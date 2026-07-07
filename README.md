@@ -15,6 +15,9 @@ in the background and serves the latest result over a small HTTP API.
 
 The first pipeline turns crypto news into a per-symbol **fear/greed sentiment** signal.
 
+> 📋 **[Vision & Roadmap](https://github.com/dc-deal/FiniexRAGEngine/issues/1)** (issue #1) —
+> the full vision, the phased plan, and where the build currently stands.
+
 ---
 
 ## Why a pipeline engine (not a one-off script)
@@ -121,8 +124,8 @@ In active development. Implemented and tested today:
   and semantic dedup before the token cap.
 
 Next up: the LLM analysis stage (prompt builder + structured output) and full pipeline
-orchestration — the API serves a typed mock envelope until those land. See the roadmap
-in issue #1.
+orchestration — the API serves a typed mock envelope until those land. See the full
+**[Vision & Roadmap](https://github.com/dc-deal/FiniexRAGEngine/issues/1)** (issue #1).
 
 ---
 
