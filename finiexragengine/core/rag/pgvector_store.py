@@ -11,6 +11,17 @@ from finiexragengine.types.article_types import Article, ScoredArticle
 from finiexragengine.types.config_types.app_config_types import VectorStoreConfig
 
 
+def _to_float_list(value) -> List[float]:
+    # pgvector deserialises the `vector` column to a numpy array when numpy is
+    # installed and to a (non-iterable) pgvector.Vector otherwise. Normalise both
+    # — and a plain list — to a list of floats so retrieval works without numpy.
+    if hasattr(value, 'to_list'):
+        value = value.to_list()
+    elif hasattr(value, 'tolist'):
+        value = value.tolist()
+    return [float(x) for x in value]
+
+
 class PgVectorStore(AbstractVectorStore):
     """Stores article embeddings in a pgvector column — the shared corpus.
 
@@ -114,6 +125,6 @@ class PgVectorStore(AbstractVectorStore):
         return [ScoredArticle(
             article=Article(*row[:n]),
             distance=float(row[n + 2]),
-            embedding=[float(x) for x in row[n + 1]],
+            embedding=_to_float_list(row[n + 1]),
             importance=row[n],
         ) for row in rows]

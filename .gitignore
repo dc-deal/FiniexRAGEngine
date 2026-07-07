@@ -28,8 +28,8 @@ env/
 data/
 logs/
 
-# Internal working docs (private — never published)
-CLAUDE.md
+# CLAUDE.md is published (the engineering rulebook — workflow transparency).
+# Internal working docs stay private — never published.
 INTERNAL_*.md
 ISSUE_*.md
 HANDOFF_*.md
