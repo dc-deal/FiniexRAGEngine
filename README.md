@@ -4,8 +4,7 @@
 
 **A configurable RAG engine that turns unstructured sources into typed trading signals.**
 
-> **Version:** 0.1.0
-> **Status:** Alpha — Phase 1 vertical slice in progress
+> **Status:** Pre-Alpha · `v0.1.0` · Phase 1 vertical slice — retrieval stage done, LLM analysis next
 
 FiniexRAGEngine fetches unstructured external content (news feeds, blogs, and later
 event/socket streams), retrieves the relevant subset via a vector store, and asks a large
@@ -78,10 +77,10 @@ same shell regardless of the signal type:
 ## Quickstart
 
 ```bash
-cp .env.example .env          # then set OPENAI_API_KEY
-docker compose up -d          # starts the engine + a pgvector PostgreSQL
+cp .env.example .env                # then set OPENAI_API_KEY
+docker compose up -d                # pgvector PostgreSQL + the engine container
 
-# inside the container:
+docker compose exec ragengine bash  # enter the container, then start the API:
 python finiexragengine/cli/server_cli.py --reload --port 8100
 ```
 
