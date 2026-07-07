@@ -1,0 +1,66 @@
+{
+    // FiniexRAGEngine — debug / run entry points
+    "version": "0.2.0",
+    "configurations": [
+        // ====================================================
+        // 🚀 SERVICE
+        // ====================================================
+        {
+            "name": "🚀 RAGEngine: API Server (reload)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/finiexragengine/cli/server_cli.py",
+            "args": [
+                "--reload",
+                "--port",
+                "8100"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "01_service",
+                "order": 1
+            }
+        },
+        // ====================================================
+        // 🧩 TESTS (free — no API cost)
+        // ====================================================
+        {
+            "name": "🧩 Pytest: All (free)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": [
+                "tests/",
+                "-v"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "02_tests",
+                "order": 1
+            }
+        },
+        // ====================================================
+        // 💸 PAID GATE (real OpenAI API cost — run deliberately)
+        // ====================================================
+        {
+            "name": "💸 Pytest: Live RAG (OpenAI, paid)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": [
+                "tests/test_rag_live.py",
+                "-m",
+                "paid",
+                "-v"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "03_paid_gate",
+                "order": 1
+            }
+        }
+    ]
+}

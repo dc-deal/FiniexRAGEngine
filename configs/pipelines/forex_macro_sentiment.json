@@ -1,0 +1,46 @@
+{
+    "pipeline_id": "forex_macro_sentiment",
+    "outcome_type": "sentiment_fear_greed",
+    "market": "forex",
+    "symbols": [
+        "EURUSD",
+        "GBPUSD"
+    ],
+    "symbol_queries": {
+        "EURUSD": "Euro US Dollar EUR/USD euro area ECB",
+        "GBPUSD": "British Pound Sterling GBP/USD Bank of England"
+    },
+    "prompt_version": "1",
+    "trigger": {
+        "type": "interval",
+        "interval_seconds": 600
+    },
+    "sources": [
+        {
+            "source_id": "fxstreet",
+            "type": "rss",
+            "url": "https://www.fxstreet.com/rss/news",
+            "weight": 1.0
+        },
+        {
+            "source_id": "forexlive",
+            "type": "rss",
+            "url": "https://www.forexlive.com/feed/news",
+            "weight": 1.0
+        },
+        {
+            "source_id": "dailyfx",
+            "type": "rss",
+            "url": "https://www.dailyfx.com/feeds/market-news",
+            "weight": 0.8
+        }
+    ],
+    "retrieval": {
+        "top_k": 12,
+        "recency_window_minutes": 2880,
+        "dedup_similarity": 0.92
+    },
+    "breaking": {
+        "urgency_threshold": 0.8
+    }
+}

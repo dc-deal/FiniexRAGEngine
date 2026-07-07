@@ -1,0 +1,42 @@
+services:
+  ragengine:
+    build: .
+    container_name: finiexragengine
+    volumes:
+      - .:/app
+      # named volume for the root home — shell history, editor server state and
+      # per-user tool config survive container rebuilds
+      - devhome:/root
+      - ~/.gitconfig:/root/.gitconfig:ro
+      - ~/.ssh:/root/.ssh:ro
+    environment:
+      - PYTHONPATH=/app
+      - DATABASE_URL=postgresql://ragengine:ragengine@postgres:5432/ragengine
+      # OPENAI_API_KEY is read from the local .env (never committed)
+    env_file:
+      - path: .env
+        required: false
+    depends_on:
+      - postgres
+    ports:
+      - "8100:8100"
+    stdin_open: true
+    tty: true
+    command: tail -f /dev/null
+
+  postgres:
+    # pgvector-enabled PostgreSQL — the vector store backing the RAG layer
+    image: pgvector/pgvector:pg16
+    container_name: finiexragengine-postgres
+    environment:
+      - POSTGRES_USER=ragengine
+      - POSTGRES_PASSWORD=ragengine
+      - POSTGRES_DB=ragengine
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+
+volumes:
+  pgdata:
+  devhome:

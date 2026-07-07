@@ -1,0 +1,58 @@
+{
+    "pipeline_id": "crypto_sentiment",
+    "outcome_type": "sentiment_fear_greed",
+    "market": "crypto",
+    "symbols": [
+        "BTCUSD",
+        "ETHUSD",
+        "SOLUSD",
+        "ADAUSD",
+        "XRPUSD",
+        "DASHUSD",
+        "LTCUSD",
+        "ETHEUR"
+    ],
+    "symbol_queries": {
+        "BTCUSD": "Bitcoin BTC",
+        "ETHUSD": "Ethereum ETH",
+        "SOLUSD": "Solana SOL",
+        "ADAUSD": "Cardano ADA",
+        "XRPUSD": "XRP Ripple",
+        "DASHUSD": "Dash cryptocurrency",
+        "LTCUSD": "Litecoin LTC",
+        "ETHEUR": "Ethereum ETH"
+    },
+    "prompt_version": "1",
+    "trigger": {
+        "type": "interval",
+        "interval_seconds": 600
+    },
+    "sources": [
+        {
+            "source_id": "cryptonews",
+            "type": "rss",
+            "url": "https://cryptonews.com/rss",
+            "weight": 0.8
+        },
+        {
+            "source_id": "cointelegraph",
+            "type": "rss",
+            "url": "https://cointelegraph.com/rss",
+            "weight": 1.0
+        },
+        {
+            "source_id": "decrypt",
+            "type": "rss",
+            "url": "https://decrypt.co/feed",
+            "weight": 1.0
+        }
+    ],
+    "retrieval": {
+        "top_k": 12,
+        "recency_window_minutes": 1440,
+        "dedup_similarity": 0.92
+    },
+    "breaking": {
+        "urgency_threshold": 0.8
+    }
+}

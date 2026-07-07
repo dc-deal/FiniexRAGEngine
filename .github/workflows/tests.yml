@@ -1,0 +1,37 @@
+# Runs the free test suite on every PR and on every merge to master.
+# Paid live tests (marker `paid`) stay excluded via pytest.ini — CI never spends API budget.
+name: tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: ragengine
+          POSTGRES_PASSWORD: ragengine
+          POSTGRES_DB: ragengine
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U ragengine"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: pytest tests/ -v
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          DATABASE_URL: postgresql://ragengine:ragengine@127.0.0.1:5433/ragengine
