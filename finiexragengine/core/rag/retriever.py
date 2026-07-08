@@ -2,8 +2,8 @@
 from datetime import datetime, timedelta, timezone
 from typing import List, Tuple
 
-from finiexragengine.core.rag.abstract_embedder import AbstractEmbedder
 from finiexragengine.core.rag.abstract_vector_store import AbstractVectorStore
+from finiexragengine.core.rag.query_vector_cache import QueryVectorCache
 from finiexragengine.types.article_types import Article, ScoredArticle
 from finiexragengine.types.config_types.pipeline_config_types import RetrievalConfig
 
@@ -28,8 +28,9 @@ def _rank_key(item: Tuple[int, ScoredArticle]) -> Tuple:
 class Retriever:
     """Selects the relevant article context for a query (e.g. a symbol).
 
-    This is where the token budget is solved (ISSUE_5): embed the query, pull
-    the most-similar candidates from the store, then squeeze them down:
+    This is where the token budget is solved (ISSUE_5): resolve the query vector
+    (cached — ISSUE_19), pull the most-similar candidates from the store, then
+    squeeze them down:
 
     - *recent tier* — candidates inside `recency_window_minutes` (broad);
     - *deep tier* (opt-in via `retrieval.deep_tier`) — older articles enter
@@ -44,9 +45,9 @@ class Retriever:
 
     _OVERFETCH = 2   # pull extra candidates per tier so dedup cannot starve top_k
 
-    def __init__(self, embedder: AbstractEmbedder, store: AbstractVectorStore,
+    def __init__(self, query_cache: QueryVectorCache, store: AbstractVectorStore,
                  config: RetrievalConfig) -> None:
-        self._embedder = embedder
+        self._query_cache = query_cache
         self._store = store
         self._config = config
 
@@ -59,7 +60,7 @@ class Retriever:
         Returns:
             At most `top_k` articles, best candidate first.
         """
-        vector = self._embedder.embed([query])[0]
+        vector = self._query_cache.get_vector(query)   # cached — embeds once, then reused (ISSUE_19)
         now = datetime.now(timezone.utc)
         fetch_k = self._config.top_k * self._OVERFETCH
         recent_since = now - timedelta(minutes=self._config.recency_window_minutes)
