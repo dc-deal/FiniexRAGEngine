@@ -28,6 +28,17 @@ every change is committed manually after review.
 - **Addressing.** The human is "the operator"; German (informal *du*) is fine in chat.
   All artifacts — code, comments, docs, issues, commit messages — stay English.
 
+## Architecture planning
+
+Before committing to a design for a non-trivial feature or change:
+
+- **Look at the established systems.** Is there a comparable, mainstream system? Does it
+  hit the same problem, and how does it solve it? Present the industry/established approach
+  next to your own recommendation — not just an opinion.
+- **Look at existing modules.** Check whether a well-established Python package already
+  solves it well (or better) before hand-rolling. Adopt one only with a clear, lasting
+  reason; when you do, update `requirements.txt` in the same change.
+
 ## Commit policy
 
 - **Never create git commits.** The operator commits manually after reviewing each change.
@@ -167,3 +178,16 @@ tests/                  pytest suite
 - **Stage-scoped reads.** Before working on the ingest or retrieval stage, read
   `docs/architecture/detailed_ingest_and_retrieval.md` first — it is the per-unit map of that flow.
 - English everywhere. Human-readable, compact.
+
+## After each feature (five-point review)
+
+"Code done" is not "done". When a feature or fix is finished, walk these five and state
+what each needs (the operator decides and applies):
+
+1. **Tests** — new behavior gets tests; changed behavior updates them.
+2. **Docs** — always review; new structures/features get documented, touched flows get
+   their doc updated.
+3. **README** — check whether the change touches it (status, quickstart, feature list).
+4. **Issues** — if the work came from an issue, fold implementation decisions/deviations
+   back into it (render an updated `ISSUE_<name>.md` for the operator to sync).
+5. **Roadmap** — keep issue #1 current; tick a box only when the item ships (merges).

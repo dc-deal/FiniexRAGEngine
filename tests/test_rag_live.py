@@ -19,6 +19,7 @@ import psycopg  # noqa: E402
 
 from finiexragengine.core.rag.openai_embedder import OpenAIEmbedder  # noqa: E402
 from finiexragengine.core.rag.pgvector_store import PgVectorStore  # noqa: E402
+from finiexragengine.core.rag.query_vector_cache import QueryVectorCache  # noqa: E402
 from finiexragengine.core.rag.retriever import Retriever  # noqa: E402
 from finiexragengine.exceptions.ragengine_errors import VectorStoreError  # noqa: E402
 from finiexragengine.types.article_types import Article  # noqa: E402
@@ -35,6 +36,7 @@ pytestmark = [
 ]
 
 _TABLE = 'articles_live_test'
+_QCACHE_TABLE = 'query_vectors_live_test'
 
 
 def _dsn() -> str:
@@ -67,6 +69,7 @@ def store():
     yield instance
     with psycopg.connect(_dsn()) as conn, conn.cursor() as cur:
         cur.execute(f'DROP TABLE IF EXISTS {_TABLE}')
+        cur.execute(f'DROP TABLE IF EXISTS {_QCACHE_TABLE}')
 
 
 def test_live_embedding_dimension_and_semantics():
@@ -100,7 +103,9 @@ def test_live_end_to_end_retrieval_squeeze(store):
     assert store.upsert(articles, vectors) == len(articles)
 
     config = RetrievalConfig(top_k=3, recency_window_minutes=1440, dedup_similarity=0.9)
-    retriever = Retriever(embedder, store, config)
+    cache = QueryVectorCache(embedder, _dsn(), model=EmbeddingConfig().model,
+                             dimensions=1536, table=_QCACHE_TABLE)
+    retriever = Retriever(cache, store, config)
     result = retriever.retrieve('Euro US Dollar EUR/USD euro area ECB')
 
     ids = [article.article_id for article in result]

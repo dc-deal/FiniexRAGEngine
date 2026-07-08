@@ -52,10 +52,16 @@ Retrieval runs **per symbol**. Top-down, one symbol's query flows through:
    retrieval-friendly text ("Bitcoin BTC"). Resolution: configured alias → derived
    base currency → the symbol itself.
 
-2. **Embed the query — `core/rag/retriever.py` (`Retriever.retrieve`).**
-   The query text is embedded with the **same model** as the articles — vectors from
-   different models live on different maps and are not comparable (the invariant
-   ISSUE_16 guards). This is the reference direction everything is compared against.
+2. **Resolve the query vector — `core/rag/query_vector_cache.py` (`QueryVectorCache`)
+   via `core/rag/retriever.py` (`Retriever.retrieve`).**
+   The retrieval queries are a fixed, small set (`symbol_queries`), so they are embedded
+   **once** and cached in the `query_vectors` table (ISSUE_19); later retrievals reuse the
+   stored vector instead of re-calling the API. Embedded with the **same model** as the
+   articles — vectors from different models live on different maps and are not comparable
+   (the invariant ISSUE_16 guards; the cache key is `(query_text, model, dimensions)`, so a
+   text or model change re-embeds only what changed). This is the reference direction
+   everything is compared against; because the vectors are in the DB, the ranking can also
+   be reproduced by hand in SQL (see `../development/database_inspection.md`).
 
 3. **Candidate search in the DB — `core/rag/pgvector_store.py` (`PgVectorStore.query`).**
    One SQL round-trip does three things at once: the **recency filter**

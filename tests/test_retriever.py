@@ -8,7 +8,6 @@ import itertools
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
-from finiexragengine.core.rag.abstract_embedder import AbstractEmbedder
 from finiexragengine.core.rag.abstract_vector_store import AbstractVectorStore
 from finiexragengine.core.rag.retriever import Retriever
 from finiexragengine.types.article_types import Article, ScoredArticle
@@ -28,13 +27,15 @@ def _unit(index: int) -> List[float]:
     return vector
 
 
-class _FakeEmbedder(AbstractEmbedder):
+class _FakeQueryVectorCache:
+    """Returns a fixed query vector (axis 0) and records the queries asked for."""
+
     def __init__(self) -> None:
         self.queries: List[str] = []
 
-    def embed(self, texts: List[str]) -> List[List[float]]:
-        self.queries.extend(texts)
-        return [_unit(0) for _ in texts]
+    def get_vector(self, query_text: str) -> List[float]:
+        self.queries.append(query_text)
+        return _unit(0)
 
 
 class _FakeStore(AbstractVectorStore):
@@ -66,7 +67,7 @@ def _hit(article_id: str, distance: float, weight: float = 1.0,
 
 
 def _retriever(store: _FakeStore, **kwargs) -> Retriever:
-    return Retriever(_FakeEmbedder(), store, RetrievalConfig(**kwargs))
+    return Retriever(_FakeQueryVectorCache(), store, RetrievalConfig(**kwargs))
 
 
 def test_recent_tier_window_and_overfetch():
