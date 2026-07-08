@@ -80,11 +80,14 @@ It needs `DATABASE_URL`; it runs **free** on the cached query vectors (issue #19
 embeds on a cache miss (`--pipeline` works for any constellation).
 
 ```
-Corpus coverage — pipeline 'crypto_sentiment' | model text-embedding-3-small | table articles
+Corpus Coverage Report
+config: configs/pipelines/crypto_sentiment.json  (pipeline 'crypto_sentiment')
+model text-embedding-3-small | table articles
 corpus: 87 articles (46 within the 1440min/24h window)
-
+--------------------------------------------------------------------------
      all-time          window
   best   mean     best   mean  cov  symbols / query
+--------------------------------------------------------------------------
  0.403  0.797    0.403  0.776   ok  ADAUSD  "Cardano ADA"
  0.502  0.746    0.502  0.734   ok  BTCUSD  "Bitcoin BTC"
  0.572  0.704    0.572  0.687  GEN  DASHUSD  "Dash cryptocurrency"

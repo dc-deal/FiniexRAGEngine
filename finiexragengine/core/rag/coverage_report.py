@@ -50,6 +50,7 @@ class SymbolCoverage:
 class CoverageReport:
     """A full coverage run: provenance + corpus size + per-query rows."""
     pipeline_id: str                # which constellation was analysed
+    config_file: str                # config path shown in the report header
     model: str                      # embedding model of the cached query vectors
     article_table: str              # corpus table the report ran against
     total_articles: int
@@ -61,7 +62,7 @@ class CoverageReport:
 
 def build_coverage_report(
         symbol_queries: Dict[str, str], cache: QueryVectorCache, database_url: str, *,
-        pipeline_id: str, model: str, window_minutes: int,
+        pipeline_id: str, config_file: str, model: str, window_minutes: int,
         article_table: str = 'articles', floor: float = COVERAGE_FLOOR) -> CoverageReport:
     """Per-symbol corpus coverage, best-covered first.
 
@@ -120,23 +121,26 @@ def build_coverage_report(
         raise VectorStoreError(f'coverage report failed: {exc}') from exc
     rows.sort(key=lambda r: r.best_distance)
     return CoverageReport(
-        pipeline_id=pipeline_id, model=model, article_table=article_table,
-        total_articles=total_articles, window_articles=window_articles,
-        window_minutes=window_minutes, floor=floor, rows=rows)
+        pipeline_id=pipeline_id, config_file=config_file, model=model,
+        article_table=article_table, total_articles=total_articles,
+        window_articles=window_articles, window_minutes=window_minutes,
+        floor=floor, rows=rows)
 
 
 def format_coverage_report(report: CoverageReport) -> str:
     """Render a CoverageReport as a compact console table (best-covered first)."""
     win_label = f'{report.window_minutes}min/{report.window_minutes / 60:.0f}h'
+    divider = '-' * 74
     lines = [
-        f"Corpus coverage — pipeline '{report.pipeline_id}' | model {report.model} "
-        f'| table {report.article_table}',
+        'Corpus Coverage Report',
+        f"config: {report.config_file}  (pipeline '{report.pipeline_id}')",
+        f'model {report.model} | table {report.article_table}',
         f'corpus: {report.total_articles} articles '
         f'({report.window_articles} within the {win_label} window)',
-        '',
+        divider,
         f'{"all-time":>13}   {"window":>13}',
         f'{"best":>6} {"mean":>6}   {"best":>6} {"mean":>6}  cov  symbols / query',
-        '-' * 74,
+        divider,
     ]
     for r in report.rows:
         mark = ' ok' if r.covered else 'GEN'   # GEN = generic fallback (no own news)

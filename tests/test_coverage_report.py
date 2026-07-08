@@ -41,14 +41,17 @@ def _dsn() -> str:
 
 def test_format_marks_generic_and_nan():
     report = CoverageReport(
-        pipeline_id='crypto_sentiment', model='text-embedding-3-small',
-        article_table='articles', total_articles=2, window_articles=1,
-        window_minutes=1440, floor=0.55, rows=[
+        pipeline_id='crypto_sentiment',
+        config_file='configs/pipelines/crypto_sentiment.json',
+        model='text-embedding-3-small', article_table='articles', total_articles=2,
+        window_articles=1, window_minutes=1440, floor=0.55, rows=[
             SymbolCoverage('Bitcoin BTC', ['BTCUSD'], 0.40, 0.70, 0.42, 0.72, True),
             SymbolCoverage('Dash', ['DASHUSD'], 0.60, 0.70,
                            float('nan'), float('nan'), False),
         ])
     text = format_coverage_report(report)
+    assert 'Corpus Coverage Report' in text             # proper heading
+    assert 'configs/pipelines/crypto_sentiment.json' in text   # config filename
     assert "pipeline 'crypto_sentiment'" in text        # provenance in the header
     assert 'text-embedding-3-small' in text
     assert '2 articles (1 within the 1440min/24h window)' in text
@@ -103,7 +106,8 @@ def seeded():
 def test_build_covers_close_query_and_flags_far_one(seeded):
     report = build_coverage_report(
         {'SYM1': 'q_close', 'SYM2': 'q_far'}, seeded, _dsn(),
-        pipeline_id='test', model='m', window_minutes=1440, article_table=_ART_TABLE)
+        pipeline_id='test', config_file='configs/pipelines/test.json', model='m',
+        window_minutes=1440, article_table=_ART_TABLE)
 
     assert report.total_articles == 3
     assert report.window_articles == 2                  # a3 is outside the 24h window

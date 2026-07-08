@@ -48,6 +48,9 @@ class _FakeStore(AbstractVectorStore):
     def upsert(self, articles: List[Article], vectors: List[List[float]]) -> int:
         raise AssertionError('retrieval must not upsert')
 
+    def existing_ids(self, article_ids: List[str]) -> set:
+        raise AssertionError('retrieval must not check existence')
+
     def query(self, vector, top_k, since, min_importance=None):
         self.calls.append({'top_k': top_k, 'since': since,
                            'min_importance': min_importance})

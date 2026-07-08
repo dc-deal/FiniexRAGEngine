@@ -1,7 +1,7 @@
 """Abstract base for the vector store backing the RAG layer."""
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Set
 
 from finiexragengine.types.article_types import Article, ScoredArticle
 
@@ -43,5 +43,15 @@ class AbstractVectorStore(ABC):
         Returns:
             The matches as ScoredArticle (cosine distance + stored embedding +
             importance tag), most similar first.
+        """
+        ...
+
+    @abstractmethod
+    def existing_ids(self, article_ids: List[str]) -> Set[str]:
+        """Return the subset of article_ids already stored.
+
+        Lets the ingest side skip articles it already holds: only the upsert is
+        idempotent, but *embedding* a known article again is wasted API spend, so
+        ingest checks existence first and embeds only the genuinely new ids.
         """
         ...

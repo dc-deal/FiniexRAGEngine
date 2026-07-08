@@ -62,6 +62,22 @@
                 "order": 1
             }
         },
+        {
+            "name": "💸 RAGEngine: Ingest (fetch→embed→upsert, paid)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/finiexragengine/cli/ingest_cli.py",
+            "args": [
+                "--pipeline",
+                "${input:pipeline}"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "03_paid_gate",
+                "order": 2
+            }
+        },
         // ====================================================
         // 📊 DIAGNOSTICS (read-only DB reports — free on cached query vectors)
         // ====================================================
@@ -70,13 +86,25 @@
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/finiexragengine/cli/coverage_cli.py",
-            "args": [],
+            "args": [
+                "--pipeline",
+                "${input:pipeline}"
+            ],
             "console": "integratedTerminal",
             "justMyCode": false,
             "presentation": {
                 "group": "04_diagnostics",
                 "order": 1
             }
+        }
+    ],
+    // Prompted at launch so the CLI entries can target any constellation.
+    "inputs": [
+        {
+            "id": "pipeline",
+            "type": "promptString",
+            "description": "Pipeline id (configs/pipelines/<id>.json)",
+            "default": "crypto_sentiment"
         }
     ]
 }

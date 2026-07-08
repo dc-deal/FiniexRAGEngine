@@ -43,6 +43,14 @@ Top-down, each new article flows through these units in order:
 **Store everything, filter later.** Ingest never decides relevance — it embeds and
 upserts *every* article. Relevance is per-query and belongs to retrieval.
 
+**Running it.** The whole write path above runs as one pass via
+`finiexragengine/cli/ingest_cli.py` (`core/pipeline/ingestor.py` — `Ingestor`: fetch → embed →
+upsert), the manual precursor to the scheduled ingest worker (ISSUE_10) that `Pipeline.run`
+(ISSUE_7) will call as its first stage. Cheap to re-run: the store is asked which article ids it
+already holds (`existing_ids`), so only genuinely new items are embedded — the pass reports
+`embedded N` (the paid count), so a re-run over an unchanged feed window pays nothing. Article text
+is embedded as `title. summary` (the title carries signal when the RSS summary is thin).
+
 ## Phase B — Retrieval (read path)
 
 Retrieval runs **per symbol**. Top-down, one symbol's query flows through:

@@ -1,6 +1,6 @@
 """pgvector-backed vector store (PostgreSQL)."""
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Set
 
 import psycopg
 from pgvector.psycopg import register_vector
@@ -104,6 +104,20 @@ class PgVectorStore(AbstractVectorStore):
         except psycopg.Error as exc:
             raise VectorStoreError(f'upsert failed: {exc}') from exc
         return written
+
+    def existing_ids(self, article_ids: List[str]) -> Set[str]:
+        if not article_ids:
+            return set()
+        table = self._config.table
+        # One round-trip membership check so ingest can skip re-embedding known ids.
+        try:
+            with self._raw_connect() as conn, conn.cursor() as cur:
+                cur.execute(
+                    f'SELECT article_id FROM {table} WHERE article_id = ANY(%s)',
+                    (article_ids,))
+                return {row[0] for row in cur.fetchall()}
+        except psycopg.Error as exc:
+            raise VectorStoreError(f'existing_ids query failed: {exc}') from exc
 
     def query(self, vector: List[float], top_k: int, since: datetime,
               min_importance: Optional[int] = None) -> List[ScoredArticle]:
