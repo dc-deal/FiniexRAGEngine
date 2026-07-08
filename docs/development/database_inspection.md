@@ -62,3 +62,45 @@ That join is exactly what `PgVectorStore.query` does in
 `finiexragengine/core/rag/pgvector_store.py`; the Python retriever then applies the
 near-duplicate collapse and the `top_k` cap on top of it (see
 `../architecture/detailed_ingest_and_retrieval.md`).
+
+## Coverage report (CLI)
+
+The manual join above answers "how well is *this* symbol covered?" one query at a time.
+`finiexragengine/cli/coverage_cli.py` automates it for a whole constellation: for every
+symbol query it reports the **nearest** article distance (best coverage) and the **mean**
+distance, both all-time and within the pipeline's recency window, plus the corpus size.
+
+```bash
+python finiexragengine/cli/coverage_cli.py                 # crypto_sentiment (default)
+python finiexragengine/cli/coverage_cli.py --pipeline forex_events --floor 0.55
+```
+
+Also available in the IDE as **📊 RAGEngine: Corpus Coverage Report** (`.vscode/launch.json`).
+It needs `DATABASE_URL`; it runs **free** on the cached query vectors (issue #19) and only
+embeds on a cache miss (`--pipeline` works for any constellation).
+
+```
+Corpus coverage — pipeline 'crypto_sentiment' | model text-embedding-3-small | table articles
+corpus: 87 articles (46 within the 1440min/24h window)
+
+     all-time          window
+  best   mean     best   mean  cov  symbols / query
+ 0.403  0.797    0.403  0.776   ok  ADAUSD  "Cardano ADA"
+ 0.502  0.746    0.502  0.734   ok  BTCUSD  "Bitcoin BTC"
+ 0.572  0.704    0.572  0.687  GEN  DASHUSD  "Dash cryptocurrency"
+```
+
+Reading it:
+
+- **best** is the distance to the nearest article — lower is better coverage. Dedicated
+  symbols land around `0.40–0.50` here; a symbol with no own news drifts higher.
+- **cov = GEN** flags a best-distance beyond `--floor` (default `0.55`): the corpus has no
+  article close to that symbol, so retrieval would return only generic, off-topic context —
+  the `HOLD` / "No relevant news found" case of the output contract.
+- **window** columns are what a *live* retrieval sees right now (only articles inside the
+  recency window); the **all-time** columns show the whole corpus. A symbol covered all-time
+  but `n/a`/worse in the window has gone quiet recently.
+
+The report is the empirical companion to a retrieval **min-similarity floor** — the same
+`~0.55` cut-off that would route an uncovered symbol into the clean `HOLD` path instead of a
+signal hallucinated from generic news.

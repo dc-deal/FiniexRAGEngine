@@ -61,6 +61,22 @@
                 "group": "03_paid_gate",
                 "order": 1
             }
+        },
+        // ====================================================
+        // 📊 DIAGNOSTICS (read-only DB reports — free on cached query vectors)
+        // ====================================================
+        {
+            "name": "📊 RAGEngine: Corpus Coverage Report",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/finiexragengine/cli/coverage_cli.py",
+            "args": [],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "04_diagnostics",
+                "order": 1
+            }
         }
     ]
 }
