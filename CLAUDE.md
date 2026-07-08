@@ -20,6 +20,14 @@ the product's own LLM usage (OpenAI API) is a core feature, described openly.
 Discipline: the assistant proposes and drafts; the human owns architecture and review;
 every change is committed manually after review.
 
+## Working style
+
+- **State confidence, ask when low.** Communicate implementation confidence as a
+  percentage; when it is below ~95%, or a change is public-facing / hard to reverse,
+  ask focused, numbered questions before executing instead of guessing.
+- **Addressing.** The human is "the operator"; German (informal *du*) is fine in chat.
+  All artifacts — code, comments, docs, issues, commit messages — stay English.
+
 ## Commit policy
 
 - **Never create git commits.** The operator commits manually after reviewing each change.
@@ -49,6 +57,13 @@ Read first, in order:
   Config defaults must mirror the JSON config file exactly.
 - **CLI entry points** in `finiexragengine/cli/` — parameter reception only, no logic.
 - Early-exit pattern preferred. Keep diffs minimal; no changelog/version comments in code.
+- **Comment the flow generously as you build.** Comment each meaningful step —
+  when in doubt, one comment too many beats one too few — giving the mechanics and
+  the *why*, so the operator can follow what was built without re-deriving it.
+  (Applies to explanatory comments; functional diffs still stay minimal.)
+  Public-repo standard: English, compact, professional — no session/tooling
+  references, no narration, no changelog/version notes; trace a step to its issue
+  with `ISSUE_N` where relevant.
 
 ## Engine output contract (envelope invariants)
 
@@ -149,4 +164,6 @@ tests/                  pytest suite
 ## Documentation
 
 - Docs in `docs/`. New structures/features get documented; review `README.md` per change.
+- **Stage-scoped reads.** Before working on the ingest or retrieval stage, read
+  `docs/architecture/detailed_ingest_and_retrieval.md` first — it is the per-unit map of that flow.
 - English everywhere. Human-readable, compact.

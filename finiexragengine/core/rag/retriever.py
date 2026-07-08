@@ -85,5 +85,5 @@ class Retriever:
             seen_ids.add(hit.article.article_id)
             kept.append(hit)
             if len(kept) == self._config.top_k:
-                break
+                break   # cap applied after dedup, so duplicates never consume a slot
         return [hit.article for hit in kept]

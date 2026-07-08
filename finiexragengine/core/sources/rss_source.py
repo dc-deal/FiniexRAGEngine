@@ -21,6 +21,9 @@ class RssSource(AbstractSource):
 
     def fetch(self) -> List[Article]:
         url = self._config.url
+        # Active pull: the ingest side fetches the feed on its own schedule (the
+        # interval trigger) — nothing is pushed to us. The only push path in the
+        # system is the separate live breaking channel (ISSUE_11).
         parsed = feedparser.parse(url)
         entries = getattr(parsed, 'entries', []) or []
         # feedparser sets bozo on a malformed feed; a transport failure surfaces

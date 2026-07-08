@@ -20,6 +20,9 @@ class PipelineRegistry:
 
     def load(self) -> None:
         """Load every constellation JSON in the pipelines directory."""
+        # Discovery: one constellation JSON = one Pipeline, keyed by its pipeline_id.
+        # PipelineConfig(**data) is the Pydantic validation gate — a malformed
+        # constellation fails loudly here at load time, not mid-run.
         for path in sorted(self._pipelines_dir.glob('*.json')):
             data = json.loads(path.read_text(encoding='utf-8'))
             config = PipelineConfig(**data)

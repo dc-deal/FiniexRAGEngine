@@ -73,6 +73,9 @@ class PgVectorStore(AbstractVectorStore):
                     'importance SMALLINT, '
                     'breaking_candidate BOOLEAN NOT NULL DEFAULT FALSE)'
                 )
+                # No ANN index yet: cosine search is an exact full scan, which is
+                # fine at the current corpus size. Add an HNSW index on `embedding`
+                # (vector_cosine_ops) before the scan dominates query latency.
         except psycopg.Error as exc:
             raise VectorStoreError(f'schema init failed: {exc}') from exc
 
@@ -106,6 +109,11 @@ class PgVectorStore(AbstractVectorStore):
               min_importance: Optional[int] = None) -> List[ScoredArticle]:
         table = self._config.table
         columns = ', '.join(self._COLUMNS)
+        # <=> is pgvector's cosine-distance operator (0.0 = identical direction).
+        # Recency filter, distance ranking and the fetch cap run in one round-trip.
+        # The query set is fixed per constellation, so query vectors and these
+        # distances are cacheable (materialize at ingest) — today each call embeds
+        # and scans afresh; revisit when the corpus outgrows the exact scan.
         sql = (f'SELECT {columns}, importance, embedding, '
                f'embedding <=> %s::vector AS distance '
                f'FROM {table} WHERE published_at >= %s')

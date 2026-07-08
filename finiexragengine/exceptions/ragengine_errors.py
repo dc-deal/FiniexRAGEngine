@@ -1,4 +1,10 @@
-"""Custom exceptions for FiniexRAGEngine."""
+"""Custom exceptions for FiniexRAGEngine.
+
+All errors root at FiniexRagError. These subclasses back the envelope's
+RunError.type taxonomy — ISSUE_7 maps each to its fixed taxonomy string
+(SOURCE_UNREACHABLE, LLM_TIMEOUT, VECTOR_STORE_ERROR, …) so a downstream
+collector can classify failures without parsing log text.
+"""
 
 
 class FiniexRagError(Exception):

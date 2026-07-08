@@ -44,6 +44,9 @@ class OpenAIEmbedder(AbstractEmbedder):
                 )
             except OpenAIError as exc:
                 raise EmbeddingError(f'embedding request failed: {exc}') from exc
+            # OpenAI returns L2-normalized (unit-length) vectors, so downstream a
+            # dot product already equals cosine similarity and pgvector's <=>
+            # distance needs no separate normalization step.
             # The API may return items unordered; `.index` is the position in `batch`.
             ordered = sorted(response.data, key=lambda item: item.index)
             for item in ordered:
