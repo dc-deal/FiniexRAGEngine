@@ -36,7 +36,30 @@ services:
       - pgdata:/var/lib/postgresql/data
     ports:
       - "5433:5432"
+    # Come back up automatically after a Docker/host restart (depends_on only orders start).
+    restart: unless-stopped
+
+  # Browser DB admin (dev only) — http://localhost:5050. Reaches postgres over the compose
+  # network; the FiniexRAGEngine server is pre-registered via pgadmin_servers.json (enter the
+  # DB password 'ragengine' on first connect).
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: finiexragengine-pgadmin
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=admin@local.dev
+      - PGADMIN_DEFAULT_PASSWORD=admin
+      - PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED=False
+      - PGADMIN_SERVER_JSON_FILE=/pgadmin4/servers.json
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+      - ./.devcontainer/pgadmin_servers.json:/pgadmin4/servers.json:ro
+    ports:
+      - "5050:80"
+    depends_on:
+      - postgres
+    restart: unless-stopped
 
 volumes:
   pgdata:
   devhome:
+  pgadmin_data:

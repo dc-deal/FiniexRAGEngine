@@ -18,6 +18,8 @@ class AppConfigManager:
     """
 
     def __init__(self) -> None:
+        # AppConfig(**data) is the Pydantic validation gate: a malformed or incomplete
+        # app_config.json fails loudly here at construction, before the service boots.
         data = json.loads(_CONFIG_PATH.read_text(encoding='utf-8'))
         self._config = AppConfig(**data)
 

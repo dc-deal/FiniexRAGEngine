@@ -13,6 +13,9 @@ def create_app() -> FastAPI:
     Returns:
         The configured FastAPI application.
     """
+    # Boot sequence: load app config → discover + validate constellations → build the
+    # app → mount routers. Dependencies are wired here and injected into the routers
+    # (build_*_router takes them as args), so the endpoint code holds no globals.
     config_manager = AppConfigManager()
     registry = PipelineRegistry(config_manager.get_pipelines_dir())
     registry.load()

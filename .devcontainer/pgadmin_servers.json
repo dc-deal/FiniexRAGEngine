@@ -1,0 +1,13 @@
+{
+    "Servers": {
+        "1": {
+            "Name": "FiniexRAGEngine",
+            "Group": "Servers",
+            "Host": "postgres",
+            "Port": 5432,
+            "MaintenanceDB": "ragengine",
+            "Username": "ragengine",
+            "SSLMode": "prefer"
+        }
+    }
+}

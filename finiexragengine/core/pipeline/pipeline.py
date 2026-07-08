@@ -38,6 +38,8 @@ class Pipeline:
             A mock envelope (scaffold). Replace with the real staged flow above.
         """
         now = datetime.now(timezone.utc)
+        # Envelope invariant: every requested symbol is always present in the result —
+        # even the scaffold mock emits one HOLD/0.0 entry per configured symbol, never a gap.
         results: List[SentimentResult] = [
             SentimentResult(
                 symbol=symbol,

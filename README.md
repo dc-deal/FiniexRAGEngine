@@ -78,7 +78,7 @@ same shell regardless of the signal type:
 
 ```bash
 cp .env.example .env                # then set OPENAI_API_KEY
-docker compose up -d                # pgvector PostgreSQL + the engine container
+docker compose up -d                # pgvector PostgreSQL + pgAdmin + the engine container
 
 docker compose exec ragengine bash  # enter the container, then start the API:
 python finiexragengine/cli/server_cli.py --reload --port 8100
@@ -109,6 +109,17 @@ CI runs the free suite on every pull request and merge (see `.github/workflows/t
   retrieval parameters, trigger, and the breaking-news threshold.
 
 Both are validated into typed Pydantic models on load.
+
+---
+
+## Inspecting the vector store (pgAdmin)
+
+The dev stack ships a browser database admin at **http://localhost:5050** (pgAdmin,
+started by `docker compose up -d`). Log in with `admin@local.dev` / `admin`; the
+**FiniexRAGEngine** server is pre-registered — enter the database password `ragengine`
+on first connect. You can then browse the `articles` corpus and run the pgvector
+similarity queries by hand — see
+[docs/development/database_inspection.md](docs/development/database_inspection.md).
 
 ---
 
