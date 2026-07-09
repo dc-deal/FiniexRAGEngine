@@ -25,6 +25,7 @@ from finiexragengine.types.outcome_types import (
     SentimentResult,
     StageTiming,
 )
+from finiexragengine.types.prompt_metadata import PromptMetadata
 
 
 @dataclass
@@ -32,6 +33,7 @@ class SymbolEval:
     """One symbol's evaluation — the result plus what it took (prompt, usage, timings)."""
     result: SentimentResult
     prompt: str
+    prompt_metadata: PromptMetadata           # which prompt produced this (ISSUE_33)
     usage: LlmUsage
     articles: List[Article]
     stage_timings: List[StageTiming]
@@ -60,6 +62,8 @@ class SymbolEvaluator:
         # the result keys on the raw ticker `symbol` (e.g. "BTCUSD").
         prompt = self._timed('prompt', timings, lambda: self._prompt_builder.build(
             self._prompt_name, self._prompt_version, query, articles))
+        # The prompt's front-matter identity travels with the outcome (ISSUE_33) — cached.
+        prompt_metadata = self._prompt_builder.metadata(self._prompt_name, self._prompt_version)
         completion = self._timed('llm', timings, lambda: self._provider.complete_structured(
             prompt, SentimentLlmOutput.model_json_schema()))
 
@@ -76,8 +80,8 @@ class SymbolEvaluator:
             is_breaking=scored.urgency >= self._breaking_threshold,
             sources=[ArticleRef(article_id=a.article_id, url=a.url, title=a.title,
                                 published_at=a.published_at) for a in articles])
-        return SymbolEval(result=result, prompt=prompt, usage=completion.usage,
-                          articles=articles, stage_timings=timings)
+        return SymbolEval(result=result, prompt=prompt, prompt_metadata=prompt_metadata,
+                          usage=completion.usage, articles=articles, stage_timings=timings)
 
     def _timed(self, stage: str, timings: List[StageTiming], fn: Callable):
         started = datetime.now(timezone.utc)
@@ -101,18 +105,19 @@ def _compact_prompt(prompt: str, cols: int, lines: int) -> str:
     return rendered
 
 
-def format_symbol_eval(ev: SymbolEval, pipeline_id: str, prompt_name: str,
-                       prompt_version: str, usd: Optional[float] = None, *,
+def format_symbol_eval(ev: SymbolEval, pipeline_id: str, usd: Optional[float] = None, *,
                        prompt_cols: int = 60, prompt_lines: int = 4,
                        full_prompt: bool = False) -> str:
     """Render a SymbolEval as the console signal card + a compacted prompt excerpt."""
     r = ev.result
+    m = ev.prompt_metadata
     titles = ', '.join(s.title[:34] for s in r.sources[:3])
     reasoning = textwrap.fill(r.reasoning, width=64, subsequent_indent=' ' * 14)
     timings = ' · '.join(f'{t.stage} {t.duration_ms:.0f}ms' for t in ev.stage_timings)
     cost = f'   cost ${usd:.6f} (llm_eval)' if usd is not None else ''
     lines = [
-        f"=== Signal: {r.symbol}   (pipeline {pipeline_id} · prompt {prompt_name}_v{prompt_version}) ===",
+        f"=== Signal: {r.symbol}   (pipeline {pipeline_id} · "
+        f"prompt {m.id}@v{m.version} #{m.content_hash}) ===",
         f'  signal      {r.signal}',
         f'  score       {r.sentiment_score:+.2f}    confidence {r.confidence:.2f}    '
         f'urgency {r.urgency:.2f}    breaking {"yes" if r.is_breaking else "no"}',

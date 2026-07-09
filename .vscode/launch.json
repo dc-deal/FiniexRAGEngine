@@ -23,45 +23,8 @@
             }
         },
         // ====================================================
-        // 🧩 TESTS (free — no API cost)
-        // ====================================================
-        {
-            "name": "🧩 Pytest: All (free)",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "pytest",
-            "args": [
-                "tests/",
-                "-v"
-            ],
-            "console": "integratedTerminal",
-            "justMyCode": false,
-            "presentation": {
-                "group": "02_tests",
-                "order": 1
-            }
-        },
-        // ====================================================
         // 💸 PAID GATE (real OpenAI API cost — run deliberately)
         // ====================================================
-        {
-            "name": "💸 Pytest: Live RAG (OpenAI, paid)",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "pytest",
-            "args": [
-                "tests/test_rag_live.py",
-                "-m",
-                "paid",
-                "-v"
-            ],
-            "console": "integratedTerminal",
-            "justMyCode": false,
-            "presentation": {
-                "group": "03_paid_gate",
-                "order": 1
-            }
-        },
         {
             "name": "💸 RAGEngine: Ingest (fetch→embed→upsert, paid)",
             "type": "debugpy",
@@ -130,7 +93,44 @@
                 "group": "04_diagnostics",
                 "order": 2
             }
-        }
+        },
+        // ====================================================
+        // 🧩 TESTS (free — no API cost)
+        // ====================================================
+        {
+            "name": "🧩 Pytest: All (free)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": [
+                "tests/",
+                "-v"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "02_tests",
+                "order": 1
+            }
+        },
+        {
+            "name": "🧩💸 Pytest: Live RAG (OpenAI, paid)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": [
+                "tests/test_rag_live.py",
+                "-m",
+                "paid",
+                "-v"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "02_tests",
+                "order": 2
+            }
+        },
     ],
     // Prompted at launch so the CLI entries can target any constellation.
     "inputs": [

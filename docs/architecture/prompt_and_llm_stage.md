@@ -6,9 +6,17 @@ score with provenance into the outcome envelope.
 
 ## Prompt templates (versioned Jinja2 / Markdown files)
 
-Prompts live as **Jinja2 Markdown** files under `prompts/`, named `<name>_v<prompt_version>.md`
-(e.g. `prompts/sentiment_v1.md`), selected by the constellation's `prompt_version`. `PromptBuilder`
-(`core/llm/prompt_builder.py`) renders the template with `symbol` and the retrieved `articles`.
+Prompts live as **Jinja2 Markdown** files under `prompts/`, named `<name>_v<version>.md`
+(e.g. `prompts/sentiment_v1.md`). Each **pipeline declares which prompt it uses** (ISSUE_33) via a
+`prompt` block in its constellation JSON — so prompts are swappable per pipeline without touching
+code:
+
+```json
+"prompt": { "name": "sentiment", "version": "1" }
+```
+
+`PromptBuilder` (`core/llm/prompt_builder.py`) resolves that to `prompts/sentiment_v1.md` and renders
+the template with `symbol` and the retrieved `articles`.
 
 - The article-rendering **loop lives in the template** (`{% for a in articles %}`) and the
   empty-context fallback is a template `{% if %}` — so prompt wording *and* formatting stay in one
@@ -16,8 +24,35 @@ Prompts live as **Jinja2 Markdown** files under `prompts/`, named `<name>_v<prom
   structure (headings / lists) well.
 - The Jinja2 env is `autoescape=False` (raw prompt text, not HTML) with `StrictUndefined` (a typo'd
   template variable fails loudly, not silently empty).
-- **Bump `prompt_version` when the prompt changes** — different prompts score the same news
-  differently, so the consumer must keep the series apart (replay/backfill). A bump = a new file.
+- **Bump the version when the prompt changes** — different prompts score the same news differently,
+  so the consumer must keep the series apart (replay/backfill). A bump = a new file.
+
+## Prompt metadata & reproducibility (ISSUE_33)
+
+Every prompt is set in stone per version and carries a **YAML front-matter** block the builder parses
+into `PromptMetadata` (`types/prompt_metadata.py`) — the `---` block never leaks into the rendered
+prompt:
+
+```markdown
+---
+id: sentiment-crypto
+version: 1
+author: FiniexRAGEngine
+created: 2026-07-09
+description: Crypto fear/greed sentiment scoring from retrieved news articles
+---
+You are a crypto-market sentiment analyst...
+```
+
+- `content_hash` is a short SHA-256 of the **template body** (front-matter excluded). A
+  behaviour-changing edit moves the hash — a **silent prompt change is visible in the output**; a
+  cosmetic metadata fix (author typo) does *not* move it, so the series stays intact.
+- The front-matter is optional-tolerant: a template without a `---` block falls back to `id = name`,
+  `version =` the requested version, empty author/created/description (no hard fail for legacy prompts).
+- The outcome envelope records **`prompt_id` + `prompt_version` + `prompt_hash`** alongside the
+  score, so a consumer can tell exactly which prompt produced it. Those fields are filled when the
+  envelope is assembled (ISSUE_7); the `eval` CLI already surfaces the identity as
+  `prompt <id>@v<version> #<hash>`. Parsed templates are cached (a prompt is immutable per version).
 
 ## Structured output
 

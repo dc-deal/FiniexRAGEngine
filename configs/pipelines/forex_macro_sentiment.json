@@ -10,7 +10,10 @@
         "EURUSD": "Euro US Dollar EUR/USD euro area ECB",
         "GBPUSD": "British Pound Sterling GBP/USD Bank of England"
     },
-    "prompt_version": "1",
+    "prompt": {
+        "name": "sentiment",
+        "version": "1"
+    },
     "trigger": {
         "type": "interval",
         "interval_seconds": 600

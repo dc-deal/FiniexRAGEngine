@@ -22,7 +22,10 @@
         "LTCUSD": "Litecoin LTC",
         "ETHEUR": "Ethereum ETH"
     },
-    "prompt_version": "1",
+    "prompt": {
+        "name": "sentiment",
+        "version": "1"
+    },
     "trigger": {
         "type": "interval",
         "interval_seconds": 600

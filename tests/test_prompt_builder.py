@@ -53,3 +53,46 @@ def test_article_braces_are_not_reparsed(tmp_path):
     prompt = PromptBuilder(tmp_path).build(
         'sentiment', '1', 'BTCUSD', [_article('a', 'title', 'weird {{ not_a_field }}')])
     assert 'weird {{ not_a_field }}' in prompt
+
+
+# --- front-matter metadata (ISSUE_33) ---
+
+def test_front_matter_parsed_and_not_rendered(tmp_path):
+    (tmp_path / 'sentiment_v1.md').write_text(
+        '---\n'
+        'id: sentiment-crypto\n'
+        'version: 1\n'
+        'author: Team\n'
+        'created: 2026-07-09\n'
+        'description: test prompt\n'
+        '---\n'
+        'Symbol: {{ symbol }}\n', encoding='utf-8')
+    builder = PromptBuilder(tmp_path)
+    meta = builder.metadata('sentiment', '1')
+    assert (meta.id, meta.version, meta.author) == ('sentiment-crypto', '1', 'Team')
+    assert (meta.created, meta.description) == ('2026-07-09', 'test prompt')
+    # The `---` block must not leak into the rendered prompt.
+    prompt = builder.build('sentiment', '1', 'BTCUSD', [])
+    assert prompt.strip() == 'Symbol: BTCUSD'
+    assert 'id:' not in prompt
+
+
+def test_body_hash_tracks_body_not_metadata(tmp_path):
+    # Same body, differing metadata -> same fingerprint; changed body -> moved fingerprint.
+    (tmp_path / 'p_v1.md').write_text('---\nid: p\nauthor: A\n---\nBODY A\n', encoding='utf-8')
+    (tmp_path / 'p_v2.md').write_text('---\nid: p\nauthor: B\n---\nBODY A\n', encoding='utf-8')
+    (tmp_path / 'p_v3.md').write_text('---\nid: p\nauthor: A\n---\nBODY CHANGED\n', encoding='utf-8')
+    builder = PromptBuilder(tmp_path)
+    h1 = builder.metadata('p', '1').content_hash
+    h2 = builder.metadata('p', '2').content_hash
+    h3 = builder.metadata('p', '3').content_hash
+    assert h1 == h2       # only the author (metadata) differs
+    assert h1 != h3       # the body changed -> silent edit is visible
+
+
+def test_missing_front_matter_defaults(tmp_path):
+    (tmp_path / 'sentiment_v1.md').write_text('No front matter {{ symbol }}', encoding='utf-8')
+    meta = PromptBuilder(tmp_path).metadata('sentiment', '1')
+    assert meta.id == 'sentiment'       # falls back to the file name
+    assert meta.version == '1'          # falls back to the requested version
+    assert meta.author == ''
