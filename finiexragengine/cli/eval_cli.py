@@ -56,15 +56,15 @@ def main() -> None:
     provider = OpenAIProvider(cfg.llm, cost_recorder=recorder, section='llm_eval',
                               pipeline_id=args.pipeline)
     evaluator = SymbolEvaluator(retriever, PromptBuilder(app.get_prompts_dir()), provider,
-                                prompt_name='sentiment',
-                                prompt_version=pipeline.prompt_version,
+                                prompt_name=pipeline.prompt.name,
+                                prompt_version=pipeline.prompt.version,
                                 breaking_threshold=pipeline.breaking.urgency_threshold)
 
     query = pipeline.symbol_queries.get(args.symbol, args.symbol)
     ev = evaluator.evaluate(args.symbol, query)
     usd = derive_usd(cfg.pricing, cfg.llm.model,
                      ev.usage.prompt_tokens, ev.usage.completion_tokens)
-    print(format_symbol_eval(ev, args.pipeline, 'sentiment', pipeline.prompt_version, usd,
+    print(format_symbol_eval(ev, args.pipeline, usd,
                              prompt_cols=args.prompt_cols, prompt_lines=args.prompt_lines,
                              full_prompt=args.full_prompt))
     if args.json:

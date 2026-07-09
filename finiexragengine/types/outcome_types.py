@@ -91,7 +91,13 @@ class AnalysisEnvelope(BaseModel, Generic[T]):
     schema_version: str = '1.0'
     pipeline_id: str
     outcome_type: str
+    # Prompt provenance (ISSUE_33): `prompt_id` + `prompt_version` name the prompt series;
+    # `prompt_hash` fingerprints the template body so a silent edit is visible downstream.
+    # Populated from PromptMetadata when the envelope is assembled (ISSUE_7); default '' keeps
+    # older archived envelopes (pre-ISSUE_33) parseable.
     prompt_version: str
+    prompt_id: str = ''
+    prompt_hash: str = ''
     timestamp: datetime
     status: Literal['success', 'partial', 'error']
     result: List[T] = Field(default_factory=list)

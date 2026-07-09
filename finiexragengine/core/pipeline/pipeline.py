@@ -53,7 +53,9 @@ class Pipeline:
         return AnalysisEnvelope(
             pipeline_id=self._config.pipeline_id,
             outcome_type=self._config.outcome_type,
-            prompt_version=self._config.prompt_version,
+            # Scaffold: version from the declared prompt; prompt_id/prompt_hash are filled
+            # from the loaded PromptMetadata once the real staged flow lands (ISSUE_7/33).
+            prompt_version=self._config.prompt.version,
             timestamp=now,
             status='success',
             result=results,

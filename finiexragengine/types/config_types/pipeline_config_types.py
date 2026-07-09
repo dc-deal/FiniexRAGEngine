@@ -15,6 +15,17 @@ class SourceConfig(BaseModel):
     weight: float = 1.0          # source trust / weight (ISSUE_5)
 
 
+class PromptRef(BaseModel):
+    """The prompt a pipeline uses — its template `name` and `version` (ISSUE_33).
+
+    Resolves to `prompts/<name>_v<version>.md`; the template's front-matter carries the
+    stable id + content hash recorded with every outcome. Each pipeline declares its own,
+    so prompts are swappable per constellation without touching code.
+    """
+    name: str = 'sentiment'
+    version: str = '1'
+
+
 class TriggerConfig(BaseModel):
     type: Literal['interval', 'event'] = 'interval'
     interval_seconds: int = 600
@@ -43,7 +54,7 @@ class PipelineConfig(BaseModel):
     market: str
     symbols: List[str]
     symbol_queries: Dict[str, str] = Field(default_factory=dict)   # symbol → retrieval query text (ISSUE_5)
-    prompt_version: str = '1'
+    prompt: PromptRef = Field(default_factory=PromptRef)           # declared prompt template (ISSUE_33)
     trigger: TriggerConfig = Field(default_factory=TriggerConfig)
     sources: List[SourceConfig]
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)

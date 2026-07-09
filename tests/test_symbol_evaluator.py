@@ -10,6 +10,7 @@ from finiexragengine.core.pipeline.symbol_evaluator import (
 from finiexragengine.exceptions.ragengine_errors import LLMParseError
 from finiexragengine.types.article_types import Article
 from finiexragengine.types.llm_types import LlmCompletion, LlmUsage
+from finiexragengine.types.prompt_metadata import PromptMetadata
 
 _TS = datetime(2026, 7, 1, tzinfo=timezone.utc)
 
@@ -31,6 +32,10 @@ class _FakeRetriever:
 class _FakeBuilder:
     def build(self, name, prompt_version, symbol, articles):
         return f'PROMPT {symbol} {len(articles)} articles'
+
+    def metadata(self, name, version):
+        return PromptMetadata(id=name, version=version, author='', created='',
+                              description='', content_hash='deadbeef0000')
 
 
 class _FakeProvider:
@@ -55,6 +60,7 @@ def test_enriches_with_provenance_and_times_stages():
     assert [s.article_id for s in ev.result.sources] == ['a', 'b']   # provenance = retrieved
     assert {t.stage for t in ev.stage_timings} == {'retrieve', 'prompt', 'llm'}
     assert ev.usage.total_tokens == 120
+    assert ev.prompt_metadata.content_hash == 'deadbeef0000'   # prompt identity travels along
 
 
 def test_not_breaking_below_threshold():
