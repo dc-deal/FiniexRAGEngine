@@ -179,8 +179,9 @@ tests/                  pytest suite
 ## Documentation
 
 - Docs in `docs/`. New structures/features get documented; review `README.md` per change.
-- **Stage-scoped reads.** Before working on the ingest or retrieval stage, read
-  `docs/architecture/detailed_ingest_and_retrieval.md` first — it is the per-unit map of that flow.
+- **Stage-scoped reads.** Before working on a pipeline stage, read the matching
+  `docs/architecture/application_flow/` map first — `01_ingest_and_retrieval.md` (ingest + retrieval)
+  or `02_analysis_and_outcome.md` (LLM analysis + outcome) — the per-unit maps of each flow.
 - English everywhere. Human-readable, compact.
 
 ## After each feature (five-point review)

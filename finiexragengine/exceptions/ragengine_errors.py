@@ -27,5 +27,17 @@ class LLMError(FiniexRagError):
     """Raised when the LLM provider fails or returns unparseable output."""
 
 
+class LLMTimeoutError(LLMError):
+    """The LLM call exceeded the configured timeout (taxonomy: LLM_TIMEOUT)."""
+
+
+class LLMApiError(LLMError):
+    """The LLM backend returned an error (taxonomy: LLM_API_ERROR)."""
+
+
+class LLMParseError(LLMError):
+    """The LLM returned output that did not parse/validate (taxonomy: LLM_PARSE_ERROR)."""
+
+
 class VectorStoreError(FiniexRagError):
     """Raised on vector-store I/O failures."""

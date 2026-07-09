@@ -15,6 +15,9 @@ pgvector>=0.2.0
 # LLM provider (OpenAI chat-completions + embeddings)
 openai>=1.0.0
 
+# Prompt templates (Jinja2 Markdown templates under prompts/)
+jinja2>=3.1.0
+
 # Optional: local embeddings (run on host GPU, decouples cost). Uncomment to use.
 # sentence-transformers>=2.2.0
 

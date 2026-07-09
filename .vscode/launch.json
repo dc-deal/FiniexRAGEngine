@@ -78,6 +78,24 @@
                 "order": 2
             }
         },
+        {
+            "name": "💸 RAGEngine: Evaluate Symbol (signal + prompt, paid)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/finiexragengine/cli/eval_cli.py",
+            "args": [
+                "--pipeline",
+                "${input:pipeline}",
+                "--symbol",
+                "${input:symbol}"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "03_paid_gate",
+                "order": 3
+            }
+        },
         // ====================================================
         // 📊 DIAGNOSTICS (read-only DB reports — free on cached query vectors)
         // ====================================================
@@ -121,6 +139,12 @@
             "type": "promptString",
             "description": "Pipeline id (configs/pipelines/<id>.json)",
             "default": "crypto_sentiment"
+        },
+        {
+            "id": "symbol",
+            "type": "promptString",
+            "description": "Symbol to evaluate (e.g. BTCUSD)",
+            "default": "BTCUSD"
         }
     ]
 }

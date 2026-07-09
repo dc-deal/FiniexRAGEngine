@@ -6,8 +6,8 @@ path** fills the corpus; the **retrieval (read) path** pulls a per-symbol slice 
 it. Read this before touching anything in the ingest or retrieval stage; the per-unit
 detail below is the map.
 
-Companion docs: `pipeline_engine_architecture.md` (how the engine is wired) and
-`retrieval_policy.md` (the retrieval parameters in depth).
+Companion docs: `../pipeline_engine_architecture.md` (how the engine is wired) and
+`../retrieval_policy.md` (the retrieval parameters in depth).
 
 ## Phase A — Ingest (write path)
 
@@ -87,7 +87,7 @@ Retrieval runs **per symbol**. Top-down, one symbol's query flows through:
 
 The retrieval parameters (`top_k`, `recency_window_minutes`, `dedup_similarity`, the
 optional two-tier `deep_tier`) and the ranking tie-breaks are documented in
-`retrieval_policy.md`.
+`../retrieval_policy.md`.
 
 ## What leaves retrieval — and what does not
 
@@ -96,4 +96,5 @@ select, then dropped. `Retriever.retrieve` returns `List[Article]`, not the scor
 wrappers — the score does not travel into the prompt, the DB, or the envelope. What
 survives is the **decision** (which articles were selected); the raw vectors stay in the
 corpus, the raw text stays with them. Downstream, the selected articles become the LLM
-prompt (ISSUE_6) whose structured output is persisted as the outcome envelope.
+prompt (ISSUE_6) whose structured output is persisted as the outcome envelope — that path
+continues in `02_analysis_and_outcome.md`.
