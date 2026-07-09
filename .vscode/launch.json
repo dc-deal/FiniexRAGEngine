@@ -96,6 +96,22 @@
                 "group": "04_diagnostics",
                 "order": 1
             }
+        },
+        {
+            "name": "📊 RAGEngine: Cost Report",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/finiexragengine/cli/cost_cli.py",
+            "args": [
+                "--since",
+                "7d"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "04_diagnostics",
+                "order": 2
+            }
         }
     ],
     // Prompted at launch so the CLI entries can target any constellation.

@@ -3,6 +3,7 @@ import argparse
 import os
 
 from finiexragengine.configuration.app_config_manager import AppConfigManager
+from finiexragengine.core.observability.cost_recorder import CostRecorder
 from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
 from finiexragengine.core.rag.coverage_report import (
     COVERAGE_FLOOR,
@@ -39,7 +40,8 @@ def main() -> None:
     except PipelineNotFoundError as exc:
         parser.error(str(exc))
 
-    embedder = OpenAIEmbedder(cfg.embedding)
+    recorder = CostRecorder(database_url, cfg.pricing)
+    embedder = OpenAIEmbedder(cfg.embedding, cost_recorder=recorder, section='ingest_query')
     cache = QueryVectorCache(embedder, database_url, model=cfg.embedding.model,
                              dimensions=cfg.embedding.dimensions)
     report = build_coverage_report(

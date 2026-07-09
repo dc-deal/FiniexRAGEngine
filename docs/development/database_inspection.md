@@ -107,3 +107,43 @@ Reading it:
 The report is the empirical companion to a retrieval **min-similarity floor** — the same
 `~0.55` cut-off that would route an uncovered symbol into the clean `HOLD` path instead of a
 signal hallucinated from generic news.
+
+## Cost tracking (billing log + cost CLI)
+
+Every paid API call (embedding news, embedding a query, later the LLM eval) writes a row to the
+`cost_log` table — section, model, tokens, and the USD derived from the price table **at record
+time** (frozen, so a later price change never rewrites history; the token count is the ground truth).
+
+```bash
+python finiexragengine/cli/cost_cli.py --since 7d      # or 30d, or all
+```
+
+```
+Cost Report
+window: last 7d
+section           calls     tokens           USD
+ingest_news           1        418      0.000008
+ingest_query          7         20      0.000000
+window total                   438      0.000009
+spent (all-time): $0.000009
+account credit:   not set (set cost.account_credit_usd to see remaining)
+```
+
+Reading it: embeddings cost fractions of a cent (hence the six decimals); the USD becomes meaningful
+once the LLM eval runs. **Balance is derived, not fetched** — OpenAI exposes no reliable balance
+endpoint, so `remaining ≈ account_credit_usd − spend`. Set your loaded credit (and an optional soft
+`budget_usd`) in a **gitignored override** so it never lands in the tracked config:
+
+```json
+// user_configs/app_config.json
+{ "cost": { "account_credit_usd": 50.0, "budget_usd": 20.0 } }
+```
+
+`user_configs/app_config.json` is deep-merged onto `configs/app_config.json` at load — the place for
+operator-specific values and secrets. The **price table** (`pricing.models` in
+`configs/app_config.json`) is hand-maintained (OpenAI has no pricing API), so update it when prices
+change; past `cost_log` rows keep their as-recorded USD regardless. Browse the raw log in pgAdmin:
+
+```sql
+SELECT ts, section, model, total_tokens, usd_cost FROM cost_log ORDER BY ts DESC;
+```
