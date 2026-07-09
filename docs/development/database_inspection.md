@@ -61,7 +61,7 @@ LIMIT 12;
 That join is exactly what `PgVectorStore.query` does in
 `finiexragengine/core/rag/pgvector_store.py`; the Python retriever then applies the
 near-duplicate collapse and the `top_k` cap on top of it (see
-`../architecture/detailed_ingest_and_retrieval.md`).
+`../architecture/application_flow/01_ingest_and_retrieval.md`).
 
 ## Coverage report (CLI)
 

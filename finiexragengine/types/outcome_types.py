@@ -6,7 +6,7 @@ surface: the collector's JSONL archive, the live worker, and the HTTP API.
 from datetime import datetime
 from typing import Generic, List, Literal, TypeVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ArticleRef(BaseModel):
@@ -42,6 +42,23 @@ class SentimentResult(BaseModel):
     urgency: float = Field(default=0.0, ge=0.0, le=1.0)   # breaking-news gate (ISSUE_6)
     is_breaking: bool = False
     sources: List[ArticleRef] = Field(default_factory=list)  # provenance (ISSUE_2)
+
+
+class SentimentLlmOutput(BaseModel):
+    """The scored fields the LLM must return for one symbol (ISSUE_6).
+
+    A strict subset of SentimentResult: the model scores the mood; provenance
+    (`sources`), `is_breaking` and `symbol` are attached by the engine, never invented
+    by the LLM. All fields required + no extras (`forbid`), so it maps cleanly to a
+    JSON schema and rejects a malformed completion.
+    """
+    model_config = ConfigDict(extra='forbid')
+
+    signal: Literal['BUY', 'SELL', 'HOLD']
+    sentiment_score: float = Field(ge=-1.0, le=1.0)
+    confidence: float = Field(ge=0.0, le=1.0)
+    reasoning: str
+    urgency: float = Field(ge=0.0, le=1.0)
 
 
 class RunError(BaseModel):

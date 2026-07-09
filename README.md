@@ -139,9 +139,12 @@ In active development. Implemented and tested today:
 - **OpenAI embeddings** (`text-embedding-3-small`, app-wide, 1536 dims).
 - **Retrieval stage**: two-tier top-k with recency window, symbol-aware query expansion,
   and semantic dedup before the token cap.
+- **Cost tracking**: a per-call token/USD billing log with a `cost` CLI (#23).
+- **LLM analysis stage**: versioned prompt templates + structured OpenAI output — typed,
+  validated per-symbol sentiment, with per-call token/cost capture (#6).
 
-Next up: the LLM analysis stage (prompt builder + structured output) and full pipeline
-orchestration — the API serves a typed mock envelope until those land. See the full
+Next up: **full pipeline orchestration (#7)** — wiring the stages into `Pipeline.run` so the API
+serves a real `SentimentEnvelope` instead of the current typed mock. See the full
 **[Vision & Roadmap](https://github.com/dc-deal/FiniexRAGEngine/issues/1)** (issue #1).
 
 ---
