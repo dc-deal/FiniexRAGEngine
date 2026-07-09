@@ -121,6 +121,13 @@ on first connect. You can then browse the `articles` corpus and run the pgvector
 similarity queries by hand — see
 [docs/development/database_inspection.md](docs/development/database_inspection.md).
 
+**CLI tools.** Grow the corpus with one **ingest pass**
+(`python finiexragengine/cli/ingest_cli.py` — fetch → embed → upsert, idempotent), check how well it
+covers each symbol with the read-only **coverage report** (`python finiexragengine/cli/coverage_cli.py`),
+and see token/USD spend by section with the **cost report** (`python finiexragengine/cli/cost_cli.py`).
+All are also in `.vscode/launch.json`; details in the
+[DB inspection doc](docs/development/database_inspection.md#coverage-report-cli).
+
 ---
 
 ## Status

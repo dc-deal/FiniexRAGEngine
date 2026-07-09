@@ -124,6 +124,10 @@ every response, success or failure.
   Cost is derived from a per-model price table in `app_config.json` (reproducible, like `prompt_version`).
 - **Track spend, not balance.** The remaining account balance is not reliably exposed via API;
   accumulate spend and compare to a configured budget.
+- **A run that spends budget reports the spend in its own output.** Any CLI or pass that makes
+  paid calls (embeddings, LLM) surfaces the count where it runs — e.g. `embedded N (paid)` — so a
+  cost is never silent. The persisted-envelope metrics stay the durable warehouse; this is the
+  at-the-call echo.
 - **Structured, levelled logging** (per `log_level`); every `RunError` is logged with its
   taxonomy type. Error statistics are aggregated from the persisted envelopes' `status`/`errors`,
   not parsed from log text.

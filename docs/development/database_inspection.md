@@ -62,3 +62,88 @@ That join is exactly what `PgVectorStore.query` does in
 `finiexragengine/core/rag/pgvector_store.py`; the Python retriever then applies the
 near-duplicate collapse and the `top_k` cap on top of it (see
 `../architecture/detailed_ingest_and_retrieval.md`).
+
+## Coverage report (CLI)
+
+The manual join above answers "how well is *this* symbol covered?" one query at a time.
+`finiexragengine/cli/coverage_cli.py` automates it for a whole constellation: for every
+symbol query it reports the **nearest** article distance (best coverage) and the **mean**
+distance, both all-time and within the pipeline's recency window, plus the corpus size.
+
+```bash
+python finiexragengine/cli/coverage_cli.py                 # crypto_sentiment (default)
+python finiexragengine/cli/coverage_cli.py --pipeline forex_events --floor 0.55
+```
+
+Also available in the IDE as **📊 RAGEngine: Corpus Coverage Report** (`.vscode/launch.json`).
+It needs `DATABASE_URL`; it runs **free** on the cached query vectors (issue #19) and only
+embeds on a cache miss (`--pipeline` works for any constellation).
+
+```
+Corpus Coverage Report
+config: configs/pipelines/crypto_sentiment.json  (pipeline 'crypto_sentiment')
+model text-embedding-3-small | table articles
+corpus: 87 articles (46 within the 1440min/24h window)
+--------------------------------------------------------------------------
+     all-time          window
+  best   mean     best   mean  cov  symbols / query
+--------------------------------------------------------------------------
+ 0.403  0.797    0.403  0.776   ok  ADAUSD  "Cardano ADA"
+ 0.502  0.746    0.502  0.734   ok  BTCUSD  "Bitcoin BTC"
+ 0.572  0.704    0.572  0.687  GEN  DASHUSD  "Dash cryptocurrency"
+```
+
+Reading it:
+
+- **best** is the distance to the nearest article — lower is better coverage. Dedicated
+  symbols land around `0.40–0.50` here; a symbol with no own news drifts higher.
+- **cov = GEN** flags a best-distance beyond `--floor` (default `0.55`): the corpus has no
+  article close to that symbol, so retrieval would return only generic, off-topic context —
+  the `HOLD` / "No relevant news found" case of the output contract.
+- **window** columns are what a *live* retrieval sees right now (only articles inside the
+  recency window); the **all-time** columns show the whole corpus. A symbol covered all-time
+  but `n/a`/worse in the window has gone quiet recently.
+
+The report is the empirical companion to a retrieval **min-similarity floor** — the same
+`~0.55` cut-off that would route an uncovered symbol into the clean `HOLD` path instead of a
+signal hallucinated from generic news.
+
+## Cost tracking (billing log + cost CLI)
+
+Every paid API call (embedding news, embedding a query, later the LLM eval) writes a row to the
+`cost_log` table — section, model, tokens, and the USD derived from the price table **at record
+time** (frozen, so a later price change never rewrites history; the token count is the ground truth).
+
+```bash
+python finiexragengine/cli/cost_cli.py --since 7d      # or 30d, or all
+```
+
+```
+Cost Report
+window: last 7d
+section           calls     tokens           USD
+ingest_news           1        418      0.000008
+ingest_query          7         20      0.000000
+window total                   438      0.000009
+spent (all-time): $0.000009
+account credit:   not set (set cost.account_credit_usd to see remaining)
+```
+
+Reading it: embeddings cost fractions of a cent (hence the six decimals); the USD becomes meaningful
+once the LLM eval runs. **Balance is derived, not fetched** — OpenAI exposes no reliable balance
+endpoint, so `remaining ≈ account_credit_usd − spend`. Set your loaded credit (and an optional soft
+`budget_usd`) in a **gitignored override** so it never lands in the tracked config:
+
+```json
+// user_configs/app_config.json
+{ "cost": { "account_credit_usd": 50.0, "budget_usd": 20.0 } }
+```
+
+`user_configs/app_config.json` is deep-merged onto `configs/app_config.json` at load — the place for
+operator-specific values and secrets. The **price table** (`pricing.models` in
+`configs/app_config.json`) is hand-maintained (OpenAI has no pricing API), so update it when prices
+change; past `cost_log` rows keep their as-recorded USD regardless. Browse the raw log in pgAdmin:
+
+```sql
+SELECT ts, section, model, total_tokens, usd_cost FROM cost_log ORDER BY ts DESC;
+```

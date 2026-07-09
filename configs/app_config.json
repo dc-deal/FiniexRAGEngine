@@ -22,5 +22,18 @@
         "retrieval_top_k": 12,
         "recency_window_minutes": 1440
     },
+    "pricing": {
+        "currency": "USD",
+        "models": {
+            "text-embedding-3-small": { "input_per_1k": 0.00002, "output_per_1k": 0.0 },
+            "text-embedding-3-large": { "input_per_1k": 0.00013, "output_per_1k": 0.0 },
+            "gpt-4o-mini": { "input_per_1k": 0.00015, "output_per_1k": 0.0006 },
+            "gpt-4o": { "input_per_1k": 0.0025, "output_per_1k": 0.01 }
+        }
+    },
+    "cost": {
+        "account_credit_usd": 0.0,
+        "budget_usd": 0.0
+    },
     "log_level": "INFO"
 }

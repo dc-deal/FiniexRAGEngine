@@ -38,6 +38,10 @@ HANDOFF_*.md
 export_github_issues.sh
 github_issues/
 
+# Operator/secret config overrides (account credit, telegram token, …) — deep-merged
+# onto configs/app_config.json at load; never committed.
+user_configs/
+
 # Local dev-home seed (personal state, restored after container rebuilds)
 .devcontainer/local/
 

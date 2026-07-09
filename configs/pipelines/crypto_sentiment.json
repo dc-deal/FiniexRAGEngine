@@ -50,7 +50,7 @@
     "retrieval": {
         "top_k": 12,
         "recency_window_minutes": 1440,
-        "dedup_similarity": 0.92
+        "dedup_similarity": 0.85
     },
     "breaking": {
         "urgency_threshold": 0.8
