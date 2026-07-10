@@ -4,10 +4,11 @@ Picks up where `01_ingest_and_retrieval.md` leaves off. Retrieval has handed a s
 on-topic `List[Article]` **per symbol**; here that context becomes a typed signal, and the
 per-symbol signals are assembled into the outcome envelope that leaves the engine.
 
-**Status:** Phase C (analysis) is **built** (ISSUE_6). Phase D (assemble → persist → serve) is the
-remaining v1.0 vertical slice — ISSUE_7 → ISSUE_8 → ISSUE_9 — so `Pipeline.run` returns a typed
-**mock** envelope until ISSUE_7 wires the stages together. Built steps name real code; planned steps
-name the unit they will live in.
+**Status:** Phase C (analysis) is **built** (ISSUE_6), and Phase D's assembly is **built**
+(ISSUE_7 — `PipelineRunner`): `POST /run` executes the real staged flow when a database is wired
+(`create_app` attaches runners; without `DATABASE_URL` the scaffold mock still answers). Persist →
+serve remains ISSUE_8 → ISSUE_9. Built steps name real code; planned steps name the unit they
+will live in.
 
 Companion docs: `01_ingest_and_retrieval.md` (the write + read paths) and
 `../prompt_and_llm_stage.md` (the LLM stage in depth).
@@ -43,11 +44,14 @@ Top-down, one symbol's retrieved context flows through:
    (ISSUE_23) — the LLM eval is where real spend lands (≈30× an embedding token, per gpt-4o-mini
    output pricing).
 
-6. **Enrich to the outcome — `types/outcome_types.py` (`SentimentResult`) · *planned, ISSUE_7*.**
+6. **Enrich to the outcome — `core/pipeline/symbol_evaluator.py` (`SymbolEvaluator.evaluate`).**
    The engine wraps the scored fields into the full result: `symbol` (known), `sources` — the real
    retrieved articles as `ArticleRef[]` **provenance** (the LLM never invents article ids, ISSUE_2),
    and `is_breaking` from `urgency` vs the constellation's breaking threshold (the gate is *confirmed*
-   here — the LLM read a real story as urgent, ISSUE_11).
+   here — the LLM read a real story as urgent, ISSUE_11). The returned `SymbolEval` also carries the
+   **raw model output** (`completion.data`, ISSUE_36 — irreconstructable after the call; the outcome
+   store persists it next to the normalized envelope, ISSUE_8) and the prompt's identity
+   (`PromptMetadata`, ISSUE_33).
 
 ## Phase D — Outcome & envelope (assemble → persist → serve · planned)
 
@@ -58,13 +62,20 @@ Runs once per pipeline pass, over all requested symbols:
    (e.g. DASH/LTC with no dedicated news) yields an **empty** context → the envelope's
    HOLD/`0.0`/'No relevant news found' path, instead of a signal hallucinated from generic news.
 
-2. **Assemble the envelope — `core/pipeline/pipeline.py` (`Pipeline.run`, real flow) · *planned, ISSUE_7*.**
-   Runs Phase B + C per symbol and collects the `SentimentResult[]` into an
-   `AnalysisEnvelope[SentimentResult]`. **Invariants:** every requested symbol is present (no data →
-   `HOLD` / `0.0` / `'No relevant news found'` / `[]`); prefer `status: 'partial'` over `'error'`
-   when some sources fail but data remains; the envelope is always parseable, even on internal
-   failure. Per-stage timings and the run's tokens/cost fold into `RunMetadata`. *(Today `Pipeline.run`
-   emits a deterministic mock — one HOLD/0.0 per symbol — so the API contract is exercisable.)*
+2. **Assemble the envelope — `core/pipeline/pipeline_runner.py` (`PipelineRunner.run`) · built, ISSUE_7.**
+   The staged flow in one readable top-down unit: ingest pass (inline in this first slice; moves to
+   the ingest worker with ISSUE_10) → Phase B + C per symbol → assemble the `SentimentResult[]`
+   into an `AnalysisEnvelope[SentimentResult]`. **Invariants:** every requested symbol is present
+   (a failed symbol degrades to a clean `HOLD` row with its taxonomy-typed `RunError` — never a
+   gap); `status: 'partial'` is preferred over `'error'` (`error` only when not a single symbol
+   evaluated); the envelope is always parseable, even on internal failure (the API catches and
+   answers `200` + `status: 'error'`). All stage timings, summed tokens, the run's USD (session
+   delta off the shared `CostRecorder`) and per-symbol tokens fold into `RunMetadata`; the prompt
+   fingerprint (`prompt_id@version` + `prompt_hash`, ISSUE_33) is stamped on the envelope.
+   **Wiring:** `core/pipeline/pipeline_assembler.py` builds the per-pipeline object graph
+   (sources → … → evaluator → ingestor) and attaches runners at API boot; `Pipeline` without a
+   runner falls back to the scaffold mock (bootable without DB, and the free-suite path —
+   contract tests never spend budget). The `run` CLI is the console twin of `POST /run`.
 
 3. **Persist — `core/store/…` (`OutcomeStore`) · *planned, ISSUE_8*.**
    The produced envelope is the **source of truth**: persisted (DB / JSONL) before/independent of any

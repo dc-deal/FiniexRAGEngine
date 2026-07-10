@@ -6,8 +6,8 @@ LLM scores only the mood, never invents sources. ISSUE_7 orchestrates this over 
 symbols into the outcome envelope.
 """
 import textwrap
-from dataclasses import dataclass
-from typing import List, Optional
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional
 
 from pydantic import ValidationError
 
@@ -37,6 +37,9 @@ class SymbolEval:
     usage: LlmUsage
     articles: List[Article]
     stage_timings: List[StageTiming]
+    # The raw scored JSON exactly as the model returned it (ISSUE_36) — irreconstructable
+    # after the call; persisted next to the normalized envelope by the outcome store (ISSUE_8).
+    raw_output: Dict[str, Any] = field(default_factory=dict)
 
     def total_ms(self) -> float:
         return sum(timing.duration_ms for timing in self.stage_timings)
@@ -83,7 +86,7 @@ class SymbolEvaluator:
                                 published_at=a.published_at) for a in articles])
         return SymbolEval(result=result, prompt=prompt, prompt_metadata=prompt_metadata,
                           usage=completion.usage, articles=articles,
-                          stage_timings=timer.timings)
+                          stage_timings=timer.timings, raw_output=completion.data)
 
 
 def _compact_prompt(prompt: str, cols: int, lines: int) -> str:

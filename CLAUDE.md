@@ -120,6 +120,13 @@ every response, success or failure.
 - **Metrics are a byproduct of the run.** Token usage, cost, and per-stage/per-call latency are
   written into `RunMetadata` and persisted with the envelope (the outcome store is the metrics
   warehouse); reporting is a read/aggregate over it, not a separate telemetry system.
+- **Every stage is tracked — cost and performance.** Any new stage or paid call wires in the
+  shared units: `StageTimer` for stage durations, `CostRecorder` for tokens/USD *and*
+  `duration_ms` (one row per API call = one latency sample, traceable via
+  ts/section/model/pipeline_id). Not optional per feature — part of a stage's Definition of Done.
+- **Reports share the pattern table.** Every metrics surface (cost, performance, coverage — and
+  future ones) renders the same console pattern: title + window line + `----` dividers + aligned
+  columns; spending CLI passes end with the `--- run metrics ---` footer (`RunFooter`).
 - **Capture token usage at the call** (OpenAI `usage`) — it is irreconstructable afterwards.
   Cost is derived from a per-model price table in `app_config.json` (reproducible, like `prompt_version`).
 - **Track spend, not balance.** The remaining account balance is not reliably exposed via API;
