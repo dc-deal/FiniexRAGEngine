@@ -9,6 +9,7 @@ import os
 
 from finiexragengine.configuration.app_config_manager import AppConfigManager
 from finiexragengine.core.observability.cost_recorder import CostRecorder
+from finiexragengine.core.observability.run_footer import RunFooter
 from finiexragengine.core.pipeline.ingestor import Ingestor
 from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
 from finiexragengine.core.rag.openai_embedder import OpenAIEmbedder
@@ -55,6 +56,13 @@ def main() -> None:
               f'new {entry.stored:3}   dup {entry.duplicates:3}')
     for source_id, error in result.failed_sources.items():
         print(f'  {source_id:14} FAILED: {error}')
+    # The shared metrics block (ISSUE_32): per-stage times (summed across sources) and
+    # what this pass actually spent — read off the recorder's session accumulator.
+    footer = RunFooter(timings=result.stage_timings,
+                       tokens_label=f'{recorder.session_tokens:,} embedding',
+                       usd=recorder.session_usd, section='ingest_news', aggregate=True)
+    print()
+    print(footer.render())
 
 
 if __name__ == '__main__':

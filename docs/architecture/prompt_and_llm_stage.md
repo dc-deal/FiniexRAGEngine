@@ -71,6 +71,7 @@ and returns an `LlmCompletion(data, usage)`.
 Failures map to the taxonomy: timeout → `LLMTimeoutError` (LLM_TIMEOUT), backend error →
 `LLMApiError` (LLM_API_ERROR), non-JSON output → `LLMParseError` (LLM_PARSE_ERROR) — all rooted at
 `LLMError`. Token `usage` is captured on every call and, when a `CostRecorder` is set, logged under
-`section='llm_eval'` (ISSUE_23) — the LLM eval is where real spend appears.
+`section='llm_eval'` (ISSUE_23) — the LLM eval is where real spend appears. The call's `duration_ms`
+rides the same row (ISSUE_32), so the cost log doubles as the API-latency log (`perf_cli`).
 
 Wiring this stage into `Pipeline.run` (retrieve → build → complete → assemble envelope) is **ISSUE_7**.

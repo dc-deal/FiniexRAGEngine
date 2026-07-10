@@ -2,10 +2,12 @@
 from dataclasses import dataclass, field
 from typing import Dict, List
 
+from finiexragengine.core.observability.stage_timer import StageTimer
 from finiexragengine.core.rag.abstract_embedder import AbstractEmbedder
 from finiexragengine.core.rag.abstract_vector_store import AbstractVectorStore
 from finiexragengine.core.sources.abstract_source import AbstractSource
 from finiexragengine.exceptions.ragengine_errors import SourceFetchError
+from finiexragengine.types.outcome_types import StageTiming
 
 
 @dataclass
@@ -29,6 +31,7 @@ class IngestResult:
     stored: int = 0
     per_source: Dict[str, SourceIngest] = field(default_factory=dict)
     failed_sources: Dict[str, str] = field(default_factory=dict)   # source_id -> error message
+    stage_timings: List[StageTiming] = field(default_factory=list)  # fetch/embed/upsert per source (ISSUE_32)
 
     @property
     def duplicates(self) -> int:
@@ -58,16 +61,20 @@ class Ingestor:
     def run(self) -> IngestResult:
         """Fetch, embed only the new articles and upsert; return per-source + totals."""
         result = IngestResult()
+        # Every stage is timed (ISSUE_32): one fetch/embed/upsert record per source; the
+        # CLI footer aggregates them per stage, ISSUE_7 persists them with the envelope.
+        timer = StageTimer()
         for source in self._sources:
             source_id = source.get_source_id()
             # 1. Pull the source. A failing source is recorded, the rest proceed.
             try:
-                fetched = source.fetch()
+                fetched = timer.time('fetch', source.fetch)
             except SourceFetchError as exc:
                 result.failed_sources[source_id] = str(exc)
                 continue
             entry = SourceIngest(fetched=len(fetched))
-            # 2. Skip ids already in the corpus — embedding a known article is wasted spend.
+            # 2. Skip ids already in the corpus — embedding a known article is wasted
+            #    spend. (Sub-ms id lookup — deliberately untimed.)
             known = self._store.existing_ids([article.article_id for article in fetched])
             fresh = [article for article in fetched if article.article_id not in known]
             entry.embedded = len(fresh)
@@ -75,10 +82,11 @@ class Ingestor:
                 # 3. Embed the new article text once (title carries signal when the RSS
                 #    summary is thin), then 4. idempotent upsert (rowcount = actually new).
                 texts = [f'{article.title}. {article.summary}'.strip() for article in fresh]
-                vectors = self._embedder.embed(texts)
-                entry.stored = self._store.upsert(fresh, vectors)
+                vectors = timer.time('embed', lambda: self._embedder.embed(texts))
+                entry.stored = timer.time('upsert', lambda: self._store.upsert(fresh, vectors))
             result.per_source[source_id] = entry
             result.fetched += entry.fetched
             result.embedded += entry.embedded
             result.stored += entry.stored
+        result.stage_timings = timer.timings
         return result

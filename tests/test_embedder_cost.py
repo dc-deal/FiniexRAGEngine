@@ -39,8 +39,10 @@ class _RecRecorder:
     def __init__(self):
         self.calls = []
 
-    def record(self, section, model, prompt_tokens, completion_tokens=0, pipeline_id=None):
-        self.calls.append((section, model, prompt_tokens, completion_tokens, pipeline_id))
+    def record(self, section, model, prompt_tokens, completion_tokens=0, pipeline_id=None,
+               duration_ms=None):
+        self.calls.append((section, model, prompt_tokens, completion_tokens, pipeline_id,
+                           duration_ms))
         return 0.0
 
 
@@ -50,7 +52,11 @@ def test_embed_records_usage_when_recorder_set():
                               cost_recorder=recorder, section='ingest_news', pipeline_id='p')
     vectors = embedder.embed(['a', 'bb'])
     assert len(vectors) == 2
-    assert recorder.calls == [('ingest_news', 'text-embedding-3-small', 14, 0, 'p')]  # 7*2
+    assert len(recorder.calls) == 1
+    section, model, prompt_tokens, completion_tokens, pipeline_id, duration_ms = recorder.calls[0]
+    assert (section, model, prompt_tokens, completion_tokens, pipeline_id) == (
+        'ingest_news', 'text-embedding-3-small', 14, 0, 'p')   # 7*2
+    assert duration_ms is not None and duration_ms >= 0.0       # latency sample (ISSUE_32)
 
 
 def test_embed_without_recorder_is_silent():
