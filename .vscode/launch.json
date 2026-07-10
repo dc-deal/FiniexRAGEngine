@@ -94,6 +94,22 @@
                 "order": 2
             }
         },
+        {
+            "name": "📊 RAGEngine: Performance Report",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/finiexragengine/cli/perf_cli.py",
+            "args": [
+                "--since",
+                "7d"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "04_diagnostics",
+                "order": 3
+            }
+        },
         // ====================================================
         // 🧩 TESTS (free — no API cost)
         // ====================================================

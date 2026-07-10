@@ -1,4 +1,5 @@
 """OpenAI-backed embedder (text-embedding-3-small by default)."""
+from time import perf_counter
 from typing import TYPE_CHECKING, List, Optional
 
 from openai import OpenAI, OpenAIError
@@ -45,8 +46,10 @@ class OpenAIEmbedder(AbstractEmbedder):
         client = self._get_client()
         vectors: List[List[float]] = []
         prompt_tokens = 0
+        api_ms = 0.0
         for start in range(0, len(texts), self._MAX_BATCH):
             batch = texts[start:start + self._MAX_BATCH]
+            call_start = perf_counter()
             try:
                 response = client.embeddings.create(
                     model=self._config.model,
@@ -55,6 +58,8 @@ class OpenAIEmbedder(AbstractEmbedder):
                 )
             except OpenAIError as exc:
                 raise EmbeddingError(f'embedding request failed: {exc}') from exc
+            # Sum pure API time across batches — the latency sample next to the tokens (ISSUE_32).
+            api_ms += (perf_counter() - call_start) * 1000.0
             # Accumulate the paid token usage across batches (irreconstructable later).
             usage = getattr(response, 'usage', None)
             if usage is not None:
@@ -70,8 +75,10 @@ class OpenAIEmbedder(AbstractEmbedder):
                         f'expected dimension {self._config.dimensions}, '
                         f'got {len(item.embedding)}')
                 vectors.append(list(item.embedding))
-        # Record the spend once per embed() call — cost is never silent (ISSUE_23).
+        # Record the spend once per embed() call — cost is never silent (ISSUE_23);
+        # the API duration rides the same row as the latency sample (ISSUE_32).
         if self._cost_recorder is not None and prompt_tokens:
             self._cost_recorder.record(self._section, self._config.model,
-                                       prompt_tokens, 0, self._pipeline_id)
+                                       prompt_tokens, 0, self._pipeline_id,
+                                       duration_ms=api_ms)
         return vectors

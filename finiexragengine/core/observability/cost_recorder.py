@@ -29,14 +29,32 @@ def derive_usd(pricing: PricingConfig, model: str, prompt_tokens: int,
 
 
 class CostRecorder:
-    """Writes a cost_log row per paid call: tokens + derived USD + section."""
+    """Writes a cost_log row per paid call: tokens + derived USD + latency + section.
+
+    One capture point for cost *and* performance (ISSUE_23/32): the caller passes the
+    API call's `duration_ms` alongside the usage, so every row is also a latency sample —
+    ts + section + model + pipeline_id + duration make a slow or hung call traceable.
+    The recorder also accumulates a per-instance session total (tokens/USD), so any CLI
+    can echo what *this* pass just spent without re-querying the log.
+    """
 
     def __init__(self, database_url: str, pricing: PricingConfig,
                  table: str = 'cost_log') -> None:
         self._database_url = database_url
         self._pricing = pricing
         self._table = table
+        # Session accumulators — what this process recorded (for the RunFooter echo).
+        self._session_tokens = 0
+        self._session_usd = 0.0
         self._ensure_schema()
+
+    @property
+    def session_tokens(self) -> int:
+        return self._session_tokens
+
+    @property
+    def session_usd(self) -> float:
+        return self._session_usd
 
     def _connect(self):
         try:
@@ -57,22 +75,31 @@ class CostRecorder:
                     'completion_tokens INTEGER NOT NULL DEFAULT 0, '
                     'total_tokens INTEGER NOT NULL, '
                     'usd_cost DOUBLE PRECISION NOT NULL, '   # frozen at record time
-                    'pipeline_id TEXT)')
+                    'pipeline_id TEXT, '
+                    'duration_ms DOUBLE PRECISION)')         # API-call latency (ISSUE_32)
+                # In-place upgrade for tables created before ISSUE_32; older rows keep
+                # NULL and are simply excluded from latency aggregates (real migrations: #14).
+                cur.execute(f'ALTER TABLE {self._table} '
+                            'ADD COLUMN IF NOT EXISTS duration_ms DOUBLE PRECISION')
         except psycopg.Error as exc:
             raise VectorStoreError(f'cost-log schema init failed: {exc}') from exc
 
     def record(self, section: str, model: str, prompt_tokens: int,
-               completion_tokens: int = 0, pipeline_id: Optional[str] = None) -> float:
-        """Write one cost_log row; returns the derived USD cost."""
+               completion_tokens: int = 0, pipeline_id: Optional[str] = None,
+               duration_ms: Optional[float] = None) -> float:
+        """Write one cost_log row (tokens + USD + latency); returns the derived USD cost."""
         usd = derive_usd(self._pricing, model, prompt_tokens, completion_tokens)
         total = prompt_tokens + completion_tokens
         try:
             with self._connect() as conn, conn.cursor() as cur:
                 cur.execute(
                     f'INSERT INTO {self._table} (section, model, prompt_tokens, '
-                    'completion_tokens, total_tokens, usd_cost, pipeline_id) '
-                    'VALUES (%s, %s, %s, %s, %s, %s, %s)',
-                    (section, model, prompt_tokens, completion_tokens, total, usd, pipeline_id))
+                    'completion_tokens, total_tokens, usd_cost, pipeline_id, duration_ms) '
+                    'VALUES (%s, %s, %s, %s, %s, %s, %s, %s)',
+                    (section, model, prompt_tokens, completion_tokens, total, usd,
+                     pipeline_id, duration_ms))
         except psycopg.Error as exc:
             raise VectorStoreError(f'cost-log write failed: {exc}') from exc
+        self._session_tokens += total
+        self._session_usd += usd
         return usd

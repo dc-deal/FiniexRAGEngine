@@ -43,6 +43,14 @@ def build_cost_report(database_url: str, since: datetime, *, credit_usd: float =
     """Aggregate the cost log by section for the window, plus the all-time total."""
     try:
         with psycopg.connect(database_url) as conn, conn.cursor() as cur:
+            # Read side only — a fresh DB where no CostRecorder ever created the table
+            # is a valid 'nothing spent yet' answer, not a crash.
+            cur.execute('SELECT count(*) FROM information_schema.tables '
+                        'WHERE table_name = %s', (table,))
+            if cur.fetchone()[0] == 0:
+                return CostReport(since_label=since_label, rows=[], window_usd=0.0,
+                                  window_tokens=0, spent_all_usd=0.0,
+                                  credit_usd=credit_usd, budget_usd=budget_usd)
             cur.execute(
                 f'SELECT section, count(*), coalesce(sum(total_tokens), 0), '
                 f'coalesce(sum(usd_cost), 0) FROM {table} WHERE ts >= %s '

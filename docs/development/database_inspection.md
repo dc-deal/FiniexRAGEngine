@@ -147,3 +147,40 @@ change; past `cost_log` rows keep their as-recorded USD regardless. Browse the r
 ```sql
 SELECT ts, section, model, total_tokens, usd_cost FROM cost_log ORDER BY ts DESC;
 ```
+
+## Performance tracking (latency log + perf CLI)
+
+The mirror of the cost report, from the same table: every `cost_log` row also carries the API
+call's **`duration_ms`** — one capture point for cost *and* latency ("capture at the call, report
+from the store"). Since a slow LLM or a hanging feed is the engine's dominant time sink, this is
+where the pain points show up — and `ts + section + model + pipeline_id + duration_ms` makes a
+single slow call traceable after the fact.
+
+```bash
+python finiexragengine/cli/perf_cli.py --since 7d      # or 30d, or all
+```
+
+```
+Performance Report
+window: last 7d
+--------------------------------------------------------------
+section           calls   avg ms   p95 ms   max ms    API s
+--------------------------------------------------------------
+llm_eval              7     2650     3100     3210     18.6
+ingest_news          10      820     1400     1520      8.2
+--------------------------------------------------------------
+window total                                           26.8
+```
+
+Reading it: `avg` for the trend, `p95`/`max` for outliers (an API hang shows as a runaway max),
+`API s` for where the wall-clock actually went. Rows recorded before latency capture existed have
+no duration; they are excluded from the aggregates and counted in an `untimed legacy calls` note.
+
+Beyond the report, every spending CLI pass (ingest, eval) echoes a `--- run metrics ---` footer —
+per-stage times plus what the pass just spent — so cost and latency are visible right where the run
+happened. Local per-stage timings (retrieve/prompt vs the API call) are persisted with the envelope
+once `Pipeline.run` assembles `RunMetadata` (#7); the full picture is issue #32.
+
+```sql
+SELECT ts, section, model, duration_ms FROM cost_log ORDER BY duration_ms DESC NULLS LAST;
+```

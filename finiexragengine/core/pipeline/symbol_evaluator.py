@@ -7,14 +7,14 @@ symbols into the outcome envelope.
 """
 import textwrap
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from time import perf_counter
-from typing import Callable, List, Optional
+from typing import List, Optional
 
 from pydantic import ValidationError
 
 from finiexragengine.core.llm.abstract_llm_provider import AbstractLLMProvider
 from finiexragengine.core.llm.prompt_builder import PromptBuilder
+from finiexragengine.core.observability.run_footer import RunFooter
+from finiexragengine.core.observability.stage_timer import StageTimer
 from finiexragengine.core.rag.retriever import Retriever
 from finiexragengine.exceptions.ragengine_errors import LLMParseError
 from finiexragengine.types.article_types import Article
@@ -56,15 +56,16 @@ class SymbolEvaluator:
         self._breaking_threshold = breaking_threshold
 
     def evaluate(self, symbol: str, query: str) -> SymbolEval:
-        timings: List[StageTiming] = []
-        articles = self._timed('retrieve', timings, lambda: self._retriever.retrieve(query))
+        # Every stage is timed (ISSUE_32) — the shared StageTimer collects the records.
+        timer = StageTimer()
+        articles = timer.time('retrieve', lambda: self._retriever.retrieve(query))
         # The prompt describes the asset in readable terms (the query, e.g. "Bitcoin BTC");
         # the result keys on the raw ticker `symbol` (e.g. "BTCUSD").
-        prompt = self._timed('prompt', timings, lambda: self._prompt_builder.build(
+        prompt = timer.time('prompt', lambda: self._prompt_builder.build(
             self._prompt_name, self._prompt_version, query, articles))
         # The prompt's front-matter identity travels with the outcome (ISSUE_33) — cached.
         prompt_metadata = self._prompt_builder.metadata(self._prompt_name, self._prompt_version)
-        completion = self._timed('llm', timings, lambda: self._provider.complete_structured(
+        completion = timer.time('llm', lambda: self._provider.complete_structured(
             prompt, SentimentLlmOutput.model_json_schema()))
 
         # Validate the scored subset; a schema mismatch is a parse failure (LLM_PARSE_ERROR).
@@ -81,16 +82,8 @@ class SymbolEvaluator:
             sources=[ArticleRef(article_id=a.article_id, url=a.url, title=a.title,
                                 published_at=a.published_at) for a in articles])
         return SymbolEval(result=result, prompt=prompt, prompt_metadata=prompt_metadata,
-                          usage=completion.usage, articles=articles, stage_timings=timings)
-
-    def _timed(self, stage: str, timings: List[StageTiming], fn: Callable):
-        started = datetime.now(timezone.utc)
-        start = perf_counter()
-        value = fn()
-        duration_ms = (perf_counter() - start) * 1000.0
-        timings.append(StageTiming(stage=stage, started_at=started,
-                                   ended_at=datetime.now(timezone.utc), duration_ms=duration_ms))
-        return value
+                          usage=completion.usage, articles=articles,
+                          stage_timings=timer.timings)
 
 
 def _compact_prompt(prompt: str, cols: int, lines: int) -> str:
@@ -113,8 +106,12 @@ def format_symbol_eval(ev: SymbolEval, pipeline_id: str, usd: Optional[float] = 
     m = ev.prompt_metadata
     titles = ', '.join(s.title[:34] for s in r.sources[:3])
     reasoning = textwrap.fill(r.reasoning, width=64, subsequent_indent=' ' * 14)
-    timings = ' · '.join(f'{t.stage} {t.duration_ms:.0f}ms' for t in ev.stage_timings)
-    cost = f'   cost ${usd:.6f} (llm_eval)' if usd is not None else ''
+    # The shared metrics block (ISSUE_32) — same pattern as the ingest footer.
+    footer = RunFooter(
+        timings=ev.stage_timings,
+        tokens_label=f'prompt {ev.usage.prompt_tokens} · completion {ev.usage.completion_tokens} '
+                     f'· total {ev.usage.total_tokens}',
+        usd=usd, section='llm_eval')
     lines = [
         f"=== Signal: {r.symbol}   (pipeline {pipeline_id} · "
         f"prompt {m.id}@v{m.version} #{m.content_hash}) ===",
@@ -124,9 +121,7 @@ def format_symbol_eval(ev: SymbolEval, pipeline_id: str, usd: Optional[float] = 
         f'  reasoning   {reasoning}',
         f'  sources     {len(r.sources)} articles  ({titles})',
         '',
-        f'  timings     {timings} · total {ev.total_ms():.0f}ms',
-        f'  tokens      prompt {ev.usage.prompt_tokens} · completion {ev.usage.completion_tokens} '
-        f'· total {ev.usage.total_tokens}{cost}',
+        footer.render(),
         '',
     ]
     if full_prompt:

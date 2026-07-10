@@ -58,8 +58,10 @@ class _RecRecorder:
     def __init__(self):
         self.calls = []
 
-    def record(self, section, model, prompt_tokens, completion_tokens=0, pipeline_id=None):
-        self.calls.append((section, model, prompt_tokens, completion_tokens, pipeline_id))
+    def record(self, section, model, prompt_tokens, completion_tokens=0, pipeline_id=None,
+               duration_ms=None):
+        self.calls.append((section, model, prompt_tokens, completion_tokens, pipeline_id,
+                           duration_ms))
         return 0.0
 
 
@@ -87,7 +89,11 @@ def test_passes_response_format_and_config():
 def test_records_cost_when_recorder_set():
     recorder = _RecRecorder()
     _provider(_Completions(content='{}'), recorder).complete_structured('p', {})
-    assert recorder.calls == [('llm_eval', 'gpt-4o-mini', 11, 7, None)]
+    assert len(recorder.calls) == 1
+    section, model, prompt_tokens, completion_tokens, pipeline_id, duration_ms = recorder.calls[0]
+    assert (section, model, prompt_tokens, completion_tokens, pipeline_id) == (
+        'llm_eval', 'gpt-4o-mini', 11, 7, None)
+    assert duration_ms is not None and duration_ms >= 0.0       # latency sample (ISSUE_32)
 
 
 def test_bad_json_raises_parse_error():

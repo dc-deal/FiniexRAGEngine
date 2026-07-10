@@ -1,5 +1,6 @@
 """OpenAI-backed LLM provider (chat-completions + structured outputs)."""
 import json
+from time import perf_counter
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from openai import APITimeoutError, OpenAI, OpenAIError
@@ -44,6 +45,7 @@ class OpenAIProvider(AbstractLLMProvider):
 
     def complete_structured(self, prompt: str, json_schema: Dict[str, Any]) -> LlmCompletion:
         client = self._get_client()
+        call_start = perf_counter()
         try:
             response = client.chat.completions.create(
                 model=self._config.model,
@@ -63,6 +65,8 @@ class OpenAIProvider(AbstractLLMProvider):
             raise LLMTimeoutError(f'LLM call timed out: {exc}') from exc
         except OpenAIError as exc:
             raise LLMApiError(f'LLM backend error: {exc}') from exc
+        # Pure API time — the latency sample recorded next to the tokens (ISSUE_32).
+        api_ms = (perf_counter() - call_start) * 1000.0
 
         content = response.choices[0].message.content or ''
         try:
@@ -78,5 +82,5 @@ class OpenAIProvider(AbstractLLMProvider):
         if self._cost_recorder is not None and (usage.prompt_tokens or usage.completion_tokens):
             self._cost_recorder.record(self._section, self._config.model,
                                        usage.prompt_tokens, usage.completion_tokens,
-                                       self._pipeline_id)
+                                       self._pipeline_id, duration_ms=api_ms)
         return LlmCompletion(data=data, usage=usage)

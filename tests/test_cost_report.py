@@ -80,3 +80,15 @@ def test_build_aggregates_by_section(seeded):
     assert by_section['ingest_news'].usd == pytest.approx(0.0002)
     assert report.spent_all_usd == pytest.approx(0.00022)
     assert report.remaining_usd == pytest.approx(10.0 - 0.00022)
+
+
+def test_build_survives_missing_table():
+    # Fresh DB, no CostRecorder ever ran: 'nothing spent yet', not a crash.
+    since = datetime.now(timezone.utc) - timedelta(days=1)
+    try:
+        report = build_cost_report(_dsn(), since, credit_usd=5.0,
+                                   table='cost_log_never_created')
+    except VectorStoreError as exc:
+        pytest.skip(f'PostgreSQL not available: {exc}')
+    assert report.rows == [] and report.spent_all_usd == 0.0
+    assert report.remaining_usd == pytest.approx(5.0)      # credit passes through
