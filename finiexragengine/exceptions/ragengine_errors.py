@@ -15,6 +15,10 @@ class PipelineNotFoundError(FiniexRagError):
     """Raised when a requested pipeline_id is not registered."""
 
 
+class ConfigurationError(FiniexRagError):
+    """Raised when a config is inconsistent (e.g. a model outside allowed_models)."""
+
+
 class SourceFetchError(FiniexRagError):
     """Raised when an input source cannot be fetched."""
 

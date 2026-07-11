@@ -26,6 +26,9 @@
         "name": "sentiment",
         "version": "2"
     },
+    "llm": {
+        "model": "gpt-4o-mini"
+    },
     "trigger": {
         "type": "interval",
         "interval_seconds": 600

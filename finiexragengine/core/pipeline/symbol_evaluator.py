@@ -43,6 +43,8 @@ class SymbolEval:
     # The raw scored JSON exactly as the model returned it (ISSUE_36) — irreconstructable
     # after the call; persisted next to the normalized envelope by the outcome store (ISSUE_8).
     raw_output: Dict[str, Any] = field(default_factory=dict)
+    # The *served* model (response.model, the dated snapshot) — '' when no LLM ran.
+    model_snapshot: str = ''
 
     def total_ms(self) -> float:
         return sum(timing.duration_ms for timing in self.stage_timings)
@@ -103,7 +105,8 @@ class SymbolEvaluator:
                                 published_at=a.published_at) for a in articles])
         return SymbolEval(result=result, prompt=prompt, prompt_metadata=prompt_metadata,
                           usage=completion.usage, articles=articles,
-                          stage_timings=timer.timings, raw_output=completion.data)
+                          stage_timings=timer.timings, raw_output=completion.data,
+                          model_snapshot=completion.model)
 
 
 def _compact_prompt(prompt: str, cols: int, lines: int) -> str:

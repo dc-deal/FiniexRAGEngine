@@ -73,6 +73,27 @@ and returns an `LlmCompletion(data, usage)`.
 - `SentimentLlmOutput` is strict (`extra='forbid'`, all fields required), so a malformed completion
   is rejected on validation.
 
+## Model governance (per-pipeline model + allowlist)
+
+The eval model is **series-defining, exactly like the prompt**: a different model yields
+different scores for the same news. Its declaration is therefore two-level:
+
+- **Each pipeline declares its model — required.** `"llm": { "model": "gpt-4o-mini" }` in the
+  constellation; there is deliberately **no global default model**, so an app-config edit can
+  never silently retarget every pipeline's signal series at once.
+- **`app_config.llm.allowed_models` is the governance allowlist.** A pipeline requesting a model
+  outside it fails at assembly (`ConfigurationError`) — fail fast, before any spend. The list is
+  overridable in the gitignored `user_configs` (replaced wholesale), which is also how a
+  **fine-tuned model** enters: allowlist its `ft:...` id there, point a pipeline at it, add a
+  pricing entry — done. Self-hosted OpenAI-compatible endpoints (vLLM, Ollama) plug in via
+  `llm.base_url` (user_configs — private infrastructure).
+- **The served model is captured per call.** The configured name (`gpt-4o-mini`) is an *alias*
+  the provider retargets silently to dated snapshots; every response reports the actual one
+  (`response.model`). It lands in `cost_log.model_snapshot` and the envelope's
+  `metadata.model_snapshot` — a silent snapshot switch becomes visible in the series, exactly
+  like a `prompt_hash` change (the model-side half of reproducibility, ISSUE_33). Pricing keys
+  on the configured alias; the snapshot is the trace.
+
 ## Errors & cost
 
 Failures map to the taxonomy: timeout → `LLMTimeoutError` (LLM_TIMEOUT), backend error →

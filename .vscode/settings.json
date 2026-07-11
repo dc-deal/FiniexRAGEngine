@@ -1,0 +1,31 @@
+{
+    // format on save/paste
+    "editor.formatOnSave": true,
+    "editor.formatOnPaste": true,
+    // Python: autopep8 as formatter — line length pinned to the codebase style (~100),
+    // otherwise the default (79) would rewrap half the repo on first save
+    "[python]": {
+        "editor.defaultFormatter": "ms-python.autopep8"
+    },
+    "autopep8.args": [
+        "--max-line-length",
+        "100"
+    ],
+    // hide generated artifacts from the explorer view
+    "files.exclude": {
+        "**/__pycache__": true,
+        "**/*.pyc": true,
+        "**/.pytest_cache": true
+    },
+    // keep generated mock-signal JSONL blobs out of search results
+    "search.exclude": {
+        "**/data/mock_signals": true
+    },
+    // show gitignored files (github_issues/, ISSUE_*, user_configs/ ...) in search + Ctrl+P
+    "search.useIgnoreFiles": false,
+    // font with proper emoji widths (matters for the ---- box alignment in reports);
+    // download if missing: https://github.com/microsoft/cascadia-code/releases
+    "terminal.integrated.fontFamily": "Cascadia Code PL",
+    "debug.console.fontFamily": "Cascadia Code PL",
+    "editor.fontFamily": "Cascadia Code PL"
+}

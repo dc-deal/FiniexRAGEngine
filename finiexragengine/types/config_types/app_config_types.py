@@ -2,7 +2,7 @@
 
 Defaults mirror configs/app_config.json exactly (operator-visible, tunable).
 """
-from typing import Dict
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -13,10 +13,24 @@ class ApiConfig(BaseModel):
 
 
 class LlmConfig(BaseModel):
+    """Call mechanics + model governance — deliberately WITHOUT a global model.
+
+    The eval model is series-defining (like the prompt): each pipeline declares its own
+    (`pipeline.llm.model`), so a global edit can never silently shift every signal
+    series at once. This block only governs *how* calls are made and *which* models are
+    admissible at all.
+    """
     provider: str = 'openai'
-    model: str = 'gpt-4o-mini'
     temperature: float = 0.1
     timeout_seconds: int = 30
+    # Governance allowlist: a pipeline requesting a model outside this set fails at
+    # assembly — fail fast, before any spend. Override the list in the gitignored
+    # user_configs to admit e.g. a fine-tuned `ft:...` model without touching tracked config.
+    allowed_models: List[str] = Field(
+        default_factory=lambda: ['gpt-4o-mini', 'gpt-4o'])
+    # Optional OpenAI-compatible endpoint (vLLM, Ollama, ...) for self-hosted models —
+    # private infrastructure, so it belongs in the user_configs override.
+    base_url: Optional[str] = None
 
 
 class EmbeddingConfig(BaseModel):

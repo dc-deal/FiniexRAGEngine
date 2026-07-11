@@ -1,24 +1,17 @@
 """CLI: evaluate one symbol end-to-end and print the signal + prompt excerpt + timings.
 
 Paid — one retrieval + one LLM call. A visual, single-symbol preview of the eval flow
-(ISSUE_7 orchestrates this over all symbols into the envelope).
+(the full-envelope twin is `run_cli.py`). Wiring goes through the PipelineAssembler, so
+the model-governance gate (allowed_models) applies here exactly as in the API.
 """
 import argparse
 import os
 
 from finiexragengine.configuration.app_config_manager import AppConfigManager
-from finiexragengine.core.llm.openai_provider import OpenAIProvider
-from finiexragengine.core.llm.prompt_builder import PromptBuilder
-from finiexragengine.core.observability.cost_recorder import CostRecorder, derive_usd
+from finiexragengine.core.observability.cost_recorder import derive_usd
+from finiexragengine.core.pipeline.pipeline_assembler import PipelineAssembler
 from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
-from finiexragengine.core.pipeline.symbol_evaluator import (
-    SymbolEvaluator,
-    format_symbol_eval,
-)
-from finiexragengine.core.rag.openai_embedder import OpenAIEmbedder
-from finiexragengine.core.rag.pgvector_store import PgVectorStore
-from finiexragengine.core.rag.query_vector_cache import QueryVectorCache
-from finiexragengine.core.rag.retriever import Retriever
+from finiexragengine.core.pipeline.symbol_evaluator import format_symbol_eval
 from finiexragengine.exceptions.ragengine_errors import PipelineNotFoundError
 
 
@@ -46,23 +39,14 @@ def main() -> None:
     except PipelineNotFoundError as exc:
         parser.error(str(exc))
 
-    # Wiring: cost recorder threads through both paid callers (query embed + LLM).
-    recorder = CostRecorder(database_url, cfg.pricing)
-    embedder = OpenAIEmbedder(cfg.embedding, cost_recorder=recorder, section='ingest_query')
-    cache = QueryVectorCache(embedder, database_url, model=cfg.embedding.model,
-                             dimensions=cfg.embedding.dimensions)
-    store = PgVectorStore(cfg.vector_store, database_url, dimensions=cfg.embedding.dimensions)
-    retriever = Retriever(cache, store, pipeline.retrieval)
-    provider = OpenAIProvider(cfg.llm, cost_recorder=recorder, section='llm_eval',
-                              pipeline_id=args.pipeline)
-    evaluator = SymbolEvaluator(retriever, PromptBuilder(app.get_prompts_dir()), provider,
-                                prompt_name=pipeline.prompt.name,
-                                prompt_version=pipeline.prompt.version,
-                                breaking_threshold=pipeline.breaking.urgency_threshold)
+    # One wiring point (the assembler) for CLI and API alike — including the
+    # allowed_models gate and the shared cost recorder behind every paid caller.
+    assembler = PipelineAssembler(app, database_url)
+    evaluator = assembler.build_evaluator(pipeline)
 
     query = pipeline.symbol_queries.get(args.symbol, args.symbol)
     ev = evaluator.evaluate(args.symbol, query)
-    usd = derive_usd(cfg.pricing, cfg.llm.model,
+    usd = derive_usd(cfg.pricing, pipeline.llm.model,
                      ev.usage.prompt_tokens, ev.usage.completion_tokens)
     print(format_symbol_eval(ev, args.pipeline, usd,
                              prompt_cols=args.prompt_cols, prompt_lines=args.prompt_lines,

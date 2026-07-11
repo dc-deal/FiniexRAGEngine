@@ -122,8 +122,12 @@ class PipelineRunner:
         stage_timings = list(ingest.stage_timings)
         for ev in evals:
             stage_timings.extend(ev.stage_timings)
+        # Served-model trace: normally one snapshot per run; a mid-run alias retarget
+        # would show as several (joined) — visible either way.
+        snapshots = sorted({ev.model_snapshot for ev in evals if ev.model_snapshot})
         metadata = RunMetadata(
             model=self._llm_model,
+            model_snapshot=', '.join(snapshots),
             sources_configured=len(self._config.sources),
             sources_reached=len(self._config.sources) - len(ingest.failed_sources),
             articles_found=ingest.fetched,

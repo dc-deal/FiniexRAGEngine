@@ -15,6 +15,18 @@ class SourceConfig(BaseModel):
     weight: float = 1.0          # source trust / weight (ISSUE_5)
 
 
+class PipelineLlmConfig(BaseModel):
+    """The pipeline's evaluation model — REQUIRED, never inherited from a global default.
+
+    The model is series-defining, exactly like the prompt (ISSUE_33): a different model
+    yields different scores for the same news. Requiring it here keeps the choice
+    deliberate and per-flow — a global config edit can never silently retarget every
+    pipeline's series. Must be inside `app_config.llm.allowed_models` (checked at
+    assembly). Accepts fine-tune ids (`ft:...`) once they are allowlisted.
+    """
+    model: str
+
+
 class PromptRef(BaseModel):
     """The prompt a pipeline uses — its template `name` and `version` (ISSUE_33).
 
@@ -62,6 +74,7 @@ class PipelineConfig(BaseModel):
     symbols: List[str]
     symbol_queries: Dict[str, str] = Field(default_factory=dict)   # symbol → retrieval query text (ISSUE_5)
     prompt: PromptRef = Field(default_factory=PromptRef)           # declared prompt template (ISSUE_33)
+    llm: PipelineLlmConfig                                         # declared eval model — required
     trigger: TriggerConfig = Field(default_factory=TriggerConfig)
     sources: List[SourceConfig]
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)

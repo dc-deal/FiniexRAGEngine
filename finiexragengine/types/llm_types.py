@@ -20,6 +20,13 @@ class LlmUsage:
 
 @dataclass
 class LlmCompletion:
-    """A structured LLM completion: the parsed JSON payload + the call's token usage."""
+    """A structured LLM completion: the parsed JSON payload + the call's token usage.
+
+    `model` is the *served* model as reported by the API (`response.model`, e.g.
+    'gpt-4o-mini-2024-07-18') — not the configured alias. Aliases are retargeted
+    silently by the provider; capturing the dated snapshot makes such a switch visible
+    in the series, exactly like the prompt hash does for template edits (ISSUE_33).
+    """
     data: Dict[str, Any]
     usage: LlmUsage = field(default_factory=LlmUsage)
+    model: str = ''

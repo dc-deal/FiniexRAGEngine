@@ -76,6 +76,10 @@ class RunError(BaseModel):
 class RunMetadata(BaseModel):
     """What happened internally during a run — debugging + data-quality."""
     model: str
+    # The model the API actually *served* (response.model, dated snapshot) — the
+    # configured `model` is an alias the provider can silently retarget; this field
+    # makes such a switch visible in the series (the model-side prompt_hash, ISSUE_33).
+    model_snapshot: str = ''
     sources_configured: int = 0
     sources_reached: int = 0
     articles_found: int = 0

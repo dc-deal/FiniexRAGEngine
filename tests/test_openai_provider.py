@@ -34,6 +34,7 @@ class _Response:
     def __init__(self, content):
         self.choices = [_Choice(content)]
         self.usage = _Usage(11, 7)
+        self.model = 'gpt-4o-mini-2024-07-18'   # the served snapshot behind the alias
 
 
 class _Completions:
@@ -59,14 +60,17 @@ class _RecRecorder:
         self.calls = []
 
     def record(self, section, model, prompt_tokens, completion_tokens=0, pipeline_id=None,
-               duration_ms=None):
+               duration_ms=None, model_snapshot=None):
         self.calls.append((section, model, prompt_tokens, completion_tokens, pipeline_id,
-                           duration_ms))
+                           duration_ms, model_snapshot))
         return 0.0
 
 
 def _provider(completions, recorder=None):
-    return OpenAIProvider(LlmConfig(), client=_Client(completions), cost_recorder=recorder)
+    # The model is an explicit argument now — it comes from the pipeline's declared
+    # llm.model, never from a global default.
+    return OpenAIProvider(LlmConfig(), 'gpt-4o-mini', client=_Client(completions),
+                          cost_recorder=recorder)
 
 
 def test_returns_parsed_data_and_usage():
@@ -76,6 +80,7 @@ def test_returns_parsed_data_and_usage():
     assert result.usage.prompt_tokens == 11
     assert result.usage.completion_tokens == 7
     assert result.usage.total_tokens == 18
+    assert result.model == 'gpt-4o-mini-2024-07-18'   # served snapshot captured
 
 
 def test_passes_response_format_and_config():
@@ -90,10 +95,12 @@ def test_records_cost_when_recorder_set():
     recorder = _RecRecorder()
     _provider(_Completions(content='{}'), recorder).complete_structured('p', {})
     assert len(recorder.calls) == 1
-    section, model, prompt_tokens, completion_tokens, pipeline_id, duration_ms = recorder.calls[0]
+    (section, model, prompt_tokens, completion_tokens,
+     pipeline_id, duration_ms, model_snapshot) = recorder.calls[0]
     assert (section, model, prompt_tokens, completion_tokens, pipeline_id) == (
         'llm_eval', 'gpt-4o-mini', 11, 7, None)
     assert duration_ms is not None and duration_ms >= 0.0       # latency sample (ISSUE_32)
+    assert model_snapshot == 'gpt-4o-mini-2024-07-18'           # served-model trace
 
 
 def test_bad_json_raises_parse_error():
