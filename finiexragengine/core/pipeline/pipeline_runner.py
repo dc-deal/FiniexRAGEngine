@@ -192,10 +192,12 @@ def format_envelope_run(envelope: AnalysisEnvelope) -> str:
         lines.append('')
         for error in envelope.errors:
             lines.append(f'  ERROR       [{error.type}] {error.message}')
+    model_label = (f'{m.model} (served {m.model_snapshot})' if m.model_snapshot
+                   else m.model)
     footer = RunFooter(
         timings=m.stage_timings,
         tokens_label=f'prompt {m.prompt_tokens} · completion {m.completion_tokens} '
                      f'· total {m.prompt_tokens + m.completion_tokens}',
-        usd=m.cost_usd, section='this run', aggregate=True)
+        usd=m.cost_usd, section='this run', model_label=model_label, aggregate=True)
     lines += ['', footer.render()]
     return '\n'.join(lines)

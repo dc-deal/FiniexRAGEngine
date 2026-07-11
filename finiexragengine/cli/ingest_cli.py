@@ -60,7 +60,8 @@ def main() -> None:
     # what this pass actually spent — read off the recorder's session accumulator.
     footer = RunFooter(timings=result.stage_timings,
                        tokens_label=f'{recorder.session_tokens:,} embedding',
-                       usd=recorder.session_usd, section='ingest_news', aggregate=True)
+                       usd=recorder.session_usd, section='ingest_news',
+                       model_label=cfg.embedding.model, aggregate=True)
     print()
     print(footer.render())
 

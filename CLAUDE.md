@@ -115,6 +115,18 @@ every response, success or failure.
   — use an `API` source that emits structured facts, or SQL. Litmus for a new pipeline: is the
   primary input unstructured text the LLM must read and distill?
 
+## LLM stage principles
+
+- **Design against the provider seam.** Every LLM-stage feature is designed against
+  `AbstractLLMProvider`, never against OpenAI specifics — provider swappability
+  (OpenAI ↔ fine-tune ↔ self-hosted OpenAI-compatible ↔ future providers) is a standing
+  review question for any change touching the LLM stage. Provider-specific behavior stays
+  inside the concrete provider; `llm.provider` selects the implementation via
+  `provider_factory` (a new entry = a genuinely different API protocol).
+- **The eval model is series-defining, like the prompt.** Pipeline-declared (required, no
+  global default), gated by `llm.allowed_models`, and the served snapshot (`response.model`)
+  is recorded per call and per envelope (#40).
+
 ## Observability & cost (capture at the call, report from the store)
 
 - **Metrics are a byproduct of the run.** Token usage, cost, and per-stage/per-call latency are

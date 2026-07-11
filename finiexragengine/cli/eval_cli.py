@@ -48,7 +48,7 @@ def main() -> None:
     ev = evaluator.evaluate(args.symbol, query)
     usd = derive_usd(cfg.pricing, pipeline.llm.model,
                      ev.usage.prompt_tokens, ev.usage.completion_tokens)
-    print(format_symbol_eval(ev, args.pipeline, usd,
+    print(format_symbol_eval(ev, args.pipeline, usd, model=pipeline.llm.model,
                              prompt_cols=args.prompt_cols, prompt_lines=args.prompt_lines,
                              full_prompt=args.full_prompt))
     if args.json:
