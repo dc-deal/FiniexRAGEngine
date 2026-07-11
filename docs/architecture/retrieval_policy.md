@@ -46,6 +46,21 @@ whose stored embedding has a pairwise cosine similarity ≥ `dedup_similarity` (
 0.92) with an already-kept article is dropped. The store returns the stored embeddings
 with each match, so dedup needs no re-embedding and no LLM.
 
+## Relevance floor (ISSUE_24)
+
+Nearest is not the same as *near*: for a symbol with no news of its own, the top-k
+"nearest" candidates are still generic, off-topic articles. Before dedup, any candidate
+whose query↔article cosine **distance** (`embedding <=> query`, = 1 − similarity) exceeds
+`floor_distance` (default 0.55, tuned on the crypto corpus via the coverage report) is
+dropped. Note the axis: `dedup_similarity` cuts what is **too similar** to another
+article (redundancy); the floor cuts what is **too dissimilar** to the query (irrelevance).
+
+An **empty** survivor set is a legitimate result: the evaluator answers it with the
+mechanical contract row (`HOLD / 0.0 / 'No relevant news found' / []`, tagged
+`basis='no_data'`) **without an LLM call** — no tokens, no cost, logged as `[NO_CONTEXT]`
+for traceability. The coverage report's `n≤f` column predicts exactly this: how many
+window articles survive the floor per symbol (0 → the mechanical HOLD).
+
 ## Configuration reference
 
 `retrieval` block per constellation:
@@ -55,6 +70,7 @@ with each match, so dedup needs no re-embedding and no LLM.
 | `top_k` | 12 | hard cap on articles reaching the prompt |
 | `recency_window_minutes` | 1440 | recent-tier lower bound |
 | `dedup_similarity` | 0.92 | pairwise cosine ≥ this collapses near-duplicates |
+| `floor_distance` | 0.55 | query↔article distance > this drops the candidate; `null` disables (ISSUE_24) |
 | `deep_tier` | absent | opt-in: `{ "min_importance": 2, "window_minutes": 43200 }` |
 
 `symbol_queries` sits at the top level of the constellation, next to `symbols`.

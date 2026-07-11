@@ -57,10 +57,16 @@ Top-down, one symbol's retrieved context flows through:
 
 Runs once per pipeline pass, over all requested symbols:
 
-1. **Relevance floor — `core/rag/retriever.py` · *planned, ISSUE_24*.**
-   Slots between retrieval and analysis: a symbol whose nearest article is beyond `min_similarity`
-   (e.g. DASH/LTC with no dedicated news) yields an **empty** context → the envelope's
-   HOLD/`0.0`/'No relevant news found' path, instead of a signal hallucinated from generic news.
+1. **Relevance floor + no_data shortcut — built, ISSUE_24.**
+   The retriever drops candidates beyond `retrieval.floor_distance` (see
+   `01_ingest_and_retrieval.md`, step 4); a symbol with only generic coverage (e.g. LTC)
+   yields an **empty** context. `SymbolEvaluator.evaluate` then answers **mechanically** —
+   the contract row `HOLD / 0.0 / 'No relevant news found' / []`, tagged
+   **`basis='no_data'`** (machine-readable: no evaluation possible due to data shortage) —
+   **without building a prompt or paying an LLM call**. Logged as `[NO_CONTEXT]` for
+   traceability; deliberately *not* a `RunError` (no data is a legitimate outcome, the run
+   stays `success`), and the envelope proves it regardless: 0 tokens for the symbol, empty
+   raw output. Failure-degraded rows carry `basis='degraded'` instead (ISSUE_35 extends this).
 
 2. **Assemble the envelope — `core/pipeline/pipeline_runner.py` (`PipelineRunner.run`) · built, ISSUE_7.**
    The staged flow in one readable top-down unit: ingest pass (inline in this first slice; moves to

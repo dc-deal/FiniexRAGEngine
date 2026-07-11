@@ -69,7 +69,7 @@ same shell regardless of the signal type:
   "prompt_hash": "1f191112898f",
   "timestamp": "2026-06-28T11:00:00Z",
   "status": "success",
-  "result": [ { "symbol": "BTCUSD", "signal": "HOLD", "sentiment_score": 0.45, "confidence": 0.78, "reasoning": "...", "sources": [ ... ] } ],
+  "result": [ { "symbol": "BTCUSD", "signal": "HOLD", "sentiment_score": 0.45, "confidence": 0.78, "reasoning": "...", "basis": "llm", "sources": [ ... ] } ],
   "metadata": { "model": "gpt-4o-mini", "articles_relevant": 23, "processing_time_ms": 1823, "cost_usd": 0.0029, "stage_timings": [ ... ] },
   "errors": []
 }

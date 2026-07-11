@@ -40,23 +40,31 @@ def _dsn() -> str:
 # --- pure formatting (no DB) --------------------------------------------------
 
 def test_format_marks_generic_and_nan():
+    now = datetime(2026, 7, 10, 12, 0, tzinfo=timezone.utc)
     report = CoverageReport(
         pipeline_id='crypto_sentiment',
         config_file='configs/pipelines/crypto_sentiment.json',
         model='text-embedding-3-small', article_table='articles', total_articles=2,
-        window_articles=1, window_minutes=1440, floor=0.55, rows=[
-            SymbolCoverage('Bitcoin BTC', ['BTCUSD'], 0.40, 0.70, 0.42, 0.72, True),
-            SymbolCoverage('Dash', ['DASHUSD'], 0.60, 0.70,
-                           float('nan'), float('nan'), False),
+        week_articles=2, window_articles=1, window_minutes=1440, floor=0.55,
+        since_all=now - timedelta(days=6), since_week=now - timedelta(days=6),
+        since_window=now - timedelta(hours=20), rows=[
+            SymbolCoverage('Bitcoin BTC', ['BTCUSD'], 0.40, 0.70, 0.41, 0.71,
+                           0.42, 0.72, 3, True),
+            SymbolCoverage('Dash', ['DASHUSD'], 0.60, 0.70, float('nan'), float('nan'),
+                           float('nan'), float('nan'), 0, False),
         ])
     text = format_coverage_report(report)
     assert 'Corpus Coverage Report' in text             # proper heading
     assert 'configs/pipelines/crypto_sentiment.json' in text   # config filename
     assert "pipeline 'crypto_sentiment'" in text        # provenance in the header
     assert 'text-embedding-3-small' in text
-    assert '2 articles (1 within the 1440min/24h window)' in text
+    assert '2 articles · 2 in 7d · 1 in the 1440min/24h window' in text
     assert 'ok' in text and 'GEN' in text               # covered vs generic fallback
-    assert 'n/a' in text                                # NaN window rendered as n/a
+    assert 'n/a' in text                                # NaN scope rendered as n/a
+    assert 'week' in text                               # the new scope group
+    assert 'from 07-04' in text                         # scope start stamps (all/week)
+    assert 'from 07-09 16:00' in text                   # window's oldest article
+    assert 'n≤f' in text                                # in-floor count column
 
 
 # --- build against a seeded corpus (needs DB) ---------------------------------
@@ -110,15 +118,22 @@ def test_build_covers_close_query_and_flags_far_one(seeded):
         window_minutes=1440, article_table=_ART_TABLE)
 
     assert report.total_articles == 3
+    assert report.week_articles == 2                    # a3 (10 days old) outside 7d too
     assert report.window_articles == 2                  # a3 is outside the 24h window
+    # Scope starts = each scope's oldest article (the stats' real reach).
+    assert report.since_all is not None and report.since_week is not None
+    assert report.since_all < report.since_week         # a3 stretches all-time back
     by_query = {row.query_text: row for row in report.rows}
 
     close = by_query['q_close']
     assert close.covered is True
     assert close.best_distance == pytest.approx(0.0, abs=1e-6)   # a1 sits on the query
+    assert close.window_in_floor == 1                   # only a1 is on-topic AND recent
+    assert close.week_best_distance == pytest.approx(0.0, abs=1e-6)
 
     far = by_query['q_far']
     assert far.covered is False                         # orthogonal to every article
     assert far.best_distance > 0.55
+    assert far.window_in_floor == 0                     # the mechanical no_data HOLD case
 
     assert report.rows[0].query_text == 'q_close'       # best-covered first

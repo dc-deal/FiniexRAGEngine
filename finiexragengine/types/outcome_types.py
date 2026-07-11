@@ -42,6 +42,12 @@ class SentimentResult(BaseModel):
     urgency: float = Field(default=0.0, ge=0.0, le=1.0)   # breaking-news gate (ISSUE_6)
     is_breaking: bool = False
     sources: List[ArticleRef] = Field(default_factory=list)  # provenance (ISSUE_2)
+    # How this row came to be (ISSUE_24/35) — machine-readable, filterable downstream:
+    # 'llm' = scored by the model · 'no_data' = mechanical HOLD, retrieval empty after the
+    # floor (no evaluation possible due to data shortage — no LLM call was made) ·
+    # 'degraded' = a guard/failure degraded the row. Additive with default: old envelopes
+    # stay parseable, schema_version is unchanged.
+    basis: Literal['llm', 'no_data', 'degraded'] = 'llm'
 
 
 class SentimentLlmOutput(BaseModel):

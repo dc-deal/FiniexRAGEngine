@@ -126,6 +126,7 @@ def test_failed_symbol_degrades_to_hold_and_partial():
     eth = {r.symbol: r for r in envelope.result}['ETHUSD']
     assert eth.signal == 'HOLD' and eth.confidence == 0.0 and eth.sources == []
     assert 'LLM_TIMEOUT' in eth.reasoning
+    assert eth.basis == 'degraded'                     # failure row, not data shortage (ISSUE_24)
     assert [e.type for e in envelope.errors] == ['LLM_TIMEOUT']
 
 

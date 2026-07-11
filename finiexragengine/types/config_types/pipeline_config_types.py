@@ -41,6 +41,13 @@ class RetrievalConfig(BaseModel):
     top_k: int = 12
     recency_window_minutes: int = 1440   # recency window for retrieval (ISSUE_3)
     dedup_similarity: float = 0.92       # pairwise cosine >= this collapses near-duplicates (ISSUE_5)
+    # Relevance floor (ISSUE_24): candidates whose query<->article cosine *distance*
+    # (pgvector `<=>`, = 1 - similarity) exceeds this are off-topic and dropped — an
+    # empty context becomes the mechanical no_data HOLD instead of a paid LLM call on
+    # generic articles. None disables the floor. Note the axis: dedup_similarity cuts
+    # what is too similar (article<->article), the floor cuts what is too dissimilar
+    # (query<->article). 0.55 tuned on the crypto corpus (coverage report).
+    floor_distance: Optional[float] = 0.55
     deep_tier: Optional[DeepTierConfig] = None   # None = recent-only (sentiment default, ISSUE_5)
 
 

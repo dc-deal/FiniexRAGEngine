@@ -78,7 +78,13 @@ Retrieval runs **per symbol**. Top-down, one symbol's query flows through:
    the **fetch cap** (`ORDER BY distance LIMIT`). The store returns each match's stored
    embedding too, so the next step needs no re-embedding.
 
-4. **Squeeze — `core/rag/retriever.py` (`Retriever._squeeze`).**
+4. **Relevance floor — `core/rag/retriever.py` (`Retriever.retrieve`) · ISSUE_24.**
+   Before dedup, candidates whose query↔article distance exceeds `floor_distance`
+   (default 0.55) are dropped — nearest is not the same as *near*, and an off-topic
+   article must never reach the prompt. An **empty** survivor set is a result: the
+   evaluator answers it mechanically (`HOLD`, `basis='no_data'`, no LLM call).
+
+5. **Squeeze — `core/rag/retriever.py` (`Retriever._squeeze`).**
    Walks candidates in rank order and collapses near-duplicates (the same story
    syndicated across feeds) via pairwise cosine ≥ `dedup_similarity`, then caps at
    `top_k`. **Dedup runs before the cap** so duplicates never consume a slot; each tier

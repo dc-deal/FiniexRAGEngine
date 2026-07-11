@@ -68,12 +68,18 @@ near-duplicate collapse and the `top_k` cap on top of it (see
 The manual join above answers "how well is *this* symbol covered?" one query at a time.
 `finiexragengine/cli/coverage_cli.py` automates it for a whole constellation: for every
 symbol query it reports the **nearest** article distance (best coverage) and the **mean**
-distance, both all-time and within the pipeline's recency window, plus the corpus size.
+distance across three scopes — all-time, last week, and the pipeline's recency window —
+plus the **`n≤f`** count (window articles inside the relevance floor = what actually
+reaches the prompt after ISSUE_24) and each scope's oldest article (`from …` — where its
+counting really starts; an "all-time" over a week-old corpus is just a week).
 
 ```bash
 python finiexragengine/cli/coverage_cli.py                 # crypto_sentiment (default)
-python finiexragengine/cli/coverage_cli.py --pipeline forex_events --floor 0.55
+python finiexragengine/cli/coverage_cli.py --pipeline forex_events --floor 0.60   # what-if tuning
 ```
+
+The default floor is the pipeline's **active** `retrieval.floor_distance`, so `n≤f`
+predicts real retrieval; `--floor` overrides it for tuning experiments.
 
 Also available in the IDE as **📊 RAGEngine: Corpus Coverage Report** (`.vscode/launch.json`).
 It needs `DATABASE_URL`; it runs **free** on the cached query vectors (issue #19) and only
@@ -82,15 +88,16 @@ embeds on a cache miss (`--pipeline` works for any constellation).
 ```
 Corpus Coverage Report
 config: configs/pipelines/crypto_sentiment.json  (pipeline 'crypto_sentiment')
-model text-embedding-3-small | table articles
-corpus: 87 articles (46 within the 1440min/24h window)
---------------------------------------------------------------------------
-     all-time          window
-  best   mean     best   mean  cov  symbols / query
---------------------------------------------------------------------------
- 0.403  0.797    0.403  0.776   ok  ADAUSD  "Cardano ADA"
- 0.502  0.746    0.502  0.734   ok  BTCUSD  "Bitcoin BTC"
- 0.572  0.704    0.572  0.687  GEN  DASHUSD  "Dash cryptocurrency"
+model text-embedding-3-small | table articles | floor 0.55
+corpus: 241 articles · 128 in 7d · 49 in the 1440min/24h window
+--------------------------------------------------------------------------------------------
+       all-time             week           window
+from 07-03 09:12 from 07-03 14:00 from 07-09 15:02
+   best    mean     best    mean     best    mean   n≤f  cov  symbols / query
+--------------------------------------------------------------------------------------------
+  0.403   0.797    0.410   0.780    0.403   0.776     3   ok  ADAUSD  "Cardano ADA"
+  0.502   0.746    0.502   0.741    0.502   0.734     2   ok  BTCUSD  "Bitcoin BTC"
+  0.572   0.704    0.580   0.700    0.628   0.687     0  GEN  DASHUSD  "Dash cryptocurrency"
 ```
 
 Reading it:
@@ -101,12 +108,19 @@ Reading it:
   article close to that symbol, so retrieval would return only generic, off-topic context —
   the `HOLD` / "No relevant news found" case of the output contract.
 - **window** columns are what a *live* retrieval sees right now (only articles inside the
-  recency window); the **all-time** columns show the whole corpus. A symbol covered all-time
-  but `n/a`/worse in the window has gone quiet recently.
+  recency window); **week** sits between window and all-time and shows the trend (covered
+  all-time but worse in week/window = the symbol has gone quiet recently); the **all-time**
+  columns show the whole corpus.
+- **n≤f** is the count of window articles inside the floor — the live prompt context after
+  the relevance floor (ISSUE_24). `0` means retrieval comes back empty and the evaluator
+  answers with the mechanical `no_data` HOLD, **skipping the LLM call entirely**.
+- the **`from …`** stamps under each scope title are that scope's oldest article — the
+  stats' real reach (a young corpus makes "all-time" ≈ "week"; a `from` far younger than
+  the nominal window boundary reveals a feed gap).
 
-The report is the empirical companion to a retrieval **min-similarity floor** — the same
-`~0.55` cut-off that would route an uncovered symbol into the clean `HOLD` path instead of a
-signal hallucinated from generic news.
+The report is the tuning instrument for `retrieval.floor_distance` (ISSUE_24) — the same
+`~0.55` cut-off that routes an uncovered symbol into the clean `no_data` HOLD path instead
+of a signal hallucinated from generic news.
 
 ## Cost tracking (billing log + cost CLI)
 
