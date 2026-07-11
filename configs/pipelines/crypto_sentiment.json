@@ -24,7 +24,7 @@
     },
     "prompt": {
         "name": "sentiment",
-        "version": "1"
+        "version": "2"
     },
     "trigger": {
         "type": "interval",

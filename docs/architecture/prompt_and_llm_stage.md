@@ -22,6 +22,13 @@ the template with `symbol` and the retrieved `articles`.
   empty-context fallback is a template `{% if %}` — so prompt wording *and* formatting stay in one
   reviewable file, out of Python. Markdown keeps it readable (GitHub-rendered), and LLMs parse the
   structure (headings / lists) well.
+- The render context is `symbol`, `articles`, and **`now`** (timezone-aware UTC wall clock) — the
+  "current time" anchor without which article timestamps are useless for age-weighting. **Ordering
+  is template-owned** (v2 sorts newest-first via `|sort(attribute='published_at', reverse=true)`):
+  presentation to the LLM is prompt behavior, so it stays versioned and hash-visible. v2 also
+  surfaces each article's **source trust score** (`source_weight`, the operator's
+  seriousness/reliability rating from the constellation's `sources[]`) with a one-line
+  instruction to weigh accordingly.
 - The Jinja2 env is `autoescape=False` (raw prompt text, not HTML) with `StrictUndefined` (a typo'd
   template variable fails loudly, not silently empty).
 - **Bump the version when the prompt changes** — different prompts score the same news differently,

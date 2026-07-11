@@ -1,6 +1,7 @@
 """Prompt builder — renders a versioned Jinja2/Markdown template with symbol + context
 (ISSUE_6) and carries its front-matter identity for reproducibility (ISSUE_33)."""
 import hashlib
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -106,6 +107,13 @@ class PromptBuilder:
 
     def build(self, name: str, prompt_version: str, symbol: str,
               articles: List[Article]) -> str:
-        """Render the `<name>_v<prompt_version>.md` body for `symbol` + its context."""
+        """Render the `<name>_v<prompt_version>.md` body for `symbol` + its context.
+
+        The render context also carries `now` (timezone-aware UTC wall clock), so a
+        template can anchor the LLM in time — article timestamps alone are useless for
+        age-weighting without a "current time" reference. Templates that ignore `now`
+        (v1) are unaffected; StrictUndefined only rejects *missing* variables.
+        """
         _, compiled = self._load(name, prompt_version)
-        return compiled.render(symbol=symbol, articles=articles)
+        return compiled.render(symbol=symbol, articles=articles,
+                               now=datetime.now(timezone.utc))

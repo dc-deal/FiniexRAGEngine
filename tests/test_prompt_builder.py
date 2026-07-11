@@ -1,5 +1,5 @@
 """Tests for the PromptBuilder (ISSUE_6) — Jinja2 .md template fill + versioning, no API."""
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -96,3 +96,26 @@ def test_missing_front_matter_defaults(tmp_path):
     assert meta.id == 'sentiment'       # falls back to the file name
     assert meta.version == '1'          # falls back to the requested version
     assert meta.author == ''
+
+
+# --- render context: `now` + newest-first sorting (prompt v2 features) ---
+
+def test_now_is_available_to_the_template(tmp_path):
+    (tmp_path / 'sentiment_v1.md').write_text(
+        "Current time: {{ now.strftime('%Y') }}", encoding='utf-8')
+    prompt = PromptBuilder(tmp_path).build('sentiment', '1', 'BTCUSD', [])
+    assert f'Current time: {datetime.now(timezone.utc).year}' in prompt
+
+
+def test_template_can_sort_articles_newest_first(tmp_path):
+    # The ordering is template-owned (versioned, hash-visible) — the engine hands the
+    # articles over in retrieval rank order; v2 re-sorts them by published_at.
+    (tmp_path / 'sentiment_v1.md').write_text(
+        "{% for a in articles|sort(attribute='published_at', reverse=true) %}"
+        '{{ a.article_id }} {% endfor %}', encoding='utf-8')
+    older = _article('older', 'o', 's')
+    newer = Article(article_id='newer', source_id='decrypt', source_weight=1.0,
+                    url='https://example.test/newer', title='n', summary='s',
+                    language='en', published_at=_TS + timedelta(hours=3), fetched_at=_TS)
+    prompt = PromptBuilder(tmp_path).build('sentiment', '1', 'BTCUSD', [older, newer])
+    assert prompt.strip() == 'newer older'
