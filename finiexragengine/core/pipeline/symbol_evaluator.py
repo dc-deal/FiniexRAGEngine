@@ -129,9 +129,11 @@ def format_symbol_eval(ev: SymbolEval, pipeline_id: str, usd: Optional[float] = 
     m = ev.prompt_metadata
     titles = ', '.join(s.title[:34] for s in r.sources[:3])
     reasoning = textwrap.fill(r.reasoning, width=64, subsequent_indent=' ' * 14)
-    # Model line: configured alias + the snapshot that actually served (or the no_data note).
+    # Model line: configured name + how it resolved — '(pinned)' when the config names
+    # the exact snapshot, '(served …)' when an alias was resolved, no_data when no call ran.
     if model and ev.model_snapshot:
-        model_label = f'{model} (served {ev.model_snapshot})'
+        resolved = '(pinned)' if ev.model_snapshot == model else f'(served {ev.model_snapshot})'
+        model_label = f'{model} {resolved}'
     elif model:
         model_label = f'{model} (not called — no_data)' if not ev.prompt else model
     else:

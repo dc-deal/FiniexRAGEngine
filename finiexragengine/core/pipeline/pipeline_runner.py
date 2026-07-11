@@ -192,8 +192,12 @@ def format_envelope_run(envelope: AnalysisEnvelope) -> str:
         lines.append('')
         for error in envelope.errors:
             lines.append(f'  ERROR       [{error.type}] {error.message}')
-    model_label = (f'{m.model} (served {m.model_snapshot})' if m.model_snapshot
-                   else m.model)
+    if m.model_snapshot == m.model and m.model_snapshot:
+        model_label = f'{m.model} (pinned)'
+    elif m.model_snapshot:
+        model_label = f'{m.model} (served {m.model_snapshot})'
+    else:
+        model_label = m.model
     footer = RunFooter(
         timings=m.stage_timings,
         tokens_label=f'prompt {m.prompt_tokens} · completion {m.completion_tokens} '

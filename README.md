@@ -152,6 +152,11 @@ In active development. Implemented and tested today:
   `partial` over `error`, taxonomy-typed errors, always a parseable envelope) (#7).
 - **Cost & performance tracking**: a per-call token/USD **and latency** billing log, `cost` +
   `perf` CLIs, per-stage timings assembled into every envelope (#23, #32).
+- **Model governance & exact-model tracking**: each pipeline declares its eval model (required)
+  behind an `allowed_models` gate; alias models (`gpt-4o-mini`) are allowed for convenience while
+  the **served snapshot** (`response.model`, e.g. `gpt-4o-mini-2024-07-18`) is recorded per call
+  and per envelope — a silent alias retarget is detected and warned, so signal series stay
+  attributable to the exact model (and prompt) that produced them (#40, #33).
 
 Next up: **retrieval min-similarity floor (#24)** — off-topic context becomes a clean, free
 HOLD — then the **outcome store + `/latest` cache (#8)**. See the full
