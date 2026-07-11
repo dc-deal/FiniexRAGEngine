@@ -2,8 +2,8 @@
 import logging
 
 from finiexragengine.configuration.app_config_manager import AppConfigManager
-from finiexragengine.core.llm.openai_provider import OpenAIProvider
 from finiexragengine.core.llm.prompt_builder import PromptBuilder
+from finiexragengine.core.llm.provider_factory import build_provider
 from finiexragengine.core.observability.cost_recorder import CostRecorder
 from finiexragengine.core.pipeline.ingestor import Ingestor
 from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
@@ -74,7 +74,9 @@ class PipelineAssembler:
                                  dimensions=self._cfg.embedding.dimensions)
         retriever = Retriever(cache, store, config.retrieval)
         prompt_builder = PromptBuilder(self._app.get_prompts_dir())
-        provider = OpenAIProvider(self._cfg.llm, model, cost_recorder=self._recorder,
+        # Provider seam: `llm.provider` names the implementation, the factory resolves
+        # it — the assembler never hard-codes a provider class.
+        provider = build_provider(self._cfg.llm, model, cost_recorder=self._recorder,
                                   section='llm_eval', pipeline_id=config.pipeline_id)
         return SymbolEvaluator(retriever, prompt_builder, provider,
                                prompt_name=config.prompt.name,

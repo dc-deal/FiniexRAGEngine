@@ -93,6 +93,11 @@ different scores for the same news. Its declaration is therefore two-level:
   `metadata.model_snapshot` — a silent snapshot switch becomes visible in the series, exactly
   like a `prompt_hash` change (the model-side half of reproducibility, ISSUE_33). Pricing keys
   on the configured alias; the snapshot is the trace.
+- **The provider is a seam.** The eval flow depends only on `AbstractLLMProvider`;
+  `llm.provider` names the implementation, resolved by `core/llm/provider_factory.py` (the
+  `source_factory` mirror — an unknown name fails at assembly). A genuinely different API
+  protocol = a new provider class + factory entry; OpenAI-compatible endpoints (vLLM, Ollama,
+  fine-tunes) are **not** one — they ride the existing class via `base_url` / the model string.
 
 ## Errors & cost
 
