@@ -26,6 +26,22 @@
         // 💸 PAID GATE (real OpenAI API cost — run deliberately)
         // ====================================================
         {
+            "name": "💸 RAGEngine: Run Pipeline (full envelope, paid)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/finiexragengine/cli/run_cli.py",
+            "args": [
+                "--pipeline",
+                "${input:pipeline}"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "03_paid_gate",
+                "order": 1
+            }
+        },
+        {
             "name": "💸 RAGEngine: Ingest (fetch→embed→upsert, paid)",
             "type": "debugpy",
             "request": "launch",

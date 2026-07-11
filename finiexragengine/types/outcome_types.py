@@ -4,7 +4,7 @@ These are Pydantic models because they are serialized identically to every
 surface: the collector's JSONL archive, the live worker, and the HTTP API.
 """
 from datetime import datetime
-from typing import Generic, List, Literal, TypeVar
+from typing import Dict, Generic, List, Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -76,6 +76,12 @@ class RunMetadata(BaseModel):
     articles_relevant: int = 0
     processing_time_ms: float = 0.0
     stage_timings: List[StageTiming] = Field(default_factory=list)  # ISSUE_7
+    # Run-level spend capture (ISSUE_12, assembled in ISSUE_7): summed LLM usage, the
+    # run's total derived USD (embeddings + LLM), and per-symbol token footprints.
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cost_usd: float = 0.0
+    per_symbol_tokens: Dict[str, int] = Field(default_factory=dict)
 
 
 T = TypeVar('T')

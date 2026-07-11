@@ -4,7 +4,8 @@
 
 **A configurable RAG engine that turns unstructured sources into typed trading signals.**
 
-> **Status:** Pre-Alpha · `v0.1.0` · Phase 1 vertical slice — retrieval stage done, LLM analysis next
+> **Status:** Alpha · `v0.2.0-alpha` · Phase 1 vertical slice — retrieval, analysis & orchestration
+> done: `POST /run` serves real signals end-to-end. Outcome persistence (`/latest` cache) next
 
 FiniexRAGEngine fetches unstructured external content (news feeds, blogs, and later
 event/socket streams), retrieves the relevant subset via a vector store, and asks a large
@@ -64,10 +65,12 @@ same shell regardless of the signal type:
   "pipeline_id": "crypto_sentiment",
   "outcome_type": "sentiment_fear_greed",
   "prompt_version": "1",
+  "prompt_id": "sentiment-crypto",
+  "prompt_hash": "1f191112898f",
   "timestamp": "2026-06-28T11:00:00Z",
   "status": "success",
   "result": [ { "symbol": "BTCUSD", "signal": "HOLD", "sentiment_score": 0.45, "confidence": 0.78, "reasoning": "...", "sources": [ ... ] } ],
-  "metadata": { "model": "gpt-4o-mini", "articles_relevant": 23, "processing_time_ms": 1823, "stage_timings": [ ... ] },
+  "metadata": { "model": "gpt-4o-mini", "articles_relevant": 23, "processing_time_ms": 1823, "cost_usd": 0.0029, "stage_timings": [ ... ] },
   "errors": []
 }
 ```
@@ -121,11 +124,13 @@ on first connect. You can then browse the `articles` corpus and run the pgvector
 similarity queries by hand — see
 [docs/development/database_inspection.md](docs/development/database_inspection.md).
 
-**CLI tools.** Grow the corpus with one **ingest pass**
-(`python finiexragengine/cli/ingest_cli.py` — fetch → embed → upsert, idempotent), check how well it
-covers each symbol with the read-only **coverage report** (`python finiexragengine/cli/coverage_cli.py`),
-and see token/USD spend by section with the **cost report** (`python finiexragengine/cli/cost_cli.py`).
-All are also in `.vscode/launch.json`; details in the
+**CLI tools.** Run one **full pipeline pass** (`run_cli.py` — the console twin of `POST /run`),
+grow the corpus with one **ingest pass** (`ingest_cli.py` — fetch → embed → upsert, idempotent),
+preview a single symbol's **evaluation** (`eval_cli.py` — signal + rendered prompt excerpt), check
+per-symbol corpus **coverage** (`coverage_cli.py`), and read the **cost** and **performance**
+reports (`cost_cli.py` / `perf_cli.py` — token/USD spend and API latency by section). Every paid
+pass ends with a `--- run metrics ---` footer, so spend is never silent. All entries are in
+`.vscode/launch.json`; details in the
 [DB inspection doc](docs/development/database_inspection.md#coverage-report-cli).
 
 ---
@@ -139,12 +144,17 @@ In active development. Implemented and tested today:
 - **OpenAI embeddings** (`text-embedding-3-small`, app-wide, 1536 dims).
 - **Retrieval stage**: two-tier top-k with recency window, symbol-aware query expansion,
   and semantic dedup before the token cap.
-- **Cost tracking**: a per-call token/USD billing log with a `cost` CLI (#23).
 - **LLM analysis stage**: versioned prompt templates + structured OpenAI output — typed,
-  validated per-symbol sentiment, with per-call token/cost capture (#6).
+  validated per-symbol sentiment (#6), with prompt **metadata + content-hash fingerprint**
+  recorded in every envelope (#33).
+- **Pipeline orchestration**: `POST /run` executes the real staged flow — ingest → per-symbol
+  eval → envelope assembly honoring the output contract (every symbol always present,
+  `partial` over `error`, taxonomy-typed errors, always a parseable envelope) (#7).
+- **Cost & performance tracking**: a per-call token/USD **and latency** billing log, `cost` +
+  `perf` CLIs, per-stage timings assembled into every envelope (#23, #32).
 
-Next up: **full pipeline orchestration (#7)** — wiring the stages into `Pipeline.run` so the API
-serves a real `SentimentEnvelope` instead of the current typed mock. See the full
+Next up: **retrieval min-similarity floor (#24)** — off-topic context becomes a clean, free
+HOLD — then the **outcome store + `/latest` cache (#8)**. See the full
 **[Vision & Roadmap](https://github.com/dc-deal/FiniexRAGEngine/issues/1)** (issue #1).
 
 ---

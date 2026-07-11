@@ -61,6 +61,7 @@ def test_enriches_with_provenance_and_times_stages():
     assert {t.stage for t in ev.stage_timings} == {'retrieve', 'prompt', 'llm'}
     assert ev.usage.total_tokens == 120
     assert ev.prompt_metadata.content_hash == 'deadbeef0000'   # prompt identity travels along
+    assert ev.raw_output == data                # raw model output retained (ISSUE_36)
 
 
 def test_not_breaking_below_threshold():

@@ -1,6 +1,6 @@
-"""Pipeline — orchestrates one constellation end-to-end."""
+"""Pipeline — the registry-facing handle for one constellation."""
 from datetime import datetime, timezone
-from typing import List
+from typing import List, Optional
 
 from finiexragengine.types.config_types.pipeline_config_types import PipelineConfig
 from finiexragengine.types.outcome_types import (
@@ -11,50 +11,53 @@ from finiexragengine.types.outcome_types import (
 
 
 class Pipeline:
-    """Runs one configured pipeline end-to-end and returns a typed envelope.
+    """Holds one constellation's config and runs it through its attached runner.
 
-    Real flow (TODO impl — see the ISSUEs):
-        1. fetch articles from each Source            (stage 'fetch', timed — ISSUE_7)
-        2. embed + upsert into the vector store        (stage 'embed', idempotent — ISSUE_3)
-        3. per symbol: Retriever.retrieve(...)         (stage 'retrieve', recency+dedup — ISSUE_3)
-        4. build prompt + LLMProvider.complete_structured (stage 'llm')
-        5. parse -> SentimentResult[] with provenance  (stage 'parse', citations — ISSUE_2)
-        6. set urgency/is_breaking; persist to the OutcomeStore (source of truth)
-
-    The scaffold's run() returns a deterministic MOCK envelope so the service
-    boots and the API contract is exercisable before the stages are implemented.
+    Construction is two-phase: the registry creates the handle from the validated
+    config (no I/O); the `PipelineAssembler` later attaches a `PipelineRunner` — the
+    real staged flow (ISSUE_7) — once DB/API wiring is available. Without a runner,
+    `run()` falls back to the deterministic scaffold mock, so the service (and the
+    free test suite) still boots with no database or API key configured.
     """
 
     def __init__(self, config: PipelineConfig) -> None:
         self._config = config
+        self._runner: Optional['PipelineRunner'] = None  # noqa: F821 — set via set_runner
 
     def get_config(self) -> PipelineConfig:
         return self._config
 
-    def run(self) -> AnalysisEnvelope:
-        """Execute the pipeline once and return its outcome envelope.
+    def set_runner(self, runner) -> None:
+        """Attach the real staged runner (built by the PipelineAssembler, ISSUE_7)."""
+        self._runner = runner
 
-        Returns:
-            A mock envelope (scaffold). Replace with the real staged flow above.
+    def run(self) -> AnalysisEnvelope:
+        """Execute the pipeline once and return its outcome envelope."""
+        if self._runner is not None:
+            return self._runner.run()
+        return self._mock_envelope()
+
+    def _mock_envelope(self) -> AnalysisEnvelope:
+        """Scaffold fallback: a valid, deterministic envelope without any wiring.
+
+        Envelope invariant: every requested symbol is always present in the result —
+        even the mock emits one HOLD/0.0 entry per configured symbol, never a gap.
+        No prompt fingerprint is stamped — these results never ran a prompt (ISSUE_33).
         """
         now = datetime.now(timezone.utc)
-        # Envelope invariant: every requested symbol is always present in the result —
-        # even the scaffold mock emits one HOLD/0.0 entry per configured symbol, never a gap.
         results: List[SentimentResult] = [
             SentimentResult(
                 symbol=symbol,
                 signal='HOLD',
                 sentiment_score=0.0,
                 confidence=0.0,
-                reasoning='Scaffold mock — pipeline stages not yet implemented.',
+                reasoning='Scaffold mock — no runner attached.',
             )
             for symbol in self._config.symbols
         ]
         return AnalysisEnvelope(
             pipeline_id=self._config.pipeline_id,
             outcome_type=self._config.outcome_type,
-            # Scaffold: version from the declared prompt; prompt_id/prompt_hash are filled
-            # from the loaded PromptMetadata once the real staged flow lands (ISSUE_7/33).
             prompt_version=self._config.prompt.version,
             timestamp=now,
             status='success',
