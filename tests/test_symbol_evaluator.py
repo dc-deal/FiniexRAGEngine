@@ -81,3 +81,33 @@ def test_bad_output_raises_parse_error():
 def test_compact_prompt_collapses_newlines():
     out = _compact_prompt('line1\nline2\nline3', cols=100, lines=5)
     assert 'line1⏎line2⏎line3' in out
+
+
+# --- empty-context shortcut (ISSUE_24) ---
+
+class _MustNotCallProvider:
+    """The shortcut's contract: no context -> the LLM is never touched."""
+    def complete_structured(self, prompt, json_schema):
+        raise AssertionError('LLM must not be called on empty context')
+
+
+def test_empty_context_shortcuts_to_no_data_hold():
+    evaluator = SymbolEvaluator(_FakeRetriever([]), _FakeBuilder(), _MustNotCallProvider(),
+                                breaking_threshold=0.8)
+    ev = evaluator.evaluate('LTCUSD', 'Litecoin LTC')
+    r = ev.result
+    # The contract row, machine-tagged: mechanical HOLD, no evaluation possible.
+    assert (r.signal, r.confidence, r.sources) == ('HOLD', 0.0, [])
+    assert r.reasoning == 'No relevant news found'
+    assert r.basis == 'no_data'
+    # Envelope-side proof that no LLM ran: zero tokens, no prompt, empty raw output.
+    assert ev.usage.total_tokens == 0 and ev.prompt == '' and ev.raw_output == {}
+    assert [t.stage for t in ev.stage_timings] == ['retrieve']   # only retrieval ran
+    assert ev.prompt_metadata.content_hash == 'deadbeef0000'     # fingerprint still resolved
+
+
+def test_llm_path_keeps_default_basis():
+    data = {'signal': 'BUY', 'sentiment_score': 0.4, 'confidence': 0.7,
+            'reasoning': 'bullish', 'urgency': 0.2}
+    ev = _evaluator([_article('a')], data).evaluate('BTCUSD', 'q')
+    assert ev.result.basis == 'llm'

@@ -45,10 +45,16 @@ def taxonomy_type(exc: Exception) -> str:
     return 'PARTIAL_RESPONSE'
 
 
-def hold_result(symbol: str, reasoning: str) -> SentimentResult:
-    """The contract's no-data row: HOLD / 0.0 / reason / no sources — never a missing symbol."""
+def hold_result(symbol: str, reasoning: str,
+                basis: str = 'degraded') -> SentimentResult:
+    """A contract HOLD row: HOLD / 0.0 / reason / no sources — never a missing symbol.
+
+    `basis` tags how the row came to be (ISSUE_24/35): the runner/API use 'degraded'
+    (a failure forced the HOLD); the evaluator's data-shortage shortcut emits its own
+    row with 'no_data'.
+    """
     return SentimentResult(symbol=symbol, signal='HOLD', sentiment_score=0.0,
-                           confidence=0.0, reasoning=reasoning)
+                           confidence=0.0, reasoning=reasoning, basis=basis)
 
 
 class PipelineRunner:
@@ -116,8 +122,12 @@ class PipelineRunner:
         stage_timings = list(ingest.stage_timings)
         for ev in evals:
             stage_timings.extend(ev.stage_timings)
+        # Served-model trace: normally one snapshot per run; a mid-run alias retarget
+        # would show as several (joined) — visible either way.
+        snapshots = sorted({ev.model_snapshot for ev in evals if ev.model_snapshot})
         metadata = RunMetadata(
             model=self._llm_model,
+            model_snapshot=', '.join(snapshots),
             sources_configured=len(self._config.sources),
             sources_reached=len(self._config.sources) - len(ingest.failed_sources),
             articles_found=ingest.fetched,
@@ -172,12 +182,12 @@ def format_envelope_run(envelope: AnalysisEnvelope) -> str:
         f'  status      {envelope.status}     sources {m.sources_reached}/{m.sources_configured}'
         f'   articles {m.articles_found} found · {m.articles_relevant} relevant',
         '',
-        f'  {"symbol":10} {"signal":6} {"score":>6} {"conf":>5} {"urg":>5}  brk  sources',
+        f'  {"symbol":10} {"signal":6} {"score":>6} {"conf":>5} {"urg":>5}  brk  sources  basis',
     ]
     for r in envelope.result:
         lines.append(f'  {r.symbol:10} {r.signal:6} {r.sentiment_score:>+6.2f} '
                      f'{r.confidence:>5.2f} {r.urgency:>5.2f}  {"yes" if r.is_breaking else "no ":3} '
-                     f'{len(r.sources):>7}')
+                     f'{len(r.sources):>7}  {r.basis}')
     if envelope.errors:
         lines.append('')
         for error in envelope.errors:

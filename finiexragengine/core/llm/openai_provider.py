@@ -21,17 +21,22 @@ if TYPE_CHECKING:
 class OpenAIProvider(AbstractLLMProvider):
     """Calls the OpenAI chat-completions API with a JSON-schema response format.
 
-    Low temperature + timeout come from `LlmConfig`. Failures map to the LLMError
-    taxonomy: timeout -> LLMTimeoutError, backend error -> LLMApiError, non-JSON output
-    -> LLMParseError. Token usage is captured on every call (ISSUE_23) and, if a
-    cost_recorder is set, logged under `section` (default 'llm_eval').
+    The eval `model` is an explicit argument — it comes from the *pipeline's* declared
+    `llm.model` (series-defining, never a global default); `LlmConfig` contributes only
+    the call mechanics (temperature, timeout, optional `base_url` for an OpenAI-compatible
+    endpoint such as vLLM/Ollama — self-hosted or fine-tuned models ride the same seam).
+    Failures map to the LLMError taxonomy: timeout -> LLMTimeoutError, backend error ->
+    LLMApiError, non-JSON output -> LLMParseError. Token usage *and the served model*
+    (`response.model`, the dated snapshot behind the alias) are captured on every call
+    (ISSUE_23) and, if a cost_recorder is set, logged under `section`.
     """
 
-    def __init__(self, config: LlmConfig, api_key: Optional[str] = None,
+    def __init__(self, config: LlmConfig, model: str, api_key: Optional[str] = None,
                  client: Optional[OpenAI] = None,
                  cost_recorder: Optional['CostRecorder'] = None,
                  section: str = 'llm_eval', pipeline_id: Optional[str] = None) -> None:
         self._config = config
+        self._model = model
         self._api_key = api_key
         self._client = client   # built lazily from OPENAI_API_KEY / api_key if not injected
         self._cost_recorder = cost_recorder
@@ -40,7 +45,9 @@ class OpenAIProvider(AbstractLLMProvider):
 
     def _get_client(self) -> OpenAI:
         if self._client is None:
-            self._client = OpenAI(api_key=self._api_key) if self._api_key else OpenAI()
+            # base_url switches to an OpenAI-compatible endpoint (user_configs override);
+            # None keeps the official API. The key still comes from env / api_key.
+            self._client = OpenAI(api_key=self._api_key, base_url=self._config.base_url)
         return self._client
 
     def complete_structured(self, prompt: str, json_schema: Dict[str, Any]) -> LlmCompletion:
@@ -48,7 +55,7 @@ class OpenAIProvider(AbstractLLMProvider):
         call_start = perf_counter()
         try:
             response = client.chat.completions.create(
-                model=self._config.model,
+                model=self._model,
                 messages=[{'role': 'user', 'content': prompt}],
                 # Structured output: the model must return JSON matching the schema.
                 # strict=False accepts the full Pydantic schema (range constraints and
@@ -74,13 +81,19 @@ class OpenAIProvider(AbstractLLMProvider):
         except json.JSONDecodeError as exc:
             raise LLMParseError(f'LLM returned non-JSON output: {exc}') from exc
 
-        # Capture the paid usage (ISSUE_23) — cost is never silent.
+        # Capture the paid usage (ISSUE_23) and the *served* model: `response.model` is
+        # the dated snapshot the alias actually resolved to — a silent alias retarget
+        # becomes visible in the series, like a prompt-hash change (ISSUE_33).
         raw = getattr(response, 'usage', None)
         usage = LlmUsage(
             prompt_tokens=getattr(raw, 'prompt_tokens', 0) or 0,
             completion_tokens=getattr(raw, 'completion_tokens', 0) or 0)
+        served_model = getattr(response, 'model', '') or ''
         if self._cost_recorder is not None and (usage.prompt_tokens or usage.completion_tokens):
-            self._cost_recorder.record(self._section, self._config.model,
+            # Priced by the *configured* name (the pricing-table key); the snapshot is
+            # stored alongside as the trace of what actually served the call.
+            self._cost_recorder.record(self._section, self._model,
                                        usage.prompt_tokens, usage.completion_tokens,
-                                       self._pipeline_id, duration_ms=api_ms)
-        return LlmCompletion(data=data, usage=usage)
+                                       self._pipeline_id, duration_ms=api_ms,
+                                       model_snapshot=served_model)
+        return LlmCompletion(data=data, usage=usage, model=served_model)

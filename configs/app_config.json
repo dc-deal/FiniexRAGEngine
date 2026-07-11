@@ -7,9 +7,13 @@
     },
     "llm": {
         "provider": "openai",
-        "model": "gpt-4o-mini",
         "temperature": 0.1,
-        "timeout_seconds": 30
+        "timeout_seconds": 30,
+        "allowed_models": [
+            "gpt-4o-mini",
+            "gpt-4o"
+        ],
+        "base_url": null
     },
     "embedding": {
         "provider": "openai",
@@ -25,10 +29,22 @@
     "pricing": {
         "currency": "USD",
         "models": {
-            "text-embedding-3-small": { "input_per_1k": 0.00002, "output_per_1k": 0.0 },
-            "text-embedding-3-large": { "input_per_1k": 0.00013, "output_per_1k": 0.0 },
-            "gpt-4o-mini": { "input_per_1k": 0.00015, "output_per_1k": 0.0006 },
-            "gpt-4o": { "input_per_1k": 0.0025, "output_per_1k": 0.01 }
+            "text-embedding-3-small": {
+                "input_per_1k": 2e-05,
+                "output_per_1k": 0.0
+            },
+            "text-embedding-3-large": {
+                "input_per_1k": 0.00013,
+                "output_per_1k": 0.0
+            },
+            "gpt-4o-mini": {
+                "input_per_1k": 0.00015,
+                "output_per_1k": 0.0006
+            },
+            "gpt-4o": {
+                "input_per_1k": 0.0025,
+                "output_per_1k": 0.01
+            }
         }
     },
     "cost": {

@@ -15,6 +15,18 @@ class SourceConfig(BaseModel):
     weight: float = 1.0          # source trust / weight (ISSUE_5)
 
 
+class PipelineLlmConfig(BaseModel):
+    """The pipeline's evaluation model — REQUIRED, never inherited from a global default.
+
+    The model is series-defining, exactly like the prompt (ISSUE_33): a different model
+    yields different scores for the same news. Requiring it here keeps the choice
+    deliberate and per-flow — a global config edit can never silently retarget every
+    pipeline's series. Must be inside `app_config.llm.allowed_models` (checked at
+    assembly). Accepts fine-tune ids (`ft:...`) once they are allowlisted.
+    """
+    model: str
+
+
 class PromptRef(BaseModel):
     """The prompt a pipeline uses — its template `name` and `version` (ISSUE_33).
 
@@ -41,6 +53,13 @@ class RetrievalConfig(BaseModel):
     top_k: int = 12
     recency_window_minutes: int = 1440   # recency window for retrieval (ISSUE_3)
     dedup_similarity: float = 0.92       # pairwise cosine >= this collapses near-duplicates (ISSUE_5)
+    # Relevance floor (ISSUE_24): candidates whose query<->article cosine *distance*
+    # (pgvector `<=>`, = 1 - similarity) exceeds this are off-topic and dropped — an
+    # empty context becomes the mechanical no_data HOLD instead of a paid LLM call on
+    # generic articles. None disables the floor. Note the axis: dedup_similarity cuts
+    # what is too similar (article<->article), the floor cuts what is too dissimilar
+    # (query<->article). 0.55 tuned on the crypto corpus (coverage report).
+    floor_distance: Optional[float] = 0.55
     deep_tier: Optional[DeepTierConfig] = None   # None = recent-only (sentiment default, ISSUE_5)
 
 
@@ -55,6 +74,7 @@ class PipelineConfig(BaseModel):
     symbols: List[str]
     symbol_queries: Dict[str, str] = Field(default_factory=dict)   # symbol → retrieval query text (ISSUE_5)
     prompt: PromptRef = Field(default_factory=PromptRef)           # declared prompt template (ISSUE_33)
+    llm: PipelineLlmConfig                                         # declared eval model — required
     trigger: TriggerConfig = Field(default_factory=TriggerConfig)
     sources: List[SourceConfig]
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)

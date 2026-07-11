@@ -35,8 +35,9 @@ _META = PromptMetadata(id='sentiment-crypto', version='1', author='t', created='
 def _config(symbols: List[str]) -> PipelineConfig:
     return PipelineConfig(
         pipeline_id='p', outcome_type='sentiment_fear_greed', market='crypto',
-        symbols=symbols, sources=[{'source_id': 's1', 'url': 'http://x'},
-                                  {'source_id': 's2', 'url': 'http://y'}])
+        symbols=symbols, llm={'model': 'gpt-4o-mini'},
+        sources=[{'source_id': 's1', 'url': 'http://x'},
+                 {'source_id': 's2', 'url': 'http://y'}])
 
 
 def _article(article_id: str) -> Article:
@@ -55,7 +56,8 @@ def _eval(symbol: str, tokens=(100, 20)) -> SymbolEval:
     return SymbolEval(result=result, prompt='P', prompt_metadata=_META,
                       usage=LlmUsage(*tokens), articles=[_article('a')],
                       stage_timings=[_timing('retrieve', 10.0), _timing('llm', 90.0)],
-                      raw_output={'signal': 'BUY'})
+                      raw_output={'signal': 'BUY'},
+                      model_snapshot='gpt-4o-mini-2024-07-18')
 
 
 class _FakeIngestor:
@@ -111,6 +113,9 @@ def test_clean_pass_assembles_success_envelope():
     assert envelope.metadata.articles_found == 10
     assert envelope.metadata.articles_relevant == 2
     assert envelope.metadata.sources_reached == 2
+    # Served-model trace next to the configured alias (the model-side prompt_hash).
+    assert envelope.metadata.model == 'gpt-4o-mini'
+    assert envelope.metadata.model_snapshot == 'gpt-4o-mini-2024-07-18'
     stages = [t.stage for t in envelope.metadata.stage_timings]
     assert stages == ['fetch', 'embed', 'retrieve', 'llm', 'retrieve', 'llm']
     assert envelope.metadata.processing_time_ms > 0.0
@@ -126,6 +131,7 @@ def test_failed_symbol_degrades_to_hold_and_partial():
     eth = {r.symbol: r for r in envelope.result}['ETHUSD']
     assert eth.signal == 'HOLD' and eth.confidence == 0.0 and eth.sources == []
     assert 'LLM_TIMEOUT' in eth.reasoning
+    assert eth.basis == 'degraded'                     # failure row, not data shortage (ISSUE_24)
     assert [e.type for e in envelope.errors] == ['LLM_TIMEOUT']
 
 

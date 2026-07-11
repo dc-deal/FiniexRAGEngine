@@ -70,6 +70,13 @@ class Retriever:
             deep_since = now - timedelta(minutes=deep.window_minutes)
             candidates += [(1, hit) for hit in self._store.query(
                 vector, fetch_k, deep_since, min_importance=deep.min_importance)]
+        # Relevance floor (ISSUE_24), before dedup: an off-topic candidate must never
+        # reach the prompt, and dropping it here also spares the pairwise dedup work.
+        # An empty survivor set is a *result* — the evaluator answers it with the
+        # mechanical no_data HOLD instead of paying for an LLM read of generic articles.
+        floor = self._config.floor_distance
+        if floor is not None:
+            candidates = [(tier, hit) for tier, hit in candidates if hit.distance <= floor]
         candidates.sort(key=_rank_key)
         return self._squeeze(candidates)
 

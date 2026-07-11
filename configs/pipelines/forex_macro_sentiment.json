@@ -14,6 +14,9 @@
         "name": "sentiment",
         "version": "1"
     },
+    "llm": {
+        "model": "gpt-4o-mini"
+    },
     "trigger": {
         "type": "interval",
         "interval_seconds": 600
@@ -41,7 +44,8 @@
     "retrieval": {
         "top_k": 12,
         "recency_window_minutes": 2880,
-        "dedup_similarity": 0.92
+        "dedup_similarity": 0.92,
+        "floor_distance": 0.55
     },
     "breaking": {
         "urgency_threshold": 0.8

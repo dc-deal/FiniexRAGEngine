@@ -24,7 +24,10 @@
     },
     "prompt": {
         "name": "sentiment",
-        "version": "1"
+        "version": "2"
+    },
+    "llm": {
+        "model": "gpt-4o-mini"
     },
     "trigger": {
         "type": "interval",
@@ -53,7 +56,8 @@
     "retrieval": {
         "top_k": 12,
         "recency_window_minutes": 1440,
-        "dedup_similarity": 0.85
+        "dedup_similarity": 0.85,
+        "floor_distance": 0.55
     },
     "breaking": {
         "urgency_threshold": 0.8

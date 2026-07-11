@@ -20,8 +20,9 @@ def main() -> None:
         description='Corpus coverage report per symbol query')
     parser.add_argument('--pipeline', default='crypto_sentiment',
                         help='pipeline id under configs/pipelines/')
-    parser.add_argument('--floor', type=float, default=COVERAGE_FLOOR,
-                        help='best-distance beyond which coverage counts as generic fallback')
+    parser.add_argument('--floor', type=float, default=None,
+                        help='floor override for tuning experiments; default = the '
+                             "pipeline's retrieval.floor_distance")
     args = parser.parse_args()
 
     database_url = os.environ.get('DATABASE_URL')
@@ -40,6 +41,11 @@ def main() -> None:
     except PipelineNotFoundError as exc:
         parser.error(str(exc))
 
+    # The report measures against the *active* floor (retrieval.floor_distance) so its
+    # n≤f column predicts real retrieval; --floor overrides for what-if tuning runs.
+    floor = args.floor if args.floor is not None else (
+        pipeline.retrieval.floor_distance or COVERAGE_FLOOR)
+
     recorder = CostRecorder(database_url, cfg.pricing)
     embedder = OpenAIEmbedder(cfg.embedding, cost_recorder=recorder, section='ingest_query')
     cache = QueryVectorCache(embedder, database_url, model=cfg.embedding.model,
@@ -49,7 +55,7 @@ def main() -> None:
         pipeline_id=args.pipeline, config_file=f'configs/pipelines/{args.pipeline}.json',
         model=cfg.embedding.model,
         window_minutes=pipeline.retrieval.recency_window_minutes,
-        article_table=cfg.vector_store.table, floor=args.floor)
+        article_table=cfg.vector_store.table, floor=floor)
     print(format_coverage_report(report))
 
 

@@ -95,9 +95,32 @@ def test_top_k_is_a_hard_cap():
 
 
 def test_orders_by_distance_within_tier():
+    # floor off: this test checks pure distance ordering, not the relevance cut.
     store = _FakeStore([[_hit('far', 0.7), _hit('near', 0.1), _hit('mid', 0.4)]])
-    result = _retriever(store, top_k=10).retrieve('q')
+    result = _retriever(store, top_k=10, floor_distance=None).retrieve('q')
     assert [a.article_id for a in result] == ['near', 'mid', 'far']
+
+
+# --- relevance floor (ISSUE_24) ---
+
+def test_floor_drops_off_topic_candidates():
+    # 0.54 stays (on-topic), 0.56/0.70 exceed the default 0.55 floor -> dropped.
+    store = _FakeStore([[_hit('on', 0.54), _hit('edge', 0.56), _hit('off', 0.70)]])
+    result = _retriever(store, top_k=10).retrieve('q')
+    assert [a.article_id for a in result] == ['on']
+
+
+def test_floor_can_empty_the_context():
+    # Nothing on-topic: the empty result is the signal the evaluator's no_data
+    # shortcut consumes — better an empty context than 12 generic articles.
+    store = _FakeStore([[_hit('g1', 0.62), _hit('g2', 0.71)]])
+    assert _retriever(store, top_k=10).retrieve('q') == []
+
+
+def test_floor_none_disables_the_cut():
+    store = _FakeStore([[_hit('g1', 0.62), _hit('g2', 0.71)]])
+    result = _retriever(store, top_k=10, floor_distance=None).retrieve('q')
+    assert [a.article_id for a in result] == ['g1', 'g2']
 
 
 def test_distance_tie_breaks_on_source_weight_then_importance():

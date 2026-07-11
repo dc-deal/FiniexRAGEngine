@@ -80,6 +80,17 @@ def test_record_persists_duration_ms(recorder):
         assert cur.fetchone()[0] == pytest.approx(2718.0)
 
 
+def test_record_persists_model_snapshot(recorder):
+    # The served model (response.model) rides the row: alias retargets become visible;
+    # the pricing lookup still keys on the configured name.
+    usd = recorder.record('llm_eval', 'gpt-4o-mini', 1000, 500,
+                          model_snapshot='gpt-4o-mini-2024-07-18')
+    assert usd == pytest.approx(0.00045)                 # priced by the alias, not the snapshot
+    with psycopg.connect(_dsn()) as conn, conn.cursor() as cur:
+        cur.execute(f'SELECT model, model_snapshot FROM {_TABLE}')
+        assert cur.fetchone() == ('gpt-4o-mini', 'gpt-4o-mini-2024-07-18')
+
+
 def test_session_accumulators_track_this_process(recorder):
     # The RunFooter echo reads these — what *this* pass spent, no re-query needed.
     assert recorder.session_tokens == 0 and recorder.session_usd == 0.0

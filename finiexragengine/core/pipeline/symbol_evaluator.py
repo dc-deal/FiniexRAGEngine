@@ -5,6 +5,7 @@ StageTiming (ISSUE_12) and attaches provenance from the *real* retrieved article
 LLM scores only the mood, never invents sources. ISSUE_7 orchestrates this over all
 symbols into the outcome envelope.
 """
+import logging
 import textwrap
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -27,6 +28,8 @@ from finiexragengine.types.outcome_types import (
 )
 from finiexragengine.types.prompt_metadata import PromptMetadata
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class SymbolEval:
@@ -40,6 +43,8 @@ class SymbolEval:
     # The raw scored JSON exactly as the model returned it (ISSUE_36) — irreconstructable
     # after the call; persisted next to the normalized envelope by the outcome store (ISSUE_8).
     raw_output: Dict[str, Any] = field(default_factory=dict)
+    # The *served* model (response.model, the dated snapshot) — '' when no LLM ran.
+    model_snapshot: str = ''
 
     def total_ms(self) -> float:
         return sum(timing.duration_ms for timing in self.stage_timings)
@@ -62,12 +67,26 @@ class SymbolEvaluator:
         # Every stage is timed (ISSUE_32) — the shared StageTimer collects the records.
         timer = StageTimer()
         articles = timer.time('retrieve', lambda: self._retriever.retrieve(query))
+        # The prompt's front-matter identity travels with the outcome (ISSUE_33) — cached.
+        prompt_metadata = self._prompt_builder.metadata(self._prompt_name, self._prompt_version)
+        # Empty-context shortcut (ISSUE_24): the floor left nothing on-topic, so there is
+        # nothing to evaluate — answer mechanically (contract row, tagged basis='no_data')
+        # instead of paying the LLM to read generic articles. Logged for traceability;
+        # deliberately *not* a RunError — no data is a legitimate outcome, the run stays
+        # 'success'. The envelope proves it anyway: 0 tokens, empty raw output.
+        if not articles:
+            logger.info("[NO_CONTEXT] %s ('%s'): retrieval empty after floor — "
+                        'mechanical HOLD, no LLM call', symbol, query)
+            result = SentimentResult(
+                symbol=symbol, signal='HOLD', sentiment_score=0.0, confidence=0.0,
+                reasoning='No relevant news found', basis='no_data')
+            return SymbolEval(result=result, prompt='', prompt_metadata=prompt_metadata,
+                              usage=LlmUsage(0, 0), articles=[],
+                              stage_timings=timer.timings, raw_output={})
         # The prompt describes the asset in readable terms (the query, e.g. "Bitcoin BTC");
         # the result keys on the raw ticker `symbol` (e.g. "BTCUSD").
         prompt = timer.time('prompt', lambda: self._prompt_builder.build(
             self._prompt_name, self._prompt_version, query, articles))
-        # The prompt's front-matter identity travels with the outcome (ISSUE_33) — cached.
-        prompt_metadata = self._prompt_builder.metadata(self._prompt_name, self._prompt_version)
         completion = timer.time('llm', lambda: self._provider.complete_structured(
             prompt, SentimentLlmOutput.model_json_schema()))
 
@@ -86,7 +105,8 @@ class SymbolEvaluator:
                                 published_at=a.published_at) for a in articles])
         return SymbolEval(result=result, prompt=prompt, prompt_metadata=prompt_metadata,
                           usage=completion.usage, articles=articles,
-                          stage_timings=timer.timings, raw_output=completion.data)
+                          stage_timings=timer.timings, raw_output=completion.data,
+                          model_snapshot=completion.model)
 
 
 def _compact_prompt(prompt: str, cols: int, lines: int) -> str:
@@ -127,7 +147,11 @@ def format_symbol_eval(ev: SymbolEval, pipeline_id: str, usd: Optional[float] = 
         footer.render(),
         '',
     ]
-    if full_prompt:
+    if not ev.prompt:
+        # no_data shortcut (ISSUE_24): no prompt was built, no LLM call was made.
+        lines.append('--- prompt ' + '-' * 53)
+        lines.append('  (no context after floor — LLM call skipped, basis=no_data)')
+    elif full_prompt:
         lines.append('--- prompt sent (full) ' + '-' * 40)
         lines.append(ev.prompt)
     else:

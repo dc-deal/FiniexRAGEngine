@@ -44,10 +44,11 @@ def test_live_structured_sentiment_conforms_and_captures_usage():
                  'BTC held firm while altcoins dropped, a risk-off rotation into bitcoin.'),
     ]
     prompt = PromptBuilder(_PROMPTS).build('sentiment', '1', 'Bitcoin BTC', articles)
-    result = OpenAIProvider(LlmConfig()).complete_structured(
+    result = OpenAIProvider(LlmConfig(), 'gpt-4o-mini').complete_structured(
         prompt, SentimentLlmOutput.model_json_schema())
 
     parsed = SentimentLlmOutput(**result.data)          # conforms to the field schema
     assert parsed.signal in ('BUY', 'SELL', 'HOLD')
     assert -1.0 <= parsed.sentiment_score <= 1.0
     assert result.usage.total_tokens > 0                # usage captured for cost
+    assert result.model.startswith('gpt-4o-mini')       # served snapshot reported
