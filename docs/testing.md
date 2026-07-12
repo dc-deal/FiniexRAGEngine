@@ -40,7 +40,12 @@ never attach one just because `DATABASE_URL`/`OPENAI_API_KEY` are set in the env
 | `test_sentiment_llm_output.py` | strict scored-subset schema (ranges, forbid extras) | — |
 | `test_openai_provider.py` | structured call, error taxonomy mapping, cost capture (mocked) | — |
 | `test_symbol_evaluator.py` | retrieve → prompt → LLM → enrich; provenance, raw-output capture | — |
-| `test_pipeline_runner.py` | envelope invariants, taxonomy, metric capture, prompt fingerprint | — |
+| `test_pipeline_runner.py` | envelope invariants, taxonomy, metric capture, prompt fingerprint, persistence wiring | — |
+| `test_outcome_store.py` | save→get_latest roundtrip, newest-wins, raw-output column, error rows | PostgreSQL |
+| `test_latest_endpoint.py` | `/latest` serves from store (no run), cold miss, broken-store degrade, catch-all persist | — |
+| `test_model_catalog.py` | staged model check (ingest + llm), endpoint split, soft-boot warnings | — |
+| `test_model_governance.py` | pipeline-declared model (required), allowlist gate at assembly | — |
+| `test_provider_factory.py` | `llm.provider` → implementation resolution; unknown name fails | — |
 | `test_cost_recorder.py` | USD derivation, billing rows, latency column, session accumulators | PostgreSQL |
 | `test_cost_report.py` / `test_perf_report.py` | section aggregation + pattern tables; fresh/legacy-DB guards | PostgreSQL |
 | `test_stage_timer.py` / `test_run_footer.py` | shared timing capture + run-metrics footer | — |

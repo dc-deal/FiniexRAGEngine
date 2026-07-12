@@ -100,6 +100,21 @@ class CostRecorder:
         total = prompt_tokens + completion_tokens
         try:
             with self._connect() as conn, conn.cursor() as cur:
+                # Alias-drift guard (#40): compare the served snapshot with the last one
+                # recorded for this model — the alias is kept for convenience, but the
+                # moment the provider retargets it, the signal series shifts and the
+                # operator must know. (Yellow/rich rendering rides #25.)
+                if model_snapshot:
+                    cur.execute(
+                        f'SELECT model_snapshot FROM {self._table} '
+                        'WHERE model = %s AND model_snapshot IS NOT NULL '
+                        'ORDER BY id DESC LIMIT 1', (model,))
+                    last = cur.fetchone()
+                    if last and last[0] != model_snapshot:
+                        logger.warning(
+                            "model alias '%s' was retargeted: now serving '%s' "
+                            "(previously '%s') — the signal series shifts here",
+                            model, model_snapshot, last[0])
                 cur.execute(
                     f'INSERT INTO {self._table} (section, model, prompt_tokens, '
                     'completion_tokens, total_tokens, usd_cost, pipeline_id, duration_ms, '

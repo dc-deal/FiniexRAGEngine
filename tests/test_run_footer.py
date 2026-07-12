@@ -39,3 +39,14 @@ def test_no_usd_means_no_cost_suffix():
 def test_empty_timings_render_placeholder():
     footer = RunFooter(timings=[], tokens_label='0 embedding', usd=0.0, section='ingest_news')
     assert '(no stages ran)' in footer.render()
+
+
+def test_model_line_renders_when_set():
+    # A print that costs tokens names what produced them (alias + served snapshot).
+    footer = RunFooter(timings=[_timing('llm', 100.0)], tokens_label='t', usd=0.1,
+                       section='llm_eval',
+                       model_label='gpt-4o-mini (served gpt-4o-mini-2024-07-18)')
+    text = footer.render()
+    assert 'model       gpt-4o-mini (served gpt-4o-mini-2024-07-18)' in text
+    # And stays absent when not set (ingest passes without an LLM, older callers).
+    assert 'model' not in RunFooter(timings=[], tokens_label='t').render()

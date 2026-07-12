@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from finiexragengine.api.endpoints.health_router import build_health_router
 from finiexragengine.api.endpoints.sentiment_router import build_sentiment_router
 from finiexragengine.configuration.app_config_manager import AppConfigManager
+from finiexragengine.core.llm.model_catalog import verify_configured_models
 from finiexragengine.core.pipeline.pipeline_assembler import PipelineAssembler
 from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
 
@@ -41,10 +42,19 @@ def create_app(attach_runners: Optional[bool] = None) -> FastAPI:
     database_url = os.environ.get('DATABASE_URL')
     if attach_runners is None:
         attach_runners = database_url is not None
+    outcome_store = None
     if attach_runners:
         if not database_url:
             raise RuntimeError('attach_runners=True requires DATABASE_URL')
-        PipelineAssembler(config_manager, database_url).attach_all(registry)
+        assembler = PipelineAssembler(config_manager, database_url)
+        assembler.attach_all(registry)
+        # /latest serves from the same store every runner persists into (ISSUE_8).
+        outcome_store = assembler.get_outcome_store()
+        # Startup model check (ISSUE_40): free provider call, soft by design — a typo'd
+        # or retired model (eval allowlist AND the corpus-binding embedding model) warns
+        # loudly here instead of failing a paid run later; an unreachable provider only
+        # logs (the allowlist stays the hard gate).
+        verify_configured_models(config_manager.get_config())
     else:
         logger.warning('runners not attached — pipelines run in scaffold-mock mode')
 
@@ -53,5 +63,5 @@ def create_app(attach_runners: Optional[bool] = None) -> FastAPI:
         version=config_manager.get_config().version,
     )
     app.include_router(build_health_router(config_manager, registry))
-    app.include_router(build_sentiment_router(registry))
+    app.include_router(build_sentiment_router(registry, outcome_store=outcome_store))
     return app

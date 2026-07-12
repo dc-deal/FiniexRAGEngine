@@ -47,6 +47,7 @@ class OpenAIEmbedder(AbstractEmbedder):
         vectors: List[List[float]] = []
         prompt_tokens = 0
         api_ms = 0.0
+        served_model = ''
         for start in range(0, len(texts), self._MAX_BATCH):
             batch = texts[start:start + self._MAX_BATCH]
             call_start = perf_counter()
@@ -64,6 +65,12 @@ class OpenAIEmbedder(AbstractEmbedder):
             usage = getattr(response, 'usage', None)
             if usage is not None:
                 prompt_tokens += getattr(usage, 'prompt_tokens', 0) or 0
+            # Served model (response.model). Embedding ids carry no alias/snapshot pair —
+            # the id IS the version (vectors across models are incompatible, so OpenAI
+            # ships changes as new ids). Captured anyway: if the id were ever silently
+            # retargeted, the corpus would mix vector spaces — the alias-drift guard in
+            # CostRecorder then fires for ingest rows too (ISSUE_40).
+            served_model = getattr(response, 'model', '') or served_model
             # OpenAI returns L2-normalized (unit-length) vectors, so downstream a
             # dot product already equals cosine similarity and pgvector's <=>
             # distance needs no separate normalization step.
@@ -80,5 +87,6 @@ class OpenAIEmbedder(AbstractEmbedder):
         if self._cost_recorder is not None and prompt_tokens:
             self._cost_recorder.record(self._section, self._config.model,
                                        prompt_tokens, 0, self._pipeline_id,
-                                       duration_ms=api_ms)
+                                       duration_ms=api_ms,
+                                       model_snapshot=served_model or None)
         return vectors

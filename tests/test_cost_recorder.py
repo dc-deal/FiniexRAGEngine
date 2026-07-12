@@ -91,6 +91,23 @@ def test_record_persists_model_snapshot(recorder):
         assert cur.fetchone() == ('gpt-4o-mini', 'gpt-4o-mini-2024-07-18')
 
 
+def test_alias_retarget_warns(recorder, caplog):
+    # The dangerous moment: same alias, different served snapshot -> series shift, warn.
+    recorder.record('llm_eval', 'gpt-4o-mini', 100, model_snapshot='gpt-4o-mini-2024-07-18')
+    with caplog.at_level('WARNING'):
+        recorder.record('llm_eval', 'gpt-4o-mini', 100,
+                        model_snapshot='gpt-4o-mini-2025-03-01')
+    assert any('retargeted' in r.message for r in caplog.records)
+
+
+def test_stable_snapshot_stays_silent(recorder, caplog):
+    recorder.record('llm_eval', 'gpt-4o-mini', 100, model_snapshot='gpt-4o-mini-2024-07-18')
+    with caplog.at_level('WARNING'):
+        recorder.record('llm_eval', 'gpt-4o-mini', 100,
+                        model_snapshot='gpt-4o-mini-2024-07-18')
+    assert not any('retargeted' in r.message for r in caplog.records)
+
+
 def test_session_accumulators_track_this_process(recorder):
     # The RunFooter echo reads these — what *this* pass spent, no re-query needed.
     assert recorder.session_tokens == 0 and recorder.session_usd == 0.0

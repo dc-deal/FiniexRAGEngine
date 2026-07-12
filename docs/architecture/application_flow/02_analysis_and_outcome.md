@@ -4,11 +4,11 @@ Picks up where `01_ingest_and_retrieval.md` leaves off. Retrieval has handed a s
 on-topic `List[Article]` **per symbol**; here that context becomes a typed signal, and the
 per-symbol signals are assembled into the outcome envelope that leaves the engine.
 
-**Status:** Phase C (analysis) is **built** (ISSUE_6), and Phase D's assembly is **built**
-(ISSUE_7 — `PipelineRunner`): `POST /run` executes the real staged flow when a database is wired
-(`create_app` attaches runners; without `DATABASE_URL` the scaffold mock still answers). Persist →
-serve remains ISSUE_8 → ISSUE_9. Built steps name real code; planned steps name the unit they
-will live in.
+**Status:** Phase C (analysis) is **built** (ISSUE_6), Phase D's assembly is **built**
+(ISSUE_7 — `PipelineRunner`), and persist → serve is **built** (ISSUE_8 — `OutcomeStore` +
+`/latest`): `POST /run` executes the real staged flow and persists its envelope; `GET /latest`
+serves the persisted outcome instantly (without `DATABASE_URL` the scaffold mock still answers).
+The collector handshake remains ISSUE_9.
 
 Companion docs: `01_ingest_and_retrieval.md` (the write + read paths) and
 `../prompt_and_llm_stage.md` (the LLM stage in depth).
@@ -83,13 +83,23 @@ Runs once per pipeline pass, over all requested symbols:
    runner falls back to the scaffold mock (bootable without DB, and the free-suite path —
    contract tests never spend budget). The `run` CLI is the console twin of `POST /run`.
 
-3. **Persist — `core/store/…` (`OutcomeStore`) · *planned, ISSUE_8*.**
-   The produced envelope is the **source of truth**: persisted (DB / JSONL) before/independent of any
-   live push, so runs are deterministically replayable with no look-ahead.
+3. **Persist — `core/store/outcome_store.py` (`OutcomeStore`) · built, ISSUE_8 + ISSUE_36.**
+   The pass ends with persistence: the runner saves the produced envelope into a Postgres
+   table alongside pgvector (one JSONB column = the exact served JSON, plus thin
+   `pipeline_id`/`ts`/`status` query columns) — the **source of truth** for replay and for
+   error statistics (aggregated from persisted envelopes' `status`/`errors`, never from
+   logs). The **raw per-symbol LLM output** rides in its own JSONB column on the same row
+   (ISSUE_36, irreconstructable after the call; explicitly non-load-bearing — never bumps
+   `schema_version`): raw output ↔ normalized result ↔ prompt fingerprint = a fully
+   reconstructable run. A store failure never loses the envelope for the caller — the pass
+   degrades (`VECTOR_STORE_ERROR`, `success` → `partial`) and is still served. The API's
+   catch-all error envelope is persisted best-effort too, so even a crashed pass is a row.
 
-4. **Serve — API `/latest` · *planned, ISSUE_8*.**
-   The eval worker writes; consumers read the cached latest envelope over HTTP (`/latest`), and
-   `/run` triggers a pass. The IDE only ever reads the cached eval output.
+4. **Serve — API `/latest` · built, ISSUE_8.**
+   `/latest` reads the newest persisted envelope (one indexed point read — instant, zero
+   spend; ~27ms vs ~6.5s for a fresh pass, surviving restarts); `/run` triggers a fresh pass
+   (which persists itself). Cold miss — nothing persisted yet — runs once, then serves that.
+   The IDE only ever reads the cached eval output.
 
 5. **Collector handshake — JSONL + `collected_msc` · *planned, ISSUE_9*.**
    Downstream archives each envelope as one JSONL line plus a top-level `collected_msc` (int

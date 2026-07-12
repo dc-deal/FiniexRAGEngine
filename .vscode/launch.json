@@ -126,6 +126,18 @@
                 "order": 3
             }
         },
+        {
+            "name": "📊 RAGEngine: Model Check (ingest + llm stage vs available)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/finiexragengine/cli/models_cli.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "04_diagnostics",
+                "order": 4
+            }
+        },
         // ====================================================
         // 🧩 TESTS (free — no API cost)
         // ====================================================

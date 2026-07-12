@@ -122,19 +122,28 @@ def _compact_prompt(prompt: str, cols: int, lines: int) -> str:
 
 
 def format_symbol_eval(ev: SymbolEval, pipeline_id: str, usd: Optional[float] = None, *,
-                       prompt_cols: int = 60, prompt_lines: int = 4,
+                       model: str = '', prompt_cols: int = 60, prompt_lines: int = 4,
                        full_prompt: bool = False) -> str:
     """Render a SymbolEval as the console signal card + a compacted prompt excerpt."""
     r = ev.result
     m = ev.prompt_metadata
     titles = ', '.join(s.title[:34] for s in r.sources[:3])
     reasoning = textwrap.fill(r.reasoning, width=64, subsequent_indent=' ' * 14)
+    # Model line: configured name + how it resolved — '(pinned)' when the config names
+    # the exact snapshot, '(served …)' when an alias was resolved, no_data when no call ran.
+    if model and ev.model_snapshot:
+        resolved = '(pinned)' if ev.model_snapshot == model else f'(served {ev.model_snapshot})'
+        model_label = f'{model} {resolved}'
+    elif model:
+        model_label = f'{model} (not called — no_data)' if not ev.prompt else model
+    else:
+        model_label = ''
     # The shared metrics block (ISSUE_32) — same pattern as the ingest footer.
     footer = RunFooter(
         timings=ev.stage_timings,
         tokens_label=f'prompt {ev.usage.prompt_tokens} · completion {ev.usage.completion_tokens} '
                      f'· total {ev.usage.total_tokens}',
-        usd=usd, section='llm_eval')
+        usd=usd, section='llm_eval', model_label=model_label)
     lines = [
         f"=== Signal: {r.symbol}   (pipeline {pipeline_id} · "
         f"prompt {m.id}@v{m.version} #{m.content_hash}) ===",

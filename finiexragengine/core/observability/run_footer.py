@@ -23,6 +23,7 @@ class RunFooter:
     tokens_label: str                 # e.g. 'prompt 1975 · completion 58 · total 2033' / '8,734 embedding'
     usd: Optional[float] = None       # None -> no cost suffix (nothing was paid)
     section: str = ''                 # billing section the cost was logged under
+    model_label: str = ''             # which model ran, e.g. 'gpt-4o-mini (served gpt-4o-mini-2024-07-18)'
     aggregate: bool = False
     width: int = 64
 
@@ -38,6 +39,10 @@ class RunFooter:
     def render(self) -> str:
         title = '--- run metrics '
         lines = [title + '-' * max(0, self.width - len(title))]
+        # The model always shows where money was spent — a print that costs tokens
+        # names what produced them (configured alias + served snapshot when known).
+        if self.model_label:
+            lines.append(f'  model       {self.model_label}')
         stages = ' · '.join(f'{stage} {ms:.0f}ms' for stage, ms in self._stage_ms())
         if stages:
             total = sum(t.duration_ms for t in self.timings)

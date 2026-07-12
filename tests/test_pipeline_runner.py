@@ -91,9 +91,22 @@ class _FakeRecorder:
         self.session_usd += 0.001
 
 
-def _runner(config, ingestor, evaluator, recorder=None):
+class _FakeStore:
+    """Captures save() calls; optionally fails like an unreachable Postgres."""
+    def __init__(self, exc=None):
+        self.saved = []
+        self._exc = exc
+
+    def save(self, envelope, raw_output=None):
+        if self._exc is not None:
+            raise self._exc
+        self.saved.append((envelope, raw_output))
+
+
+def _runner(config, ingestor, evaluator, recorder=None, store=None):
     return PipelineRunner(config, ingestor, evaluator, _META,
-                          llm_model='gpt-4o-mini', cost_recorder=recorder)
+                          llm_model='gpt-4o-mini', cost_recorder=recorder,
+                          outcome_store=store)
 
 
 def test_clean_pass_assembles_success_envelope():
@@ -170,6 +183,40 @@ def test_cost_usd_is_the_recorders_session_delta():
     envelope = _runner(config, _FakeIngestor(),
                        _SpendingEvaluator({'BTCUSD': _eval('BTCUSD')}), recorder).run()
     assert envelope.metadata.cost_usd == pytest.approx(0.001)   # delta, not the total
+
+
+def test_run_persists_envelope_with_raw_output():
+    # ISSUE_8/36: the pass ends with persistence — envelope + per-symbol raw LLM output.
+    store = _FakeStore()
+    config = _config(['BTCUSD'])
+    envelope = _runner(config, _FakeIngestor(),
+                       _FakeEvaluator({'BTCUSD': _eval('BTCUSD')}), store=store).run()
+    assert len(store.saved) == 1
+    saved_envelope, raw_output = store.saved[0]
+    assert saved_envelope is envelope
+    assert raw_output == {'BTCUSD': {'signal': 'BUY'}}
+    assert envelope.status == 'success'               # persistence leaves a clean pass clean
+
+
+def test_no_data_rows_leave_no_raw_output():
+    # The no_data shortcut made no LLM call — nothing raw to persist (raw stays None).
+    no_data = _eval('LTCUSD')
+    no_data.raw_output = {}
+    store = _FakeStore()
+    _runner(_config(['LTCUSD']), _FakeIngestor(),
+            _FakeEvaluator({'LTCUSD': no_data}), store=store).run()
+    assert store.saved[0][1] is None
+
+
+def test_store_failure_degrades_pass_never_kills_it():
+    # A dead store must not lose the produced envelope: served anyway, marked partial.
+    store = _FakeStore(exc=VectorStoreError('db gone'))
+    config = _config(['BTCUSD'])
+    envelope = _runner(config, _FakeIngestor(),
+                       _FakeEvaluator({'BTCUSD': _eval('BTCUSD')}), store=store).run()
+    assert envelope.status == 'partial'
+    assert envelope.errors[-1].type == 'VECTOR_STORE_ERROR'
+    assert 'not persisted' in envelope.errors[-1].message
 
 
 def test_taxonomy_fallback_is_partial_response():
