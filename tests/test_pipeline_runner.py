@@ -219,6 +219,16 @@ def test_store_failure_degrades_pass_never_kills_it():
     assert 'not persisted' in envelope.errors[-1].message
 
 
+def test_fanned_config_stamps_variant_hints():
+    # ISSUE_42: expansion sets the hints on the config; the runner stamps them into
+    # the envelope. Single-model configs (variant_group None) omit the keys entirely.
+    config = _config(['BTCUSD']).model_copy(
+        update={'pipeline_id': 'p_4o', 'variant_group': 'p', 'variant': '4o'})
+    envelope = _runner(config, _FakeIngestor(),
+                       _FakeEvaluator({'BTCUSD': _eval('BTCUSD')})).run()
+    assert (envelope.metadata.variant_group, envelope.metadata.variant) == ('p', '4o')
+
+
 def test_taxonomy_fallback_is_partial_response():
     class _Odd(Exception):
         pass

@@ -142,6 +142,9 @@ class PipelineRunner:
             cost_usd=(self._cost_recorder.session_usd - usd_before
                       if self._cost_recorder else 0.0),
             per_symbol_tokens=per_symbol_tokens,
+            # Fan-out hints (ISSUE_42): set by registry expansion, absent otherwise.
+            variant_group=self._config.variant_group,
+            variant=self._config.variant,
         )
         envelope = AnalysisEnvelope(
             pipeline_id=self._config.pipeline_id,

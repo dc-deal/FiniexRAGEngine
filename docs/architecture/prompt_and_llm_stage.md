@@ -109,6 +109,44 @@ different scores for the same news. Its declaration is therefore two-level:
   protocol = a new provider class + factory entry; OpenAI-compatible endpoints (vLLM, Ollama,
   fine-tunes) are **not** one — they ride the existing class via `base_url` / the model string.
 
+## Multi-model variant fan-out (ISSUE_42)
+
+One constellation can evaluate through **several models in parallel** — double-tracking for
+model comparison and for feeding multiple consumers. The `llm` block takes a `models` list
+instead of `model` (exactly one form; the single form stays the default):
+
+```json
+"llm": {
+    "models": [
+        { "name": "gpt-4o-mini", "sub_pipeline_id": "mini",        "default": true },
+        { "name": "gpt-4o",      "sub_pipeline_id": "4o_enhanced" }
+    ]
+}
+```
+
+- **Registry-level expansion, format A** (confirmed with the Testing IDE): the registry fans
+  the constellation into one *logical pipeline per variant* — the `default` variant keeps the
+  bare `pipeline_id` (archived series continue seamlessly), the others get
+  `<pipeline_id>_<sub_pipeline_id>` (charset `[a-z0-9_]`, collision-guarded at load).
+- **A variant stream is an ordinary `pipeline_id`.** Downstream needs zero fan-out awareness:
+  the assembler builds each stream like any pipeline (allowlist gate per variant model), the
+  CLIs/API address streams by id (`--pipeline crypto_sentiment_4o_enhanced`, launch entry
+  "Evaluate Symbol @ variant"), cost/perf rows and the outcome store split per stream, and
+  the model check lists every variant model with its stream under 'used by' — all for free.
+- **Grouping hints in the envelope** (`metadata.variant_group` / `variant`, additive): every
+  variant of a fanned constellation carries both — `variant_group` equals the default
+  stream's id ("derivative of *that* series"), so `pipeline_id == variant_group` ⇔ the
+  default variant. Single-model pipelines **omit the keys entirely** (absent = the pre-fan
+  JSON, no `schema_version` bump). Consumers group fan streams by these instead of parsing ids.
+- **The comparison is anchored:** identical prompt fingerprint (ISSUE_33) + shared corpus and
+  retrieval, different model — any score difference is attributable to the model
+  (`sub_pipeline_id` deliberately decouples the stream name from the model behind it, which
+  can be swapped/pinned per ISSUE_40 without renaming the series).
+- **Costs:** N× the LLM calls (the intended spend), 1× corpus — the ingest pass is idempotent,
+  so the non-default streams re-run it for cents (fully single-run once the ingest worker
+  ISSUE_10 lands). Running a stream = one `run` call per stream id; the eval worker will
+  iterate all logical pipelines.
+
 ## Errors & cost
 
 Failures map to the taxonomy: timeout → `LLMTimeoutError` (LLM_TIMEOUT), backend error →

@@ -75,6 +75,26 @@
                 "order": 3
             }
         },
+        {
+            // Variant fan-out (ISSUE_42): a variant stream is an ordinary pipeline_id —
+            // this entry just composes it (<pipeline>_<variant>) from two prompts.
+            "name": "💸 RAGEngine: Evaluate Symbol @ variant (paid)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/finiexragengine/cli/eval_cli.py",
+            "args": [
+                "--pipeline",
+                "${input:pipeline}_${input:variant}",
+                "--symbol",
+                "${input:symbol}"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "03_paid_gate",
+                "order": 4
+            }
+        },
         // ====================================================
         // 📊 DIAGNOSTICS (read-only DB reports — free on cached query vectors)
         // ====================================================
@@ -189,6 +209,12 @@
             "type": "promptString",
             "description": "Symbol to evaluate (e.g. BTCUSD)",
             "default": "BTCUSD"
+        },
+        {
+            "id": "variant",
+            "type": "promptString",
+            "description": "Variant sub_pipeline_id — stream = <pipeline>_<variant> (ISSUE_42)",
+            "default": "4o_enhanced"
         }
     ]
 }

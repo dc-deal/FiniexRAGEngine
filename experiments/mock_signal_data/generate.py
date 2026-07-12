@@ -79,6 +79,7 @@ class _Variant:
     sub_id: str            # '' in single-stream mode (no hints emitted)
     model: str
     stream_id: str         # bare pipeline_id for the default, else pipeline_id_sub_id
+    group: str             # variant_group hint (= the constellation id); '' single-stream
     bias: float            # fixed reading offset — one model leans a touch more bullish
     rng: random.Random     # per-variant noise: scores, confidence, latency, tokens
     error_cycles: Set[int]  # LLM timeouts are model-side → per-variant cycles
@@ -242,6 +243,9 @@ def _render_variant(variant: _Variant, facts: dict, symbols, collected_at, force
         prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
         cost_usd=round((prompt_tokens * price_in + completion_tokens * price_out) / 1e6, 6),
         per_symbol_tokens=per_symbol_tokens,
+        # Grouping hints (ISSUE_42) — real RunMetadata fields since the fan-out landed;
+        # the model omits the keys entirely when unset (single-stream mode).
+        variant_group=variant.group or None, variant=variant.sub_id or None,
     )
     return _make_envelope(variant.stream_id, 'partial' if facts['partial'] else 'success',
                           analysis_at, results, metadata, errors)
@@ -306,6 +310,7 @@ def main() -> None:
             sub_id=sub_id,
             model=model,
             stream_id=pipeline_id if idx == 0 else f'{pipeline_id}_{sub_id}',
+            group=pipeline_id if multi else '',
             bias=0.0 if idx == 0 else vrng.uniform(-0.06, 0.06),
             rng=vrng,
             # The deterministic timeout cycle is offset per stream — per-variant gaps are
@@ -336,12 +341,6 @@ def main() -> None:
             envelope = _render_variant(variant, facts, symbols, collected_at, force_error)
             line = {'collected_msc': int(collected_at.timestamp() * 1000),
                     **json.loads(envelope.model_dump_json())}
-            if multi:
-                # Grouping hints (ISSUE_42, additive): land in RunMetadata when the
-                # fan-out ships; the mock previews them for the IDE's format validation.
-                # variant_group == the default stream's pipeline_id, on every variant.
-                line['metadata']['variant_group'] = pipeline_id
-                line['metadata']['variant'] = variant.sub_id
             handles[variant.stream_id].write(json.dumps(line) + '\n')
     for handle in handles.values():
         handle.close()
