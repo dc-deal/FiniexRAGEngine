@@ -93,6 +93,16 @@ different scores for the same news. Its declaration is therefore two-level:
   `metadata.model_snapshot` — a silent snapshot switch becomes visible in the series, exactly
   like a `prompt_hash` change (the model-side half of reproducibility, ISSUE_33). Pricing keys
   on the configured alias; the snapshot is the trace.
+- **Availability is checked, staged like the run.** `core/llm/model_catalog.py` verifies the
+  configured ids against the provider's live list (`models.list`, free) in two sections:
+  **ingest** — the embedding model, which is corpus-binding (#16): if it vanishes, ingest *and*
+  query embedding fail with no substitute short of re-embedding the corpus — and **llm stage** —
+  every `allowed_models` entry. Runs **softly at server boot** (warn, never block; the allowlist
+  stays the hard gate) and manually via `models_cli`. With a custom `llm.base_url` the eval
+  models are checked against that endpoint while the embedding model stays checked against the
+  OpenAI default. The embed call also captures the served model (`response.model`) into
+  `cost_log.model_snapshot` — embedding ids carry no alias/snapshot pair (the id *is* the
+  version), but if one were ever retargeted the alias-drift warning would fire for ingest too.
 - **The provider is a seam.** The eval flow depends only on `AbstractLLMProvider`;
   `llm.provider` names the implementation, resolved by `core/llm/provider_factory.py` (the
   `source_factory` mirror — an unknown name fails at assembly). A genuinely different API

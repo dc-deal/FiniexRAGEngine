@@ -22,6 +22,7 @@ class _Response:
     def __init__(self, data, usage):
         self.data = data
         self.usage = usage
+        self.model = 'text-embedding-3-small'   # the served model echo (ISSUE_40)
 
 
 class _Embeddings:
@@ -40,9 +41,9 @@ class _RecRecorder:
         self.calls = []
 
     def record(self, section, model, prompt_tokens, completion_tokens=0, pipeline_id=None,
-               duration_ms=None):
+               duration_ms=None, model_snapshot=None):
         self.calls.append((section, model, prompt_tokens, completion_tokens, pipeline_id,
-                           duration_ms))
+                           duration_ms, model_snapshot))
         return 0.0
 
 
@@ -53,10 +54,12 @@ def test_embed_records_usage_when_recorder_set():
     vectors = embedder.embed(['a', 'bb'])
     assert len(vectors) == 2
     assert len(recorder.calls) == 1
-    section, model, prompt_tokens, completion_tokens, pipeline_id, duration_ms = recorder.calls[0]
+    (section, model, prompt_tokens, completion_tokens, pipeline_id,
+     duration_ms, model_snapshot) = recorder.calls[0]
     assert (section, model, prompt_tokens, completion_tokens, pipeline_id) == (
         'ingest_news', 'text-embedding-3-small', 14, 0, 'p')   # 7*2
     assert duration_ms is not None and duration_ms >= 0.0       # latency sample (ISSUE_32)
+    assert model_snapshot == 'text-embedding-3-small'           # served echo → drift guard (ISSUE_40)
 
 
 def test_embed_without_recorder_is_silent():
