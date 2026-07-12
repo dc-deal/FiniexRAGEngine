@@ -4,8 +4,9 @@
 
 **A configurable RAG engine that turns unstructured sources into typed trading signals.**
 
-> **Status:** Alpha · `v0.2.0-alpha` · Phase 1 vertical slice — retrieval, analysis & orchestration
-> done: `POST /run` serves real signals end-to-end. Outcome persistence (`/latest` cache) next
+> **Status:** Alpha · `v0.2.0-alpha` · Phase 1 vertical slice — retrieval, analysis, orchestration
+> & persistence done: `POST /run` serves real signals end-to-end, `GET /latest` serves the
+> persisted outcome instantly
 
 FiniexRAGEngine fetches unstructured external content (news feeds, blogs, and later
 event/socket streams), retrieves the relevant subset via a vector store, and asks a large
@@ -143,7 +144,9 @@ In active development. Implemented and tested today:
   filter at retrieval).
 - **OpenAI embeddings** (`text-embedding-3-small`, app-wide, 1536 dims).
 - **Retrieval stage**: two-tier top-k with recency window, symbol-aware query expansion,
-  and semantic dedup before the token cap.
+  semantic dedup before the token cap, and a min-similarity floor — a symbol with only
+  off-topic coverage degrades to a clean, zero-cost `no_data` HOLD instead of a signal
+  hallucinated from generic news (#24).
 - **LLM analysis stage**: versioned prompt templates + structured OpenAI output — typed,
   validated per-symbol sentiment (#6), with prompt **metadata + content-hash fingerprint**
   recorded in every envelope (#33).
@@ -158,9 +161,14 @@ In active development. Implemented and tested today:
   and per envelope — a silent alias retarget is detected and warned, so signal series stay
   attributable to the exact model (and prompt) that produced them (#40, #33).
 
-Next up: **retrieval min-similarity floor (#24)** — off-topic context becomes a clean, free
-HOLD — then the **outcome store + `/latest` cache (#8)**. See the full
-**[Vision & Roadmap](https://github.com/dc-deal/FiniexRAGEngine/issues/1)** (issue #1).
+- **Outcome store & cached serving**: every produced envelope is persisted (Postgres — the
+  source of truth for replay and error statistics) with the **raw LLM output** stored next to
+  it, so a run is fully reconstructable: raw output ↔ normalized result ↔ prompt fingerprint
+  (#8, #36). `GET /latest` is an indexed read — instant, zero spend.
+
+Next up: **multi-model variant fan-out (#42)** — double-tracking one constellation through
+several eval models as separate signal streams — then the **collector handshake (#9)**. See the
+full **[Vision & Roadmap](https://github.com/dc-deal/FiniexRAGEngine/issues/1)** (issue #1).
 
 ---
 

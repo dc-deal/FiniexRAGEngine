@@ -76,7 +76,7 @@ class PipelineRunner:
 
     def __init__(self, config: PipelineConfig, ingestor: Ingestor,
                  evaluator: SymbolEvaluator, prompt_metadata: PromptMetadata,
-                 llm_model: str, cost_recorder=None) -> None:
+                 llm_model: str, cost_recorder=None, outcome_store=None) -> None:
         self._config = config
         self._ingestor = ingestor
         self._evaluator = evaluator
@@ -87,6 +87,9 @@ class PipelineRunner:
         # Optional: the run's own USD is read as a session delta off the shared recorder
         # (single pass at a time), covering embeddings *and* LLM in one number.
         self._cost_recorder = cost_recorder
+        # Optional (ISSUE_8): every produced envelope is persisted before it is served —
+        # the store is the source of truth; /latest reads it instead of re-running.
+        self._outcome_store = outcome_store
 
     def run(self) -> AnalysisEnvelope:
         run_start = perf_counter()
@@ -140,7 +143,7 @@ class PipelineRunner:
                       if self._cost_recorder else 0.0),
             per_symbol_tokens=per_symbol_tokens,
         )
-        return AnalysisEnvelope(
+        envelope = AnalysisEnvelope(
             pipeline_id=self._config.pipeline_id,
             outcome_type=self._config.outcome_type,
             prompt_version=self._prompt_metadata.version,
@@ -152,6 +155,27 @@ class PipelineRunner:
             metadata=metadata,
             errors=errors,
         )
+        self._persist(envelope, evals)
+        return envelope
+
+    def _persist(self, envelope: AnalysisEnvelope, evals: List[SymbolEval]) -> None:
+        """Persist the envelope + per-symbol raw LLM output (ISSUE_8/36) — never fatal.
+
+        The raw scored JSON is irreconstructable after the call, so it is stored next to
+        the normalized envelope (same row). A store failure must not lose the produced
+        envelope for the caller: it degrades the pass (VECTOR_STORE_ERROR, success ->
+        partial) and is logged — the envelope is still served.
+        """
+        if self._outcome_store is None:
+            return
+        raw_output = {ev.result.symbol: ev.raw_output for ev in evals if ev.raw_output}
+        try:
+            self._outcome_store.save(envelope, raw_output or None)
+        except FiniexRagError as exc:
+            envelope.errors.append(self._error('VECTOR_STORE_ERROR',
+                                               f'outcome not persisted: {exc}'))
+            if envelope.status == 'success':
+                envelope.status = 'partial'
 
     def _derive_status(self, errors: List[RunError],
                        evals: List[SymbolEval]) -> str:

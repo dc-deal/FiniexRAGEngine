@@ -14,6 +14,7 @@ from finiexragengine.core.rag.pgvector_store import PgVectorStore
 from finiexragengine.core.rag.query_vector_cache import QueryVectorCache
 from finiexragengine.core.rag.retriever import Retriever
 from finiexragengine.core.sources.source_factory import build_source
+from finiexragengine.core.store.outcome_store import OutcomeStore
 from finiexragengine.exceptions.ragengine_errors import ConfigurationError
 from finiexragengine.types.config_types.pipeline_config_types import PipelineConfig
 
@@ -38,9 +39,15 @@ class PipelineAssembler:
         self._cfg = app.get_config()
         self._database_url = database_url
         self._recorder = CostRecorder(database_url, self._cfg.pricing)
+        # One store for all pipelines (ISSUE_8): every runner persists into it, the
+        # API's /latest reads from it — the shared source of truth, like the recorder.
+        self._outcome_store = OutcomeStore(database_url)
 
     def get_cost_recorder(self) -> CostRecorder:
         return self._recorder
+
+    def get_outcome_store(self) -> OutcomeStore:
+        return self._outcome_store
 
     def resolve_model(self, config: PipelineConfig) -> str:
         """The pipeline's declared eval model, validated against the governance allowlist.
@@ -100,7 +107,8 @@ class PipelineAssembler:
         prompt_builder = PromptBuilder(self._app.get_prompts_dir())
         prompt_metadata = prompt_builder.metadata(config.prompt.name, config.prompt.version)
         return PipelineRunner(config, ingestor, evaluator, prompt_metadata,
-                              llm_model=config.llm.model, cost_recorder=self._recorder)
+                              llm_model=config.llm.model, cost_recorder=self._recorder,
+                              outcome_store=self._outcome_store)
 
     def attach_all(self, registry: PipelineRegistry) -> None:
         """Give every registered pipeline its real runner (replaces the scaffold mock)."""
