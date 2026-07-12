@@ -3,9 +3,10 @@
 One file in configs/pipelines/ maps to one PipelineConfig: inputs (sources),
 scope (market + symbols), retrieval params, trigger, and the breaking-news gate.
 """
+import re
 from typing import Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class SourceConfig(BaseModel):
@@ -15,16 +16,54 @@ class SourceConfig(BaseModel):
     weight: float = 1.0          # source trust / weight (ISSUE_5)
 
 
+class LlmVariant(BaseModel):
+    """One model variant of a fanned constellation (ISSUE_42).
+
+    `sub_pipeline_id` names the *stream*, decoupled from the model behind it: the model
+    can be swapped or pinned (alias → dated snapshot, ISSUE_40) without renaming the
+    series. Charset `[a-z0-9_]` keeps derived stream ids path/collector-safe.
+    """
+    name: str                    # the model id — allowlist-gated at assembly (ISSUE_40)
+    sub_pipeline_id: str
+    default: bool = False        # exactly one variant keeps the bare pipeline_id
+
+
 class PipelineLlmConfig(BaseModel):
-    """The pipeline's evaluation model — REQUIRED, never inherited from a global default.
+    """The pipeline's evaluation model(s) — REQUIRED, never inherited from a global default.
 
     The model is series-defining, exactly like the prompt (ISSUE_33): a different model
-    yields different scores for the same news. Requiring it here keeps the choice
-    deliberate and per-flow — a global config edit can never silently retarget every
-    pipeline's series. Must be inside `app_config.llm.allowed_models` (checked at
+    yields different scores for the same news. Requiring the declaration here keeps the
+    choice deliberate and per-flow — a global config edit can never silently retarget
+    every pipeline's series. Exactly one form:
+
+    - `model` — the single-model constellation (one stream, today's default), or
+    - `models` — the variant fan-out (ISSUE_42): the registry expands the constellation
+      into one logical pipeline per variant; the `default` variant keeps the bare
+      `pipeline_id`, the others get `<pipeline_id>_<sub_pipeline_id>`.
+
+    Every named model must be inside `app_config.llm.allowed_models` (checked at
     assembly). Accepts fine-tune ids (`ft:...`) once they are allowlisted.
     """
-    model: str
+    model: Optional[str] = None
+    models: Optional[List[LlmVariant]] = None
+
+    @model_validator(mode='after')
+    def _exactly_one_form(self) -> 'PipelineLlmConfig':
+        if (self.model is None) == (self.models is None):
+            raise ValueError("declare exactly one of llm.model (single) or "
+                             'llm.models (variant fan-out, ISSUE_42)')
+        if self.models is not None:
+            if sum(1 for variant in self.models if variant.default) != 1:
+                raise ValueError('llm.models needs exactly one variant with default: true '
+                                 '(it keeps the bare pipeline_id)')
+            sub_ids = [variant.sub_pipeline_id for variant in self.models]
+            if len(set(sub_ids)) != len(sub_ids):
+                raise ValueError(f'llm.models sub_pipeline_ids must be unique: {sub_ids}')
+            for sub_id in sub_ids:
+                if not re.fullmatch(r'[a-z0-9_]+', sub_id):
+                    raise ValueError(f"sub_pipeline_id '{sub_id}' must match [a-z0-9_]+ "
+                                     '(stream ids stay path/collector-safe)')
+        return self
 
 
 class PromptRef(BaseModel):
@@ -79,3 +118,8 @@ class PipelineConfig(BaseModel):
     sources: List[SourceConfig]
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
     breaking: BreakingConfig = Field(default_factory=BreakingConfig)
+    # Variant provenance (ISSUE_42) — set ONLY by the registry's fan-out expansion,
+    # never in a constellation file: which constellation this stream derives from
+    # (`variant_group` = the default stream's id) and which variant it is.
+    variant_group: Optional[str] = None
+    variant: Optional[str] = None

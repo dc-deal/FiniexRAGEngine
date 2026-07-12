@@ -27,7 +27,10 @@
         "version": "2"
     },
     "llm": {
-        "model": "gpt-4o-mini"
+        "models": [
+            { "name": "gpt-4o-mini", "sub_pipeline_id": "mini", "default": true },
+            { "name": "gpt-4o", "sub_pipeline_id": "4o_enhanced" }
+        ]
     },
     "trigger": {
         "type": "interval",

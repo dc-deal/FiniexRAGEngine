@@ -4,9 +4,9 @@ These are Pydantic models because they are serialized identically to every
 surface: the collector's JSONL archive, the live worker, and the HTTP API.
 """
 from datetime import datetime
-from typing import Dict, Generic, List, Literal, TypeVar
+from typing import Dict, Generic, List, Literal, Optional, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_serializer
 
 
 class ArticleRef(BaseModel):
@@ -92,6 +92,23 @@ class RunMetadata(BaseModel):
     completion_tokens: int = 0
     cost_usd: float = 0.0
     per_symbol_tokens: Dict[str, int] = Field(default_factory=dict)
+    # Variant grouping hints (ISSUE_42, additive — confirmed with the Testing IDE):
+    # present only on streams of a fanned constellation. `variant_group` = the default
+    # stream's pipeline_id ("this series derives from that one"); `variant` = this
+    # stream's sub id. `pipeline_id == variant_group` ⇔ the default variant. A consumer
+    # groups fan streams by these instead of parsing stream ids.
+    variant_group: Optional[str] = None
+    variant: Optional[str] = None
+
+    @model_serializer(mode='wrap')
+    def _omit_absent_hints(self, handler):
+        # Single-model pipelines omit the hint keys entirely (absent = today's JSON,
+        # no schema bump) instead of serializing nulls.
+        data = handler(self)
+        for key in ('variant_group', 'variant'):
+            if data.get(key) is None:
+                data.pop(key, None)
+        return data
 
 
 T = TypeVar('T')
