@@ -17,6 +17,11 @@ from finiexragengine.types.config_types.pipeline_config_types import (
 
 logger = logging.getLogger(__name__)
 
+# Lists whose items a user override merges *by id* (patch one item, keep the rest) rather than
+# replacing wholesale — so an override can flip a single variant's `enabled` (or a source's
+# weight) without restating the whole array. Plain lists (symbols, keywords) still replace.
+_OVERRIDE_LIST_KEYS = {'models': 'sub_pipeline_id', 'sources': 'source_id'}
+
 
 def expand_variants(config: PipelineConfig) -> List[PipelineConfig]:
     """Fan one constellation into its logical pipelines (ISSUE_42) — format A.
@@ -32,6 +37,8 @@ def expand_variants(config: PipelineConfig) -> List[PipelineConfig]:
         return [config]
     expanded = []
     for variant in config.llm.models:
+        if not variant.enabled:
+            continue                     # defined but toggled off — no stream, no cost
         stream_id = (config.pipeline_id if variant.default
                      else f'{config.pipeline_id}_{variant.sub_pipeline_id}')
         # Each logical pipeline is a plain single-model config downstream — assembler,
@@ -101,7 +108,7 @@ class PipelineRegistry:
         if not override_path.exists():
             return data
         override = json.loads(override_path.read_text(encoding='utf-8'))
-        merged = deep_merge(data, override)
+        merged = deep_merge(data, override, _OVERRIDE_LIST_KEYS)
         # Guard the llm XOR: if the override picks a form (model vs models), drop the base's
         # *other* form so switching forms via override can't produce an invalid "both present".
         override_llm = override.get('llm', {})

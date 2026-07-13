@@ -31,11 +31,13 @@
             {
                 "name": "gpt-4o-mini",
                 "sub_pipeline_id": "mini",
-                "default": true
+                "default": true,
+                "enabled": true
             },
             {
                 "name": "gpt-4o",
-                "sub_pipeline_id": "4o_enhanced"
+                "sub_pipeline_id": "4o_enhanced",
+                "enabled": true
             }
         ]
     },

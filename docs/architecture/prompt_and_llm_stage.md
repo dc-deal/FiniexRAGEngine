@@ -149,6 +149,14 @@ instead of `model` (exactly one form; the single form stays the default):
   so the non-default streams re-run it for cents (fully single-run once the ingest worker
   ISSUE_10 lands). Running a stream = one `run` call per stream id; the eval worker will
   iterate all logical pipelines.
+- **Toggle a variant with `enabled`:** each variant carries `enabled` (default `true`); an
+  `enabled: false` variant stays *defined* but is skipped at expansion — no stream, no cost —
+  so you toggle the expensive `4o` double-track instead of deleting it (the default variant
+  can't be disabled; it owns the bare id). It is togglable **per gitignored override without
+  restating the array**: pipeline overrides merge the `models` list **by `sub_pipeline_id`**
+  (`sources` merge by `source_id`), so a one-line override
+  `"llm": { "models": [ { "sub_pipeline_id": "4o_enhanced", "enabled": false } ] }` flips just
+  that flag and inherits the rest — see `configs/pipelines/` + `user_configs/pipelines/`.
 
 ## Errors & cost
 

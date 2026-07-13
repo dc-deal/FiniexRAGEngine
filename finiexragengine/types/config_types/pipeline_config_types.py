@@ -19,6 +19,7 @@ class LlmVariant(BaseModel):
     name: str                    # the model id — allowlist-gated at assembly (ISSUE_40)
     sub_pipeline_id: str
     default: bool = False        # exactly one variant keeps the bare pipeline_id
+    enabled: bool = True         # a disabled variant stays defined but is not expanded/run
 
 
 class PipelineLlmConfig(BaseModel):
@@ -49,6 +50,11 @@ class PipelineLlmConfig(BaseModel):
             if sum(1 for variant in self.models if variant.default) != 1:
                 raise ValueError('llm.models needs exactly one variant with default: true '
                                  '(it keeps the bare pipeline_id)')
+            # A disabled variant is skipped at expansion (kept defined, not run) — but the
+            # default owns the bare pipeline_id, so disabling it would leave no default stream.
+            if not next(variant for variant in self.models if variant.default).enabled:
+                raise ValueError('the default variant cannot be disabled (enabled: false) — it '
+                                 'keeps the bare pipeline_id; disable a non-default variant instead')
             sub_ids = [variant.sub_pipeline_id for variant in self.models]
             if len(set(sub_ids)) != len(sub_ids):
                 raise ValueError(f'llm.models sub_pipeline_ids must be unique: {sub_ids}')
