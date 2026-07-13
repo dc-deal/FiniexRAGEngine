@@ -27,7 +27,7 @@ never attach one just because `DATABASE_URL`/`OPENAI_API_KEY` are set in the env
 | File | Covers | Needs |
 |---|---|---|
 | `test_api_health.py` | API contract: health, pipeline listing, run envelope (mock mode) | — |
-| `test_rss_source.py` | RSS → Article mapping, idempotent ids | — |
+| `test_rss_source.py` | RSS → Article mapping, idempotent ids, conditional GET (304), poll floor | — |
 | `test_openai_embedder.py` | batching, order preservation, dimension guard (mocked client) | — |
 | `test_pgvector_store.py` | idempotent upsert, recency/similarity query, importance filter | PostgreSQL |
 | `test_retriever.py` | two-tier policy, top_k cap, near-dup collapse, tie-breaks (mocked) | — |
@@ -45,6 +45,10 @@ never attach one just because `DATABASE_URL`/`OPENAI_API_KEY` are set in the env
 | `test_corpus_guard.py` | corpus stamped with embedding model; mismatch refuses to boot | PostgreSQL |
 | `test_source_set_registry.py` | source-set loading, duplicate ids, unknown reference, tracked configs | — |
 | `test_workers.py` | interval-trigger loop, pass resilience, supervisor build (fan variants) | — |
+| `test_breaking_detector.py` | cluster-tier boundaries + keyword fast-path (word-boundary), all LLM-free | — |
+| `test_breaking_bus.py` | per-pipeline `min_importance` wake filter, re-arm, cross-set isolation | — |
+| `test_event_trigger.py` | eval clock: immediate + interval + breaking wake before interval, clean stop | — |
+| `test_breaking_report.py` | reaction math (engine vs end-to-end), episode grouping, funnel render | — |
 | `test_latest_endpoint.py` | `/latest` serves from store (no run), cold miss, broken-store degrade, catch-all persist | — |
 | `test_model_catalog.py` | staged model check (ingest + llm), endpoint split, soft-boot warnings | — |
 | `test_model_governance.py` | pipeline-declared model (required), allowlist gate at assembly | — |

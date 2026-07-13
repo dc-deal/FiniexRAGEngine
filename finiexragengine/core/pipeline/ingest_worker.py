@@ -3,6 +3,7 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 from time import perf_counter
+from typing import Callable, Optional
 
 from finiexragengine.core.pipeline.ingestor import Ingestor
 from finiexragengine.core.triggers.abstract_trigger import AbstractTrigger
@@ -23,7 +24,8 @@ class IngestWorker:
 
     def __init__(self, source_set: SourceSetConfig, ingestor: Ingestor,
                  trigger: AbstractTrigger, pass_lock: asyncio.Lock,
-                 cost_recorder=None) -> None:
+                 cost_recorder=None,
+                 on_candidates: Optional[Callable[[int], None]] = None) -> None:
         self._ingestor = ingestor
         self._trigger = trigger
         # One lock across ALL workers: passes are seconds on minute cadences, so
@@ -31,6 +33,9 @@ class IngestWorker:
         # attribution (runner envelopes, pass logs) race-free.
         self._pass_lock = pass_lock
         self._cost_recorder = cost_recorder
+        # Optional (ISSUE_11): called with the highest importance tier flagged this pass, to
+        # nudge the eval workers on this set out-of-band (the breaking bus). None = no wake.
+        self._on_candidates = on_candidates
         self._state = WorkerState(name=f'ingest:{source_set.source_set_id}',
                                   kind='ingest',
                                   interval_seconds=source_set.trigger.interval_seconds)
@@ -64,12 +69,26 @@ class IngestWorker:
                 self._state.last_detail = (f'fetched {result.fetched} · '
                                            f'embedded {result.embedded} · '
                                            f'stored {result.stored}')
-                # Spend is never silent (CLAUDE.md): every paid pass logs its own cost.
-                logger.info('[%s] %s · $%.6f · %.0fms', self._state.name,
-                            self._state.last_detail, usd,
-                            (perf_counter() - started) * 1000.0)
+                # Surface breaking candidates in the pass line when any were flagged (ISSUE_11).
+                if result.candidates:
+                    self._state.last_detail += f' · flagged {result.candidates} breaking'
+                # A quiet pass (nothing new, nothing flagged, $0 — the common case once the
+                # corpus is warm and conditional GET is 304ing) logs at DEBUG so an overnight
+                # run's log stays readable; a pass that stored, flagged or spent logs at INFO —
+                # so spend is still never silent (a paid pass always has stored > 0). The eval
+                # workers' INFO passes remain the regular liveness heartbeat either way.
+                eventful = result.stored or result.candidates or usd or result.failed_sources
+                logger.log(logging.INFO if eventful else logging.DEBUG,
+                           '[%s] %s · $%.6f · %.0fms', self._state.name,
+                           self._state.last_detail, usd,
+                           (perf_counter() - started) * 1000.0)
                 for source_id, message in result.failed_sources.items():
                     logger.warning('[%s] source %s failed: %s', self._state.name,
                                    source_id, message)
+                # Nudge the eval workers on this set out-of-band (ISSUE_11) — in the event
+                # loop thread, after the sync pass returned. A missed nudge is harmless: the
+                # candidate is already persisted, the eval worker still catches it next interval.
+                if self._on_candidates is not None and result.max_tier > 0:
+                    self._on_candidates(result.max_tier)
             self._state.runs += 1
             self._state.last_duration_ms = (perf_counter() - started) * 1000.0

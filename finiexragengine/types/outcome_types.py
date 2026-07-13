@@ -15,6 +15,11 @@ class ArticleRef(BaseModel):
     url: str
     title: str
     published_at: datetime
+    # When the engine fetched this source (ISSUE_11 reaction time: engine-reaction =
+    # envelope timestamp − earliest source fetched_at). Additive with a default so
+    # pre-ISSUE_11 archived envelopes stay parseable; always set on new envelopes. The
+    # detection timestamp (flagged_at) is joined from the corpus by article_id at report time.
+    fetched_at: Optional[datetime] = None
 
 
 class StageTiming(BaseModel):

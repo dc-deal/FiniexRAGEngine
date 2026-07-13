@@ -175,10 +175,15 @@ In active development. Implemented and tested today:
   stream (fan-out variants included). Opt-in via `--workers`; every pass logs its own spend,
   worker states surface in `/health`. The corpus is **stamped with its embedding model** in the
   database and refuses to boot on a mismatch (#16) — mixed vector spaces are impossible.
+- **Breaking detection (#11)**: the flash-crash path. **Near-continuous ingest** (conditional GET,
+  so fast polling stays cheap + polite) feeds an **LLM-free** cluster-burst + keyword detector that
+  flags candidates on the corpus; a flagged candidate **wakes the eval worker out-of-band** (jumps
+  the interval) at each pipeline's own sensitivity, the LLM **confirms** (`urgency ≥ threshold`),
+  and a **reaction-time report** (engine vs end-to-end, from the store) shows the flagged→confirmed
+  funnel. The live SSE push wire is the next slice (Stage C, IDE-accepted, paired with #9).
 
-Next up: **breaking detection (#11)** — cheap burst heuristics in the ingest worker,
-priority eval, confirmed push — and the **collector handshake (#9)**. See the full
-**[Vision & Roadmap](https://github.com/dc-deal/FiniexRAGEngine/issues/1)** (issue #1).
+Next up: the **collector handshake (#9)** + the live **SSE breaking push** (#11 Stage C). See the
+full **[Vision & Roadmap](https://github.com/dc-deal/FiniexRAGEngine/issues/1)** (issue #1).
 
 ---
 

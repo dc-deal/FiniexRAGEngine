@@ -202,3 +202,30 @@ def test_supervisor_refuses_unknown_trigger_type():
     with pytest.raises(ConfigurationError, match='event'):
         WorkerSupervisor._interval_trigger(
             TriggerConfig(type='event'), 'pipeline p')
+
+
+def test_breaking_confirmation_log_reports_reaction_time():
+    # ISSUE_11: a confirmed breaking is logged inline with its reaction time, from the envelope.
+    from datetime import timedelta
+
+    from finiexragengine.core.pipeline.eval_worker import _breaking_confirmations
+    from finiexragengine.types.outcome_types import ArticleRef, SentimentResult
+
+    t3 = datetime(2026, 7, 13, 14, 0, 54, tzinfo=timezone.utc)
+    envelope = SentimentEnvelope(
+        pipeline_id='crypto_sentiment', outcome_type='sentiment_fear_greed', prompt_version='2',
+        timestamp=t3, status='success', metadata=RunMetadata(model='gpt-4o-mini'),
+        result=[
+            SentimentResult(
+                symbol='BTCUSD', signal='SELL', sentiment_score=-0.5, confidence=0.8,
+                reasoning='hack', urgency=0.92, is_breaking=True,
+                sources=[ArticleRef(article_id='a', url='u', title='t',
+                                    published_at=t3 - timedelta(seconds=49),
+                                    fetched_at=t3 - timedelta(seconds=42))]),
+            SentimentResult(symbol='ETHUSD', signal='HOLD', sentiment_score=0.0, confidence=0.5,
+                            reasoning='calm', urgency=0.1, is_breaking=False),
+        ])
+    lines = _breaking_confirmations(envelope)
+    assert len(lines) == 1                                  # only the breaking row
+    assert 'BTCUSD' in lines[0]
+    assert 'engine 42s' in lines[0] and 'e2e 49s' in lines[0]

@@ -78,3 +78,38 @@ def test_query_min_importance_excludes_null(store):
     result = store.query([1.0, 0.0, 0.0, 0.0], top_k=10,
                          since=_BASE - timedelta(days=1), min_importance=2)
     assert result == []
+
+
+def test_count_neighbors_within_window_and_distance(store):
+    # The breaking detector's cluster probe (ISSUE_11): near copies within the window count;
+    # a dissimilar article and a stale one do not.
+    old = _BASE - timedelta(days=10)
+    store.upsert(
+        [_article('n1', _BASE), _article('n2', _BASE),
+         _article('far', _BASE), _article('old', old)],
+        [[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0],
+         [0.0, 1.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
+    )
+    count = store.count_neighbors([1.0, 0.0, 0.0, 0.0],
+                                  since=_BASE - timedelta(days=1), max_distance=0.1)
+    assert count == 2          # n1 + n2 (distance 0); far excluded (distance 1), old (window)
+
+
+def test_flag_candidates_sets_tier_flag_and_timestamp(store):
+    # ISSUE_11: flagging stamps importance + breaking_candidate + flagged_at, idempotently.
+    store.upsert([_article('a', _BASE)], [[1.0, 0.0, 0.0, 0.0]])
+    assert store.flag_candidates(['a'], importance=3, breaking=True) == 1
+    # importance now satisfies the deep-tier filter that a NULL failed above
+    result = store.query([1.0, 0.0, 0.0, 0.0], top_k=10,
+                         since=_BASE - timedelta(days=1), min_importance=2)
+    assert [hit.article.article_id for hit in result] == ['a']
+    assert result[0].importance == 3
+    with psycopg.connect(_dsn()) as conn, conn.cursor() as cur:
+        cur.execute(f'SELECT breaking_candidate, flagged_at FROM {_TABLE} '
+                    'WHERE article_id = %s', ('a',))
+        breaking, flagged_at = cur.fetchone()
+    assert breaking is True and flagged_at is not None
+
+
+def test_flag_candidates_nonexistent_id_is_noop(store):
+    assert store.flag_candidates(['ghost'], importance=3, breaking=True) == 0

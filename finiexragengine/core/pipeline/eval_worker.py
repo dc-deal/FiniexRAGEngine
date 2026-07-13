@@ -11,6 +11,34 @@ from finiexragengine.types.worker_types import WorkerState
 logger = logging.getLogger(__name__)
 
 
+def _fmt_seconds(seconds) -> str:
+    if seconds is None:
+        return '—'
+    return f'{seconds:.0f}s' if seconds < 90 else f'{seconds / 60:.1f}m'
+
+
+def _breaking_confirmations(envelope) -> list:
+    """One `[BREAKING ✓]` line per confirmed breaking result, with its reaction time (ISSUE_11).
+
+    Engine reaction = envelope timestamp − earliest source `fetched_at` (what we control);
+    end-to-end = − earliest `published_at` (what the consumer feels). Both from the envelope,
+    so it matches the store-based report exactly.
+    """
+    lines = []
+    for result in envelope.result:
+        if not result.is_breaking:
+            continue
+        fetched = [s.fetched_at for s in result.sources if s.fetched_at]
+        published = [s.published_at for s in result.sources if s.published_at]
+        engine = (envelope.timestamp - min(fetched)).total_seconds() if fetched else None
+        end_to_end = (envelope.timestamp - min(published)).total_seconds() if published else None
+        lines.append(
+            f'[BREAKING ✓] {envelope.pipeline_id} {result.symbol} {result.signal} '
+            f'urgency {result.urgency:.2f} · engine {_fmt_seconds(engine)} / '
+            f'e2e {_fmt_seconds(end_to_end)} · {len(result.sources)} sources')
+    return lines
+
+
 class EvalWorker:
     """Runs retrieve -> LLM -> assemble -> persist for ONE logical pipeline.
 
@@ -62,5 +90,10 @@ class EvalWorker:
                             self._state.name, self._state.last_detail,
                             m.prompt_tokens + m.completion_tokens, m.cost_usd,
                             (perf_counter() - started) * 1000.0)
+                # Per-breaking reaction time, logged the moment it is confirmed (ISSUE_11) — so an
+                # overnight run is self-documenting: every confirmed breaking shows its latency
+                # inline, and it cross-checks the store-based `breaking` report.
+                for line in _breaking_confirmations(envelope):
+                    logger.info(line)
             self._state.runs += 1
             self._state.last_duration_ms = (perf_counter() - started) * 1000.0

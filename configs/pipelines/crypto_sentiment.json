@@ -27,10 +27,7 @@
         "version": "2"
     },
     "llm": {
-        "models": [
-            { "name": "gpt-4o-mini", "sub_pipeline_id": "mini", "default": true },
-            { "name": "gpt-4o", "sub_pipeline_id": "4o_enhanced" }
-        ]
+        "model": "gpt-4o-mini"
     },
     "trigger": {
         "type": "interval",
@@ -44,6 +41,7 @@
         "floor_distance": 0.55
     },
     "breaking": {
-        "urgency_threshold": 0.8
+        "urgency_threshold": 0.8,
+        "min_importance": 2
     }
 }

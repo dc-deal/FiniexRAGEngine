@@ -102,7 +102,8 @@ class SymbolEvaluator:
             confidence=scored.confidence, reasoning=scored.reasoning, urgency=scored.urgency,
             is_breaking=scored.urgency >= self._breaking_threshold,
             sources=[ArticleRef(article_id=a.article_id, url=a.url, title=a.title,
-                                published_at=a.published_at) for a in articles])
+                                published_at=a.published_at, fetched_at=a.fetched_at)
+                     for a in articles])
         return SymbolEval(result=result, prompt=prompt, prompt_metadata=prompt_metadata,
                           usage=completion.usage, articles=articles,
                           stage_timings=timer.timings, raw_output=completion.data,

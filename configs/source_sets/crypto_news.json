@@ -2,7 +2,18 @@
     "source_set_id": "crypto_news",
     "trigger": {
         "type": "interval",
-        "interval_seconds": 300
+        "interval_seconds": 15
+    },
+    "detection": {
+        "cluster_similarity": 0.85,
+        "cluster_window_minutes": 60,
+        "mid_cluster_size": 3,
+        "high_cluster_size": 5,
+        "keyword_source_weight": 0.9,
+        "keywords": [
+            "hack", "exploit", "breach", "halt", "SEC", "lawsuit",
+            "collapse", "depeg", "insolvency", "liquidation", "delisting"
+        ]
     },
     "sources": [
         {

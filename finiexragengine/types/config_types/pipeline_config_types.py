@@ -97,7 +97,20 @@ class RetrievalConfig(BaseModel):
 
 
 class BreakingConfig(BaseModel):
+    """Per-pipeline breaking gates — two knobs at two stages of the funnel (ISSUE_11).
+
+    Detection flagging is one shared write on the corpus (source-set-scoped); *sensitivity* is
+    per-pipeline, so the same corpus can wake an eager and a conservative pipeline differently:
+
+    - `min_importance` — the **wake** gate: which detected importance tier (1=LOW/2=MID/3=HIGH)
+      is hot enough to run *this* pipeline's eval out-of-band. Answers "is it worth paying to look
+      now?" — a cheap-side knob, before any LLM spend.
+    - `urgency_threshold` — the **confirm** gate: `is_breaking = urgency >= this` on the LLM's own
+      score. Answers "having read it, is it market-moving enough to count as breaking?" — after the
+      LLM read it. The two are orthogonal on purpose (see docs/architecture).
+    """
     urgency_threshold: float = 0.8       # push gate for breaking news (ISSUE_6)
+    min_importance: int = 2              # wake sensitivity: MID+ clusters wake this pipeline (ISSUE_11)
 
 
 class PipelineConfig(BaseModel):
