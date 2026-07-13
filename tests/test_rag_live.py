@@ -61,7 +61,8 @@ def _cosine(a, b):
 def store():
     config = VectorStoreConfig(table=_TABLE)
     try:
-        instance = PgVectorStore(config, _dsn(), dimensions=1536)
+        instance = PgVectorStore(config, _dsn(), dimensions=1536,
+                                 embedding_model='text-embedding-3-small')
     except VectorStoreError as exc:
         pytest.skip(f'PostgreSQL/pgvector not available: {exc}')
     with psycopg.connect(_dsn()) as conn, conn.cursor() as cur:
@@ -70,6 +71,7 @@ def store():
     with psycopg.connect(_dsn()) as conn, conn.cursor() as cur:
         cur.execute(f'DROP TABLE IF EXISTS {_TABLE}')
         cur.execute(f'DROP TABLE IF EXISTS {_QCACHE_TABLE}')
+        cur.execute('DELETE FROM corpus_meta WHERE table_name = %s', (_TABLE,))
 
 
 def test_live_embedding_dimension_and_semantics():

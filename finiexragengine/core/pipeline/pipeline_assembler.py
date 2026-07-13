@@ -2,6 +2,7 @@
 import logging
 
 from finiexragengine.configuration.app_config_manager import AppConfigManager
+from finiexragengine.configuration.source_set_registry import SourceSetRegistry
 from finiexragengine.core.llm.prompt_builder import PromptBuilder
 from finiexragengine.core.llm.provider_factory import build_provider
 from finiexragengine.core.observability.cost_recorder import CostRecorder
@@ -42,6 +43,13 @@ class PipelineAssembler:
         # One store for all pipelines (ISSUE_8): every runner persists into it, the
         # API's /latest reads from it — the shared source of truth, like the recorder.
         self._outcome_store = OutcomeStore(database_url)
+        # Shared feed groups (ISSUE_10): constellations reference a source-set by id;
+        # an unresolved reference fails here at assembly — before any spend.
+        self._source_sets = SourceSetRegistry(app.get_source_sets_dir())
+        self._source_sets.load()
+
+    def get_source_sets(self) -> SourceSetRegistry:
+        return self._source_sets
 
     def get_cost_recorder(self) -> CostRecorder:
         return self._recorder
@@ -75,7 +83,8 @@ class PipelineAssembler:
                                         section='ingest_query',
                                         pipeline_id=config.pipeline_id)
         store = PgVectorStore(self._cfg.vector_store, self._database_url,
-                              dimensions=self._cfg.embedding.dimensions)
+                              dimensions=self._cfg.embedding.dimensions,
+                              embedding_model=self._cfg.embedding.model)
         cache = QueryVectorCache(query_embedder, self._database_url,
                                  model=self._cfg.embedding.model,
                                  dimensions=self._cfg.embedding.dimensions)
@@ -90,27 +99,46 @@ class PipelineAssembler:
                                prompt_version=config.prompt.version,
                                breaking_threshold=config.breaking.urgency_threshold)
 
-    def build_runner(self, config: PipelineConfig) -> PipelineRunner:
-        """Assemble one pipeline's full graph; billing sections per paid caller."""
-        pipeline_id = config.pipeline_id
-        # The news embedder bills under its own section (ingest_news) — the cost report
-        # separates corpus building from retrieval overhead (ingest_query, in the evaluator).
+    def build_ingestor(self, source_set_id: str, billing_label: str = '') -> Ingestor:
+        """Assemble the ingest pass for one source-set (ISSUE_10) — worker + CLI unit.
+
+        Bills under `ingest_news`; the cost row's pipeline_id column carries the
+        source-set id (acquisition is per set, not per pipeline) unless a caller
+        passes its own label.
+        """
+        source_set = self._source_sets.get(source_set_id)
         news_embedder = OpenAIEmbedder(self._cfg.embedding, cost_recorder=self._recorder,
-                                       section='ingest_news', pipeline_id=pipeline_id)
+                                       section='ingest_news',
+                                       pipeline_id=billing_label or source_set_id)
         store = PgVectorStore(self._cfg.vector_store, self._database_url,
-                              dimensions=self._cfg.embedding.dimensions)
+                              dimensions=self._cfg.embedding.dimensions,
+                              embedding_model=self._cfg.embedding.model)
+        return Ingestor([build_source(source) for source in source_set.sources],
+                        news_embedder, store)
+
+    def build_runner(self, config: PipelineConfig,
+                     include_ingest: bool = True) -> PipelineRunner:
+        """Assemble one pipeline's full graph; billing sections per paid caller.
+
+        `include_ingest=False` is worker mode (ISSUE_10): acquisition belongs to the
+        ingest worker's own clock, so the runner evaluates over the shared corpus
+        without fetching — and `/run` cannot double-ingest next to a running worker.
+        """
+        source_set = self._source_sets.get(config.source_set)   # fail-fast reference check
+        ingestor = (self.build_ingestor(config.source_set, billing_label=config.pipeline_id)
+                    if include_ingest else None)
         evaluator = self.build_evaluator(config)
-        ingestor = Ingestor([build_source(source) for source in config.sources],
-                            news_embedder, store)
         # The prompt fingerprint is resolved once here (ISSUE_33) — the runner stamps it
         # on every envelope, valid even for a pass where all evals fail.
         prompt_builder = PromptBuilder(self._app.get_prompts_dir())
         prompt_metadata = prompt_builder.metadata(config.prompt.name, config.prompt.version)
         return PipelineRunner(config, ingestor, evaluator, prompt_metadata,
                               llm_model=config.llm.model, cost_recorder=self._recorder,
-                              outcome_store=self._outcome_store)
+                              outcome_store=self._outcome_store,
+                              sources_configured=len(source_set.sources))
 
-    def attach_all(self, registry: PipelineRegistry) -> None:
+    def attach_all(self, registry: PipelineRegistry, include_ingest: bool = True) -> None:
         """Give every registered pipeline its real runner (replaces the scaffold mock)."""
         for pipeline in registry.list_pipelines():
-            pipeline.set_runner(self.build_runner(pipeline.get_config()))
+            pipeline.set_runner(self.build_runner(pipeline.get_config(),
+                                                  include_ingest=include_ingest))

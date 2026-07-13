@@ -42,6 +42,9 @@ never attach one just because `DATABASE_URL`/`OPENAI_API_KEY` are set in the env
 | `test_symbol_evaluator.py` | retrieve → prompt → LLM → enrich; provenance, raw-output capture | — |
 | `test_pipeline_runner.py` | envelope invariants, taxonomy, metric capture, prompt fingerprint, persistence wiring | — |
 | `test_outcome_store.py` | save→get_latest roundtrip, newest-wins, raw-output column, error rows | PostgreSQL |
+| `test_corpus_guard.py` | corpus stamped with embedding model; mismatch refuses to boot | PostgreSQL |
+| `test_source_set_registry.py` | source-set loading, duplicate ids, unknown reference, tracked configs | — |
+| `test_workers.py` | interval-trigger loop, pass resilience, supervisor build (fan variants) | — |
 | `test_latest_endpoint.py` | `/latest` serves from store (no run), cold miss, broken-store degrade, catch-all persist | — |
 | `test_model_catalog.py` | staged model check (ingest + llm), endpoint split, soft-boot warnings | — |
 | `test_model_governance.py` | pipeline-declared model (required), allowlist gate at assembly | — |

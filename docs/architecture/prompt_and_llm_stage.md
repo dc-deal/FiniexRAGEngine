@@ -6,17 +6,20 @@ score with provenance into the outcome envelope.
 
 ## Prompt templates (versioned Jinja2 / Markdown files)
 
-Prompts live as **Jinja2 Markdown** files under `prompts/`, named `<name>_v<version>.md`
-(e.g. `prompts/sentiment_v1.md`). Each **pipeline declares which prompt it uses** (ISSUE_33) via a
-`prompt` block in its constellation JSON — so prompts are swappable per pipeline without touching
-code:
+Prompts live as **Jinja2 Markdown** files under `prompts/`, one folder per prompt family:
+`prompts/<name>/<name>_v<version>.md` (e.g. `prompts/crypto_sentiment/crypto_sentiment_v2.md`,
+`prompts/forex_sentiment/forex_sentiment_v1.md`) — each pipeline type owns its wording; a
+forex pipeline never runs on crypto phrasing. Each **pipeline declares which prompt it uses**
+(ISSUE_33) via a `prompt` block in its constellation JSON — so prompts are swappable per
+pipeline without touching code:
 
 ```json
-"prompt": { "name": "sentiment", "version": "1" }
+"prompt": { "name": "crypto_sentiment", "version": "2" }
 ```
 
-`PromptBuilder` (`core/llm/prompt_builder.py`) resolves that to `prompts/sentiment_v1.md` and renders
-the template with `symbol` and the retrieved `articles`.
+`PromptBuilder` (`core/llm/prompt_builder.py`) resolves that to
+`prompts/crypto_sentiment/crypto_sentiment_v2.md` and renders the template with `symbol` and
+the retrieved `articles`.
 
 - The article-rendering **loop lives in the template** (`{% for a in articles %}`) and the
   empty-context fallback is a template `{% if %}` — so prompt wording *and* formatting stay in one

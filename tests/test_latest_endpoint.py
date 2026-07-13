@@ -43,7 +43,7 @@ class _FakePipeline:
         return PipelineConfig(
             pipeline_id='p', outcome_type='sentiment_fear_greed', market='crypto',
             symbols=['BTCUSD'], llm={'model': 'gpt-4o-mini'},
-            sources=[{'source_id': 's1', 'url': 'http://x'}])
+            source_set='test_news')
 
     def run(self) -> SentimentEnvelope:
         self.runs += 1

@@ -34,10 +34,14 @@ class PgVectorStore(AbstractVectorStore):
     _COLUMNS = ('article_id', 'source_id', 'source_weight', 'url', 'title',
                 'summary', 'language', 'published_at', 'fetched_at')
 
-    def __init__(self, config: VectorStoreConfig, database_url: str, dimensions: int) -> None:
+    def __init__(self, config: VectorStoreConfig, database_url: str, dimensions: int,
+                 embedding_model: str) -> None:
         self._config = config
         self._database_url = database_url
         self._dimensions = dimensions
+        # The corpus is bound to ONE embedding model (ISSUE_16) — required so the
+        # boot guard below can compare config against the corpus stamp.
+        self._embedding_model = embedding_model
         self._ensure_schema()
 
     def _raw_connect(self):
@@ -76,6 +80,35 @@ class PgVectorStore(AbstractVectorStore):
                 # No ANN index yet: cosine search is an exact full scan, which is
                 # fine at the current corpus size. Add an HNSW index on `embedding`
                 # (vector_cosine_ops) before the scan dominates query latency.
+
+                # Corpus guard (ISSUE_16): vectors from different embedding models live
+                # on different "maps" and must never mix — stamp the corpus with its
+                # model IN THE DATABASE and refuse to boot on a mismatch, so a config
+                # edit can never silently poison the corpus. A pre-guard corpus is
+                # stamped with the configured model on first boot (in-place upgrade —
+                # the running corpus was built with it). A model change is a deliberate
+                # re-embed migration (ISSUE_14), never a config flip.
+                cur.execute(
+                    'CREATE TABLE IF NOT EXISTS corpus_meta ('
+                    'table_name TEXT PRIMARY KEY, '
+                    'embedding_model TEXT NOT NULL, '
+                    'dimensions INTEGER NOT NULL, '
+                    'created_at TIMESTAMPTZ NOT NULL DEFAULT now())')
+                cur.execute('SELECT embedding_model, dimensions FROM corpus_meta '
+                            'WHERE table_name = %s', (table,))
+                stamp = cur.fetchone()
+                if stamp is None:
+                    cur.execute(
+                        'INSERT INTO corpus_meta (table_name, embedding_model, dimensions) '
+                        'VALUES (%s, %s, %s) ON CONFLICT (table_name) DO NOTHING',
+                        (table, self._embedding_model, self._dimensions))
+                elif stamp != (self._embedding_model, self._dimensions):
+                    raise VectorStoreError(
+                        f"corpus '{table}' is stamped for embedding model '{stamp[0]}' "
+                        f'({stamp[1]} dims) but the config declares '
+                        f"'{self._embedding_model}' ({self._dimensions} dims) — vectors "
+                        'from different models must never mix. Either revert the config '
+                        'or re-embed the corpus (migration, ISSUE_14).')
         except psycopg.Error as exc:
             raise VectorStoreError(f'schema init failed: {exc}') from exc
 

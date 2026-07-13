@@ -1,0 +1,57 @@
+{
+    "source_set_id": "forex_news",
+    "trigger": {
+        "type": "interval",
+        "interval_seconds": 300
+    },
+    "sources": [
+        {
+            "source_id": "fxstreet",
+            "type": "rss",
+            "url": "https://www.fxstreet.com/rss/news",
+            "weight": 1.0
+        },
+        {
+            "source_id": "forexlive",
+            "type": "rss",
+            "url": "https://www.forexlive.com/feed/news",
+            "weight": 1.0
+        },
+        {
+            "source_id": "investing_fx",
+            "type": "rss",
+            "url": "https://www.investing.com/rss/news_1.rss",
+            "weight": 0.8
+        },
+        {
+            "source_id": "cnbc_forex",
+            "type": "rss",
+            "url": "https://www.cnbc.com/id/10000664/device/rss/rss.html",
+            "weight": 1.0
+        },
+        {
+            "source_id": "actionforex",
+            "type": "rss",
+            "url": "https://www.actionforex.com/feed/",
+            "weight": 0.8
+        },
+        {
+            "source_id": "fed_press",
+            "type": "rss",
+            "url": "https://www.federalreserve.gov/feeds/press_all.xml",
+            "weight": 1.0
+        },
+        {
+            "source_id": "ecb_press",
+            "type": "rss",
+            "url": "https://www.ecb.europa.eu/rss/press.html",
+            "weight": 1.0
+        },
+        {
+            "source_id": "boe_news",
+            "type": "rss",
+            "url": "https://www.bankofengland.co.uk/rss/news",
+            "weight": 1.0
+        }
+    ]
+}

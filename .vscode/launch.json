@@ -26,6 +26,25 @@
         // 💸 PAID GATE (real OpenAI API cost — run deliberately)
         // ====================================================
         {
+            // Live mode (ISSUE_10): background ingest+eval workers on their own
+            // cadences — continuous paid activity, run deliberately.
+            "name": "💸 RAGEngine: API Server + Workers (live, paid)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/finiexragengine/cli/server_cli.py",
+            "args": [
+                "--workers",
+                "--port",
+                "8100"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "03_paid_gate",
+                "order": 0
+            }
+        },
+        {
             "name": "💸 RAGEngine: Run Pipeline (full envelope, paid)",
             "type": "debugpy",
             "request": "launch",
@@ -47,8 +66,8 @@
             "request": "launch",
             "program": "${workspaceFolder}/finiexragengine/cli/ingest_cli.py",
             "args": [
-                "--pipeline",
-                "${input:pipeline}"
+                "--source-set",
+                "${input:source_set}"
             ],
             "console": "integratedTerminal",
             "justMyCode": false,
@@ -215,6 +234,12 @@
             "type": "promptString",
             "description": "Variant sub_pipeline_id — stream = <pipeline>_<variant> (ISSUE_42)",
             "default": "4o_enhanced"
+        },
+        {
+            "id": "source_set",
+            "type": "promptString",
+            "description": "Source-set id (configs/source_sets/<id>.json)",
+            "default": "crypto_news"
         }
     ]
 }

@@ -1,54 +1,43 @@
-"""CLI entry point: run one ingest pass (fetch -> embed -> upsert) for a pipeline.
+"""CLI entry point: run one ingest pass (fetch -> embed -> upsert) for a source-set.
 
 Spends OpenAI budget only on **new** articles (known ids are skipped before embedding),
 and reports how many were embedded so the cost is never silent. Fenced under the paid
-launch group.
+launch group. Acquisition is per source-set (ISSUE_10) — the shared corpus a set feeds
+serves every pipeline referencing it.
 """
 import argparse
 import os
 
 from finiexragengine.configuration.app_config_manager import AppConfigManager
-from finiexragengine.core.observability.cost_recorder import CostRecorder
 from finiexragengine.core.observability.run_footer import RunFooter
-from finiexragengine.core.pipeline.ingestor import Ingestor
-from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
-from finiexragengine.core.rag.openai_embedder import OpenAIEmbedder
-from finiexragengine.core.rag.pgvector_store import PgVectorStore
-from finiexragengine.core.sources.source_factory import build_source
-from finiexragengine.exceptions.ragengine_errors import PipelineNotFoundError
+from finiexragengine.core.pipeline.pipeline_assembler import PipelineAssembler
+from finiexragengine.exceptions.ragengine_errors import ConfigurationError
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description='Run one ingest pass (fetch -> embed -> upsert) for a pipeline')
-    parser.add_argument('--pipeline', default='crypto_sentiment',
-                        help='pipeline id under configs/pipelines/')
+        description='Run one ingest pass (fetch -> embed -> upsert) for a source-set')
+    parser.add_argument('--source-set', default='crypto_news',
+                        help='source-set id under configs/source_sets/')
     args = parser.parse_args()
 
     database_url = os.environ.get('DATABASE_URL')
     if not database_url:
         parser.error('DATABASE_URL is not set (point it at the pgvector Postgres)')
 
-    # Config loading goes through the Pydantic gate: app config + the pipeline via the
-    # registry (validated on load; a bad --pipeline fails cleanly, not with a traceback).
+    # The assembler is the one place the object graph is built — the CLI reuses its
+    # wiring (embedder, store incl. corpus guard, shared cost recorder).
     app = AppConfigManager()
     cfg = app.get_config()
-    registry = PipelineRegistry(app.get_pipelines_dir())
-    registry.load()
+    assembler = PipelineAssembler(app, database_url)
     try:
-        pipeline = registry.get(args.pipeline).get_config()
-    except PipelineNotFoundError as exc:
+        ingestor = assembler.build_ingestor(args.source_set)
+    except ConfigurationError as exc:
         parser.error(str(exc))
-
-    sources = [build_source(source) for source in pipeline.sources]
-    recorder = CostRecorder(database_url, cfg.pricing)
-    embedder = OpenAIEmbedder(cfg.embedding, cost_recorder=recorder,
-                              section='ingest_news', pipeline_id=args.pipeline)
-    store = PgVectorStore(cfg.vector_store, database_url, dimensions=cfg.embedding.dimensions)
-    result = Ingestor(sources, embedder, store).run()
+    result = ingestor.run()
 
     # Cost line first: `embedded` is what was actually paid for this pass.
-    print(f"ingest '{args.pipeline}': fetched {result.fetched}, "
+    print(f"ingest '{args.source_set}': fetched {result.fetched}, "
           f'embedded {result.embedded} (paid), stored {result.stored} new, '
           f'{result.duplicates} duplicates')
     for source_id, entry in result.per_source.items():
@@ -58,6 +47,7 @@ def main() -> None:
         print(f'  {source_id:14} FAILED: {error}')
     # The shared metrics block (ISSUE_32): per-stage times (summed across sources) and
     # what this pass actually spent — read off the recorder's session accumulator.
+    recorder = assembler.get_cost_recorder()
     footer = RunFooter(timings=result.stage_timings,
                        tokens_label=f'{recorder.session_tokens:,} embedding',
                        usd=recorder.session_usd, section='ingest_news',

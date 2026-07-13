@@ -51,16 +51,33 @@ signal type adds its own `result` model (e.g. `TrendResult`) and reuses the enve
 | `AbstractLLMProvider` | `OpenAIProvider` | any OpenAI-format backend (vLLM, Ollama) |
 | `AbstractTrigger` | `IntervalTrigger` | event/push trigger |
 
-## Serving model
+## Serving model — the two-worker split (ISSUE_10)
 
-Pipelines run in the background on their trigger and write the latest outcome to the store.
+Acquisition and evaluation are separate, independently-clocked background workers over
+the one shared corpus, started opt-in via `server_cli --workers` (continuous paid
+activity is a deliberate choice; without the flag the server is a free, passive API):
+
+- **Ingest workers** — one per *referenced* **source-set**
+  (`configs/source_sets/<id>.json`: feeds + ingest cadence, default 300s; declared once,
+  referenced by constellations via `source_set`). Fast, LLM-free: fetch → embed only new
+  → upsert. One set feeds every pipeline referencing it (1× fetch, N× read).
+- **Eval workers** — one per logical pipeline (fan-out variants included, ISSUE_42), on
+  the constellation's `trigger` cadence (default 600s): retrieve → LLM → assemble →
+  persist (`OutcomeStore`, ISSUE_8). In worker mode the runners are **ingest-less** —
+  `/run` cannot double-ingest next to a running worker.
+- Every pass logs one compact line incl. its spend (cost is never silent); worker states
+  (last run, status, run count) surface in `GET /v1/health`. A failing pass is logged
+  and the loop continues — the next tick heals.
+
 The API then serves two shapes:
 
-- `GET /v1/pipelines/{id}/latest` — the cached outcome, served instantly (low-latency consumers).
-- `POST /v1/pipelines/{id}/run` — force a fresh run (a guaranteed-fresh data point).
+- `GET /v1/pipelines/{id}/latest` — the persisted outcome, served instantly (low-latency
+  consumers; the IDE/collector path).
+- `POST /v1/pipelines/{id}/run` — force a fresh eval pass (a guaranteed-fresh data point).
 
 ## Adding a new pipeline
 
-1. Add a constellation JSON to `configs/pipelines/`.
+1. Add a constellation JSON to `configs/pipelines/` (referencing a source-set from
+   `configs/source_sets/` — add one if the feeds are new).
 2. If it produces a new signal type, add its outcome `result` model.
 3. The registry discovers it on startup; no engine code changes.

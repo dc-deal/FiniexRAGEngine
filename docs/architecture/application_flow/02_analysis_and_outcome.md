@@ -22,7 +22,8 @@ Top-down, one symbol's retrieved context flows through:
    (the comparison scores were already dropped — only the selected articles travel on).
 
 2. **Build the prompt — `core/llm/prompt_builder.py` (`PromptBuilder.build`).**
-   Renders the versioned Jinja2 Markdown template `prompts/<name>_v<prompt_version>.md`: fills
+   Renders the versioned Jinja2 Markdown template `prompts/<name>/<name>_v<version>.md`
+   (one folder per prompt family — crypto_sentiment/, forex_sentiment/): fills
    `{{ symbol }}` and loops the retrieved articles (`{% for a in articles %}`) into a numbered list
    with source + timestamp. Wording **and** formatting live in the reviewable template, out of code;
    `prompt_version` pins the exact file, so the same version always yields the same prompt
@@ -113,5 +114,8 @@ A valid `AnalysisEnvelope` JSON — the generic shell (`schema_version`, `pipeli
 (model, counts, timings, cost) and `errors`. Every consumer parses the same shell regardless of the
 signal type; a new signal type = a new constellation + a new payload model, engine unchanged.
 
-The two-worker split (ISSUE_10) later runs Phase A (ingest) and Phases B–D (eval) on independent
-clocks over the one shared corpus; the retrieval + analysis flow above is unchanged by that split.
+The two-worker split (ISSUE_10, **built**) runs Phase A (ingest) and Phases B–D (eval) on
+independent clocks over the one shared corpus — `server_cli --workers` starts one ingest worker
+per referenced source-set and one eval worker per logical pipeline (fan variants included); the
+retrieval + analysis flow above is unchanged by the split, worker-mode eval passes simply skip
+the inline Phase A (`PipelineRunner(ingestor=None)`).

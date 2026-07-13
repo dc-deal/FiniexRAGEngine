@@ -4,9 +4,9 @@
 
 **A configurable RAG engine that turns unstructured sources into typed trading signals.**
 
-> **Status:** Alpha · `v0.2.0-alpha` · Phase 1 vertical slice — retrieval, analysis, orchestration
-> & persistence done: `POST /run` serves real signals end-to-end, `GET /latest` serves the
-> persisted outcome instantly
+> **Status:** Alpha · `v0.2.0-alpha` · the engine runs as a live service — background
+> ingest/eval workers on independent cadences over one shared corpus (`--workers`),
+> `GET /latest` serves the persisted outcome instantly, `POST /run` forces a fresh pass
 
 FiniexRAGEngine fetches unstructured external content (news feeds, blogs, and later
 event/socket streams), retrieves the relevant subset via a vector store, and asks a large
@@ -86,6 +86,10 @@ docker compose up -d                # pgvector PostgreSQL + pgAdmin + the engine
 
 docker compose exec ragengine bash  # enter the container, then start the API:
 python finiexragengine/cli/server_cli.py --reload --port 8100
+
+# live mode: + background ingest/eval workers on their own cadences (continuous,
+# PAID OpenAI activity — deliberate opt-in)
+python finiexragengine/cli/server_cli.py --workers --port 8100
 ```
 
 ```bash
@@ -165,10 +169,16 @@ In active development. Implemented and tested today:
   source of truth for replay and error statistics) with the **raw LLM output** stored next to
   it, so a run is fully reconstructable: raw output ↔ normalized result ↔ prompt fingerprint
   (#8, #36). `GET /latest` is an indexed read — instant, zero spend.
+- **Two-worker live service**: acquisition and evaluation run as independently-clocked
+  background workers over one shared corpus (#10) — ingest per **source-set** (declared once,
+  referenced by N pipelines; fast and LLM-free, because RSS windows slide), eval per signal
+  stream (fan-out variants included). Opt-in via `--workers`; every pass logs its own spend,
+  worker states surface in `/health`. The corpus is **stamped with its embedding model** in the
+  database and refuses to boot on a mismatch (#16) — mixed vector spaces are impossible.
 
-Next up: **multi-model variant fan-out (#42)** — double-tracking one constellation through
-several eval models as separate signal streams — then the **collector handshake (#9)**. See the
-full **[Vision & Roadmap](https://github.com/dc-deal/FiniexRAGEngine/issues/1)** (issue #1).
+Next up: **breaking detection (#11)** — cheap burst heuristics in the ingest worker,
+priority eval, confirmed push — and the **collector handshake (#9)**. See the full
+**[Vision & Roadmap](https://github.com/dc-deal/FiniexRAGEngine/issues/1)** (issue #1).
 
 ---
 

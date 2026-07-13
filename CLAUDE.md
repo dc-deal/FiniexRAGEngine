@@ -32,6 +32,19 @@ every change is committed manually after review.
 
 Before committing to a design for a non-trivial feature or change:
 
+- **Plan first, build second — the two-eyes principle.** Implementation starts only after
+  the operator has seen the plan. For an **issue-feature: always** — the operator may have
+  read the issue days ago; the plan re-anchors it. Small-but-real changes get a short pitch
+  in chat; anything bigger — and when in doubt — runs through **plan mode**. Only trivial
+  few-liners skip the step. Explicit skip: only when the operator explicitly says to
+  implement directly, without a plan. Explicit plan: when the operator asks for a plan,
+  plan mode runs regardless of size.
+- **A plan shows the target mechanics.** The anchor points (files/units to touch), the
+  architecture and conversion steps, how the design carries planned future issues — and
+  **exemplary target outputs** where they exist: a mock console output, a live-output line,
+  a DB row, an envelope/JSON fragment. Every plan ends with an **architecture confidence
+  in %**; below ~95% the plan asks **numbered questions** instead of guessing. Architecture
+  decisions that surface *mid-build* come back to the table, never silently into the diff.
 - **Look at the established systems.** Is there a comparable, mainstream system? Does it
   hit the same problem, and how does it solve it? Present the industry/established approach
   next to your own recommendation — not just an opinion.
@@ -183,6 +196,11 @@ tests/                  pytest suite
   project root; the operator reads them first. Only on explicit OK does the assistant create
   them on GitHub (`gh issue create`, one at a time) — never push an issue to the tracker
   unprompted. (The bulk re-import script is retired; issues are added individually now.)
+- **Comments vs body:** additions to a **not-yet-begun** issue always go into the **body**
+  (the body stays the spec). Once implementation has started, progress, deviations and
+  decisions land as dated **implementation-notes comments** — effectively: comments only on
+  issues whose build has begun. The snapshot export includes comment threads; re-run it
+  before sessions that need fresh issue context.
 - Mention test + docs follow-ups at the bottom of an issue where relevant.
 - **List issues as a checklist, never a table:** `- [ ]` / `- [x]` + `#N` + a short description
   — **not** the title (GitHub renders the title from the `#N` reference). The checkbox carries the
