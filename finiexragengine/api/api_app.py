@@ -44,7 +44,8 @@ def create_app(attach_runners: Optional[bool] = None,
     # would be invisible. basicConfig is a no-op if a root handler already exists.
     logging.basicConfig(level=config_manager.get_config().log_level,
                         format='%(levelname)s %(name)s: %(message)s')
-    registry = PipelineRegistry(config_manager.get_pipelines_dir())
+    registry = PipelineRegistry(config_manager.get_pipelines_dir(),
+                                config_manager.get_user_pipelines_dir())
     registry.load()
 
     # Real staged flow (ISSUE_7) needs the pgvector Postgres; without DATABASE_URL the

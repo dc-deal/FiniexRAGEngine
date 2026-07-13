@@ -1,8 +1,10 @@
 """Loads constellation JSONs into Pipeline objects and serves them by id."""
 import json
+import logging
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, Dict, List, Optional
 
+from finiexragengine.configuration.config_merge import deep_merge
 from finiexragengine.core.pipeline.pipeline import Pipeline
 from finiexragengine.exceptions.ragengine_errors import (
     ConfigurationError,
@@ -12,6 +14,8 @@ from finiexragengine.types.config_types.pipeline_config_types import (
     PipelineConfig,
     PipelineLlmConfig,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def expand_variants(config: PipelineConfig) -> List[PipelineConfig]:
@@ -48,8 +52,13 @@ class PipelineRegistry:
     or N logical pipelines when it declares model variants (ISSUE_42).
     """
 
-    def __init__(self, pipelines_dir: Path) -> None:
+    def __init__(self, pipelines_dir: Path,
+                 user_overrides_dir: Optional[Path] = None) -> None:
         self._pipelines_dir = pipelines_dir
+        # Optional gitignored per-pipeline overrides (deep-merged onto the tracked config, same
+        # pattern as app_config) — the place for a dev/live variant (fewer symbols, other models)
+        # without touching the committed constellation. None = no overrides.
+        self._user_overrides_dir = user_overrides_dir
         self._pipelines: Dict[str, Pipeline] = {}
 
     def load(self) -> None:
@@ -58,7 +67,7 @@ class PipelineRegistry:
         # pipeline_id. PipelineConfig(**data) is the Pydantic validation gate — a
         # malformed constellation fails loudly here at load time, not mid-run.
         for path in sorted(self._pipelines_dir.glob('*.json')):
-            data = json.loads(path.read_text(encoding='utf-8'))
+            data = self._with_override(path)
             for config in expand_variants(PipelineConfig(**data)):
                 # A derived stream id colliding with another pipeline (or another
                 # file's expansion) would silently shadow a signal series — refuse.
@@ -67,6 +76,33 @@ class PipelineRegistry:
                         f"duplicate pipeline_id '{config.pipeline_id}' "
                         f'(from {path.name}) — stream ids must be unique')
                 self._pipelines[config.pipeline_id] = Pipeline(config)
+
+    def _with_override(self, path: Path) -> Dict[str, Any]:
+        """Load a constellation, deep-merging a gitignored user override when one exists.
+
+        Override only what differs — everything else is inherited from the tracked base (no
+        silent drift, unlike a full copy). Lists (`symbols`, `llm.models`) replace wholesale.
+        """
+        data = json.loads(path.read_text(encoding='utf-8'))
+        if self._user_overrides_dir is None:
+            return data
+        override_path = self._user_overrides_dir / path.name
+        if not override_path.exists():
+            return data
+        override = json.loads(override_path.read_text(encoding='utf-8'))
+        merged = deep_merge(data, override)
+        # Guard the llm XOR: if the override picks a form (model vs models), drop the base's
+        # *other* form so switching forms via override can't produce an invalid "both present".
+        override_llm = override.get('llm', {})
+        merged_llm = merged.get('llm')
+        if isinstance(merged_llm, dict):
+            if 'model' in override_llm and 'models' not in override_llm:
+                merged_llm.pop('models', None)
+            elif 'models' in override_llm and 'model' not in override_llm:
+                merged_llm.pop('model', None)
+        logger.info("pipeline '%s' overridden from user_configs/pipelines/%s",
+                    data.get('pipeline_id', path.stem), path.name)
+        return merged
 
     def list_pipelines(self) -> List[Pipeline]:
         return list(self._pipelines.values())
