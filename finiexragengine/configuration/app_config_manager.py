@@ -1,8 +1,9 @@
 """Loads and provides the application configuration."""
 import json
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Optional
 
+from finiexragengine.configuration.config_merge import deep_merge
 from finiexragengine.types.config_types.app_config_types import AppConfig
 
 # Project root = two levels up from this file (finiexragengine/configuration/ -> repo root)
@@ -10,19 +11,9 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _CONFIG_PATH = _PROJECT_ROOT / 'configs' / 'app_config.json'
 _USER_CONFIG_PATH = _PROJECT_ROOT / 'user_configs' / 'app_config.json'
 _PIPELINES_DIR = _PROJECT_ROOT / 'configs' / 'pipelines'
+_USER_PIPELINES_DIR = _PROJECT_ROOT / 'user_configs' / 'pipelines'
 _SOURCE_SETS_DIR = _PROJECT_ROOT / 'configs' / 'source_sets'
 _PROMPTS_DIR = _PROJECT_ROOT / 'prompts'
-
-
-def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
-    """Recursively merge `override` onto `base` (nested dicts merge, scalars replace)."""
-    result = dict(base)
-    for key, value in override.items():
-        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
-            result[key] = _deep_merge(result[key], value)
-        else:
-            result[key] = value
-    return result
 
 
 class AppConfigManager:
@@ -44,7 +35,7 @@ class AppConfigManager:
         data = json.loads(base_path.read_text(encoding='utf-8'))
         # Overlay operator/secret overrides when present (gitignored, optional).
         if user_path.exists():
-            data = _deep_merge(data, json.loads(user_path.read_text(encoding='utf-8')))
+            data = deep_merge(data, json.loads(user_path.read_text(encoding='utf-8')))
         self._config = AppConfig(**data)
 
     def get_config(self) -> AppConfig:
@@ -52,6 +43,10 @@ class AppConfigManager:
 
     def get_pipelines_dir(self) -> Path:
         return _PIPELINES_DIR
+
+    def get_user_pipelines_dir(self) -> Path:
+        """Gitignored per-pipeline overrides — deep-merged onto the tracked constellation."""
+        return _USER_PIPELINES_DIR
 
     def get_source_sets_dir(self) -> Path:
         return _SOURCE_SETS_DIR

@@ -90,6 +90,22 @@ def test_fan_expands_to_streams_with_hints():
     assert default.symbols == enhanced.symbols and default.prompt == enhanced.prompt
 
 
+def test_disabled_variant_is_defined_but_not_expanded():
+    # `enabled: false` keeps the variant in the config but produces no stream (no cost).
+    streams = expand_variants(_config({'models': [
+        {'name': 'gpt-4o-mini', 'sub_pipeline_id': 'mini', 'default': True},
+        {'name': 'gpt-4o', 'sub_pipeline_id': '4o_enhanced', 'enabled': False}]}))
+    assert [c.pipeline_id for c in streams] == ['crypto_sentiment']   # only the default runs
+
+
+def test_disabling_the_default_variant_is_rejected():
+    # The default owns the bare pipeline_id — disabling it would leave no default stream.
+    with pytest.raises(ValidationError, match='default variant cannot be disabled'):
+        PipelineLlmConfig(models=[
+            {'name': 'a', 'sub_pipeline_id': 'mini', 'default': True, 'enabled': False},
+            {'name': 'b', 'sub_pipeline_id': '4o'}])
+
+
 def test_registry_loads_fan_as_addressable_streams(tmp_path):
     data = _config(_FAN).model_dump(exclude_none=True)
     (tmp_path / 'crypto_sentiment.json').write_text(json.dumps(data))

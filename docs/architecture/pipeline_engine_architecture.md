@@ -58,13 +58,15 @@ the one shared corpus, started opt-in via `server_cli --workers` (continuous pai
 activity is a deliberate choice; without the flag the server is a free, passive API):
 
 - **Ingest workers** — one per *referenced* **source-set**
-  (`configs/source_sets/<id>.json`: feeds + ingest cadence, default 300s; declared once,
-  referenced by constellations via `source_set`). Fast, LLM-free: fetch → embed only new
-  → upsert. One set feeds every pipeline referencing it (1× fetch, N× read).
+  (`configs/source_sets/<id>.json`: feeds + ingest cadence; declared once, referenced by
+  constellations via `source_set`). Fast, LLM-free: fetch (conditional GET, near-continuous
+  ~15s) → embed only new → upsert → **flag breaking candidates** (`BreakingDetector`, no LLM,
+  ISSUE_11). One set feeds every pipeline referencing it (1× fetch, N× read).
 - **Eval workers** — one per logical pipeline (fan-out variants included, ISSUE_42), on
-  the constellation's `trigger` cadence (default 600s): retrieve → LLM → assemble →
-  persist (`OutcomeStore`, ISSUE_8). In worker mode the runners are **ingest-less** —
-  `/run` cannot double-ingest next to a running worker.
+  the constellation's `trigger` cadence (default 600s) **or a breaking wake** (`EventTrigger`
+  + `BreakingBus`, ISSUE_11 — a flagged candidate at/above the pipeline's `breaking.min_importance`
+  jumps the queue in seconds): retrieve → LLM → assemble → persist (`OutcomeStore`, ISSUE_8). In
+  worker mode the runners are **ingest-less** — `/run` cannot double-ingest next to a running worker.
 - Every pass logs one compact line incl. its spend (cost is never silent); worker states
   (last run, status, run count) surface in `GET /v1/health`. A failing pass is logged
   and the loop continues — the next tick heals.

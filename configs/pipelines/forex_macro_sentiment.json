@@ -29,6 +29,7 @@
         "floor_distance": 0.55
     },
     "breaking": {
-        "urgency_threshold": 0.8
+        "urgency_threshold": 0.8,
+        "min_importance": 2
     }
 }

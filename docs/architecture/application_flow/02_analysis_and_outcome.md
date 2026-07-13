@@ -119,3 +119,12 @@ independent clocks over the one shared corpus — `server_cli --workers` starts 
 per referenced source-set and one eval worker per logical pipeline (fan variants included); the
 retrieval + analysis flow above is unchanged by the split, worker-mode eval passes simply skip
 the inline Phase A (`PipelineRunner(ingestor=None)`).
+
+**Breaking priority path (ISSUE_11, built).** The eval worker runs on its interval **or** on a
+breaking wake: when the ingest detector flags a candidate, the `BreakingBus` nudges the eval
+workers on that set whose `breaking.min_importance` the flagged tier reaches, and the `EventTrigger`
+runs an off-cadence pass in seconds. The pass is otherwise unchanged — the **confirm gate** is the
+existing `is_breaking = urgency ≥ breaking.urgency_threshold` (SymbolEvaluator step 6); a breaking
+wake only makes eval run *sooner*, not differently, so the envelope stays model/fingerprint-
+consistent. Everything is persisted regardless; the gate governs only what would *push* (Stage C).
+Two knobs, two stages (wake vs confirm) — see `../breaking_detection.md`.

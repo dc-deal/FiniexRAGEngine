@@ -75,8 +75,17 @@ class PgVectorStore(AbstractVectorStore):
                     'fetched_at TIMESTAMPTZ NOT NULL, '
                     f'embedding vector({self._dimensions}) NOT NULL, '
                     'importance SMALLINT, '
-                    'breaking_candidate BOOLEAN NOT NULL DEFAULT FALSE)'
+                    'breaking_candidate BOOLEAN NOT NULL DEFAULT FALSE, '
+                    # Detection timestamp (ISSUE_11): when the breaking detector flagged this
+                    # article — the reaction-time report joins it by article_id (detection
+                    # latency = flagged_at − fetched_at). NULL until flagged.
+                    'flagged_at TIMESTAMPTZ)'
                 )
+                # In-place add for a pre-ISSUE_11 corpus (the DDL above only applies to a freshly
+                # created table); idempotent, so a matched-stamp boot just no-ops.
+                cur.execute(f'ALTER TABLE {table} ADD COLUMN IF NOT EXISTS '
+                            'breaking_candidate BOOLEAN NOT NULL DEFAULT FALSE')
+                cur.execute(f'ALTER TABLE {table} ADD COLUMN IF NOT EXISTS flagged_at TIMESTAMPTZ')
                 # No ANN index yet: cosine search is an exact full scan, which is
                 # fine at the current corpus size. Add an HNSW index on `embedding`
                 # (vector_cosine_ops) before the scan dominates query latency.
@@ -151,6 +160,46 @@ class PgVectorStore(AbstractVectorStore):
                 return {row[0] for row in cur.fetchall()}
         except psycopg.Error as exc:
             raise VectorStoreError(f'existing_ids query failed: {exc}') from exc
+
+    def count_neighbors(self, vector: List[float], since: datetime,
+                        max_distance: float) -> int:
+        """Count corpus articles within `max_distance` of `vector`, published at/after `since`.
+
+        The breaking detector's cluster-size probe (ISSUE_11): a burst of near-duplicate stories
+        across feeds is a `COUNT(*)` over the recency window with a cosine-distance filter — pure
+        vector math in the DB, no rows materialized, no LLM. `max_distance` = 1 − cluster_similarity.
+        """
+        table = self._config.table
+        try:
+            with self._connect() as conn, conn.cursor() as cur:
+                cur.execute(
+                    f'SELECT COUNT(*) FROM {table} '
+                    'WHERE published_at >= %s AND (embedding <=> %s::vector) <= %s',
+                    (since, vector, max_distance))
+                return int(cur.fetchone()[0])
+        except psycopg.Error as exc:
+            raise VectorStoreError(f'count_neighbors query failed: {exc}') from exc
+
+    def flag_candidates(self, article_ids: List[str], importance: int,
+                        breaking: bool) -> int:
+        """Stamp an importance tier (+ breaking-candidate + detection time) on articles (ISSUE_11).
+
+        Idempotent: re-flagging a known cluster on a later pass just re-writes the same values.
+        `flagged_at` is set to the DB clock — the detection-time anchor the reaction-time report
+        joins by article_id. Returns the number of rows updated.
+        """
+        if not article_ids:
+            return 0
+        table = self._config.table
+        try:
+            with self._connect() as conn, conn.cursor() as cur:
+                cur.execute(
+                    f'UPDATE {table} SET importance = %s, breaking_candidate = %s, '
+                    'flagged_at = now() WHERE article_id = ANY(%s)',
+                    (importance, breaking, article_ids))
+                return cur.rowcount
+        except psycopg.Error as exc:
+            raise VectorStoreError(f'flag_candidates update failed: {exc}') from exc
 
     def query(self, vector: List[float], top_k: int, since: datetime,
               min_importance: Optional[int] = None) -> List[ScoredArticle]:

@@ -26,11 +26,17 @@ Top-down, each new article flows through these units in order:
    referencing the set (1× fetch, N× read).
 
 2. **Fetch — `core/sources/rss_source.py` (`RssSource.fetch`).**
-   Actively pulls the RSS feed (`feedparser.parse(url)`), maps each entry to an
-   `Article` (title + summary only), assigns an **idempotent** `article_id` from the
-   entry guid/link, stamps `fetched_at` as real-time UTC, and carries the configured
-   `source_weight` onto every article. An entry with no stable identity is skipped
-   rather than allowed to poison the corpus.
+   Actively pulls the RSS feed, maps each entry to an `Article` (title + summary only),
+   assigns an **idempotent** `article_id` from the entry guid/link, stamps `fetched_at`
+   as real-time UTC, and carries the configured `source_weight` onto every article. An
+   entry with no stable identity is skipped rather than allowed to poison the corpus.
+   **Conditional GET (ISSUE_11):** the long-lived source keeps each feed's `ETag` /
+   `Last-Modified` and sends them back, so an unchanged feed answers `304` with no body —
+   this is what lets the ingest clock run near-continuous (~15s, for flash-crash latency)
+   while staying polite; the binding constraint at speed is feed etiquette, not OpenAI.
+   An optional per-source `poll_interval_seconds` lets a slow feed opt out of the fast
+   loop (central-bank feeds are deliberately *not* slowed — they are prime breaking
+   sources; 304 keeps them fast and polite).
 
 3. **Embed — `core/rag/openai_embedder.py` (`OpenAIEmbedder.embed`).**
    Sends the article text to OpenAI and gets back a 1536-dimension vector — a point
@@ -44,13 +50,22 @@ Top-down, each new article flows through these units in order:
    Writes the vector **and the full raw article** into the shared pgvector corpus,
    **idempotent** on `article_id` (`ON CONFLICT DO NOTHING`). Keeping the raw text is
    deliberate: it is what makes a later re-embed possible (e.g. an embedding-model
-   change, ISSUE_16). The `importance` / `breaking_candidate` columns exist now
-   (nullable) and are populated later by the breaking detector (ISSUE_11).
+   change, ISSUE_16). The `importance` / `breaking_candidate` / `flagged_at` columns are
+   populated by the breaking detector in step 5 (ISSUE_11).
    **Corpus guard (built, ISSUE_16):** on first creation the store stamps the corpus
    with its embedding model + dimensions in a `corpus_meta` row; booting against a
    mismatched stamp raises hard, naming both sides — vectors from different models
    must never mix, and a config edit can never silently poison the corpus (a model
    change is a deliberate re-embed migration, ISSUE_14).
+
+5. **Breaking detection — `core/pipeline/breaking_detector.py` (`BreakingDetector`) · built, ISSUE_11.**
+   After upsert, an **LLM-free** pass flags breaking candidates over the articles just stored:
+   cluster-burst (near-duplicate count via `count_neighbors`) + a keyword fast-path on high-trust
+   sources → writes an `importance` tier + `breaking_candidate` + `flagged_at` onto the corpus rows
+   (`flag_candidates`). The highest tier drives the eval **wake** (the `BreakingBus`), so a flash
+   crash is evaluated in seconds instead of up to a full eval interval. Full detail — the two-
+   parameter split, the reaction-time anchors, continuous-ingest etiquette — in
+   `../breaking_detection.md`.
 
 **Store everything, filter later.** Ingest never decides relevance — it embeds and
 upserts *every* article. Relevance is per-query and belongs to retrieval.

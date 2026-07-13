@@ -134,14 +134,11 @@
             }
         },
         {
-            "name": "📊 RAGEngine: Cost Report",
+            "name": "📊 RAGEngine: Cost Report (real spend + projection)",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/finiexragengine/cli/cost_cli.py",
-            "args": [
-                "--since",
-                "7d"
-            ],
+            "args": [],
             "console": "integratedTerminal",
             "justMyCode": false,
             "presentation": {
@@ -166,6 +163,22 @@
             }
         },
         {
+            "name": "📊 RAGEngine: Breaking Report (reaction + funnel)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/finiexragengine/cli/breaking_cli.py",
+            "args": [
+                "--since",
+                "7d"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "04_diagnostics",
+                "order": 4
+            }
+        },
+        {
             "name": "📊 RAGEngine: Model Check (ingest + llm stage vs available)",
             "type": "debugpy",
             "request": "launch",
@@ -174,7 +187,7 @@
             "justMyCode": false,
             "presentation": {
                 "group": "04_diagnostics",
-                "order": 4
+                "order": 5
             }
         },
         // ====================================================

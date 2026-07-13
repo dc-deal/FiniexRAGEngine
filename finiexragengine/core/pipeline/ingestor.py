@@ -1,12 +1,14 @@
 """Ingest half of a pipeline: fetch -> embed only new -> idempotent upsert."""
 from dataclasses import dataclass, field
-from typing import Dict, List
+from typing import Dict, List, Optional, Tuple
 
 from finiexragengine.core.observability.stage_timer import StageTimer
+from finiexragengine.core.pipeline.breaking_detector import BreakingDetector
 from finiexragengine.core.rag.abstract_embedder import AbstractEmbedder
 from finiexragengine.core.rag.abstract_vector_store import AbstractVectorStore
 from finiexragengine.core.sources.abstract_source import AbstractSource
 from finiexragengine.exceptions.ragengine_errors import SourceFetchError
+from finiexragengine.types.article_types import Article
 from finiexragengine.types.outcome_types import StageTiming
 
 
@@ -29,6 +31,8 @@ class IngestResult:
     fetched: int = 0
     embedded: int = 0               # total paid embeddings this pass
     stored: int = 0
+    candidates: int = 0             # breaking candidates flagged this pass (HIGH tier, ISSUE_11)
+    max_tier: int = 0               # highest importance tier written this pass — drives the eval wake (ISSUE_11)
     per_source: Dict[str, SourceIngest] = field(default_factory=dict)
     failed_sources: Dict[str, str] = field(default_factory=dict)   # source_id -> error message
     stage_timings: List[StageTiming] = field(default_factory=list)  # fetch/embed/upsert per source (ISSUE_32)
@@ -53,10 +57,14 @@ class Ingestor:
     """
 
     def __init__(self, sources: List[AbstractSource], embedder: AbstractEmbedder,
-                 store: AbstractVectorStore) -> None:
+                 store: AbstractVectorStore,
+                 breaking_detector: Optional[BreakingDetector] = None) -> None:
         self._sources = sources
         self._embedder = embedder
         self._store = store
+        # Optional (ISSUE_11): flags breaking candidates cheaply after upsert. None = detection
+        # off (e.g. a set with no interest in the breaking path); the ingest pass is unchanged.
+        self._breaking_detector = breaking_detector
 
     def run(self) -> IngestResult:
         """Fetch, embed only the new articles and upsert; return per-source + totals."""
@@ -64,6 +72,9 @@ class Ingestor:
         # Every stage is timed (ISSUE_32): one fetch/embed/upsert record per source; the
         # CLI footer aggregates them per stage, ISSUE_7 persists them with the envelope.
         timer = StageTimer()
+        # Fresh articles + their vectors, accumulated across sources — breaking detection runs
+        # once at the end so a story clustered across *different* feeds is visible (ISSUE_11).
+        detect_batch: List[Tuple[Article, List[float]]] = []
         for source in self._sources:
             source_id = source.get_source_id()
             # 1. Pull the source. A failing source is recorded, the rest proceed.
@@ -84,9 +95,17 @@ class Ingestor:
                 texts = [f'{article.title}. {article.summary}'.strip() for article in fresh]
                 vectors = timer.time('embed', lambda: self._embedder.embed(texts))
                 entry.stored = timer.time('upsert', lambda: self._store.upsert(fresh, vectors))
+                detect_batch.extend(zip(fresh, vectors))
             result.per_source[source_id] = entry
             result.fetched += entry.fetched
             result.embedded += entry.embedded
             result.stored += entry.stored
+        # 5. Breaking detection (ISSUE_11) — LLM-free, over everything just stored, so
+        #    cross-feed clusters count. Its highest tier drives the eval wake (Stage B).
+        if self._breaking_detector is not None and detect_batch:
+            articles, vectors = zip(*detect_batch)
+            detection = self._breaking_detector.detect(list(articles), list(vectors))
+            result.candidates = detection.candidates
+            result.max_tier = detection.max_tier
         result.stage_timings = timer.timings
         return result
