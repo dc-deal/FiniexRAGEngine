@@ -60,6 +60,9 @@ class PipelineRegistry:
         # without touching the committed constellation. None = no overrides.
         self._user_overrides_dir = user_overrides_dir
         self._pipelines: Dict[str, Pipeline] = {}
+        # Stream ids whose constellation carried a gitignored user override (all variants of
+        # an overridden file) — surfaced e.g. in the cost report so a diverging config is visible.
+        self._overridden: set = set()
 
     def load(self) -> None:
         """Load every constellation JSON in the pipelines directory."""
@@ -68,6 +71,8 @@ class PipelineRegistry:
         # malformed constellation fails loudly here at load time, not mid-run.
         for path in sorted(self._pipelines_dir.glob('*.json')):
             data = self._with_override(path)
+            overridden = (self._user_overrides_dir is not None
+                          and (self._user_overrides_dir / path.name).exists())
             for config in expand_variants(PipelineConfig(**data)):
                 # A derived stream id colliding with another pipeline (or another
                 # file's expansion) would silently shadow a signal series — refuse.
@@ -76,6 +81,12 @@ class PipelineRegistry:
                         f"duplicate pipeline_id '{config.pipeline_id}' "
                         f'(from {path.name}) — stream ids must be unique')
                 self._pipelines[config.pipeline_id] = Pipeline(config)
+                if overridden:
+                    self._overridden.add(config.pipeline_id)
+
+    def is_overridden(self, pipeline_id: str) -> bool:
+        """Whether this stream's constellation was deep-merged with a user override."""
+        return pipeline_id in self._overridden
 
     def _with_override(self, path: Path) -> Dict[str, Any]:
         """Load a constellation, deep-merging a gitignored user override when one exists.

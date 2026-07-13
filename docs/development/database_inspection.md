@@ -129,19 +129,43 @@ Every paid API call (embedding news, embedding a query, later the LLM eval) writ
 time** (frozen, so a later price change never rewrites history; the token count is the ground truth).
 
 ```bash
-python finiexragengine/cli/cost_cli.py --since 7d      # or 30d, or all
+python finiexragengine/cli/cost_cli.py
 ```
+
+The report has **two clearly separated parts** so real and estimated numbers are never confused
+(ISSUE_23/12):
 
 ```
 Cost Report
-window: last 7d
-section           calls     tokens           USD
-ingest_news           1        418      0.000008
-ingest_query          7         20      0.000000
-window total                   438      0.000009
-spent (all-time): $0.000009
-account credit:   not set (set cost.account_credit_usd to see remaining)
+
+=== REAL spend (billing log — actual USD) ==================
+window        calls      tokens            USD
+this week       175     211,492       0.094504
+this month      175     211,492       0.094504
+all-time        175     211,492       0.094504
+
+by pipeline / source-set (all-time):
+  crypto_sentiment_4o_enhanced       27      23,929       0.074313
+  crypto_sentiment                   93     102,950       0.015349
+  forex_macro_sentiment              23      30,263       0.003755
+  ...
+
+=== PREDICTION  ⚠️ EXTRAPOLATED — NOT REAL SPEND ===========
+Estimated from the REAL avg $/eval-pass (measured, N recent passes) × the current effective
+config cadence. Excludes breaking wakes (variable) and assumes a continuous run.
+pipeline                       sym ovr  $/pass(real)  passes/d  $/day(est) $/week(est) $/month(est)
+crypto_sentiment_4o_enhanced     2 yes      0.007947       144      1.1444        8.01        34.33
+...
+projected total (EXTRAPOLATED):  ~$1.31/day   ~$9.19/week   ~$39.37/month
 ```
+
+- **Part A — REAL** is aggregated from `cost_log`: actual USD, windowed (this week / this month /
+  all-time) and **split per pipeline / source-set** (the `pipeline_id` on every row — so the
+  expensive stream, e.g. a `gpt-4o` variant, is visible at a glance).
+- **Part B — PREDICTION** is *extrapolated*: the **real** measured cost per eval pass (from the
+  persisted envelopes) × the **effective** config's cadence (base + any `user_configs/pipelines/`
+  override). Every projected figure carries `⚠️` / `(est)` / `~` — never mistaken for real spend.
+  The `$/pass` is real and converges after a config change (e.g. a symbol-count override) runs.
 
 Reading it: embeddings cost fractions of a cent (hence the six decimals); the USD becomes meaningful
 once the LLM eval runs. **Balance is derived, not fetched** — OpenAI exposes no reliable balance

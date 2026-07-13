@@ -1,10 +1,11 @@
-"""Tests for the cost report (ISSUE_23).
+"""Tests for the cost report (ISSUE_23/12) — real spend + config-driven projection.
 
-`test_format_*` is pure rendering (no DB). `test_build_*` seeds a cost_log and needs a
-reachable pgvector Postgres — skipped otherwise; no API budget is touched.
+`test_format_*` is pure rendering (no DB). `test_build_*` / `test_prediction_*` seed a cost_log
+(+ an outcomes table) and need a reachable pgvector Postgres — skipped otherwise; no API budget.
 """
+import json
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import pytest
 
@@ -14,7 +15,11 @@ import psycopg  # noqa: E402
 from finiexragengine.core.observability.cost_recorder import CostRecorder  # noqa: E402
 from finiexragengine.core.observability.cost_report import (  # noqa: E402
     CostReport,
-    SectionCost,
+    EvalPipelineInfo,
+    LineItem,
+    PipelineProjection,
+    Prediction,
+    RealWindow,
     build_cost_report,
     format_cost_report,
 )
@@ -25,8 +30,10 @@ from finiexragengine.types.config_types.app_config_types import (  # noqa: E402
 )
 
 _TABLE = 'cost_log_report_test'
+_OUTCOMES = 'outcomes_report_test'
 _PRICING = PricingConfig(models={
     'text-embedding-3-small': ModelPrice(input_per_1k=0.00002),
+    'gpt-4o-mini': ModelPrice(input_per_1k=0.00015, output_per_1k=0.0006),
 })
 
 
@@ -35,60 +42,106 @@ def _dsn() -> str:
         'DATABASE_URL', 'postgresql://ragengine:ragengine@127.0.0.1:5433/ragengine')
 
 
-def test_format_shows_sections_and_derived_balance():
-    report = CostReport(
-        since_label='7d',
-        rows=[SectionCost('ingest_news', 3, 12000, 0.24),
-              SectionCost('llm_eval', 1, 800, 0.05)],
-        window_usd=0.29, window_tokens=12800, spent_all_usd=0.29,
-        credit_usd=50.0, budget_usd=0.0)
-    text = format_cost_report(report)
-    assert 'ingest_news' in text and 'llm_eval' in text
-    assert 'window total' in text
-    assert 'remaining' in text and '49.71' in text     # 50.00 − 0.29
+# --- pure rendering -------------------------------------------------------------------
+
+def _report(prediction):
+    win = [RealWindow('this week', 5, 1000, 0.05,
+                      [LineItem('crypto_sentiment', 3, 600, 0.03),
+                       LineItem('crypto_news', 2, 400, 0.02)]),
+           RealWindow('this month', 5, 1000, 0.05, []),
+           RealWindow('all-time', 5, 1000, 0.05,
+                      [LineItem('crypto_sentiment', 3, 600, 0.03),
+                       LineItem('crypto_news', 2, 400, 0.02)])]
+    return CostReport(real=win, prediction=prediction, spent_all_usd=0.05, credit_usd=10.0)
 
 
-def test_format_without_credit_hints_and_empty_window():
-    report = CostReport(since_label='all-time', rows=[], window_usd=0.0, window_tokens=0,
-                        spent_all_usd=0.0, credit_usd=0.0, budget_usd=0.0)
-    text = format_cost_report(report)
-    assert 'not set' in text
-    assert '(no paid calls in the window)' in text
+def test_format_separates_real_and_prediction_with_warning():
+    prediction = Prediction(
+        per_pipeline=[PipelineProjection('crypto_sentiment', 0.003, 144.0, 0.432,
+                                         symbol_count=8, overridden=True)],
+        usd_per_day=0.432, usd_per_week=3.024, usd_per_month=12.96, sampled_passes=20)
+    text = format_cost_report(_report(prediction))
+    assert 'REAL spend' in text and 'PREDICTION' in text
+    assert 'crypto_sentiment' in text and 'crypto_news' in text     # per-pipeline attribution
+    assert 'EXTRAPOLATED' in text and '⚠️' in text                  # projection clearly marked
+    assert '/day' in text and '/week' in text and '/month' in text
+    assert 'sym' in text and 'ovr' in text                          # symbol count + override cols
+    assert 'yes' in text                                            # the override flag renders
+    assert 'remaining' in text and '9.95' in text                   # 10.00 − 0.05
 
+
+def test_format_without_any_passes_says_no_projection():
+    text = format_cost_report(_report(None))
+    assert 'no real passes yet to project' in text
+    assert 'REAL spend' in text                                     # real part still renders
+
+
+# --- DB-backed build ------------------------------------------------------------------
 
 @pytest.fixture
 def seeded():
-    def _drop() -> None:
+    def _drop():
         with psycopg.connect(_dsn()) as conn, conn.cursor() as cur:
             cur.execute(f'DROP TABLE IF EXISTS {_TABLE}')
+            cur.execute(f'DROP TABLE IF EXISTS {_OUTCOMES}')
     try:
         _drop()
-        rec = CostRecorder(_dsn(), _PRICING, table=_TABLE)
+        recorder = CostRecorder(_dsn(), _PRICING, table=_TABLE)
     except (psycopg.Error, VectorStoreError) as exc:
         pytest.skip(f'PostgreSQL not available: {exc}')
-    rec.record('ingest_news', 'text-embedding-3-small', 10_000)   # 0.0002
-    rec.record('ingest_query', 'text-embedding-3-small', 1_000)   # 0.00002
+    # Real billing rows, attributed per pipeline / source-set.
+    recorder.record('llm_eval', 'gpt-4o-mini', 1000, 500, pipeline_id='p1')      # 0.00045
+    recorder.record('llm_eval', 'gpt-4o-mini', 1000, 500, pipeline_id='p1')      # 0.00045
+    recorder.record('ingest_news', 'text-embedding-3-small', 10_000,
+                    pipeline_id='news_set')                                      # 0.0002
+    # Two persisted passes for p1 → avg cost/pass = 0.02 (drives the projection).
+    with psycopg.connect(_dsn()) as conn, conn.cursor() as cur:
+        cur.execute(f'CREATE TABLE {_OUTCOMES} (id BIGSERIAL PRIMARY KEY, pipeline_id TEXT, '
+                    'ts TIMESTAMPTZ DEFAULT now(), status TEXT, envelope JSONB)')
+        for cost in (0.01, 0.03):
+            cur.execute(f'INSERT INTO {_OUTCOMES} (pipeline_id, status, envelope) '
+                        'VALUES (%s, %s, %s)',
+                        ('p1', 'success', json.dumps({'metadata': {'cost_usd': cost}})))
     yield
     _drop()
 
 
-def test_build_aggregates_by_section(seeded):
-    since = datetime.now(timezone.utc) - timedelta(days=1)
-    report = build_cost_report(_dsn(), since, credit_usd=10.0, table=_TABLE)
-    by_section = {r.section: r for r in report.rows}
-    assert set(by_section) == {'ingest_news', 'ingest_query'}
-    assert by_section['ingest_news'].usd == pytest.approx(0.0002)
-    assert report.spent_all_usd == pytest.approx(0.00022)
-    assert report.remaining_usd == pytest.approx(10.0 - 0.00022)
+def test_build_aggregates_real_spend_per_pipeline(seeded):
+    report = build_cost_report(_dsn(), cost_table=_TABLE, outcomes_table=_OUTCOMES,
+                               credit_usd=10.0)
+    all_time = next(w for w in report.real if w.label == 'all-time')
+    by = {item.label: item for item in all_time.by_pipeline}
+    assert by['p1'].usd == pytest.approx(0.0009)          # two llm_eval calls
+    assert by['news_set'].usd == pytest.approx(0.0002)
+    assert report.spent_all_usd == pytest.approx(0.0011)
+    assert report.remaining_usd == pytest.approx(10.0 - 0.0011)
 
 
-def test_build_survives_missing_table():
+def test_prediction_projects_real_cost_per_pass_over_config_cadence(seeded):
+    report = build_cost_report(
+        _dsn(), eval_pipelines={'p1': EvalPipelineInfo(600, symbol_count=2, overridden=True)},
+        cost_table=_TABLE, outcomes_table=_OUTCOMES)
+    assert report.prediction is not None
+    proj = {p.pipeline_id: p for p in report.prediction.per_pipeline}
+    assert proj['p1'].usd_per_pass == pytest.approx(0.02)        # avg of 0.01 + 0.03
+    assert proj['p1'].passes_per_day == pytest.approx(144.0)     # 86400 / 600
+    assert proj['p1'].usd_per_day == pytest.approx(0.02 * 144)
+    assert proj['p1'].symbol_count == 2 and proj['p1'].overridden is True
+    assert report.prediction.usd_per_week == pytest.approx(0.02 * 144 * 7)
+    assert report.prediction.usd_per_month == pytest.approx(0.02 * 144 * 30)
+
+
+def test_no_eval_pipelines_means_no_prediction(seeded):
+    report = build_cost_report(_dsn(), eval_pipelines={}, cost_table=_TABLE,
+                               outcomes_table=_OUTCOMES)
+    assert report.prediction is None                            # nothing to project
+
+
+def test_build_survives_missing_cost_table():
     # Fresh DB, no CostRecorder ever ran: 'nothing spent yet', not a crash.
-    since = datetime.now(timezone.utc) - timedelta(days=1)
     try:
-        report = build_cost_report(_dsn(), since, credit_usd=5.0,
-                                   table='cost_log_never_created')
+        report = build_cost_report(_dsn(), cost_table='cost_log_never_created', credit_usd=5.0)
     except VectorStoreError as exc:
         pytest.skip(f'PostgreSQL not available: {exc}')
-    assert report.rows == [] and report.spent_all_usd == 0.0
-    assert report.remaining_usd == pytest.approx(5.0)      # credit passes through
+    assert all(w.usd == 0.0 for w in report.real) and report.spent_all_usd == 0.0
+    assert report.remaining_usd == pytest.approx(5.0)

@@ -134,14 +134,11 @@
             }
         },
         {
-            "name": "📊 RAGEngine: Cost Report",
+            "name": "📊 RAGEngine: Cost Report (real spend + projection)",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/finiexragengine/cli/cost_cli.py",
-            "args": [
-                "--since",
-                "7d"
-            ],
+            "args": [],
             "console": "integratedTerminal",
             "justMyCode": false,
             "presentation": {
