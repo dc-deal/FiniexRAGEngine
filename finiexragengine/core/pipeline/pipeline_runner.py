@@ -5,7 +5,7 @@ from time import perf_counter
 from typing import Dict, List, Optional
 
 from finiexragengine.core.observability.run_footer import RunFooter
-from finiexragengine.core.pipeline.ingestor import Ingestor
+from finiexragengine.core.pipeline.ingestor import Ingestor, IngestResult
 from finiexragengine.core.pipeline.symbol_evaluator import SymbolEval, SymbolEvaluator
 from finiexragengine.exceptions.ragengine_errors import (
     FiniexRagError,
@@ -74,12 +74,18 @@ class PipelineRunner:
     every RunError carries a fixed taxonomy type. Persisting the envelope is ISSUE_8.
     """
 
-    def __init__(self, config: PipelineConfig, ingestor: Ingestor,
+    def __init__(self, config: PipelineConfig, ingestor: Optional[Ingestor],
                  evaluator: SymbolEvaluator, prompt_metadata: PromptMetadata,
-                 llm_model: str, cost_recorder=None, outcome_store=None) -> None:
+                 llm_model: str, cost_recorder=None, outcome_store=None,
+                 sources_configured: int = 0) -> None:
         self._config = config
+        # None = worker mode (ISSUE_10): acquisition runs on the ingest worker's own
+        # clock; this runner only evaluates over the shared corpus. Set = the manual,
+        # self-contained pass (run CLI / API without workers) — ingest inline as before.
         self._ingestor = ingestor
         self._evaluator = evaluator
+        # The referenced source-set's size — config no longer owns feeds (ISSUE_10).
+        self._sources_configured = sources_configured
         # Resolved once at assembly (ISSUE_33): stamped on every envelope this runner
         # produces, so the outcome names the exact prompt even when every eval fails.
         self._prompt_metadata = prompt_metadata
@@ -97,7 +103,9 @@ class PipelineRunner:
         errors: List[RunError] = []
 
         # --- A: ingest (fetch -> embed only new -> idempotent upsert), per source ---
-        ingest = self._ingestor.run()
+        # Skipped in worker mode: the ingest worker owns acquisition on its own cadence
+        # (ISSUE_10); an empty IngestResult keeps the assembly below uniform.
+        ingest = self._ingestor.run() if self._ingestor is not None else IngestResult()
         for source_id, message in ingest.failed_sources.items():
             errors.append(self._error('SOURCE_UNREACHABLE', f'{source_id}: {message}'))
 
@@ -131,8 +139,8 @@ class PipelineRunner:
         metadata = RunMetadata(
             model=self._llm_model,
             model_snapshot=', '.join(snapshots),
-            sources_configured=len(self._config.sources),
-            sources_reached=len(self._config.sources) - len(ingest.failed_sources),
+            sources_configured=self._sources_configured,
+            sources_reached=self._sources_configured - len(ingest.failed_sources),
             articles_found=ingest.fetched,
             articles_relevant=sum(len(ev.articles) for ev in evals),
             processing_time_ms=(perf_counter() - run_start) * 1000.0,

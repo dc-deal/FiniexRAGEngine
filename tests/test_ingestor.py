@@ -11,7 +11,7 @@ from finiexragengine.core.rag.abstract_vector_store import AbstractVectorStore
 from finiexragengine.core.sources.abstract_source import AbstractSource
 from finiexragengine.exceptions.ragengine_errors import SourceFetchError
 from finiexragengine.types.article_types import Article, ScoredArticle
-from finiexragengine.types.config_types.pipeline_config_types import SourceConfig
+from finiexragengine.types.config_types.source_set_types import SourceConfig
 
 _NOW = datetime.now(timezone.utc)
 

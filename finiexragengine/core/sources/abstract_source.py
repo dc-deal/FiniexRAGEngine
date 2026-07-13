@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 from typing import List
 
 from finiexragengine.types.article_types import Article
-from finiexragengine.types.config_types.pipeline_config_types import SourceConfig
+from finiexragengine.types.config_types.source_set_types import SourceConfig
 
 
 class AbstractSource(ABC):

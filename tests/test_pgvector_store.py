@@ -38,7 +38,8 @@ def _article(article_id: str, published_at: datetime) -> Article:
 def store():
     config = VectorStoreConfig(table=_TABLE)
     try:
-        instance = PgVectorStore(config, _dsn(), dimensions=_DIMS)
+        instance = PgVectorStore(config, _dsn(), dimensions=_DIMS,
+                                 embedding_model='test-embed')
     except VectorStoreError as exc:
         pytest.skip(f'PostgreSQL/pgvector not available: {exc}')
     with psycopg.connect(_dsn()) as conn, conn.cursor() as cur:
@@ -46,6 +47,7 @@ def store():
     yield instance
     with psycopg.connect(_dsn()) as conn, conn.cursor() as cur:
         cur.execute(f'DROP TABLE IF EXISTS {_TABLE}')
+        cur.execute('DELETE FROM corpus_meta WHERE table_name = %s', (_TABLE,))
 
 
 def test_upsert_is_idempotent(store):

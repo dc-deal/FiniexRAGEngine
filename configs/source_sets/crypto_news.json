@@ -1,0 +1,45 @@
+{
+    "source_set_id": "crypto_news",
+    "trigger": {
+        "type": "interval",
+        "interval_seconds": 300
+    },
+    "sources": [
+        {
+            "source_id": "cryptonews",
+            "type": "rss",
+            "url": "https://cryptonews.com/rss",
+            "weight": 0.8
+        },
+        {
+            "source_id": "cointelegraph",
+            "type": "rss",
+            "url": "https://cointelegraph.com/rss",
+            "weight": 1.0
+        },
+        {
+            "source_id": "decrypt",
+            "type": "rss",
+            "url": "https://decrypt.co/feed",
+            "weight": 1.0
+        },
+        {
+            "source_id": "coindesk",
+            "type": "rss",
+            "url": "https://www.coindesk.com/arc/outboundfeeds/rss/",
+            "weight": 1.0
+        },
+        {
+            "source_id": "theblock",
+            "type": "rss",
+            "url": "https://www.theblock.co/rss.xml",
+            "weight": 1.0
+        },
+        {
+            "source_id": "cryptoslate",
+            "type": "rss",
+            "url": "https://cryptoslate.com/feed/",
+            "weight": 0.8
+        }
+    ]
+}

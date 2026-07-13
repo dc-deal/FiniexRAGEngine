@@ -11,7 +11,7 @@
         "GBPUSD": "British Pound Sterling GBP/USD Bank of England"
     },
     "prompt": {
-        "name": "sentiment",
+        "name": "forex_sentiment",
         "version": "1"
     },
     "llm": {
@@ -21,26 +21,7 @@
         "type": "interval",
         "interval_seconds": 600
     },
-    "sources": [
-        {
-            "source_id": "fxstreet",
-            "type": "rss",
-            "url": "https://www.fxstreet.com/rss/news",
-            "weight": 1.0
-        },
-        {
-            "source_id": "forexlive",
-            "type": "rss",
-            "url": "https://www.forexlive.com/feed/news",
-            "weight": 1.0
-        },
-        {
-            "source_id": "dailyfx",
-            "type": "rss",
-            "url": "https://www.dailyfx.com/feeds/market-news",
-            "weight": 0.8
-        }
-    ],
+    "source_set": "forex_news",
     "retrieval": {
         "top_k": 12,
         "recency_window_minutes": 2880,

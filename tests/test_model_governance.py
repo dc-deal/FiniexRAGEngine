@@ -33,7 +33,7 @@ def _assembler(allowed) -> PipelineAssembler:
 def _pipeline(model: str) -> PipelineConfig:
     return PipelineConfig(
         pipeline_id='p', outcome_type='o', market='crypto', symbols=['BTCUSD'],
-        llm={'model': model}, sources=[{'source_id': 's', 'url': 'http://x'}])
+        llm={'model': model}, source_set='test_news')
 
 
 def test_allowed_model_resolves():

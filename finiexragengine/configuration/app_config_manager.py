@@ -10,6 +10,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _CONFIG_PATH = _PROJECT_ROOT / 'configs' / 'app_config.json'
 _USER_CONFIG_PATH = _PROJECT_ROOT / 'user_configs' / 'app_config.json'
 _PIPELINES_DIR = _PROJECT_ROOT / 'configs' / 'pipelines'
+_SOURCE_SETS_DIR = _PROJECT_ROOT / 'configs' / 'source_sets'
 _PROMPTS_DIR = _PROJECT_ROOT / 'prompts'
 
 
@@ -51,6 +52,9 @@ class AppConfigManager:
 
     def get_pipelines_dir(self) -> Path:
         return _PIPELINES_DIR
+
+    def get_source_sets_dir(self) -> Path:
+        return _SOURCE_SETS_DIR
 
     def get_prompts_dir(self) -> Path:
         return _PROMPTS_DIR

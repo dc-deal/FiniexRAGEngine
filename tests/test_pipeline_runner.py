@@ -36,8 +36,7 @@ def _config(symbols: List[str]) -> PipelineConfig:
     return PipelineConfig(
         pipeline_id='p', outcome_type='sentiment_fear_greed', market='crypto',
         symbols=symbols, llm={'model': 'gpt-4o-mini'},
-        sources=[{'source_id': 's1', 'url': 'http://x'},
-                 {'source_id': 's2', 'url': 'http://y'}])
+        source_set='test_news')
 
 
 def _article(article_id: str) -> Article:
@@ -104,9 +103,11 @@ class _FakeStore:
 
 
 def _runner(config, ingestor, evaluator, recorder=None, store=None):
+    # sources_configured mirrors what the assembler injects from the referenced
+    # source-set (ISSUE_10) — the fake set has two feeds.
     return PipelineRunner(config, ingestor, evaluator, _META,
                           llm_model='gpt-4o-mini', cost_recorder=recorder,
-                          outcome_store=store)
+                          outcome_store=store, sources_configured=2)
 
 
 def test_clean_pass_assembles_success_envelope():
@@ -217,6 +218,21 @@ def test_store_failure_degrades_pass_never_kills_it():
     assert envelope.status == 'partial'
     assert envelope.errors[-1].type == 'VECTOR_STORE_ERROR'
     assert 'not persisted' in envelope.errors[-1].message
+
+
+def test_worker_mode_runner_skips_ingest_cleanly():
+    # ISSUE_10: ingestor=None = worker mode — acquisition happens on the ingest
+    # worker's clock; the eval pass touches no source and reports full reach.
+    config = _config(['BTCUSD'])
+    envelope = PipelineRunner(config, None,
+                              _FakeEvaluator({'BTCUSD': _eval('BTCUSD')}), _META,
+                              llm_model='gpt-4o-mini', sources_configured=2).run()
+    assert envelope.status == 'success'
+    stages = [t.stage for t in envelope.metadata.stage_timings]
+    assert 'fetch' not in stages and 'embed' not in stages   # no Phase A ran
+    assert envelope.metadata.sources_configured == 2
+    assert envelope.metadata.sources_reached == 2            # nothing failed — none ran
+    assert envelope.metadata.articles_found == 0             # found *this pass*
 
 
 def test_fanned_config_stamps_variant_hints():

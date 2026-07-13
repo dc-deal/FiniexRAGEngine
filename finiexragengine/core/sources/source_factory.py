@@ -2,7 +2,7 @@
 from finiexragengine.core.sources.abstract_source import AbstractSource
 from finiexragengine.core.sources.rss_source import RssSource
 from finiexragengine.exceptions.ragengine_errors import SourceFetchError
-from finiexragengine.types.config_types.pipeline_config_types import SourceConfig
+from finiexragengine.types.config_types.source_set_types import SourceConfig
 
 
 def build_source(config: SourceConfig) -> AbstractSource:

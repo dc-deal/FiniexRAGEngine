@@ -8,7 +8,7 @@ import pytest
 from finiexragengine.core.sources.rss_source import RssSource
 from finiexragengine.exceptions.ragengine_errors import SourceFetchError
 from finiexragengine.types.article_types import Article
-from finiexragengine.types.config_types.pipeline_config_types import SourceConfig
+from finiexragengine.types.config_types.source_set_types import SourceConfig
 
 
 class _FakeParsed:

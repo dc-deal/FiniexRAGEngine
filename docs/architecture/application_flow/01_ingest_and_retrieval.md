@@ -13,10 +13,17 @@ Companion docs: `../pipeline_engine_architecture.md` (how the engine is wired) a
 
 Top-down, each new article flows through these units in order:
 
-1. **Trigger — `core/triggers/interval_trigger.py` (`IntervalTrigger`).**
+1. **Trigger — `core/triggers/interval_trigger.py` (`IntervalTrigger`) · built, ISSUE_10.**
    Ingest is **pull, not push**: the engine fetches on its own schedule. Nothing is
    pushed to us. (The only push path in the system is the future live breaking
-   channel, ISSUE_11 — a separate concern.)
+   channel, ISSUE_11 — a separate concern.) The trigger loop is overlap-free (the
+   next tick waits for the pass) and fires immediately on start; the **ingest worker**
+   (`core/pipeline/ingest_worker.py`) clocks one **source-set**
+   (`configs/source_sets/<id>.json` — feeds + ingest cadence, default 300s; declared
+   once, referenced by constellations via `source_set`). Acquisition runs faster than
+   eval deliberately: RSS windows slide, a missed article is gone forever — and this
+   path never touches the LLM, so frequent is cheap. One worker feeds every pipeline
+   referencing the set (1× fetch, N× read).
 
 2. **Fetch — `core/sources/rss_source.py` (`RssSource.fetch`).**
    Actively pulls the RSS feed (`feedparser.parse(url)`), maps each entry to an
@@ -39,17 +46,24 @@ Top-down, each new article flows through these units in order:
    deliberate: it is what makes a later re-embed possible (e.g. an embedding-model
    change, ISSUE_16). The `importance` / `breaking_candidate` columns exist now
    (nullable) and are populated later by the breaking detector (ISSUE_11).
+   **Corpus guard (built, ISSUE_16):** on first creation the store stamps the corpus
+   with its embedding model + dimensions in a `corpus_meta` row; booting against a
+   mismatched stamp raises hard, naming both sides — vectors from different models
+   must never mix, and a config edit can never silently poison the corpus (a model
+   change is a deliberate re-embed migration, ISSUE_14).
 
 **Store everything, filter later.** Ingest never decides relevance — it embeds and
 upserts *every* article. Relevance is per-query and belongs to retrieval.
 
-**Running it.** The whole write path above runs as one pass via
-`finiexragengine/cli/ingest_cli.py` (`core/pipeline/ingestor.py` — `Ingestor`: fetch → embed →
-upsert), the manual precursor to the scheduled ingest worker (ISSUE_10) that `Pipeline.run`
-(ISSUE_7) will call as its first stage. Cheap to re-run: the store is asked which article ids it
-already holds (`existing_ids`), so only genuinely new items are embedded — the pass reports
-`embedded N` (the paid count), so a re-run over an unchanged feed window pays nothing. Article text
-is embedded as `title. summary` (the title carries signal when the RSS summary is thin).
+**Running it.** The write path runs as one pass (`core/pipeline/ingestor.py` — `Ingestor`:
+fetch → embed → upsert) with three drivers: the **ingest worker** on its source-set cadence
+(`server_cli --workers`, ISSUE_10 — the live mode), the manual
+`finiexragengine/cli/ingest_cli.py --source-set <id>` pass, and — only when the server runs
+*without* workers — inline as `Pipeline.run`'s first stage (the self-contained manual run).
+Cheap to re-run: the store is asked which article ids it already holds (`existing_ids`), so only
+genuinely new items are embedded — the pass reports `embedded N` (the paid count), so a re-run
+over an unchanged feed window pays nothing. Article text is embedded as `title. summary` (the
+title carries signal when the RSS summary is thin).
 
 ## Phase B — Retrieval (read path)
 

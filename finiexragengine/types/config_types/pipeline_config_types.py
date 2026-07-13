@@ -9,13 +9,6 @@ from typing import Dict, List, Literal, Optional
 from pydantic import BaseModel, Field, model_validator
 
 
-class SourceConfig(BaseModel):
-    source_id: str
-    type: Literal['rss', 'blog', 'socket', 'api'] = 'rss'
-    url: str
-    weight: float = 1.0          # source trust / weight (ISSUE_5)
-
-
 class LlmVariant(BaseModel):
     """One model variant of a fanned constellation (ISSUE_42).
 
@@ -69,11 +62,12 @@ class PipelineLlmConfig(BaseModel):
 class PromptRef(BaseModel):
     """The prompt a pipeline uses — its template `name` and `version` (ISSUE_33).
 
-    Resolves to `prompts/<name>_v<version>.md`; the template's front-matter carries the
-    stable id + content hash recorded with every outcome. Each pipeline declares its own,
-    so prompts are swappable per constellation without touching code.
+    Resolves to `prompts/<name>/<name>_v<version>.md` (one folder per prompt family);
+    the template's front-matter carries the stable id + content hash recorded with
+    every outcome. Each pipeline declares its own, so prompts are swappable per
+    constellation without touching code.
     """
-    name: str = 'sentiment'
+    name: str = 'crypto_sentiment'
     version: str = '1'
 
 
@@ -114,8 +108,11 @@ class PipelineConfig(BaseModel):
     symbol_queries: Dict[str, str] = Field(default_factory=dict)   # symbol → retrieval query text (ISSUE_5)
     prompt: PromptRef = Field(default_factory=PromptRef)           # declared prompt template (ISSUE_33)
     llm: PipelineLlmConfig                                         # declared eval model — required
-    trigger: TriggerConfig = Field(default_factory=TriggerConfig)
-    sources: List[SourceConfig]
+    trigger: TriggerConfig = Field(default_factory=TriggerConfig)   # EVAL cadence (ISSUE_10)
+    # The shared feed group this pipeline evaluates over (ISSUE_10) — a reference into
+    # configs/source_sets/<id>.json, resolved at assembly. Constellations never own
+    # feeds; acquisition (sources + ingest cadence) is the source-set's concern.
+    source_set: str
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
     breaking: BreakingConfig = Field(default_factory=BreakingConfig)
     # Variant provenance (ISSUE_42) — set ONLY by the registry's fan-out expansion,

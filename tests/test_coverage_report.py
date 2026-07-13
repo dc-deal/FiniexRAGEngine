@@ -85,10 +85,14 @@ def seeded():
         with psycopg.connect(_dsn()) as conn, conn.cursor() as cur:
             cur.execute(f'DROP TABLE IF EXISTS {_ART_TABLE}')
             cur.execute(f'DROP TABLE IF EXISTS {_QC_TABLE}')
+            cur.execute("SELECT to_regclass('corpus_meta')")
+            if cur.fetchone()[0] is not None:
+                cur.execute('DELETE FROM corpus_meta WHERE table_name = %s', (_ART_TABLE,))
 
     try:
         _drop()
-        store = PgVectorStore(VectorStoreConfig(table=_ART_TABLE), _dsn(), dimensions=_DIMS)
+        store = PgVectorStore(VectorStoreConfig(table=_ART_TABLE), _dsn(), dimensions=_DIMS,
+                              embedding_model='test-embed')
         cache = QueryVectorCache(_FixedEmbedder(), _dsn(), model='m',
                                  dimensions=_DIMS, table=_QC_TABLE)
     except (psycopg.Error, VectorStoreError) as exc:

@@ -76,15 +76,20 @@ class PromptBuilder:
         self._cache: Dict[Tuple[str, str], Tuple[PromptMetadata, Template]] = {}
 
     def _load(self, name: str, version: str) -> Tuple[PromptMetadata, Template]:
-        """Read, parse (front-matter -> metadata) and compile `<name>_v<version>.md`, cached."""
+        """Read, parse (front-matter -> metadata) and compile the template, cached.
+
+        Layout: one folder per prompt family — `prompts/<name>/<name>_v<version>.md`
+        (e.g. crypto_sentiment/, forex_sentiment/) — so a family's versions stay
+        together and each pipeline type owns its wording.
+        """
         key = (name, version)
         if key in self._cache:
             return self._cache[key]
-        path = self._prompts_dir / f'{name}_v{version}.md'
+        path = self._prompts_dir / name / f'{name}_v{version}.md'
         try:
             raw = path.read_text(encoding='utf-8')
         except FileNotFoundError as exc:
-            raise LLMError(f'prompt template not found: {path.name}') from exc
+            raise LLMError(f'prompt template not found: {name}/{path.name}') from exc
         meta, body = _split_front_matter(raw)
         # Fingerprint the body (front-matter excluded): a silent edit shows in the output;
         # a metadata-only fix does not invalidate the series. Short git-style hex is enough.
