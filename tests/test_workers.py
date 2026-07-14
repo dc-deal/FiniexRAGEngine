@@ -10,7 +10,7 @@ import pytest
 
 from finiexragengine.core.pipeline.eval_worker import EvalWorker
 from finiexragengine.core.pipeline.ingest_worker import IngestWorker
-from finiexragengine.core.pipeline.ingestor import IngestResult
+from finiexragengine.types.ingest_types import IngestResult
 from finiexragengine.core.triggers.interval_trigger import IntervalTrigger
 from finiexragengine.exceptions.ragengine_errors import ConfigurationError
 from finiexragengine.types.config_types.source_set_types import SourceSetConfig

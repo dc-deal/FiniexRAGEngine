@@ -12,7 +12,10 @@ from finiexragengine.core.observability.cost_recorder import derive_usd
 from finiexragengine.core.pipeline.pipeline_assembler import PipelineAssembler
 from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
 from finiexragengine.core.pipeline.symbol_evaluator import format_symbol_eval
-from finiexragengine.exceptions.ragengine_errors import PipelineNotFoundError
+from finiexragengine.exceptions.ragengine_errors import (
+    BudgetExceededError,
+    PipelineNotFoundError,
+)
 
 
 def main() -> None:
@@ -45,7 +48,13 @@ def main() -> None:
     evaluator = assembler.build_evaluator(pipeline)
 
     query = pipeline.symbol_queries.get(args.symbol, args.symbol)
-    ev = evaluator.evaluate(args.symbol, query)
+    # The eval CLI calls the evaluator directly (not via the runner, which degrades to HOLD), so
+    # it handles the circuit-breaker suspend itself (ISSUE_47) — a clean message, not a traceback.
+    try:
+        ev = evaluator.evaluate(args.symbol, query)
+    except BudgetExceededError as exc:
+        print(f'⏸ paid evaluation suspended — {exc}')
+        return
     usd = derive_usd(cfg.pricing, pipeline.llm.model,
                      ev.usage.prompt_tokens, ev.usage.completion_tokens)
     print(format_symbol_eval(ev, args.pipeline, usd, model=pipeline.llm.model,

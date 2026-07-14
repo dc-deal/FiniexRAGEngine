@@ -1,8 +1,14 @@
 """Shared pytest fixtures."""
-import pytest
-from fastapi.testclient import TestClient
+import os
 
-from finiexragengine.api.api_app import create_app
+# Console-only logging for the suite: booting the app in a test (the client fixture) must not
+# append test output — including deliberately-raised errors — to the real logs/finiex.log.
+os.environ['FINIEX_LOG_FILE'] = ''
+
+import pytest  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+
+from finiexragengine.api.api_app import create_app  # noqa: E402
 
 
 @pytest.fixture

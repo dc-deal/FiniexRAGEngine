@@ -17,12 +17,24 @@ class WorkerInfo(BaseModel):
     last_detail: str = ''
 
 
+class BudgetInfo(BaseModel):
+    """Cost circuit-breaker state (ISSUE_47) — is paid work suspended, and until when."""
+    enabled: bool = True
+    suspended: bool = False
+    reason: Optional[str] = None
+    retry_at: Optional[str] = None
+    day_spend_usd: float = 0.0
+    soft_daily_usd: float = 0.0
+
+
 class HealthResponse(BaseModel):
     status: str = 'ok'
     service: str = 'FiniexRAGEngine'
     version: str
     # Empty when the server runs without --workers (API-only mode, no background spend).
     workers: List[WorkerInfo] = []
+    # Present only with real runners attached (the guard lives on the assembler, ISSUE_47).
+    budget: Optional[BudgetInfo] = None
 
 
 class PipelineInfo(BaseModel):

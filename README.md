@@ -182,6 +182,11 @@ In active development. Implemented and tested today:
   the interval) at each pipeline's own sensitivity, the LLM **confirms** (`urgency ≥ threshold`),
   and a **reaction-time report** (engine vs end-to-end, from the store) shows the flagged→confirmed
   funnel. The live SSE push wire is the next slice (Stage C, IDE-accepted, paired with #9).
+- **Cost circuit-breaker (#47)**: the engine reacts to the provider's own spend limit — an OpenAI
+  `insufficient_quota` at any paid seam (embeddings or LLM) **suspends paid work**, backs off, and
+  **re-probes** on a cool-off (auto-resume); a suspended eval degrades to a clean `BUDGET_EXCEEDED`
+  HOLD, a suspended ingest pass logs `suspended (quota)`, and the state shows on `/health`. No
+  dollar-accounting to keep in sync with the provider — it reacts to the authoritative signal.
 - **Source health & rotating logs (#11)**: every poll is recorded per feed (`source_health`);
   status-aware fetch classifies failures (a fast loop's HTTP 429 is `RATE_LIMITED`, not a fake parse
   error), and a persistently failing feed is **flagged + quarantined** so the loop backs off. A

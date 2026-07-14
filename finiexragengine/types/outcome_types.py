@@ -4,9 +4,10 @@ These are Pydantic models because they are serialized identically to every
 surface: the collector's JSONL archive, the live worker, and the HTTP API.
 """
 from datetime import datetime
-from typing import Dict, Generic, List, Literal, Optional, TypeVar
+from typing import Any, Dict, Generic, List, Literal, Optional, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, model_serializer
+from pydantic.functional_serializers import SerializerFunctionWrapHandler
 
 
 class ArticleRef(BaseModel):
@@ -106,7 +107,7 @@ class RunMetadata(BaseModel):
     variant: Optional[str] = None
 
     @model_serializer(mode='wrap')
-    def _omit_absent_hints(self, handler):
+    def _omit_absent_hints(self, handler: SerializerFunctionWrapHandler) -> Dict[str, Any]:
         # Single-model pipelines omit the hint keys entirely (absent = today's JSON,
         # no schema bump) instead of serializing nulls.
         data = handler(self)

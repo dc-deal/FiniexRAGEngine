@@ -3,21 +3,23 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 from time import perf_counter
+from typing import List, Optional
 
 from finiexragengine.core.pipeline.pipeline import Pipeline
 from finiexragengine.core.triggers.abstract_trigger import AbstractTrigger
+from finiexragengine.types.outcome_types import AnalysisEnvelope
 from finiexragengine.types.worker_types import WorkerState
 
 logger = logging.getLogger(__name__)
 
 
-def _fmt_seconds(seconds) -> str:
+def _fmt_seconds(seconds: Optional[float]) -> str:
     if seconds is None:
         return '—'
     return f'{seconds:.0f}s' if seconds < 90 else f'{seconds / 60:.1f}m'
 
 
-def _breaking_confirmations(envelope) -> list:
+def _breaking_confirmations(envelope: AnalysisEnvelope) -> List[str]:
     """One `[BREAKING ✓]` line per confirmed breaking result, with its reaction time (ISSUE_11).
 
     Engine reaction = envelope timestamp − earliest source `fetched_at` (what we control);

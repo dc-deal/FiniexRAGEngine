@@ -2,6 +2,7 @@
 from datetime import datetime, timezone
 from typing import List, Optional
 
+from finiexragengine.core.pipeline.pipeline_runner import PipelineRunner
 from finiexragengine.types.config_types.pipeline_config_types import PipelineConfig
 from finiexragengine.types.outcome_types import (
     AnalysisEnvelope,
@@ -22,12 +23,12 @@ class Pipeline:
 
     def __init__(self, config: PipelineConfig) -> None:
         self._config = config
-        self._runner: Optional['PipelineRunner'] = None  # noqa: F821 — set via set_runner
+        self._runner: Optional[PipelineRunner] = None    # set via set_runner
 
     def get_config(self) -> PipelineConfig:
         return self._config
 
-    def set_runner(self, runner) -> None:
+    def set_runner(self, runner: PipelineRunner) -> None:
         """Attach the real staged runner (built by the PipelineAssembler, ISSUE_7)."""
         self._runner = runner
 

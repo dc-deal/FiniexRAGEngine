@@ -7,8 +7,7 @@ symbols into the outcome envelope.
 """
 import logging
 import textwrap
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 from pydantic import ValidationError
 
@@ -18,36 +17,16 @@ from finiexragengine.core.observability.run_footer import RunFooter
 from finiexragengine.core.observability.stage_timer import StageTimer
 from finiexragengine.core.rag.retriever import Retriever
 from finiexragengine.exceptions.ragengine_errors import LLMParseError
-from finiexragengine.types.article_types import Article
+from finiexragengine.types.eval_types import SymbolEval
 from finiexragengine.types.llm_types import LlmUsage
 from finiexragengine.types.outcome_types import (
     ArticleRef,
     SentimentLlmOutput,
     SentimentResult,
-    StageTiming,
 )
 from finiexragengine.types.prompt_metadata import PromptMetadata
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class SymbolEval:
-    """One symbol's evaluation — the result plus what it took (prompt, usage, timings)."""
-    result: SentimentResult
-    prompt: str
-    prompt_metadata: PromptMetadata           # which prompt produced this (ISSUE_33)
-    usage: LlmUsage
-    articles: List[Article]
-    stage_timings: List[StageTiming]
-    # The raw scored JSON exactly as the model returned it (ISSUE_36) — irreconstructable
-    # after the call; persisted next to the normalized envelope by the outcome store (ISSUE_8).
-    raw_output: Dict[str, Any] = field(default_factory=dict)
-    # The *served* model (response.model, the dated snapshot) — '' when no LLM ran.
-    model_snapshot: str = ''
-
-    def total_ms(self) -> float:
-        return sum(timing.duration_ms for timing in self.stage_timings)
 
 
 class SymbolEvaluator:

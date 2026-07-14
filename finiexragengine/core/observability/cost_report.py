@@ -87,12 +87,13 @@ class CostReport:
         return self.credit_usd - self.spent_all_usd
 
 
-def _table_exists(cur, table: str) -> bool:
+def _table_exists(cur: psycopg.Cursor, table: str) -> bool:
     cur.execute('SELECT count(*) FROM information_schema.tables WHERE table_name = %s', (table,))
     return cur.fetchone()[0] > 0
 
 
-def _window(cur, table: str, label: str, since: Optional[datetime]) -> RealWindow:
+def _window(cur: psycopg.Cursor, table: str, label: str,
+            since: Optional[datetime]) -> RealWindow:
     """Aggregate the billing log for one window: totals + a per-pipeline breakdown."""
     where, params = ('', [])
     if since is not None:
@@ -108,7 +109,7 @@ def _window(cur, table: str, label: str, since: Optional[datetime]) -> RealWindo
     return RealWindow(label, int(calls), int(tokens), float(usd), by_pipeline)
 
 
-def _build_prediction(cur, outcomes_table: str,
+def _build_prediction(cur: psycopg.Cursor, outcomes_table: str,
                       eval_pipelines: Dict[str, 'EvalPipelineInfo'],
                       recent_passes: int) -> Optional[Prediction]:
     """Project daily/weekly/monthly eval cost from the real recent $/pass × the config cadence.

@@ -5,9 +5,11 @@ from datetime import datetime, timezone
 from time import perf_counter
 from typing import Callable, Optional
 
+from finiexragengine.core.observability.cost_recorder import CostRecorder
 from finiexragengine.core.pipeline.ingestor import Ingestor
 from finiexragengine.core.triggers.abstract_trigger import AbstractTrigger
 from finiexragengine.types.config_types.source_set_types import SourceSetConfig
+from finiexragengine.types.ingest_types import IngestResult
 from finiexragengine.types.worker_types import WorkerState
 
 logger = logging.getLogger(__name__)
@@ -24,7 +26,7 @@ class IngestWorker:
 
     def __init__(self, source_set: SourceSetConfig, ingestor: Ingestor,
                  trigger: AbstractTrigger, pass_lock: asyncio.Lock,
-                 cost_recorder=None,
+                 cost_recorder: Optional[CostRecorder] = None,
                  on_candidates: Optional[Callable[[int], None]] = None) -> None:
         self._ingestor = ingestor
         self._trigger = trigger
@@ -66,7 +68,9 @@ class IngestWorker:
                 usd = (self._cost_recorder.session_usd - usd_before
                        if self._cost_recorder else 0.0)
                 self._state.last_status = 'ok'
-                self._state.last_detail = (f'fetched {result.fetched} · '
+                # Prefix a suspended pass (provider quota, ISSUE_47) so it is visible, not silent.
+                prefix = 'suspended (quota) · ' if result.suspended else ''
+                self._state.last_detail = (f'{prefix}fetched {result.fetched} · '
                                            f'embedded {result.embedded} · '
                                            f'stored {result.stored}')
                 # Surface breaking candidates in the pass line when any were flagged (ISSUE_11).
@@ -77,7 +81,8 @@ class IngestWorker:
                 # run's log stays readable; a pass that stored, flagged or spent logs at INFO —
                 # so spend is still never silent (a paid pass always has stored > 0). The eval
                 # workers' INFO passes remain the regular liveness heartbeat either way.
-                eventful = result.stored or result.candidates or usd or result.failed_sources
+                eventful = (result.stored or result.candidates or usd
+                            or result.failed_sources or result.suspended)
                 logger.log(logging.INFO if eventful else logging.DEBUG,
                            '[%s] %s · $%.6f · %.0fms', self._state.name,
                            self._state.last_detail, usd,
@@ -91,7 +96,7 @@ class IngestWorker:
             self._state.runs += 1
             self._state.last_duration_ms = (perf_counter() - started) * 1000.0
 
-    def _log_source_health(self, result) -> None:
+    def _log_source_health(self, result: IngestResult) -> None:
         """Emit source-failure lines at a level that denoises repeats (ISSUE_11).
 
         A feed that fails every pass (e.g. cryptoslate rate-limiting a fast loop) would otherwise

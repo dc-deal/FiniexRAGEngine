@@ -166,4 +166,15 @@ Failures map to the taxonomy: timeout → `LLMTimeoutError` (LLM_TIMEOUT), backe
 `section='llm_eval'` (ISSUE_23) — the LLM eval is where real spend appears. The call's `duration_ms`
 rides the same row (ISSUE_32), so the cost log doubles as the API-latency log (`perf_cli`).
 
+**Cost circuit-breaker (ISSUE_47).** The provider is the authoritative spend ceiling — OpenAI returns
+429 `insufficient_quota` at the account limit — so a shared `BudgetGuard` *reacts* to that signal
+rather than re-estimating spend. A quota error at any paid seam (embeddings *or* LLM) routes to
+`BudgetExceededError` (a plain `rate_limit_exceeded` stays the retryable LLM_API_ERROR path); the
+guard suspends paid work and `should_attempt()` gates every subsequent paid call, so the engine backs
+off instead of hammering a limited account. A suspended eval degrades to a clean HOLD
+(`BUDGET_EXCEEDED`, `basis='degraded'`, `status='partial'`); a suspended ingest pass logs
+`suspended (quota)` (stored 0). After `reprobe_interval_seconds` one probe is allowed and the first
+success auto-resumes. State shows on `/health` (`budget` block); config is `cost.circuit_breaker`
+(`enabled`, `reprobe_interval_seconds`, optional warn-only `soft_daily_usd`).
+
 Wiring this stage into `Pipeline.run` (retrieve → build → complete → assemble envelope) is **ISSUE_7**.

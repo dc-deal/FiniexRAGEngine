@@ -1,6 +1,6 @@
 """pgvector-backed vector store (PostgreSQL)."""
 from datetime import datetime
-from typing import List, Optional, Set
+from typing import Any, List, Optional, Set
 
 import psycopg
 from pgvector.psycopg import register_vector
@@ -11,7 +11,7 @@ from finiexragengine.types.article_types import Article, ScoredArticle
 from finiexragengine.types.config_types.app_config_types import VectorStoreConfig
 
 
-def _to_float_list(value) -> List[float]:
+def _to_float_list(value: Any) -> List[float]:
     # pgvector deserialises the `vector` column to a numpy array when numpy is
     # installed and to a (non-iterable) pgvector.Vector otherwise. Normalise both
     # — and a plain list — to a list of floats so retrieval works without numpy.
@@ -44,13 +44,13 @@ class PgVectorStore(AbstractVectorStore):
         self._embedding_model = embedding_model
         self._ensure_schema()
 
-    def _raw_connect(self):
+    def _raw_connect(self) -> psycopg.Connection:
         try:
             return psycopg.connect(self._database_url)
         except psycopg.Error as exc:
             raise VectorStoreError(f'cannot connect to the vector store: {exc}') from exc
 
-    def _connect(self):
+    def _connect(self) -> psycopg.Connection:
         # register_vector needs the `vector` type to already exist, so this is only
         # used after _ensure_schema has created the extension.
         conn = self._raw_connect()

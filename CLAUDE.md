@@ -66,13 +66,34 @@ Read first, in order:
 
 ## Code conventions
 
-- **Fully typed.** Runtime domain types → `@dataclass`; config schemas → Pydantic `BaseModel`
+- **Fully typed — every signature, no exceptions.** Every parameter and every return carries an
+  annotation: public and private, `__init__` and module-level helpers, sync and async. Specifically:
+  - An optional collaborator is `x: Optional[Thing] = None` — **never a bare `x=None`**. The
+    annotation costs an import; pay it. (This is where it drifted before: parameters appended to an
+    existing signature by a later issue, where `=None` was one line and the annotation was two.)
+  - A genuinely dynamic value (a DB cell, a serializer handler) is `Any`. An explicit `Any` is
+    typed; an omission is not.
+  - If a runtime import would cycle, use `if TYPE_CHECKING:` + a string annotation. Dropping the
+    annotation is never the answer — and check first: `core/` never imports `api/`, so most feared
+    cycles do not exist.
+  - Verified mechanically (AST sweep over `finiexragengine/`), not by eye.
+- **Domain modelling.** Runtime domain types → `@dataclass`; config schemas → Pydantic `BaseModel`
   (in `finiexragengine/types/config_types/`).
+- **A shape that crosses a seam lives in `types/`.** If another module must import it to write a
+  signature, it is a domain type → `types/<domain>_types.py`, grouped by domain
+  (`ingest_types`, `eval_types`, `article_types`, …). A shape built *and* consumed inside one
+  module (a report's row/section) stays with it — do not scatter a self-contained unit.
+  **`types/` never imports from `core/`** (checked: it does not today) — so when a shape moves,
+  everything it references moves with it or the move is wrong.
 - **String literals use single quotes**; double quotes only for f-strings and docstrings.
 - **Imports at the top**, grouped standard library → third party → project. Never mid-file.
 - **No `__init__.py`** — fully-qualified imports from the package root `finiexragengine.`.
-- **One class per file**; file name = class name in snake_case. ABCs in their own
-  `abstract_*.py` file, named `Abstract<Concept>`.
+- **One *behaviour* class per file**; file name = class name in snake_case. ABCs in their own
+  `abstract_*.py` file, named `Abstract<Concept>`. Data shapes are not "classes" for this rule —
+  they group by domain (`types/*_types.py` hold many). Module-level functions are fine when they
+  are file-private helpers (`_fmt`) or a deliberate function module (`provider_factory`,
+  `envelope_contract`) — but a **public** function that other layers import is its own unit:
+  if the API and the CLI both reach into an engine file for it, it is in the wrong file.
 - **Private members** carry a `_` prefix; expose via getters/setters. No external `obj._x` access.
 - **All datetimes timezone-aware UTC.** The analysis timestamp is real-time wall-clock (this
   is a live service); consumers stamp their own collection time downstream.

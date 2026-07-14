@@ -33,7 +33,7 @@ never attach one just because `DATABASE_URL`/`OPENAI_API_KEY` are set in the env
 | `test_retriever.py` | two-tier policy, top_k cap, near-dup collapse, tie-breaks (mocked) | — |
 | `test_symbol_query_map.py` | constellation alias + base-currency fallback | — |
 | `test_query_vector_cache.py` | cached query vectors, cache busting on config/model change | PostgreSQL |
-| `test_ingestor.py` | fetch → skip known ids → embed only new → upsert; per-source counts; health record + quarantine skip | — |
+| `test_ingestor.py` | fetch → skip known ids → embed only new → upsert; per-source counts; health record + quarantine skip; budget suspend | — |
 | `test_coverage_report.py` | corpus coverage aggregation + console rendering | PostgreSQL |
 | `test_prompt_builder.py` | Jinja2 `.md` fill + versioning; front-matter metadata + body hash | — |
 | `test_pipeline_prompt_config.py` | pipeline-declared `prompt` block (name + version) | — |
@@ -52,6 +52,7 @@ never attach one just because `DATABASE_URL`/`OPENAI_API_KEY` are set in the env
 | `test_source_health.py` | host normalization, warn/error split, report format, orphan notice, feed-doctor classifier | — |
 | `test_source_health_store.py` | poll counters, flag+quarantine threshold, recovery reset, event cap, restart-survives quarantine | PostgreSQL |
 | `test_logging_setup.py` | console + daily-rotating file, idempotent reconfigure, quiet loggers | — |
+| `test_budget_guard.py` | cost circuit-breaker: quota-vs-rate-limit, suspend/cool-off/single-probe/resume, soft-daily warn, paid-seam reaction (fake clients) | — |
 | `test_latest_endpoint.py` | `/latest` serves from store (no run), cold miss, broken-store degrade, catch-all persist | — |
 | `test_model_catalog.py` | staged model check (ingest + llm), endpoint split, soft-boot warnings | — |
 | `test_model_governance.py` | pipeline-declared model (required), allowlist gate at assembly | — |
