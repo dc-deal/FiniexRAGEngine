@@ -2,7 +2,7 @@
 
 Defaults mirror configs/app_config.json exactly (operator-visible, tunable).
 """
-from typing import Dict, List, Optional
+from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -76,6 +76,34 @@ class CostConfig(BaseModel):
     budget_usd: float = 0.0           # optional soft cap for a spend warning (0 = off)
 
 
+class LoggingConfig(BaseModel):
+    """File logging + rotation (ISSUE_11). The console handler stays on regardless — this
+    only adds a flat, rotating file so an overnight worker run survives the scrollback and
+    stays grep-able the morning after. The *level* is `AppConfig.log_level` (shared with the
+    console); this block is purely the file + noise policy.
+    """
+    file: Optional[str] = 'logs/finiex.log'    # rotating log path; set null for console-only
+    rotation: Literal['daily', 'size'] = 'daily'
+    backup_count: int = 14                     # rotated files kept (daily: days; size: files)
+    max_bytes: int = 10_000_000                # size-rotation only (ignored when rotation='daily')
+    # Third-party loggers pinned to WARNING so the file is signal, not per-request noise
+    # (httpx logs every OpenAI call at INFO — thousands a night otherwise).
+    quiet_loggers: List[str] = Field(default_factory=lambda: ['httpx', 'httpcore'])
+
+
+class SourceHealthConfig(BaseModel):
+    """Source-health flagging policy (ISSUE_11) — app-wide, not per source-set.
+
+    A feed that keeps failing (rate-limit, malformed body, TLS drop) is flagged and
+    quarantined: polling pauses for `quarantine_hours`, then it is retried once; still
+    failing → flagged again. The last few warnings/errors are kept per source so the
+    Sources report / weekly is debugging-ready without digging through logs.
+    """
+    flag_after_consecutive_failures: int = 5   # consecutive fails -> flag + quarantine
+    quarantine_hours: int = 24                  # a flagged source is skipped this long, then retried
+    recent_events_kept: int = 10                # capped warn/error ring per source (overview)
+
+
 class AppConfig(BaseModel):
     version: str = '0.2.0'
     schema_version: str = '1.0'
@@ -86,3 +114,5 @@ class AppConfig(BaseModel):
     pricing: PricingConfig = Field(default_factory=PricingConfig)
     cost: CostConfig = Field(default_factory=CostConfig)
     log_level: str = 'INFO'
+    logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    source_health: SourceHealthConfig = Field(default_factory=SourceHealthConfig)

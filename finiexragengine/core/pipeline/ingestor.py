@@ -2,6 +2,11 @@
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
+from finiexragengine.core.observability.source_health_store import (
+    HealthOutcome,
+    SourceHealthStore,
+    normalize_host,
+)
 from finiexragengine.core.observability.stage_timer import StageTimer
 from finiexragengine.core.pipeline.breaking_detector import BreakingDetector
 from finiexragengine.core.rag.abstract_embedder import AbstractEmbedder
@@ -35,6 +40,12 @@ class IngestResult:
     max_tier: int = 0               # highest importance tier written this pass — drives the eval wake (ISSUE_11)
     per_source: Dict[str, SourceIngest] = field(default_factory=dict)
     failed_sources: Dict[str, str] = field(default_factory=dict)   # source_id -> error message
+    # Source-health outcomes for this pass (ISSUE_11) — let the worker pick a log level so
+    # repeated identical failures are denoised (WARN once, DEBUG the repeats, WARN on flag).
+    health_notes: Dict[str, HealthOutcome] = field(default_factory=dict)   # per failed source
+    quarantined_skips: List[str] = field(default_factory=list)     # sources skipped (in quarantine)
+    floor_skips: List[str] = field(default_factory=list)           # sources skipped (within poll floor)
+    recovered_sources: List[str] = field(default_factory=list)     # sources that came back this pass
     stage_timings: List[StageTiming] = field(default_factory=list)  # fetch/embed/upsert per source (ISSUE_32)
 
     @property
@@ -58,13 +69,19 @@ class Ingestor:
 
     def __init__(self, sources: List[AbstractSource], embedder: AbstractEmbedder,
                  store: AbstractVectorStore,
-                 breaking_detector: Optional[BreakingDetector] = None) -> None:
+                 breaking_detector: Optional[BreakingDetector] = None,
+                 health_store: Optional[SourceHealthStore] = None,
+                 source_set_id: str = '') -> None:
         self._sources = sources
         self._embedder = embedder
         self._store = store
         # Optional (ISSUE_11): flags breaking candidates cheaply after upsert. None = detection
         # off (e.g. a set with no interest in the breaking path); the ingest pass is unchanged.
         self._breaking_detector = breaking_detector
+        # Optional (ISSUE_11): records every poll's health + drives the flag/quarantine policy.
+        # None = health tracking off (manual CLI ingest, tests); the pass is otherwise unchanged.
+        self._health_store = health_store
+        self._source_set_id = source_set_id
 
     def run(self) -> IngestResult:
         """Fetch, embed only the new articles and upsert; return per-source + totals."""
@@ -77,12 +94,31 @@ class Ingestor:
         detect_batch: List[Tuple[Article, List[float]]] = []
         for source in self._sources:
             source_id = source.get_source_id()
-            # 1. Pull the source. A failing source is recorded, the rest proceed.
+            # 0. Skip a quarantined source (ISSUE_11) — it keeps failing (e.g. rate-limiting us),
+            #    so we back off entirely until its cool-off elapses instead of hammering it.
+            if self._health_store is not None and not self._health_store.should_poll(source_id):
+                result.quarantined_skips.append(source_id)
+                continue
+            # 0b. Skip a source that is within its poll floor — a deliberate local no-op, so it is
+            #     NOT recorded as a poll (a floor skip must never reset a failure streak).
+            if not source.due_for_fetch():
+                result.floor_skips.append(source_id)
+                continue
+            host = normalize_host(source.get_url())
+            # 1. Pull the source. A failing source is recorded (typed, into health), the rest proceed.
             try:
                 fetched = timer.time('fetch', source.fetch)
             except SourceFetchError as exc:
                 result.failed_sources[source_id] = str(exc)
+                if self._health_store is not None:
+                    result.health_notes[source_id] = self._health_store.record_failure(
+                        source_id, host, self._source_set_id,
+                        error_type=exc.error_type, status=exc.status, message=str(exc))
                 continue
+            if self._health_store is not None:
+                # A returned fetch (even empty / 304) means the source was reachable → success.
+                if self._health_store.record_success(source_id, host, self._source_set_id):
+                    result.recovered_sources.append(source_id)
             entry = SourceIngest(fetched=len(fetched))
             # 2. Skip ids already in the corpus — embedding a known article is wasted
             #    spend. (Sub-ms id lookup — deliberately untimed.)

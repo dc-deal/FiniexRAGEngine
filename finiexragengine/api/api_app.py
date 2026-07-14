@@ -10,6 +10,7 @@ from finiexragengine.api.endpoints.health_router import build_health_router
 from finiexragengine.api.endpoints.sentiment_router import build_sentiment_router
 from finiexragengine.configuration.app_config_manager import AppConfigManager
 from finiexragengine.core.llm.model_catalog import verify_configured_models
+from finiexragengine.core.observability.logging_setup import configure_logging
 from finiexragengine.core.pipeline.pipeline_assembler import PipelineAssembler
 from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
 from finiexragengine.core.pipeline.worker_supervisor import WorkerSupervisor
@@ -39,11 +40,11 @@ def create_app(attach_runners: Optional[bool] = None,
     # real runners → build the app → mount routers. Dependencies are wired here and
     # injected into the routers (build_*_router takes them as args) — no globals.
     config_manager = AppConfigManager()
-    # Levelled logging per app config (CLAUDE.md): uvicorn only configures its own
-    # loggers — without this the workers' INFO pass lines (incl. spend, ISSUE_10)
-    # would be invisible. basicConfig is a no-op if a root handler already exists.
-    logging.basicConfig(level=config_manager.get_config().log_level,
-                        format='%(levelname)s %(name)s: %(message)s')
+    # Levelled logging per app config (CLAUDE.md): uvicorn only configures its own loggers —
+    # without this the workers' INFO pass lines (incl. spend, ISSUE_10) would be invisible.
+    # configure_logging adds a console handler *and* a daily-rotating file so an overnight
+    # worker run survives the scrollback (ISSUE_11), and quiets httpx's per-request noise.
+    configure_logging(config_manager.get_config())
     registry = PipelineRegistry(config_manager.get_pipelines_dir(),
                                 config_manager.get_user_pipelines_dir())
     registry.load()

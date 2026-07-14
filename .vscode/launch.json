@@ -190,6 +190,33 @@
                 "order": 5
             }
         },
+        {
+            "name": "📊 RAGEngine: Source Health Report (feeds + problems)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/finiexragengine/cli/sources_cli.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "04_diagnostics",
+                "order": 6
+            }
+        },
+        {
+            // Touches the feeds' network (no LLM/embeddings — no spend); resolves URLs from
+            // the source-set configs. Omit --source to probe all feeds.
+            "name": "📊 RAGEngine: Feed Doctor (raw output + parse diagnosis)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/finiexragengine/cli/feed_doctor_cli.py",
+            "args": [],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "04_diagnostics",
+                "order": 7
+            }
+        },
         // ====================================================
         // 🧩 TESTS (free — no API cost)
         // ====================================================

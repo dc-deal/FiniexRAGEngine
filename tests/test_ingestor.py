@@ -5,6 +5,7 @@ Pure logic: fake source/store/embedder, so no DB and no API budget are touched.
 from datetime import datetime, timezone
 from typing import List, Optional
 
+from finiexragengine.core.observability.source_health_store import HealthOutcome
 from finiexragengine.core.pipeline.ingestor import Ingestor
 from finiexragengine.core.rag.abstract_embedder import AbstractEmbedder
 from finiexragengine.core.rag.abstract_vector_store import AbstractVectorStore
@@ -27,10 +28,14 @@ class _FakeSource(AbstractSource):
     """Returns a fixed article list, or raises like an unreachable feed."""
 
     def __init__(self, source_id: str, articles: Optional[List[Article]] = None,
-                 fail: bool = False) -> None:
+                 fail: bool = False, due: bool = True) -> None:
         super().__init__(SourceConfig(source_id=source_id, url='https://example.test'))
         self._articles = articles or []
         self._fail = fail
+        self._due = due
+
+    def due_for_fetch(self) -> bool:
+        return self._due
 
     def fetch(self) -> List[Article]:
         if self._fail:
@@ -103,3 +108,59 @@ def test_failing_source_is_recorded_others_proceed():
     assert 'bad' in result.failed_sources
     assert 'bad' not in result.per_source
     assert result.per_source['good'].stored == 1
+
+
+class _FakeHealth:
+    """In-memory stand-in for SourceHealthStore (ISSUE_11) — no DB."""
+
+    def __init__(self, quarantined=()):
+        self.quarantined = set(quarantined)
+        self.successes = []
+        self.failures = []
+
+    def should_poll(self, source_id):
+        return source_id not in self.quarantined
+
+    def record_success(self, source_id, host, source_set):
+        self.successes.append((source_id, host))
+        return False
+
+    def record_failure(self, source_id, host, source_set, *, error_type, status, message):
+        self.failures.append((source_id, error_type))
+        return HealthOutcome(consecutive_failures=1, just_flagged=False, quarantined_until=None)
+
+
+def test_health_records_success_and_typed_failure():
+    good = _FakeSource('good', [_article('a1')])
+    bad = _FakeSource('bad', fail=True)
+    health = _FakeHealth()
+    result = Ingestor([bad, good], _CountingEmbedder(), _FakeStore(),
+                      health_store=health, source_set_id='crypto_news').run()
+    assert ('good', 'example.test') in health.successes    # reachable poll -> success + host
+    assert ('bad', 'UNREACHABLE') in health.failures       # typed failure recorded
+    assert 'bad' in result.health_notes                    # carried for the worker's log level
+
+
+def test_quarantined_source_is_skipped_not_polled():
+    good = _FakeSource('good', [_article('a1')])
+    bad = _FakeSource('bad', fail=True)
+    health = _FakeHealth(quarantined={'bad'})
+    result = Ingestor([bad, good], _CountingEmbedder(), _FakeStore(),
+                      health_store=health, source_set_id='crypto_news').run()
+    assert result.quarantined_skips == ['bad']             # skipped entirely (no poll)
+    assert 'bad' not in result.failed_sources              # not polled -> not a failure
+    assert health.failures == []                           # never hit while quarantined
+    assert result.stored == 1                              # the good source still ingested
+
+
+def test_floor_skipped_source_records_no_health():
+    # A source within its poll floor is a local no-op — not a poll, so no success/failure is
+    # recorded (otherwise a floor skip would reset a failing feed's streak and hide it).
+    slow = _FakeSource('slow', [_article('a1')], due=False)
+    fast = _FakeSource('fast', [_article('a2')])
+    health = _FakeHealth()
+    result = Ingestor([slow, fast], _CountingEmbedder(), _FakeStore(),
+                      health_store=health, source_set_id='crypto_news').run()
+    assert result.floor_skips == ['slow']                  # skipped as a no-op
+    assert [s for s, _ in health.successes] == ['fast']    # only the polled source recorded
+    assert 'slow' not in result.per_source

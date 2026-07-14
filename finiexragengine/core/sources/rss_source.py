@@ -35,22 +35,27 @@ class RssSource(AbstractSource):
         self._modified: Optional[str] = None
         self._last_polled_at: Optional[datetime] = None
 
+    def due_for_fetch(self) -> bool:
+        # Per-source poll floor (ISSUE_11): a feed that ignores conditional GET (e.g. cryptoslate,
+        # which 429s a fast loop) opts out until its own interval elapses. Measured from the last
+        # attempt (`_last_polled_at`, set in fetch). Unset floor -> always due (our fast tempo).
+        floor = self._config.poll_interval_seconds
+        if floor is None or self._last_polled_at is None:
+            return True
+        return (datetime.now(timezone.utc) - self._last_polled_at).total_seconds() >= floor
+
     def fetch(self) -> List[Article]:
         now = datetime.now(timezone.utc)
-        # Per-source poll floor: a slow feed skips the fast loop until its own interval elapses.
-        floor = self._config.poll_interval_seconds
-        if (floor is not None and self._last_polled_at is not None
-                and (now - self._last_polled_at).total_seconds() < floor):
-            return []
+        # Stamp the attempt time — the poll floor in `due_for_fetch` measures from here. The
+        # Ingestor gates the floor before calling fetch, so a within-floor pass never reaches here.
         self._last_polled_at = now
-
         url = self._config.url
-        # Active pull with conditional GET (ISSUE_11): send the last ETag / Last-Modified so an
-        # unchanged feed answers 304 with no body. Nothing is pushed to us — the only push path
-        # in the system is the separate live breaking channel (ISSUE_11 Stage C).
-        parsed = feedparser.parse(url, etag=self._etag, modified=self._modified)
-        if getattr(parsed, 'status', None) == 304:
-            return []   # unchanged since the last poll — no new articles, no body transferred
+        # Active pull with conditional GET + status/transport handling (ISSUE_11): returns the
+        # parsed feed on success, or None on 304 (unchanged, no body); a non-success HTTP status
+        # or a malformed/unreachable feed raises a *typed* SourceFetchError for source-health.
+        parsed = self._fetch_parsed(url)
+        if parsed is None:
+            return []   # 304 — unchanged since the last poll, no body transferred
         # Remember the validators for the next conditional GET (only when the server sent them).
         if getattr(parsed, 'etag', None):
             self._etag = parsed.etag
@@ -58,14 +63,6 @@ class RssSource(AbstractSource):
             self._modified = parsed.modified
 
         entries = getattr(parsed, 'entries', []) or []
-        # feedparser sets bozo on a malformed feed; a transport failure surfaces
-        # as bozo with no usable entries. Empty-but-valid feeds are not an error.
-        if getattr(parsed, 'bozo', 0) and not entries:
-            reason = getattr(parsed, 'bozo_exception', 'unknown error')
-            raise SourceFetchError(
-                f'{self.get_source_id()}: cannot fetch feed {url} ({reason})'
-            )
-
         fetched_at = now
         feed_meta = getattr(parsed, 'feed', {}) or {}
         articles: List[Article] = []
@@ -89,6 +86,42 @@ class RssSource(AbstractSource):
                 )
             )
         return articles
+
+    def _fetch_parsed(self, url: str):
+        """Conditional GET with typed failure classification (ISSUE_11).
+
+        Returns the parsed feed on success, None on HTTP 304. Raises a typed SourceFetchError
+        otherwise so source-health can classify without parsing the message:
+        - a non-success HTTP status (the body is an error/hint page, NOT the feed) → RATE_LIMITED
+          (429) or HTTP_ERROR — never parsed as XML (that is exactly the '429-HTML → not
+          well-formed' trap);
+        - a transport/TLS failure (feedparser never reached a body) → one retry, then UNREACHABLE;
+        - a malformed body with no usable entries → PARSE_ERROR (a retry would not fix it).
+        A bozo feed that still yielded entries is tolerated (feedparser is lenient).
+        """
+        for attempt in (1, 2):
+            parsed = feedparser.parse(url, etag=self._etag, modified=self._modified)
+            status = getattr(parsed, 'status', None)
+            if status == 304:
+                return None
+            if status is not None and status >= 400:
+                kind = 'RATE_LIMITED' if status == 429 else 'HTTP_ERROR'
+                raise SourceFetchError(
+                    f'{self.get_source_id()}: {url} returned HTTP {status}',
+                    error_type=kind, status=status)
+            entries = getattr(parsed, 'entries', []) or []
+            if not (getattr(parsed, 'bozo', 0) and not entries):
+                return parsed   # success: real entries, or a clean empty/valid feed
+            exc = getattr(parsed, 'bozo_exception', None)
+            transient = isinstance(exc, OSError)   # URLError/SSLError/Connection/Timeout ⊂ OSError
+            if transient and attempt == 1:
+                continue        # one retry for a transient TLS/transport drop (e.g. central banks)
+            raise SourceFetchError(
+                f'{self.get_source_id()}: cannot fetch feed {url} ({exc or "unknown error"})',
+                error_type='UNREACHABLE' if transient else 'PARSE_ERROR')
+        # The loop always returns or raises; this satisfies the type-checker.
+        raise SourceFetchError(f'{self.get_source_id()}: cannot fetch feed {url}',
+                               error_type='UNREACHABLE')
 
     def _summary(self, entry: Mapping[str, Any]) -> str:
         return (entry.get('summary') or entry.get('description') or '').strip()

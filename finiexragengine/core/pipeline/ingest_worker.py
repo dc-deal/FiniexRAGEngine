@@ -82,9 +82,7 @@ class IngestWorker:
                            '[%s] %s · $%.6f · %.0fms', self._state.name,
                            self._state.last_detail, usd,
                            (perf_counter() - started) * 1000.0)
-                for source_id, message in result.failed_sources.items():
-                    logger.warning('[%s] source %s failed: %s', self._state.name,
-                                   source_id, message)
+                self._log_source_health(result)
                 # Nudge the eval workers on this set out-of-band (ISSUE_11) — in the event
                 # loop thread, after the sync pass returned. A missed nudge is harmless: the
                 # candidate is already persisted, the eval worker still catches it next interval.
@@ -92,3 +90,25 @@ class IngestWorker:
                     self._on_candidates(result.max_tier)
             self._state.runs += 1
             self._state.last_duration_ms = (perf_counter() - started) * 1000.0
+
+    def _log_source_health(self, result) -> None:
+        """Emit source-failure lines at a level that denoises repeats (ISSUE_11).
+
+        A feed that fails every pass (e.g. cryptoslate rate-limiting a fast loop) would otherwise
+        flood the log. So: WARN the first failure of a streak, DEBUG the repeats, WARN once when it
+        crosses into flagged+quarantined, and INFO a recovery. The full detail always persists in
+        source_health regardless of the console level — the Sources report reads it from there."""
+        for source_id in result.recovered_sources:
+            logger.info('[%s] source %s recovered', self._state.name, source_id)
+        for source_id, message in result.failed_sources.items():
+            note = result.health_notes.get(source_id)
+            if note is not None and note.just_flagged:
+                logger.warning('[%s] source %s flagged + quarantined until %s (%d consecutive): %s',
+                               self._state.name, source_id,
+                               note.quarantined_until.isoformat() if note.quarantined_until else '?',
+                               note.consecutive_failures, message)
+            elif note is None or note.consecutive_failures <= 1:
+                logger.warning('[%s] source %s failed: %s', self._state.name, source_id, message)
+            else:
+                logger.debug('[%s] source %s still failing (%dx): %s', self._state.name,
+                             source_id, note.consecutive_failures, message)

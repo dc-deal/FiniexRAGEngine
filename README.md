@@ -133,10 +133,11 @@ similarity queries by hand — see
 grow the corpus with one **ingest pass** (`ingest_cli.py` — fetch → embed → upsert, idempotent),
 preview a single symbol's **evaluation** (`eval_cli.py` — signal + rendered prompt excerpt), check
 per-symbol corpus **coverage** (`coverage_cli.py`), and read the **cost** and **performance**
-reports (`cost_cli.py` / `perf_cli.py` — token/USD spend and API latency by section). Every paid
-pass ends with a `--- run metrics ---` footer, so spend is never silent. All entries are in
-`.vscode/launch.json`; details in the
-[DB inspection doc](docs/development/database_inspection.md#coverage-report-cli).
+reports (`cost_cli.py` / `perf_cli.py` — token/USD spend and API latency by section). Check **feed
+health** (`sources_cli.py` — poll reliability, flag/quarantine, recent problems, orphan notice) and
+diagnose a failing feed's raw output (`feed_doctor_cli.py`). Every paid pass ends with a
+`--- run metrics ---` footer, so spend is never silent. All entries are in `.vscode/launch.json`;
+details in the [DB inspection doc](docs/development/database_inspection.md#coverage-report-cli).
 
 ---
 
@@ -181,6 +182,13 @@ In active development. Implemented and tested today:
   the interval) at each pipeline's own sensitivity, the LLM **confirms** (`urgency ≥ threshold`),
   and a **reaction-time report** (engine vs end-to-end, from the store) shows the flagged→confirmed
   funnel. The live SSE push wire is the next slice (Stage C, IDE-accepted, paired with #9).
+- **Source health & rotating logs (#11)**: every poll is recorded per feed (`source_health`);
+  status-aware fetch classifies failures (a fast loop's HTTP 429 is `RATE_LIMITED`, not a fake parse
+  error), and a persistently failing feed is **flagged + quarantined** so the loop backs off. A
+  **Sources report** (reliability, flags, recent problems, orphan notice) and a **feed doctor**
+  (raw-output diagnosis) make a bad feed one command away; the console now also writes a **daily
+  rotating file** so an overnight run survives the scrollback. See
+  [source_health_and_logging.md](docs/architecture/source_health_and_logging.md).
 
 Next up: the **collector handshake (#9)** + the live **SSE breaking push** (#11 Stage C). See the
 full **[Vision & Roadmap](https://github.com/dc-deal/FiniexRAGEngine/issues/1)** (issue #1).

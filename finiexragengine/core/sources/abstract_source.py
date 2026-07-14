@@ -19,6 +19,18 @@ class AbstractSource(ABC):
     def get_source_id(self) -> str:
         return self._config.source_id
 
+    def get_url(self) -> str:
+        """The feed URL — used to derive the health-store `host` (ISSUE_11)."""
+        return self._config.url
+
+    def due_for_fetch(self) -> bool:
+        """Whether this source should be polled this pass (ISSUE_11).
+
+        The default source is always due; a source with a poll floor (e.g. a feed that ignores
+        conditional GET) overrides this. The Ingestor gates on it *before* fetch, so a within-floor
+        pass is a local no-op — not a health event (a floor skip must not reset a failure streak)."""
+        return True
+
     @abstractmethod
     def fetch(self) -> List[Article]:
         """Fetch the current set of articles from this source.

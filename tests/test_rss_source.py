@@ -116,18 +116,76 @@ def test_conditional_get_sends_etag_and_304_returns_empty(monkeypatch):
     assert seen_etags == [None, '"v1"']        # the stored ETag was sent on the second poll
 
 
-def test_poll_interval_floor_skips_within_the_window(monkeypatch):
-    # A slow feed opts out of the fast loop: within its poll_interval it is not hit at all.
-    parses = []
+def test_http_429_raises_rate_limited_without_parsing(monkeypatch):
+    # ISSUE_11: a 429's body is an HTML error page, NOT the feed — classify it as RATE_LIMITED
+    # from the status instead of choking on 'not well-formed' (the real cryptoslate bug).
+    monkeypatch.setattr(feedparser, 'parse',
+                        lambda url, etag=None, modified=None: _FakeParsed([], bozo=1, status=429))
+    with pytest.raises(SourceFetchError) as exc:
+        _source().fetch()
+    assert exc.value.error_type == 'RATE_LIMITED' and exc.value.status == 429
+
+
+def test_http_5xx_raises_http_error(monkeypatch):
+    monkeypatch.setattr(feedparser, 'parse',
+                        lambda url, etag=None, modified=None: _FakeParsed([], status=503))
+    with pytest.raises(SourceFetchError) as exc:
+        _source().fetch()
+    assert exc.value.error_type == 'HTTP_ERROR' and exc.value.status == 503
+
+
+def test_transport_error_retries_once_then_succeeds(monkeypatch):
+    # A transient TLS/transport drop (OSError) is worth one retry — a central-bank feed with an
+    # occasional SSL EOF should not be recorded as failing when the retry succeeds.
+    calls = []
+    good = [{'id': 'g', 'link': 'https://example.test/a', 'title': 't', 'summary': 's'}]
 
     def fake_parse(url, etag=None, modified=None):
-        parses.append(url)
-        return _FakeParsed(
-            [{'id': 'g', 'link': 'https://example.test/a', 'title': 't', 'summary': 's'}])
+        calls.append(url)
+        if len(calls) == 1:
+            return _FakeParsed([], bozo=1, bozo_exception=OSError('SSL: UNEXPECTED_EOF'))
+        return _FakeParsed(good)
 
     monkeypatch.setattr(feedparser, 'parse', fake_parse)
+    assert len(_source().fetch()) == 1
+    assert len(calls) == 2                               # failed once, retried, succeeded
+
+
+def test_persistent_transport_error_raises_unreachable(monkeypatch):
+    monkeypatch.setattr(feedparser, 'parse', lambda url, etag=None, modified=None:
+                        _FakeParsed([], bozo=1, bozo_exception=OSError('conn refused')))
+    with pytest.raises(SourceFetchError) as exc:
+        _source().fetch()
+    assert exc.value.error_type == 'UNREACHABLE'
+
+
+def test_malformed_body_raises_parse_error_without_retry(monkeypatch):
+    # A non-transport bozo (malformed XML) will not fix itself — classify PARSE_ERROR, no retry.
+    calls = []
+
+    def fake_parse(url, etag=None, modified=None):
+        calls.append(url)
+        return _FakeParsed([], bozo=1, bozo_exception=ValueError('not well-formed'))
+
+    monkeypatch.setattr(feedparser, 'parse', fake_parse)
+    with pytest.raises(SourceFetchError) as exc:
+        _source().fetch()
+    assert exc.value.error_type == 'PARSE_ERROR'
+    assert len(calls) == 1                               # no retry on a malformed body
+
+
+def test_poll_interval_floor_gates_due_for_fetch(monkeypatch):
+    # A slow feed opts out of the fast loop via due_for_fetch (the Ingestor gates on it so a
+    # floor skip is a local no-op, never a recorded poll). Within its interval it is not due.
+    monkeypatch.setattr(feedparser, 'parse', lambda url, etag=None, modified=None: _FakeParsed(
+        [{'id': 'g', 'link': 'https://example.test/a', 'title': 't', 'summary': 's'}]))
     source = RssSource(SourceConfig(source_id='slow', url='https://example.test/rss',
                                     poll_interval_seconds=3600))
-    source.fetch()                             # first poll goes through
-    assert source.fetch() == []                # within the floor -> skipped
-    assert len(parses) == 1                    # the feed was hit exactly once
+    assert source.due_for_fetch() is True      # never polled -> due
+    source.fetch()                             # stamps the attempt time
+    assert source.due_for_fetch() is False     # within the floor -> not due
+
+
+def test_no_floor_is_always_due():
+    source = RssSource(SourceConfig(source_id='fast', url='https://example.test/rss'))
+    assert source.due_for_fetch() is True      # no poll_interval_seconds -> our fast tempo
