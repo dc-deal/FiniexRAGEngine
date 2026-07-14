@@ -6,6 +6,7 @@ from finiexragengine.configuration.source_set_registry import SourceSetRegistry
 from finiexragengine.core.llm.prompt_builder import PromptBuilder
 from finiexragengine.core.llm.provider_factory import build_provider
 from finiexragengine.core.observability.cost_recorder import CostRecorder
+from finiexragengine.core.observability.source_health_store import SourceHealthStore
 from finiexragengine.core.pipeline.breaking_detector import BreakingDetector
 from finiexragengine.core.pipeline.ingestor import Ingestor
 from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
@@ -117,8 +118,12 @@ class PipelineAssembler:
         # Breaking detection (ISSUE_11): LLM-free cluster-burst + keyword flagging over the shared
         # corpus, scoped to this set's `detection` block (clustering is across the set's feeds).
         detector = BreakingDetector(store, source_set.detection)
+        # Source health (ISSUE_11): every poll is recorded; a persistently failing feed is flagged
+        # and quarantined. One store per ingestor (long-lived on the worker → in-memory quarantine).
+        health_store = SourceHealthStore(self._database_url, self._cfg.source_health)
         return Ingestor([build_source(source) for source in source_set.sources],
-                        news_embedder, store, breaking_detector=detector)
+                        news_embedder, store, breaking_detector=detector,
+                        health_store=health_store, source_set_id=source_set_id)
 
     def build_runner(self, config: PipelineConfig,
                      include_ingest: bool = True) -> PipelineRunner:

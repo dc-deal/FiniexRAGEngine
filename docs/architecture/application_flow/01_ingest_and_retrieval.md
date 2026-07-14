@@ -36,7 +36,12 @@ Top-down, each new article flows through these units in order:
    while staying polite; the binding constraint at speed is feed etiquette, not OpenAI.
    An optional per-source `poll_interval_seconds` lets a slow feed opt out of the fast
    loop (central-bank feeds are deliberately *not* slowed — they are prime breaking
-   sources; 304 keeps them fast and polite).
+   sources; 304 keeps them fast and polite). **Status-aware + health-tracked (ISSUE_11):**
+   the fetch classifies every outcome into a typed `SourceFetchError`
+   (`RATE_LIMITED` on HTTP 429, `HTTP_ERROR`, `UNREACHABLE` with one retry, `PARSE_ERROR`)
+   instead of parsing a non-feed error body, and every poll — success or failure — is
+   recorded into `source_health`; a feed that keeps failing is flagged and quarantined so
+   the loop backs off. See [`source_health_and_logging.md`](../source_health_and_logging.md).
 
 3. **Embed — `core/rag/openai_embedder.py` (`OpenAIEmbedder.embed`).**
    Sends the article text to OpenAI and gets back a 1536-dimension vector — a point

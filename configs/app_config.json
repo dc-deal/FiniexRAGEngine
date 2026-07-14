@@ -51,5 +51,20 @@
         "account_credit_usd": 0.0,
         "budget_usd": 0.0
     },
-    "log_level": "INFO"
+    "log_level": "INFO",
+    "logging": {
+        "file": "logs/finiex.log",
+        "rotation": "daily",
+        "backup_count": 14,
+        "max_bytes": 10000000,
+        "quiet_loggers": [
+            "httpx",
+            "httpcore"
+        ]
+    },
+    "source_health": {
+        "flag_after_consecutive_failures": 5,
+        "quarantine_hours": 24,
+        "recent_events_kept": 10
+    }
 }

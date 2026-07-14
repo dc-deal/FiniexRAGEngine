@@ -50,7 +50,8 @@
             "source_id": "cryptoslate",
             "type": "rss",
             "url": "https://cryptoslate.com/feed/",
-            "weight": 0.8
+            "weight": 0.8,
+            "poll_interval_seconds": 120
         }
     ]
 }

@@ -11,8 +11,9 @@
         "high_cluster_size": 5,
         "keyword_source_weight": 0.9,
         "keywords": [
-            "rate decision", "rate cut", "rate hike", "emergency", "intervention",
-            "default", "recession", "devaluation", "hikes", "cuts"
+            "emergency", "emergency cut", "surprise cut", "surprise hike",
+            "unscheduled", "intervention", "devaluation", "capital controls",
+            "abandons peg", "debt crisis"
         ]
     },
     "sources": [

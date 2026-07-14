@@ -5,6 +5,7 @@ RunError.type taxonomy — ISSUE_7 maps each to its fixed taxonomy string
 (SOURCE_UNREACHABLE, LLM_TIMEOUT, VECTOR_STORE_ERROR, …) so a downstream
 collector can classify failures without parsing log text.
 """
+from typing import Optional
 
 
 class FiniexRagError(Exception):
@@ -20,7 +21,19 @@ class ConfigurationError(FiniexRagError):
 
 
 class SourceFetchError(FiniexRagError):
-    """Raised when an input source cannot be fetched."""
+    """Raised when an input source cannot be fetched.
+
+    Carries a **typed reason** so source-health (ISSUE_11) can classify a failure without
+    parsing the message. `error_type` is from a small taxonomy — RATE_LIMITED (HTTP 429),
+    HTTP_ERROR (other 4xx/5xx), UNREACHABLE (DNS/TLS/transport), PARSE_ERROR (malformed feed
+    body) — and `status` is the HTTP status when the failure was an HTTP response, else None.
+    """
+
+    def __init__(self, message: str, *, error_type: str = 'UNREACHABLE',
+                 status: Optional[int] = None) -> None:
+        super().__init__(message)
+        self.error_type = error_type
+        self.status = status
 
 
 class EmbeddingError(FiniexRagError):

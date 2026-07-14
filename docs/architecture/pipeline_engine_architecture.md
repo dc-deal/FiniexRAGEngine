@@ -61,15 +61,20 @@ activity is a deliberate choice; without the flag the server is a free, passive 
   (`configs/source_sets/<id>.json`: feeds + ingest cadence; declared once, referenced by
   constellations via `source_set`). Fast, LLM-free: fetch (conditional GET, near-continuous
   ~15s) → embed only new → upsert → **flag breaking candidates** (`BreakingDetector`, no LLM,
-  ISSUE_11). One set feeds every pipeline referencing it (1× fetch, N× read).
+  ISSUE_11). One set feeds every pipeline referencing it (1× fetch, N× read). Each poll is
+  **health-tracked** (`source_health`): status-aware fetch (a fast loop's HTTP 429 is
+  `RATE_LIMITED`, not a fake parse error), and a persistently failing feed is flagged and
+  quarantined so the loop backs off — see
+  [`source_health_and_logging.md`](source_health_and_logging.md).
 - **Eval workers** — one per logical pipeline (fan-out variants included, ISSUE_42), on
   the constellation's `trigger` cadence (default 600s) **or a breaking wake** (`EventTrigger`
   + `BreakingBus`, ISSUE_11 — a flagged candidate at/above the pipeline's `breaking.min_importance`
   jumps the queue in seconds): retrieve → LLM → assemble → persist (`OutcomeStore`, ISSUE_8). In
   worker mode the runners are **ingest-less** — `/run` cannot double-ingest next to a running worker.
-- Every pass logs one compact line incl. its spend (cost is never silent); worker states
-  (last run, status, run count) surface in `GET /v1/health`. A failing pass is logged
-  and the loop continues — the next tick heals.
+- Every pass logs one compact line incl. its spend (cost is never silent) to the console
+  **and a daily-rotating file** (`logs/finiex.log`, so an overnight run survives the
+  scrollback; ISSUE_11); worker states (last run, status, run count) surface in
+  `GET /v1/health`. A failing pass is logged and the loop continues — the next tick heals.
 
 The API then serves two shapes:
 
