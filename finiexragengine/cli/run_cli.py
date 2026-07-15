@@ -7,9 +7,9 @@ import argparse
 import os
 
 from finiexragengine.configuration.app_config_manager import AppConfigManager
+from finiexragengine.core.observability.reports.envelope_report import format_envelope_run
 from finiexragengine.core.pipeline.pipeline_assembler import PipelineAssembler
 from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
-from finiexragengine.core.pipeline.pipeline_runner import format_envelope_run
 from finiexragengine.exceptions.ragengine_errors import PipelineNotFoundError
 
 

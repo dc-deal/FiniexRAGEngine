@@ -40,7 +40,7 @@ class OutcomeStore:
         self._table = table
         self._ensure_schema()
 
-    def _connect(self):
+    def _connect(self) -> psycopg.Connection:
         try:
             return psycopg.connect(self._database_url)
         except psycopg.Error as exc:

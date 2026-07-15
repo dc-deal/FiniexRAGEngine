@@ -2,14 +2,15 @@
 import argparse
 import os
 from datetime import datetime, timedelta, timezone
+from typing import Tuple
 
-from finiexragengine.core.observability.perf_report import (
+from finiexragengine.core.observability.reports.perf_report import (
     build_perf_report,
     format_perf_report,
 )
 
 
-def _parse_since(value: str):
+def _parse_since(value: str) -> Tuple[datetime, str]:
     """'7d' / '30d' / '14' -> (since_datetime, label); 'all' -> from the epoch."""
     if value == 'all':
         return datetime(1970, 1, 1, tzinfo=timezone.utc), 'all-time'

@@ -7,7 +7,7 @@ import argparse
 import os
 
 from finiexragengine.configuration.app_config_manager import AppConfigManager
-from finiexragengine.core.observability.cost_report import (
+from finiexragengine.core.observability.reports.cost_report import (
     EvalPipelineInfo,
     build_cost_report,
     format_cost_report,

@@ -40,6 +40,9 @@ def main() -> None:
     print(f"ingest '{args.source_set}': fetched {result.fetched}, "
           f'embedded {result.embedded} (paid), stored {result.stored} new, '
           f'{result.duplicates} duplicates')
+    # The circuit-breaker may have suspended the paid embedding mid-pass (ISSUE_47).
+    if result.suspended:
+        print('  ⏸ paid work suspended (provider quota) — embedding skipped this pass')
     for source_id, entry in result.per_source.items():
         print(f'  {source_id:14} fetched {entry.fetched:3}   embedded {entry.embedded:3}   '
               f'new {entry.stored:3}   dup {entry.duplicates:3}')

@@ -11,6 +11,7 @@ surfaces, not long-running services, so they do not spin up a file.
 """
 import logging
 import logging.handlers
+import os
 from pathlib import Path
 
 from finiexragengine.types.config_types.app_config_types import AppConfig
@@ -42,10 +43,13 @@ def configure_logging(config: AppConfig) -> None:
     root.addHandler(console)
 
     # File — the durable, rotating record. Created lazily (dir made on demand) so importing
-    # this module never touches the filesystem; only an actual boot writes.
+    # this module never touches the filesystem; only an actual boot writes. The `FINIEX_LOG_FILE`
+    # env var overrides the configured path — set it empty to force console-only (the test suite
+    # does this so booting the app in tests never pollutes the real logs/finiex.log).
     log_conf = config.logging
-    if log_conf.file:
-        path = Path(log_conf.file)
+    log_file = os.environ.get('FINIEX_LOG_FILE', log_conf.file)
+    if log_file:
+        path = Path(log_file)
         path.parent.mkdir(parents=True, exist_ok=True)
         if log_conf.rotation == 'size':
             file_handler: logging.Handler = logging.handlers.RotatingFileHandler(

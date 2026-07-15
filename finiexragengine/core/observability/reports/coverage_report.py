@@ -11,7 +11,7 @@ It is the tuning instrument for `retrieval.floor_distance`.
 """
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import psycopg
 from pgvector.psycopg import register_vector
@@ -28,7 +28,7 @@ COVERAGE_FLOOR = 0.55
 _WEEK_MINUTES = 7 * 24 * 60
 
 
-def _as_float(value) -> float:
+def _as_float(value: Any) -> float:
     """DB numeric -> float; NULL (empty result set) -> NaN so callers can flag it."""
     return float(value) if value is not None else float('nan')
 

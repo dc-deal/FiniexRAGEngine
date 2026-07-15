@@ -12,35 +12,16 @@ source-sets.
 """
 import json
 import logging
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
-from urllib.parse import urlparse
 
 import psycopg
 
 from finiexragengine.exceptions.ragengine_errors import VectorStoreError
 from finiexragengine.types.config_types.app_config_types import SourceHealthConfig
+from finiexragengine.types.ingest_types import HealthOutcome
 
 logger = logging.getLogger(__name__)
-
-
-def normalize_host(url: str) -> str:
-    """Bare hostname for grouping — lowercased, `www.` stripped ('' if unparseable)."""
-    host = (urlparse(url).netloc or '').lower()
-    if '@' in host:            # strip any userinfo
-        host = host.split('@', 1)[1]
-    if ':' in host:            # strip a port
-        host = host.split(':', 1)[0]
-    return host[4:] if host.startswith('www.') else host
-
-
-@dataclass
-class HealthOutcome:
-    """What a failure record did — lets the worker pick a log level (denoise repeats)."""
-    consecutive_failures: int
-    just_flagged: bool          # this failure crossed the threshold -> newly quarantined
-    quarantined_until: Optional[datetime]
 
 
 class SourceHealthStore:
@@ -61,7 +42,7 @@ class SourceHealthStore:
         self._ensure_schema()
         self._load_quarantines()
 
-    def _connect(self):
+    def _connect(self) -> psycopg.Connection:
         try:
             return psycopg.connect(self._database_url)
         except psycopg.Error as exc:

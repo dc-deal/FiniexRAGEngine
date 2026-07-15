@@ -17,7 +17,8 @@ def _cleanup():
         logging.getLogger().removeHandler(handler)
 
 
-def test_adds_console_and_rotating_file(tmp_path):
+def test_adds_console_and_rotating_file(tmp_path, monkeypatch):
+    monkeypatch.delenv('FINIEX_LOG_FILE', raising=False)   # test the config-driven path
     log_file = tmp_path / 'finiex.log'
     config = AppConfig(logging=LoggingConfig(file=str(log_file)))
     try:
@@ -32,7 +33,8 @@ def test_adds_console_and_rotating_file(tmp_path):
         _cleanup()
 
 
-def test_reconfigure_is_idempotent(tmp_path):
+def test_reconfigure_is_idempotent(tmp_path, monkeypatch):
+    monkeypatch.delenv('FINIEX_LOG_FILE', raising=False)   # test the config-driven path
     config = AppConfig(logging=LoggingConfig(file=str(tmp_path / 'finiex.log')))
     try:
         configure_logging(config)

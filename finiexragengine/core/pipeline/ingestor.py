@@ -1,56 +1,16 @@
 """Ingest half of a pipeline: fetch -> embed only new -> idempotent upsert."""
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
-from finiexragengine.core.observability.source_health_store import (
-    HealthOutcome,
-    SourceHealthStore,
-    normalize_host,
-)
+from finiexragengine.core.observability.source_health_store import SourceHealthStore
 from finiexragengine.core.observability.stage_timer import StageTimer
 from finiexragengine.core.pipeline.breaking_detector import BreakingDetector
 from finiexragengine.core.rag.abstract_embedder import AbstractEmbedder
 from finiexragengine.core.rag.abstract_vector_store import AbstractVectorStore
 from finiexragengine.core.sources.abstract_source import AbstractSource
-from finiexragengine.exceptions.ragengine_errors import SourceFetchError
+from finiexragengine.exceptions.ragengine_errors import BudgetExceededError, SourceFetchError
 from finiexragengine.types.article_types import Article
-from finiexragengine.types.outcome_types import StageTiming
-
-
-@dataclass
-class SourceIngest:
-    """One source's contribution to an ingest pass."""
-    fetched: int = 0                # articles pulled from the feed
-    embedded: int = 0               # articles sent to the embedder (the paid call)
-    stored: int = 0                 # newly stored (upsert rowcount — genuinely new ids)
-
-    @property
-    def duplicates(self) -> int:
-        """Fetched items already in the corpus (skipped, never re-embedded)."""
-        return self.fetched - self.stored
-
-
-@dataclass
-class IngestResult:
-    """What one ingest pass did — totals plus a per-source breakdown."""
-    fetched: int = 0
-    embedded: int = 0               # total paid embeddings this pass
-    stored: int = 0
-    candidates: int = 0             # breaking candidates flagged this pass (HIGH tier, ISSUE_11)
-    max_tier: int = 0               # highest importance tier written this pass — drives the eval wake (ISSUE_11)
-    per_source: Dict[str, SourceIngest] = field(default_factory=dict)
-    failed_sources: Dict[str, str] = field(default_factory=dict)   # source_id -> error message
-    # Source-health outcomes for this pass (ISSUE_11) — let the worker pick a log level so
-    # repeated identical failures are denoised (WARN once, DEBUG the repeats, WARN on flag).
-    health_notes: Dict[str, HealthOutcome] = field(default_factory=dict)   # per failed source
-    quarantined_skips: List[str] = field(default_factory=list)     # sources skipped (in quarantine)
-    floor_skips: List[str] = field(default_factory=list)           # sources skipped (within poll floor)
-    recovered_sources: List[str] = field(default_factory=list)     # sources that came back this pass
-    stage_timings: List[StageTiming] = field(default_factory=list)  # fetch/embed/upsert per source (ISSUE_32)
-
-    @property
-    def duplicates(self) -> int:
-        return self.fetched - self.stored
+from finiexragengine.types.ingest_types import IngestResult, SourceIngest
+from finiexragengine.utils.url import normalize_host
 
 
 class Ingestor:
@@ -129,7 +89,18 @@ class Ingestor:
                 # 3. Embed the new article text once (title carries signal when the RSS
                 #    summary is thin), then 4. idempotent upsert (rowcount = actually new).
                 texts = [f'{article.title}. {article.summary}'.strip() for article in fresh]
-                vectors = timer.time('embed', lambda: self._embedder.embed(texts))
+                try:
+                    vectors = timer.time('embed', lambda: self._embedder.embed(texts))
+                except BudgetExceededError:
+                    # Paid work suspended (provider quota, ISSUE_47): skip embedding this pass.
+                    # Fetch + health already ran; the un-embedded articles reappear next pass, so
+                    # nothing is lost while the feed window still holds them. Stop the pass here —
+                    # every remaining source would suspend too.
+                    result.suspended = True
+                    entry.embedded = 0
+                    result.per_source[source_id] = entry
+                    result.fetched += entry.fetched
+                    break
                 entry.stored = timer.time('upsert', lambda: self._store.upsert(fresh, vectors))
                 detect_batch.extend(zip(fresh, vectors))
             result.per_source[source_id] = entry

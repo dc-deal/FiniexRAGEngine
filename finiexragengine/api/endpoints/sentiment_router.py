@@ -1,12 +1,14 @@
 """Pipeline run + latest-outcome endpoints."""
 import logging
 from datetime import datetime, timezone
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 
+from finiexragengine.core.outcome.outcome_store import OutcomeStore
+from finiexragengine.core.pipeline.envelope_contract import hold_result, taxonomy_type
 from finiexragengine.core.pipeline.pipeline import Pipeline
 from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
-from finiexragengine.core.pipeline.pipeline_runner import hold_result, taxonomy_type
 from finiexragengine.exceptions.ragengine_errors import PipelineNotFoundError
 from finiexragengine.types.outcome_types import (
     RunError,
@@ -43,7 +45,7 @@ def _error_envelope(pipeline: Pipeline, exc: Exception) -> SentimentEnvelope:
 
 
 def build_sentiment_router(registry: PipelineRegistry,
-                           outcome_store=None) -> APIRouter:
+                           outcome_store: Optional[OutcomeStore] = None) -> APIRouter:
     """Build the pipeline run/latest router bound to the given registry.
 
     `outcome_store` (ISSUE_8) backs `/latest` with persisted envelopes; without one

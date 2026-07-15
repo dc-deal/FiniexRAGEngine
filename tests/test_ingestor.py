@@ -5,14 +5,14 @@ Pure logic: fake source/store/embedder, so no DB and no API budget are touched.
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from finiexragengine.core.observability.source_health_store import HealthOutcome
 from finiexragengine.core.pipeline.ingestor import Ingestor
 from finiexragengine.core.rag.abstract_embedder import AbstractEmbedder
 from finiexragengine.core.rag.abstract_vector_store import AbstractVectorStore
 from finiexragengine.core.sources.abstract_source import AbstractSource
-from finiexragengine.exceptions.ragengine_errors import SourceFetchError
+from finiexragengine.exceptions.ragengine_errors import BudgetExceededError, SourceFetchError
 from finiexragengine.types.article_types import Article, ScoredArticle
 from finiexragengine.types.config_types.source_set_types import SourceConfig
+from finiexragengine.types.ingest_types import HealthOutcome
 
 _NOW = datetime.now(timezone.utc)
 
@@ -151,6 +151,22 @@ def test_quarantined_source_is_skipped_not_polled():
     assert 'bad' not in result.failed_sources              # not polled -> not a failure
     assert health.failures == []                           # never hit while quarantined
     assert result.stored == 1                              # the good source still ingested
+
+
+class _SuspendedEmbedder(AbstractEmbedder):
+    """Stands in for the circuit-breaker gate (ISSUE_47): embedding is suspended (provider quota)."""
+
+    def embed(self, texts):
+        raise BudgetExceededError('embedding suspended — provider quota reached')
+
+
+def test_budget_suspend_skips_embedding_no_crash():
+    # A quota suspend degrades the ingest pass cleanly: stored 0, suspended flag set — not a crash.
+    source = _FakeSource('s1', [_article('a1')])
+    result = Ingestor([source], _SuspendedEmbedder(), _FakeStore()).run()
+    assert result.suspended is True
+    assert result.stored == 0                        # nothing embedded/stored while suspended
+    assert result.fetched == 1                       # fetch still happened (free)
 
 
 def test_floor_skipped_source_records_no_health():

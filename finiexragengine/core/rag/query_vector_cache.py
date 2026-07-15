@@ -1,5 +1,5 @@
 """Query-vector cache (ISSUE_19) — embed the fixed retrieval queries once, keep them."""
-from typing import List
+from typing import Any, List
 
 import psycopg
 from pgvector.psycopg import register_vector
@@ -8,7 +8,7 @@ from finiexragengine.core.rag.abstract_embedder import AbstractEmbedder
 from finiexragengine.exceptions.ragengine_errors import VectorStoreError
 
 
-def _to_float_list(value) -> List[float]:
+def _to_float_list(value: Any) -> List[float]:
     # pgvector deserialises the vector column to numpy when numpy is installed and to a
     # (non-iterable) pgvector.Vector otherwise. Mirror PgVectorStore's normaliser so the
     # cache works without numpy.
@@ -46,13 +46,13 @@ class QueryVectorCache:
         self._table = table
         self._ensure_schema()
 
-    def _raw_connect(self):
+    def _raw_connect(self) -> psycopg.Connection:
         try:
             return psycopg.connect(self._database_url)
         except psycopg.Error as exc:
             raise VectorStoreError(f'cannot connect to the query-vector cache: {exc}') from exc
 
-    def _connect(self):
+    def _connect(self) -> psycopg.Connection:
         # register_vector needs the `vector` type to exist first (created in _ensure_schema).
         conn = self._raw_connect()
         register_vector(conn)

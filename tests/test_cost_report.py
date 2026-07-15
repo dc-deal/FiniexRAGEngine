@@ -13,7 +13,7 @@ pytest.importorskip('psycopg')
 import psycopg  # noqa: E402
 
 from finiexragengine.core.observability.cost_recorder import CostRecorder  # noqa: E402
-from finiexragengine.core.observability.cost_report import (  # noqa: E402
+from finiexragengine.core.observability.reports.cost_report import (  # noqa: E402
     CostReport,
     EvalPipelineInfo,
     LineItem,

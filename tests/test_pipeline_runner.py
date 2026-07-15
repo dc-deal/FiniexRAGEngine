@@ -9,20 +9,19 @@ from typing import List
 
 import pytest
 
-from finiexragengine.core.pipeline.ingestor import IngestResult
-from finiexragengine.core.pipeline.pipeline_runner import (
-    PipelineRunner,
-    format_envelope_run,
-    taxonomy_type,
-)
-from finiexragengine.core.pipeline.symbol_evaluator import SymbolEval
+from finiexragengine.core.observability.reports.envelope_report import format_envelope_run
+from finiexragengine.core.pipeline.envelope_contract import taxonomy_type
+from finiexragengine.core.pipeline.pipeline_runner import PipelineRunner
 from finiexragengine.exceptions.ragengine_errors import (
+    BudgetExceededError,
     LLMApiError,
     LLMTimeoutError,
     VectorStoreError,
 )
 from finiexragengine.types.article_types import Article
 from finiexragengine.types.config_types.pipeline_config_types import PipelineConfig
+from finiexragengine.types.eval_types import SymbolEval
+from finiexragengine.types.ingest_types import IngestResult
 from finiexragengine.types.llm_types import LlmUsage
 from finiexragengine.types.outcome_types import SentimentResult, StageTiming
 from finiexragengine.types.prompt_metadata import PromptMetadata
@@ -147,6 +146,31 @@ def test_failed_symbol_degrades_to_hold_and_partial():
     assert 'LLM_TIMEOUT' in eth.reasoning
     assert eth.basis == 'degraded'                     # failure row, not data shortage (ISSUE_24)
     assert [e.type for e in envelope.errors] == ['LLM_TIMEOUT']
+
+
+def test_budget_exceeded_degrades_to_hold_and_partial():
+    # ISSUE_47: a provider quota stop surfaces as BudgetExceededError from the eval seam; the
+    # runner degrades the symbol to a clean HOLD tagged BUDGET_EXCEEDED — the contract holds.
+    config = _config(['BTCUSD', 'ETHUSD'])
+    envelope = _runner(config, _FakeIngestor(),
+                       _FakeEvaluator({'BTCUSD': _eval('BTCUSD'),
+                                       'ETHUSD': BudgetExceededError('provider quota reached')})).run()
+    assert envelope.status == 'partial'
+    eth = {r.symbol: r for r in envelope.result}['ETHUSD']
+    assert eth.signal == 'HOLD' and eth.basis == 'degraded'
+    assert [e.type for e in envelope.errors] == ['BUDGET_EXCEEDED']
+
+
+def test_all_symbols_budget_suspended_is_partial_not_error():
+    # A full budget suspend is a controlled degrade — every symbol has a HOLD row, so it is
+    # 'partial' (auditable), NOT 'error' (ISSUE_47); 'error' stays for a genuine total failure.
+    config = _config(['BTCUSD', 'ETHUSD'])
+    envelope = _runner(config, _FakeIngestor(),
+                       _FakeEvaluator({'BTCUSD': BudgetExceededError('quota'),
+                                       'ETHUSD': BudgetExceededError('quota')})).run()
+    assert envelope.status == 'partial'                # not 'error' — a deliberate pause, rows present
+    assert {r.symbol for r in envelope.result} == {'BTCUSD', 'ETHUSD'}
+    assert all(r.signal == 'HOLD' for r in envelope.result)
 
 
 def test_failed_source_records_taxonomy_and_partial():

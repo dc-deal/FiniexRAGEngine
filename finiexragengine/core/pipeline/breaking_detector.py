@@ -1,27 +1,19 @@
 """Breaking-candidate detection at ingest — LLM-free cluster-burst + keyword heuristic (ISSUE_11)."""
 import logging
 import re
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Pattern
 
 from finiexragengine.core.rag.abstract_vector_store import AbstractVectorStore
 from finiexragengine.types.article_types import Article
 from finiexragengine.types.config_types.source_set_types import DetectionConfig
+from finiexragengine.types.ingest_types import DetectionResult
 
 logger = logging.getLogger(__name__)
 
 # Importance tiers written to the corpus (ISSUE_11) — the graded signal the per-pipeline wake
 # filter (breaking.min_importance) and the deep retrieval tier (importance >= 2) both read.
 LOW, MID, HIGH = 1, 2, 3
-
-
-@dataclass
-class DetectionResult:
-    """What one detection pass flagged — totals for the ingest log + the wake signal."""
-    candidates: int = 0          # articles raised to HIGH (breaking_candidate = TRUE)
-    mid: int = 0                 # articles raised to MID
-    max_tier: int = 0            # highest tier written this pass (0 = nothing) — drives the wake
 
 
 class BreakingDetector:

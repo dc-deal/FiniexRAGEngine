@@ -3,13 +3,14 @@ feed-doctor classifier. No DB, no network, no API budget (the DB path is test_so
 """
 from datetime import datetime, timedelta, timezone
 
-from finiexragengine.core.observability.source_health_report import (
+from finiexragengine.core.observability.reports.source_health_report import (
     SourceHealthReport,
     SourceHealthRow,
     format_source_health_report,
 )
-from finiexragengine.core.observability.source_health_store import _level_for, normalize_host
+from finiexragengine.core.observability.source_health_store import _level_for
 from finiexragengine.core.sources.feed_doctor import _scan_suspicious, classify_feed
+from finiexragengine.utils.url import normalize_host
 
 _NOW = datetime.now(timezone.utc)
 

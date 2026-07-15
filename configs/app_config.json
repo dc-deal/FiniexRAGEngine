@@ -49,7 +49,12 @@
     },
     "cost": {
         "account_credit_usd": 0.0,
-        "budget_usd": 0.0
+        "budget_usd": 0.0,
+        "circuit_breaker": {
+            "enabled": true,
+            "reprobe_interval_seconds": 120,
+            "soft_daily_usd": 0.0
+        }
     },
     "log_level": "INFO",
     "logging": {

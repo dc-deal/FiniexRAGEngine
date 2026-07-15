@@ -3,10 +3,8 @@ from datetime import datetime, timezone
 
 import pytest
 
-from finiexragengine.core.pipeline.symbol_evaluator import (
-    SymbolEvaluator,
-    _compact_prompt,
-)
+from finiexragengine.core.observability.reports.eval_report import _compact_prompt
+from finiexragengine.core.pipeline.symbol_evaluator import SymbolEvaluator
 from finiexragengine.exceptions.ragengine_errors import LLMParseError
 from finiexragengine.types.article_types import Article
 from finiexragengine.types.llm_types import LlmCompletion, LlmUsage

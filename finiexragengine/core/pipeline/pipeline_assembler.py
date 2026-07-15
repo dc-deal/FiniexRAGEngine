@@ -5,8 +5,10 @@ from finiexragengine.configuration.app_config_manager import AppConfigManager
 from finiexragengine.configuration.source_set_registry import SourceSetRegistry
 from finiexragengine.core.llm.prompt_builder import PromptBuilder
 from finiexragengine.core.llm.provider_factory import build_provider
+from finiexragengine.core.observability.budget_guard import BudgetGuard
 from finiexragengine.core.observability.cost_recorder import CostRecorder
 from finiexragengine.core.observability.source_health_store import SourceHealthStore
+from finiexragengine.core.outcome.outcome_store import OutcomeStore
 from finiexragengine.core.pipeline.breaking_detector import BreakingDetector
 from finiexragengine.core.pipeline.ingestor import Ingestor
 from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
@@ -17,7 +19,6 @@ from finiexragengine.core.rag.pgvector_store import PgVectorStore
 from finiexragengine.core.rag.query_vector_cache import QueryVectorCache
 from finiexragengine.core.rag.retriever import Retriever
 from finiexragengine.core.sources.source_factory import build_source
-from finiexragengine.core.store.outcome_store import OutcomeStore
 from finiexragengine.exceptions.ragengine_errors import ConfigurationError
 from finiexragengine.types.config_types.pipeline_config_types import PipelineConfig
 
@@ -42,6 +43,12 @@ class PipelineAssembler:
         self._cfg = app.get_config()
         self._database_url = database_url
         self._recorder = CostRecorder(database_url, self._cfg.pricing)
+        # One cost circuit-breaker for every paid call of this process (ISSUE_47): reacts to the
+        # provider's quota limit and suspends paid work. Seed the warn-only day accumulator from
+        # today's billing log (only when the soft line is armed — else no boot query).
+        breaker = self._cfg.cost.circuit_breaker
+        day_start = self._today_spend() if breaker.soft_daily_usd > 0 else 0.0
+        self._budget_guard = BudgetGuard(breaker, day_spend_start=day_start)
         # One store for all pipelines (ISSUE_8): every runner persists into it, the
         # API's /latest reads from it — the shared source of truth, like the recorder.
         self._outcome_store = OutcomeStore(database_url)
@@ -55,6 +62,22 @@ class PipelineAssembler:
 
     def get_cost_recorder(self) -> CostRecorder:
         return self._recorder
+
+    def get_budget_guard(self) -> BudgetGuard:
+        return self._budget_guard
+
+    def _today_spend(self) -> float:
+        """Sum of the billing log since UTC midnight — seeds the guard's warn-only day line."""
+        import psycopg   # local import: only used when the soft daily line is armed
+        from datetime import datetime, timezone
+        midnight = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        try:
+            with psycopg.connect(self._database_url) as conn, conn.cursor() as cur:
+                cur.execute('SELECT COALESCE(SUM(usd_cost), 0) FROM cost_log WHERE ts >= %s',
+                            (midnight,))
+                return float(cur.fetchone()[0])
+        except psycopg.Error:
+            return 0.0   # a missing/unreachable log just starts the day line at 0 — never fatal
 
     def get_outcome_store(self) -> OutcomeStore:
         return self._outcome_store
@@ -83,7 +106,8 @@ class PipelineAssembler:
         model = self.resolve_model(config)
         query_embedder = OpenAIEmbedder(self._cfg.embedding, cost_recorder=self._recorder,
                                         section='ingest_query',
-                                        pipeline_id=config.pipeline_id)
+                                        pipeline_id=config.pipeline_id,
+                                        budget_guard=self._budget_guard)
         store = PgVectorStore(self._cfg.vector_store, self._database_url,
                               dimensions=self._cfg.embedding.dimensions,
                               embedding_model=self._cfg.embedding.model)
@@ -95,7 +119,8 @@ class PipelineAssembler:
         # Provider seam: `llm.provider` names the implementation, the factory resolves
         # it — the assembler never hard-codes a provider class.
         provider = build_provider(self._cfg.llm, model, cost_recorder=self._recorder,
-                                  section='llm_eval', pipeline_id=config.pipeline_id)
+                                  section='llm_eval', pipeline_id=config.pipeline_id,
+                                  budget_guard=self._budget_guard)
         return SymbolEvaluator(retriever, prompt_builder, provider,
                                prompt_name=config.prompt.name,
                                prompt_version=config.prompt.version,
@@ -111,7 +136,8 @@ class PipelineAssembler:
         source_set = self._source_sets.get(source_set_id)
         news_embedder = OpenAIEmbedder(self._cfg.embedding, cost_recorder=self._recorder,
                                        section='ingest_news',
-                                       pipeline_id=billing_label or source_set_id)
+                                       pipeline_id=billing_label or source_set_id,
+                                       budget_guard=self._budget_guard)
         store = PgVectorStore(self._cfg.vector_store, self._database_url,
                               dimensions=self._cfg.embedding.dimensions,
                               embedding_model=self._cfg.embedding.model)

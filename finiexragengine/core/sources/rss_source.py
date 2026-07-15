@@ -87,7 +87,7 @@ class RssSource(AbstractSource):
             )
         return articles
 
-    def _fetch_parsed(self, url: str):
+    def _fetch_parsed(self, url: str) -> Optional[feedparser.FeedParserDict]:
         """Conditional GET with typed failure classification (ISSUE_11).
 
         Returns the parsed feed on success, None on HTTP 304. Raises a typed SourceFetchError

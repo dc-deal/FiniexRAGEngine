@@ -2,7 +2,7 @@
 import logging
 import os
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import AsyncIterator, Optional
 
 from fastapi import FastAPI
 
@@ -60,6 +60,7 @@ def create_app(attach_runners: Optional[bool] = None,
         start_workers = os.environ.get('FINIEX_WORKERS') == '1'
     outcome_store = None
     supervisor = None
+    budget_guard = None
     if attach_runners:
         if not database_url:
             raise RuntimeError('attach_runners=True requires DATABASE_URL')
@@ -70,6 +71,8 @@ def create_app(attach_runners: Optional[bool] = None,
         assembler.attach_all(registry, include_ingest=not start_workers)
         # /latest serves from the same store every runner persists into (ISSUE_8).
         outcome_store = assembler.get_outcome_store()
+        # The cost circuit-breaker state is surfaced on /health (ISSUE_47).
+        budget_guard = assembler.get_budget_guard()
         # Startup model check (ISSUE_40): free provider call, soft by design — a typo'd
         # or retired model (eval allowlist AND the corpus-binding embedding model) warns
         # loudly here instead of failing a paid run later; an unreachable provider only
@@ -84,7 +87,7 @@ def create_app(attach_runners: Optional[bool] = None,
         logger.warning('runners not attached — pipelines run in scaffold-mock mode')
 
     @asynccontextmanager
-    async def lifespan(app: FastAPI):
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # The background heartbeat lives inside the server process: started once the
         # event loop exists, stopped on shutdown after in-flight passes finish.
         if supervisor is not None:
@@ -99,6 +102,6 @@ def create_app(attach_runners: Optional[bool] = None,
         lifespan=lifespan,
     )
     app.include_router(build_health_router(config_manager, registry,
-                                           supervisor=supervisor))
+                                           supervisor=supervisor, budget_guard=budget_guard))
     app.include_router(build_sentiment_router(registry, outcome_store=outcome_store))
     return app

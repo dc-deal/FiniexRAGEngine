@@ -56,7 +56,7 @@ class CostRecorder:
     def session_usd(self) -> float:
         return self._session_usd
 
-    def _connect(self):
+    def _connect(self) -> psycopg.Connection:
         try:
             return psycopg.connect(self._database_url)
         except psycopg.Error as exc:

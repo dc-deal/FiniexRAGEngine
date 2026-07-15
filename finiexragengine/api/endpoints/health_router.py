@@ -1,9 +1,14 @@
 """Health + pipeline-listing endpoints."""
+from typing import Optional
+
 from fastapi import APIRouter
 
 from finiexragengine.configuration.app_config_manager import AppConfigManager
+from finiexragengine.core.observability.budget_guard import BudgetGuard
 from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
+from finiexragengine.core.pipeline.worker_supervisor import WorkerSupervisor
 from finiexragengine.types.api_types import (
+    BudgetInfo,
     HealthResponse,
     PipelineInfo,
     PipelinesResponse,
@@ -13,11 +18,13 @@ from finiexragengine.types.api_types import (
 
 def build_health_router(config_manager: AppConfigManager,
                         registry: PipelineRegistry,
-                        supervisor=None) -> APIRouter:
+                        supervisor: Optional[WorkerSupervisor] = None,
+                        budget_guard: Optional[BudgetGuard] = None) -> APIRouter:
     """Build the health/pipelines router bound to the given config + registry.
 
     `supervisor` (ISSUE_10) adds the live worker states to /health — the first
     surface of the engine's background heartbeat (the live display #26 builds on it).
+    `budget_guard` (ISSUE_47) adds the cost circuit-breaker state (suspended? until when?).
     """
     router = APIRouter(prefix='/v1', tags=['health'])
 
@@ -25,8 +32,9 @@ def build_health_router(config_manager: AppConfigManager,
     def health() -> HealthResponse:
         workers = ([WorkerInfo(**vars(state)) for state in supervisor.states()]
                    if supervisor is not None else [])
+        budget = BudgetInfo(**budget_guard.status()) if budget_guard is not None else None
         return HealthResponse(version=config_manager.get_config().version,
-                              workers=workers)
+                              workers=workers, budget=budget)
 
     @router.get('/pipelines', response_model=PipelinesResponse)
     def list_pipelines() -> PipelinesResponse:

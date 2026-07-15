@@ -70,10 +70,24 @@ class PricingConfig(BaseModel):
         default_factory=lambda: dict(_DEFAULT_MODEL_PRICES))
 
 
+class CircuitBreakerConfig(BaseModel):
+    """Cost circuit-breaker (ISSUE_47) — react to the provider's own spend limit.
+
+    The hard stop is the provider itself: OpenAI returns HTTP 429 `insufficient_quota` at the
+    account ceiling. This block only governs how we *react* — on that signal, suspend paid work,
+    back off, and re-probe once per cool-off (auto-resume). `soft_daily_usd` is an optional
+    warn-only early line *under* that ceiling; it never suspends (the provider stays the hard stop).
+    """
+    enabled: bool = True                   # master switch for the reaction
+    reprobe_interval_seconds: int = 600    # cool-off before one re-probe after a quota suspend
+    soft_daily_usd: float = 0.0            # warn-only day line (0 = off); does NOT suspend
+
+
 class CostConfig(BaseModel):
     """Cost tracking knobs. Balance is not exposed by the API, so we derive it."""
     account_credit_usd: float = 0.0   # what you topped up; remaining ≈ credit − tracked spend
     budget_usd: float = 0.0           # optional soft cap for a spend warning (0 = off)
+    circuit_breaker: CircuitBreakerConfig = Field(default_factory=CircuitBreakerConfig)   # ISSUE_47
 
 
 class LoggingConfig(BaseModel):

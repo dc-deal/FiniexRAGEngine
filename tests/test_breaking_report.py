@@ -4,7 +4,7 @@ Tests `_aggregate` directly with synthetic store rows (envelope dicts), so no DB
 """
 from datetime import datetime, timedelta, timezone
 
-from finiexragengine.core.observability.breaking_report import (
+from finiexragengine.core.observability.reports.breaking_report import (
     _aggregate,
     format_breaking_report,
 )

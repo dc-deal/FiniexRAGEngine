@@ -58,3 +58,12 @@ class LLMParseError(LLMError):
 
 class VectorStoreError(FiniexRagError):
     """Raised on vector-store I/O failures."""
+
+
+class BudgetExceededError(FiniexRagError):
+    """The paid provider is out of quota — paid work is suspended (taxonomy: BUDGET_EXCEEDED).
+
+    Raised at the shared paid seam (embedders + LLM provider) when the provider reports its
+    account ceiling reached (OpenAI 429 `insufficient_quota`) or while the circuit-breaker is
+    backing off after one. The runner degrades the symbol to a clean HOLD row and the ingest
+    pass suspends its paid part — never a crash (ISSUE_47)."""
