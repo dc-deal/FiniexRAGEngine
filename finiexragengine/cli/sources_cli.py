@@ -8,7 +8,7 @@ import os
 
 from finiexragengine.configuration.app_config_manager import AppConfigManager
 from finiexragengine.configuration.source_set_registry import SourceSetRegistry
-from finiexragengine.core.observability.source_health_report import (
+from finiexragengine.core.observability.reports.source_health_report import (
     build_source_health_report,
     format_source_health_report,
 )

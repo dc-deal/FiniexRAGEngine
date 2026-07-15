@@ -9,9 +9,9 @@ import os
 
 from finiexragengine.configuration.app_config_manager import AppConfigManager
 from finiexragengine.core.observability.cost_recorder import derive_usd
+from finiexragengine.core.observability.reports.eval_report import format_symbol_eval
 from finiexragengine.core.pipeline.pipeline_assembler import PipelineAssembler
 from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
-from finiexragengine.core.pipeline.symbol_evaluator import format_symbol_eval
 from finiexragengine.exceptions.ragengine_errors import (
     BudgetExceededError,
     PipelineNotFoundError,

@@ -5,7 +5,7 @@ import os
 from finiexragengine.configuration.app_config_manager import AppConfigManager
 from finiexragengine.core.observability.cost_recorder import CostRecorder
 from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
-from finiexragengine.core.rag.coverage_report import (
+from finiexragengine.core.observability.reports.coverage_report import (
     COVERAGE_FLOOR,
     build_coverage_report,
     format_coverage_report,
@@ -31,7 +31,7 @@ def main() -> None:
 
     # Wiring only: app config (embedding model/dims, corpus table) + the pipeline's
     # symbol->query map via the Pydantic-validated registry; report logic lives in
-    # core.rag.coverage_report.
+    # core.observability.reports.coverage_report.
     app = AppConfigManager()
     cfg = app.get_config()
     registry = PipelineRegistry(app.get_pipelines_dir())

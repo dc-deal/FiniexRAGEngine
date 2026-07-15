@@ -4,7 +4,7 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import Tuple
 
-from finiexragengine.core.observability.breaking_report import (
+from finiexragengine.core.observability.reports.breaking_report import (
     build_breaking_report,
     format_breaking_report,
 )

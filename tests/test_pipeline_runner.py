@@ -9,7 +9,7 @@ from typing import List
 
 import pytest
 
-from finiexragengine.core.observability.envelope_report import format_envelope_run
+from finiexragengine.core.observability.reports.envelope_report import format_envelope_run
 from finiexragengine.core.pipeline.envelope_contract import taxonomy_type
 from finiexragengine.core.pipeline.pipeline_runner import PipelineRunner
 from finiexragengine.exceptions.ragengine_errors import (

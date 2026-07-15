@@ -10,7 +10,7 @@ import pytest
 pytest.importorskip('psycopg')
 import psycopg  # noqa: E402
 
-from finiexragengine.core.store.outcome_store import OutcomeStore  # noqa: E402
+from finiexragengine.core.outcome.outcome_store import OutcomeStore  # noqa: E402
 from finiexragengine.exceptions.ragengine_errors import VectorStoreError  # noqa: E402
 from finiexragengine.types.outcome_types import (  # noqa: E402
     RunError,

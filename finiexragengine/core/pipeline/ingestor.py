@@ -1,10 +1,7 @@
 """Ingest half of a pipeline: fetch -> embed only new -> idempotent upsert."""
 from typing import List, Optional, Tuple
 
-from finiexragengine.core.observability.source_health_store import (
-    SourceHealthStore,
-    normalize_host,
-)
+from finiexragengine.core.observability.source_health_store import SourceHealthStore
 from finiexragengine.core.observability.stage_timer import StageTimer
 from finiexragengine.core.pipeline.breaking_detector import BreakingDetector
 from finiexragengine.core.rag.abstract_embedder import AbstractEmbedder
@@ -13,6 +10,7 @@ from finiexragengine.core.sources.abstract_source import AbstractSource
 from finiexragengine.exceptions.ragengine_errors import BudgetExceededError, SourceFetchError
 from finiexragengine.types.article_types import Article
 from finiexragengine.types.ingest_types import IngestResult, SourceIngest
+from finiexragengine.utils.url import normalize_host
 
 
 class Ingestor:

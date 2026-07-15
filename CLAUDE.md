@@ -85,6 +85,19 @@ Read first, in order:
   module (a report's row/section) stays with it — do not scatter a self-contained unit.
   **`types/` never imports from `core/`** (checked: it does not today) — so when a shape moves,
   everything it references moves with it or the move is wrong.
+- **Group by domain, never by mechanism.** Every `core/` directory names a domain (`sources`,
+  `rag`, `llm`, `pipeline`, `outcome`, `observability`, `triggers`) — never a technique. "It
+  touches psycopg", "it is a store", "it is a report" is not a domain: a unit lives with its
+  consumers and its lifecycle. So `pgvector_store` stays in `rag/` (meaningless without the
+  retriever/embedder) and `source_health_store` in `observability/` (meaningless without its
+  report) — collecting them into a `store/` folder would group eleven unrelated files whose only
+  bond is a driver, and would flatten the deliberate *"two stores, distinct roles"* split below.
+  Sub-folders group by domain too (`observability/reports/`), and only once a directory is
+  genuinely crowded — a prefix (`ingest_*`, `eval_*`) already groups an alphabetical listing for
+  free, at zero import churn.
+- **A file's name says what it *is*.** `openai_errors.py` holding no exception (only a
+  classifier) is a naming bug, not a placement one — it invited "move it to `exceptions/`",
+  which would have leaked one vendor's vocabulary into a shared leaf. Rename before relocating.
 - **String literals use single quotes**; double quotes only for f-strings and docstrings.
 - **Imports at the top**, grouped standard library → third party → project. Never mid-file.
 - **No `__init__.py`** — fully-qualified imports from the package root `finiexragengine.`.
@@ -173,6 +186,10 @@ every response, success or failure.
 - **Reports share the pattern table.** Every metrics surface (cost, performance, coverage — and
   future ones) renders the same console pattern: title + window line + `----` dividers + aligned
   columns; spending CLI passes end with the `--- run metrics ---` footer (`RunFooter`).
+  They live together in `core/observability/reports/` (`build_*` + `format_*` + their own row
+  shapes per file — a self-contained unit). The shared primitives they render *with*
+  (`RunFooter`, `StageTimer`) stay one level up: `StageTimer` is used by the engine itself, so
+  the ingestor must never import from `reports/`.
 - **Capture token usage at the call** (OpenAI `usage`) — it is irreconstructable afterwards.
   Cost is derived from a per-model price table in `app_config.json` (reproducible, like `prompt_version`).
 - **Track spend, not balance.** The remaining account balance is not reliably exposed via API;
@@ -192,10 +209,13 @@ finiexragengine/        package root (no __init__.py)
   api/                  FastAPI app + endpoint routers
   cli/                  CLI entry points
   configuration/        config managers
-  core/                 the pipeline engine
-    sources/  triggers/  rag/  llm/  pipeline/  store/
+  core/                 the pipeline engine — one directory per domain, never per mechanism
+    sources/  triggers/  rag/  llm/  pipeline/  outcome/
+    observability/      metrics units (recorder, guard, timer, footer, logging)
+      reports/          the console surfaces (build_* + format_*)
   exceptions/           custom errors
   types/                @dataclass domain types + config_types/ (Pydantic)
+  utils/                dependency-free helpers (pure functions, no engine imports)
 configs/                app_config.json + pipelines/*.json (constellations)
 docs/                   architecture + guides
 tests/                  pytest suite

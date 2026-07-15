@@ -5,10 +5,10 @@ from time import perf_counter
 from typing import Dict, List, Optional
 
 from finiexragengine.core.observability.cost_recorder import CostRecorder
+from finiexragengine.core.outcome.outcome_store import OutcomeStore
 from finiexragengine.core.pipeline.envelope_contract import hold_result, taxonomy_type
 from finiexragengine.core.pipeline.ingestor import Ingestor
 from finiexragengine.core.pipeline.symbol_evaluator import SymbolEvaluator
-from finiexragengine.core.store.outcome_store import OutcomeStore
 from finiexragengine.exceptions.ragengine_errors import FiniexRagError
 from finiexragengine.types.config_types.pipeline_config_types import PipelineConfig
 from finiexragengine.types.eval_types import SymbolEval

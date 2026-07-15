@@ -8,6 +8,7 @@ from finiexragengine.core.llm.provider_factory import build_provider
 from finiexragengine.core.observability.budget_guard import BudgetGuard
 from finiexragengine.core.observability.cost_recorder import CostRecorder
 from finiexragengine.core.observability.source_health_store import SourceHealthStore
+from finiexragengine.core.outcome.outcome_store import OutcomeStore
 from finiexragengine.core.pipeline.breaking_detector import BreakingDetector
 from finiexragengine.core.pipeline.ingestor import Ingestor
 from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
@@ -18,7 +19,6 @@ from finiexragengine.core.rag.pgvector_store import PgVectorStore
 from finiexragengine.core.rag.query_vector_cache import QueryVectorCache
 from finiexragengine.core.rag.retriever import Retriever
 from finiexragengine.core.sources.source_factory import build_source
-from finiexragengine.core.store.outcome_store import OutcomeStore
 from finiexragengine.exceptions.ragengine_errors import ConfigurationError
 from finiexragengine.types.config_types.pipeline_config_types import PipelineConfig
 

@@ -1,11 +1,16 @@
 """Cost circuit-breaker guard (ISSUE_47) — react to the provider's own quota limit.
 
-The hard stop is the provider: OpenAI returns HTTP 429 `insufficient_quota` at the account ceiling.
-Re-implementing a dollar-accumulator to *predict* that ceiling would be redundant and imprecise (our
-price table is an estimate; the real limit lives at the provider). So this guard reacts to the
-authoritative signal instead — the source-health quarantine pattern (#49) applied to the paid seam:
-on a quota signal, suspend paid work; back off through a cool-off; re-probe once; auto-resume on the
-first success. Shared across the embedders + LLM provider; in-memory only (no DB on the hot path).
+The hard stop is the provider: at the account ceiling it refuses the call. Re-implementing a
+dollar-accumulator to *predict* that ceiling would be redundant and imprecise (our price table is
+an estimate; the real limit lives at the provider). So this guard reacts to the authoritative
+signal instead — the source-health quarantine pattern (#49) applied to the paid seam: on a quota
+signal, suspend paid work; back off through a cool-off; re-probe once; auto-resume on the first
+success. Shared across the embedders + LLM provider; in-memory only (no DB on the hot path).
+
+Deliberately **provider-agnostic**: the guard never inspects a vendor's error vocabulary — the
+concrete provider classifies its own failure and calls `on_quota_error` (see
+`core/llm/openai_quota.is_quota_exceeded`). A second provider brings its own classifier and
+leaves this file untouched.
 """
 import logging
 from datetime import datetime, timedelta, timezone
@@ -14,25 +19,6 @@ from typing import Optional
 from finiexragengine.types.config_types.app_config_types import CircuitBreakerConfig
 
 logger = logging.getLogger(__name__)
-
-
-def is_quota_exceeded(exc: Exception) -> bool:
-    """True for a budget/quota stop, False for a transient rate-limit.
-
-    OpenAI returns HTTP 429 for both; they differ by the error `code`. A rate-limit
-    (`rate_limit_exceeded`) is a short throttle (retryable); the account spend limit is
-    `insufficient_quota` (verified live). Any *other* 429 is treated as a budget stop too — a 429
-    on OpenAI is only ever a rate-limit or a budget/quota stop — with a billing/quota message
-    fallback for a non-429 billing error. Robust to a differently-coded spend limit."""
-    code = getattr(exc, 'code', None)
-    if code == 'rate_limit_exceeded':
-        return False
-    if code == 'insufficient_quota':
-        return True
-    if getattr(exc, 'status_code', None) == 429:
-        return True
-    message = str(getattr(exc, 'message', '') or exc).lower()
-    return any(k in message for k in ('quota', 'billing', 'spend limit', 'exceeded your current'))
 
 
 def _fmt(seconds: int) -> str:
@@ -70,11 +56,13 @@ class BudgetGuard:
         self._retry_at = now + timedelta(seconds=self._reprobe)   # probe now, re-arm the window
         return True
 
-    def on_quota_error(self, reason: str = 'insufficient_quota') -> None:
+    def on_quota_error(self, reason: str = 'quota') -> None:
         """A paid call reported provider quota exhausted — arm (or renew) the suspend.
 
         `reason` is the provider's actual error code (the seam passes it through), so the log and
-        /health name what really came back rather than a hard-coded string."""
+        /health name what really came back rather than a hard-coded string. The default stays
+        vendor-neutral: naming one provider's code here would leak its vocabulary back into this
+        deliberately provider-agnostic unit."""
         newly = not self._suspended
         self._suspended = True
         self._reason = reason

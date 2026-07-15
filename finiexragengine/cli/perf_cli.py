@@ -4,7 +4,7 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import Tuple
 
-from finiexragengine.core.observability.perf_report import (
+from finiexragengine.core.observability.reports.perf_report import (
     build_perf_report,
     format_perf_report,
 )

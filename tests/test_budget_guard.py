@@ -11,7 +11,8 @@ import pytest
 from openai import OpenAIError
 
 from finiexragengine.core.llm.openai_provider import OpenAIProvider
-from finiexragengine.core.observability.budget_guard import BudgetGuard, is_quota_exceeded
+from finiexragengine.core.llm.openai_quota import is_quota_exceeded
+from finiexragengine.core.observability.budget_guard import BudgetGuard
 from finiexragengine.core.rag.openai_embedder import OpenAIEmbedder
 from finiexragengine.exceptions.ragengine_errors import (
     BudgetExceededError,
@@ -104,10 +105,18 @@ def test_soft_daily_warns_once_without_suspending(caplog):
 
 def test_status_shape_for_health():
     g = _guard(reprobe_interval_seconds=600)
-    g.on_quota_error()
+    # The provider passes its own error code through — the guard only echoes it (it must not
+    # know any vendor's vocabulary itself), and /health reports what actually came back.
+    g.on_quota_error(reason='insufficient_quota')
     status = g.status()
     assert status['suspended'] is True and status['reason'] == 'insufficient_quota'
     assert status['retry_at'] is not None
+
+
+def test_guard_default_reason_is_vendor_neutral():
+    g = _guard(reprobe_interval_seconds=600)
+    g.on_quota_error()                               # no code supplied (a provider that has none)
+    assert g.status()['reason'] == 'quota'           # never a hard-coded OpenAI code
 
 
 # --- the paid seams react (fake OpenAI clients) --------------------------------------

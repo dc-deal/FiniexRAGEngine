@@ -14,7 +14,6 @@ import json
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
-from urllib.parse import urlparse
 
 import psycopg
 
@@ -23,16 +22,6 @@ from finiexragengine.types.config_types.app_config_types import SourceHealthConf
 from finiexragengine.types.ingest_types import HealthOutcome
 
 logger = logging.getLogger(__name__)
-
-
-def normalize_host(url: str) -> str:
-    """Bare hostname for grouping — lowercased, `www.` stripped ('' if unparseable)."""
-    host = (urlparse(url).netloc or '').lower()
-    if '@' in host:            # strip any userinfo
-        host = host.split('@', 1)[1]
-    if ':' in host:            # strip a port
-        host = host.split(':', 1)[0]
-    return host[4:] if host.startswith('www.') else host
 
 
 class SourceHealthStore:

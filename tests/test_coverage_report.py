@@ -15,7 +15,7 @@ pytest.importorskip('pgvector')
 import psycopg  # noqa: E402
 
 from finiexragengine.core.rag.abstract_embedder import AbstractEmbedder  # noqa: E402
-from finiexragengine.core.rag.coverage_report import (  # noqa: E402
+from finiexragengine.core.observability.reports.coverage_report import (  # noqa: E402
     CoverageReport,
     SymbolCoverage,
     build_coverage_report,

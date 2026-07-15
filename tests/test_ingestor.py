@@ -6,13 +6,13 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 from finiexragengine.core.pipeline.ingestor import Ingestor
-from finiexragengine.types.ingest_types import HealthOutcome
 from finiexragengine.core.rag.abstract_embedder import AbstractEmbedder
 from finiexragengine.core.rag.abstract_vector_store import AbstractVectorStore
 from finiexragengine.core.sources.abstract_source import AbstractSource
 from finiexragengine.exceptions.ragengine_errors import BudgetExceededError, SourceFetchError
 from finiexragengine.types.article_types import Article, ScoredArticle
 from finiexragengine.types.config_types.source_set_types import SourceConfig
+from finiexragengine.types.ingest_types import HealthOutcome
 
 _NOW = datetime.now(timezone.utc)
 

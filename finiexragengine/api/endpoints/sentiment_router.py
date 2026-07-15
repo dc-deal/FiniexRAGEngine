@@ -5,10 +5,10 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 
+from finiexragengine.core.outcome.outcome_store import OutcomeStore
 from finiexragengine.core.pipeline.envelope_contract import hold_result, taxonomy_type
 from finiexragengine.core.pipeline.pipeline import Pipeline
 from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
-from finiexragengine.core.store.outcome_store import OutcomeStore
 from finiexragengine.exceptions.ragengine_errors import PipelineNotFoundError
 from finiexragengine.types.outcome_types import (
     RunError,

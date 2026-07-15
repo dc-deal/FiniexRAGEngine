@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any, Dict, Optional
 from openai import APITimeoutError, OpenAI, OpenAIError
 
 from finiexragengine.core.llm.abstract_llm_provider import AbstractLLMProvider
-from finiexragengine.core.observability.budget_guard import is_quota_exceeded
+from finiexragengine.core.llm.openai_quota import is_quota_exceeded
 from finiexragengine.exceptions.ragengine_errors import (
     BudgetExceededError,
     LLMApiError,

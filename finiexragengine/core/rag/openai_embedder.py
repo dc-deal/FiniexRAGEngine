@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, List, Optional
 
 from openai import OpenAI, OpenAIError
 
-from finiexragengine.core.observability.budget_guard import is_quota_exceeded
+from finiexragengine.core.llm.openai_quota import is_quota_exceeded
 from finiexragengine.core.rag.abstract_embedder import AbstractEmbedder
 from finiexragengine.exceptions.ragengine_errors import BudgetExceededError, EmbeddingError
 from finiexragengine.types.config_types.app_config_types import EmbeddingConfig
