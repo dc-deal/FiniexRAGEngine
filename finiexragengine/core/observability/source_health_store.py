@@ -39,7 +39,6 @@ class SourceHealthStore:
         self._TABLE = table
         # source_id -> quarantine expiry (in memory; the DB row is the source of truth).
         self._quarantined: Dict[str, datetime] = {}
-        self._ensure_schema()
         self._load_quarantines()
 
     def _connect(self) -> psycopg.Connection:
@@ -47,31 +46,6 @@ class SourceHealthStore:
             return psycopg.connect(self._database_url)
         except psycopg.Error as exc:
             raise VectorStoreError(f'cannot connect to the health store: {exc}') from exc
-
-    def _ensure_schema(self) -> None:
-        try:
-            with self._connect() as conn, conn.cursor() as cur:
-                cur.execute(
-                    f'CREATE TABLE IF NOT EXISTS {self._TABLE} ('
-                    'source_id TEXT PRIMARY KEY, '
-                    'host TEXT, '
-                    'source_set TEXT, '
-                    'total_polls BIGINT NOT NULL DEFAULT 0, '
-                    'total_success BIGINT NOT NULL DEFAULT 0, '
-                    'total_failures BIGINT NOT NULL DEFAULT 0, '
-                    'consecutive_failures INT NOT NULL DEFAULT 0, '
-                    'last_success_at TIMESTAMPTZ, '
-                    'last_failure_at TIMESTAMPTZ, '
-                    'last_status INT, '
-                    'last_error_type TEXT, '
-                    'flagged BOOLEAN NOT NULL DEFAULT FALSE, '
-                    'flagged_at TIMESTAMPTZ, '
-                    'quarantined_until TIMESTAMPTZ, '
-                    "recent_events JSONB NOT NULL DEFAULT '[]', "
-                    'first_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(), '
-                    'updated_at TIMESTAMPTZ NOT NULL DEFAULT now())')
-        except psycopg.Error as exc:
-            raise VectorStoreError(f'source_health schema init failed: {exc}') from exc
 
     def _load_quarantines(self) -> None:
         """Warm the in-memory quarantine cache from the DB (survives a worker restart)."""

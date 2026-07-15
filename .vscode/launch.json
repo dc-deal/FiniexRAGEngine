@@ -218,6 +218,43 @@
             }
         },
         // ====================================================
+        // 🗄 DATABASE MANAGEMENT (the schema itself — ISSUE_14)
+        // ====================================================
+        {
+            // Read-only: what has been applied, what is waiting, what drifted.
+            // Never changes the schema, so it is always safe to run.
+            "name": "🗄 RAGEngine: Migration Status (read-only)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/finiexragengine/cli/migrate_cli.py",
+            "args": [
+                "--status"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "05_database",
+                "order": 1
+            }
+        },
+        {
+            // The ONLY writer of the schema: applies migrations/ in order, each in its own
+            // transaction. Re-running is a no-op, so it is safe before every start — and the
+            // engine refuses to boot while a migration is pending.
+            // No API cost; it touches the database, not OpenAI.
+            "name": "🗄 RAGEngine: Apply Migrations",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/finiexragengine/cli/migrate_cli.py",
+            "args": [],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "05_database",
+                "order": 2
+            }
+        },
+        // ====================================================
         // 🧩 TESTS (free — no API cost)
         // ====================================================
         {

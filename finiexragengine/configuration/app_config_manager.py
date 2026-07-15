@@ -14,6 +14,7 @@ _PIPELINES_DIR = _PROJECT_ROOT / 'configs' / 'pipelines'
 _USER_PIPELINES_DIR = _PROJECT_ROOT / 'user_configs' / 'pipelines'
 _SOURCE_SETS_DIR = _PROJECT_ROOT / 'configs' / 'source_sets'
 _PROMPTS_DIR = _PROJECT_ROOT / 'prompts'
+_MIGRATIONS_DIR = _PROJECT_ROOT / 'migrations'
 
 
 class AppConfigManager:
@@ -53,3 +54,7 @@ class AppConfigManager:
 
     def get_prompts_dir(self) -> Path:
         return _PROMPTS_DIR
+
+    def get_migrations_dir(self) -> Path:
+        """Numbered SQL migrations (ISSUE_14) — the schema's source of truth, applied in order."""
+        return _MIGRATIONS_DIR

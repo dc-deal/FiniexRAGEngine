@@ -22,7 +22,6 @@
     },
     "vector_store": {
         "backend": "pgvector",
-        "table": "articles",
         "retrieval_top_k": 12,
         "recency_window_minutes": 1440
     },

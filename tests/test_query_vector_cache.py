@@ -1,29 +1,18 @@
 """Integration tests for QueryVectorCache — hit skips embed, text/model = new key.
 
-Skipped when psycopg/pgvector or a reachable PostgreSQL is missing. The embedder is
-faked (call-counting), so these spend no API budget — only the cache/DB logic is tested.
-Point DATABASE_URL at a pgvector-enabled Postgres to run them.
+Skipped when psycopg/pgvector or a reachable PostgreSQL is missing. The embedder is faked
+(call-counting), so these spend no API budget — only the cache/DB logic is tested. Runs against
+the canonical `query_vectors` table in the isolated, migration-built test schema (`clean_db`,
+ISSUE_14), at the real 1536 width the column declares.
 """
-import os
-from typing import List
+from typing import Callable, List
 
 import pytest
 
-pytest.importorskip('psycopg')
-pytest.importorskip('pgvector')
-import psycopg  # noqa: E402
+from finiexragengine.core.rag.abstract_embedder import AbstractEmbedder
+from finiexragengine.core.rag.query_vector_cache import QueryVectorCache
 
-from finiexragengine.core.rag.abstract_embedder import AbstractEmbedder  # noqa: E402
-from finiexragengine.core.rag.query_vector_cache import QueryVectorCache  # noqa: E402
-from finiexragengine.exceptions.ragengine_errors import VectorStoreError  # noqa: E402
-
-_DIMS = 4
-_TABLE = 'query_vectors_test'
-
-
-def _dsn() -> str:
-    return os.environ.get(
-        'DATABASE_URL', 'postgresql://ragengine:ragengine@127.0.0.1:5433/ragengine')
+_DIMS = 1536
 
 
 class _CountingEmbedder(AbstractEmbedder):
@@ -43,26 +32,12 @@ def embedder() -> _CountingEmbedder:
 
 
 @pytest.fixture
-def make_cache(embedder):
-    """Factory for a cache on a clean test table (dropped before and after)."""
-    def _drop() -> None:
-        with psycopg.connect(_dsn()) as conn, conn.cursor() as cur:
-            cur.execute(f'DROP TABLE IF EXISTS {_TABLE}')
-
-    try:
-        _drop()
-    except psycopg.Error as exc:
-        pytest.skip(f'PostgreSQL not available: {exc}')
-
+def make_cache(embedder: _CountingEmbedder,
+               clean_db: str) -> Callable[..., QueryVectorCache]:
+    """Factory for a cache against the empty canonical table."""
     def _make(model: str = 'text-embedding-3-small') -> QueryVectorCache:
-        try:
-            return QueryVectorCache(embedder, _dsn(), model=model,
-                                    dimensions=_DIMS, table=_TABLE)
-        except VectorStoreError as exc:
-            pytest.skip(f'PostgreSQL/pgvector not available: {exc}')
-
-    yield _make
-    _drop()
+        return QueryVectorCache(embedder, clean_db, model=model, dimensions=_DIMS)
+    return _make
 
 
 def test_miss_embeds_then_hit_reuses(make_cache, embedder):

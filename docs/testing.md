@@ -11,6 +11,21 @@ The default exclusion comes from `pytest.ini` (`addopts = -m "not paid"`). The
 PostgreSQL-backed tests skip themselves when no database is reachable, so the free
 suite is green everywhere.
 
+## Database isolation
+
+DB-backed tests never touch the operator's corpus. The `db_dsn` fixture (`tests/conftest.py`)
+creates a throwaway `finiex_test` schema, applies the **real** `migrations/` into it, and returns
+a DSN carrying `search_path=finiex_test,public` — isolation is the DSN's job, so no production
+code knows a test is running. Tests therefore use the canonical table names (`articles`,
+`cost_log`, …) against the exact schema the repo defines: a **broken** migration fails the suite
+instead of hiding behind hand-written test DDL. `clean_db` adds a truncate for a per-test blank
+slate. See [development/migrations.md](development/migrations.md).
+
+Note what this deliberately cannot cover: the fixture builds its schema from scratch every run, so
+**checksum drift never appears here** — it only exists against a database that already applied an
+older version of a file. Drift is caught by `migrate_cli --status` and the boot guard, on a real
+database, not by the suite.
+
 ## Cost fencing (`paid` marker)
 
 Tests that spend real API budget carry the `paid` marker and live in clearly-named
@@ -59,6 +74,7 @@ never attach one just because `DATABASE_URL`/`OPENAI_API_KEY` are set in the env
 | `test_provider_factory.py` | `llm.provider` → implementation resolution; unknown name fails | — |
 | `test_cost_recorder.py` | USD derivation, billing rows, latency column, session accumulators | PostgreSQL |
 | `test_cost_report.py` / `test_perf_report.py` | section aggregation + pattern tables; fresh/legacy-DB guards | PostgreSQL |
+| `test_migration_runner.py` | ordered apply + record, re-run no-op, column added to a populated table, failed migration rolls back whole, checksum drift refuses, duplicate version, boot guard checks-but-never-applies, `-- finiex:no-transaction` (concurrent index needs it / builds with it / one statement only) | PostgreSQL |
 | `test_stage_timer.py` / `test_run_footer.py` | shared timing capture + run-metrics footer | — |
 | `test_embedder_cost.py` / `test_config_override.py` | embed cost wiring · base+user config deep-merge | — |
 | `test_rag_live.py` 💸 | real embeddings end-to-end through store + retriever | `OPENAI_API_KEY` + PostgreSQL, `-m paid` |

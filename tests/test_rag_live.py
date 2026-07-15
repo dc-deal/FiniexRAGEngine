@@ -15,13 +15,11 @@ import pytest
 
 pytest.importorskip('openai')
 pytest.importorskip('psycopg')
-import psycopg  # noqa: E402
 
 from finiexragengine.core.rag.openai_embedder import OpenAIEmbedder  # noqa: E402
 from finiexragengine.core.rag.pgvector_store import PgVectorStore  # noqa: E402
 from finiexragengine.core.rag.query_vector_cache import QueryVectorCache  # noqa: E402
 from finiexragengine.core.rag.retriever import Retriever  # noqa: E402
-from finiexragengine.exceptions.ragengine_errors import VectorStoreError  # noqa: E402
 from finiexragengine.types.article_types import Article  # noqa: E402
 from finiexragengine.types.config_types.app_config_types import (  # noqa: E402
     EmbeddingConfig,
@@ -35,13 +33,6 @@ pytestmark = [
                        reason='OPENAI_API_KEY not set'),
 ]
 
-_TABLE = 'articles_live_test'
-_QCACHE_TABLE = 'query_vectors_live_test'
-
-
-def _dsn() -> str:
-    return os.environ.get(
-        'DATABASE_URL', 'postgresql://ragengine:ragengine@127.0.0.1:5433/ragengine')
 
 
 def _article(article_id: str, title: str, published_at: datetime,
@@ -58,20 +49,11 @@ def _cosine(a, b):
 
 
 @pytest.fixture
-def store():
-    config = VectorStoreConfig(table=_TABLE)
-    try:
-        instance = PgVectorStore(config, _dsn(), dimensions=1536,
-                                 embedding_model='text-embedding-3-small')
-    except VectorStoreError as exc:
-        pytest.skip(f'PostgreSQL/pgvector not available: {exc}')
-    with psycopg.connect(_dsn()) as conn, conn.cursor() as cur:
-        cur.execute(f'TRUNCATE {_TABLE}')
-    yield instance
-    with psycopg.connect(_dsn()) as conn, conn.cursor() as cur:
-        cur.execute(f'DROP TABLE IF EXISTS {_TABLE}')
-        cur.execute(f'DROP TABLE IF EXISTS {_QCACHE_TABLE}')
-        cur.execute('DELETE FROM corpus_meta WHERE table_name = %s', (_TABLE,))
+def store(clean_db: str) -> PgVectorStore:
+    # The isolated, migration-built test schema (ISSUE_14) — the operator's real corpus is
+    # never touched, even by a paid run.
+    return PgVectorStore(VectorStoreConfig(), clean_db, dimensions=1536,
+                         embedding_model='text-embedding-3-small')
 
 
 def test_live_embedding_dimension_and_semantics():
@@ -85,7 +67,7 @@ def test_live_embedding_dimension_and_semantics():
     assert _cosine(vectors[0], vectors[1]) > _cosine(vectors[0], vectors[2])
 
 
-def test_live_end_to_end_retrieval_squeeze(store):
+def test_live_end_to_end_retrieval_squeeze(store, clean_db):
     embedder = OpenAIEmbedder(EmbeddingConfig())
     now = datetime.now(timezone.utc)
     articles = [
@@ -105,8 +87,8 @@ def test_live_end_to_end_retrieval_squeeze(store):
     assert store.upsert(articles, vectors) == len(articles)
 
     config = RetrievalConfig(top_k=3, recency_window_minutes=1440, dedup_similarity=0.9)
-    cache = QueryVectorCache(embedder, _dsn(), model=EmbeddingConfig().model,
-                             dimensions=1536, table=_QCACHE_TABLE)
+    cache = QueryVectorCache(embedder, clean_db, model=EmbeddingConfig().model,
+                             dimensions=1536)
     retriever = Retriever(cache, store, config)
     result = retriever.retrieve('Euro US Dollar EUR/USD euro area ECB')
 

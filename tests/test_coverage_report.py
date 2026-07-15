@@ -1,18 +1,13 @@
 """Tests for the corpus coverage diagnostic.
 
-`test_format_*` is pure rendering (no DB). `test_build_*` seeds a tiny corpus and needs a
-reachable pgvector Postgres — skipped otherwise, and it spends no API budget (the embedder
-is faked). Point DATABASE_URL at a pgvector-enabled Postgres to run the integration test.
+`test_format_*` is pure rendering (no DB). `test_build_*` seeds a tiny corpus into the isolated,
+migration-built test schema (`clean_db`, ISSUE_14) and needs a reachable Postgres — skipped
+otherwise, and it spends no API budget (the embedder is faked).
 """
-import os
 from datetime import datetime, timedelta, timezone
 from typing import List
 
 import pytest
-
-pytest.importorskip('psycopg')
-pytest.importorskip('pgvector')
-import psycopg  # noqa: E402
 
 from finiexragengine.core.rag.abstract_embedder import AbstractEmbedder  # noqa: E402
 from finiexragengine.core.observability.reports.coverage_report import (  # noqa: E402
@@ -23,18 +18,16 @@ from finiexragengine.core.observability.reports.coverage_report import (  # noqa
 )
 from finiexragengine.core.rag.pgvector_store import PgVectorStore  # noqa: E402
 from finiexragengine.core.rag.query_vector_cache import QueryVectorCache  # noqa: E402
-from finiexragengine.exceptions.ragengine_errors import VectorStoreError  # noqa: E402
 from finiexragengine.types.article_types import Article  # noqa: E402
 from finiexragengine.types.config_types.app_config_types import VectorStoreConfig  # noqa: E402
 
-_DIMS = 4
-_ART_TABLE = 'articles_coverage_test'
-_QC_TABLE = 'query_vectors_coverage_test'
+_DIMS = 1536
 
 
-def _dsn() -> str:
-    return os.environ.get(
-        'DATABASE_URL', 'postgresql://ragengine:ragengine@127.0.0.1:5433/ragengine')
+def _vec(*leading: float) -> List[float]:
+    """A full-width embedding whose meaning lives in its first components (see ISSUE_14:
+    the corpus column is 1536 wide, so the tests use the real width)."""
+    return list(leading) + [0.0] * (_DIMS - len(leading))
 
 
 # --- pure formatting (no DB) --------------------------------------------------
@@ -72,31 +65,17 @@ def test_format_marks_generic_and_nan():
 class _FixedEmbedder(AbstractEmbedder):
     """Maps known query texts to hand-crafted unit vectors — no API, deterministic."""
 
-    _MAP = {'q_close': [1.0, 0.0, 0.0, 0.0], 'q_far': [0.0, 0.0, 0.0, 1.0]}
-
     def embed(self, texts: List[str]) -> List[List[float]]:
-        return [self._MAP[text] for text in texts]
+        mapping = {'q_close': _vec(1.0), 'q_far': _vec(0.0, 0.0, 0.0, 1.0)}
+        return [mapping[text] for text in texts]
 
 
 @pytest.fixture
-def seeded():
-    """A 3-article corpus (2 recent, 1 stale) + a query cache on clean test tables."""
-    def _drop() -> None:
-        with psycopg.connect(_dsn()) as conn, conn.cursor() as cur:
-            cur.execute(f'DROP TABLE IF EXISTS {_ART_TABLE}')
-            cur.execute(f'DROP TABLE IF EXISTS {_QC_TABLE}')
-            cur.execute("SELECT to_regclass('corpus_meta')")
-            if cur.fetchone()[0] is not None:
-                cur.execute('DELETE FROM corpus_meta WHERE table_name = %s', (_ART_TABLE,))
-
-    try:
-        _drop()
-        store = PgVectorStore(VectorStoreConfig(table=_ART_TABLE), _dsn(), dimensions=_DIMS,
-                              embedding_model='test-embed')
-        cache = QueryVectorCache(_FixedEmbedder(), _dsn(), model='m',
-                                 dimensions=_DIMS, table=_QC_TABLE)
-    except (psycopg.Error, VectorStoreError) as exc:
-        pytest.skip(f'PostgreSQL/pgvector not available: {exc}')
+def seeded(clean_db: str):
+    """A 3-article corpus (2 recent, 1 stale) + a query cache, in the empty test schema."""
+    store = PgVectorStore(VectorStoreConfig(), clean_db, dimensions=_DIMS,
+                          embedding_model='test-embed')
+    cache = QueryVectorCache(_FixedEmbedder(), clean_db, model='m', dimensions=_DIMS)
 
     now = datetime.now(timezone.utc)
 
@@ -109,17 +88,16 @@ def seeded():
     # a1 sits exactly on q_close (distance 0); a2 is orthogonal; a3 == a1 but stale.
     articles = [_article('a1', now), _article('a2', now),
                 _article('a3', now - timedelta(days=10))]
-    vectors = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]]
-    store.upsert(articles, vectors)
-    yield cache
-    _drop()
+    store.upsert(articles, [_vec(1.0), _vec(0.0, 1.0), _vec(1.0)])
+    return cache, clean_db
 
 
 def test_build_covers_close_query_and_flags_far_one(seeded):
+    cache, dsn = seeded
     report = build_coverage_report(
-        {'SYM1': 'q_close', 'SYM2': 'q_far'}, seeded, _dsn(),
+        {'SYM1': 'q_close', 'SYM2': 'q_far'}, cache, dsn,
         pipeline_id='test', config_file='configs/pipelines/test.json', model='m',
-        window_minutes=1440, article_table=_ART_TABLE)
+        window_minutes=1440)
 
     assert report.total_articles == 3
     assert report.week_articles == 2                    # a3 (10 days old) outside 7d too

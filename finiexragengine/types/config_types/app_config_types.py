@@ -40,8 +40,9 @@ class EmbeddingConfig(BaseModel):
 
 
 class VectorStoreConfig(BaseModel):
+    # No `table` key: the corpus table name is owned by the migrations (ISSUE_14), not by
+    # config — a config value here could only ever disagree with the schema that exists.
     backend: str = 'pgvector'
-    table: str = 'articles'
     retrieval_top_k: int = 12
     recency_window_minutes: int = 1440
 

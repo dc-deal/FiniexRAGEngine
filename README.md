@@ -84,7 +84,9 @@ same shell regardless of the signal type:
 cp .env.example .env                # then set OPENAI_API_KEY
 docker compose up -d                # pgvector PostgreSQL + pgAdmin + the engine container
 
-docker compose exec ragengine bash  # enter the container, then start the API:
+docker compose exec ragengine bash  # enter the container, then build the schema:
+python -m finiexragengine.cli.migrate_cli          # applies migrations/ (re-run = no-op)
+
 python finiexragengine/cli/server_cli.py --reload --port 8100
 
 # live mode: + background ingest/eval workers on their own cadences (continuous,
@@ -117,6 +119,11 @@ CI runs the free suite on every pull request and merge (see `.github/workflows/t
   retrieval parameters, trigger, and the breaking-news threshold.
 
 Both are validated into typed Pydantic models on load.
+
+The **database schema is not configuration** — it is owned by the numbered SQL files in
+`migrations/` and applied with the migrate CLI, so it can evolve on a populated database
+without data loss. The engine refuses to start against a schema that is behind the repo.
+See [docs/development/migrations.md](docs/development/migrations.md).
 
 ---
 
