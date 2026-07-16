@@ -4,8 +4,6 @@
 (+ an outcomes table) and need a reachable pgvector Postgres — skipped otherwise; no API budget.
 """
 import json
-import os
-from datetime import datetime, timezone
 
 import pytest
 
@@ -23,23 +21,17 @@ from finiexragengine.core.observability.reports.cost_report import (  # noqa: E4
     build_cost_report,
     format_cost_report,
 )
-from finiexragengine.exceptions.ragengine_errors import VectorStoreError  # noqa: E402
 from finiexragengine.types.config_types.app_config_types import (  # noqa: E402
     ModelPrice,
     PricingConfig,
 )
 
-_TABLE = 'cost_log_report_test'
-_OUTCOMES = 'outcomes_report_test'
+_TABLE = 'cost_log'
+_OUTCOMES = 'outcomes'
 _PRICING = PricingConfig(models={
     'text-embedding-3-small': ModelPrice(input_per_1k=0.00002),
     'gpt-4o-mini': ModelPrice(input_per_1k=0.00015, output_per_1k=0.0006),
 })
-
-
-def _dsn() -> str:
-    return os.environ.get(
-        'DATABASE_URL', 'postgresql://ragengine:ragengine@127.0.0.1:5433/ragengine')
 
 
 # --- pure rendering -------------------------------------------------------------------
@@ -79,36 +71,25 @@ def test_format_without_any_passes_says_no_projection():
 # --- DB-backed build ------------------------------------------------------------------
 
 @pytest.fixture
-def seeded():
-    def _drop():
-        with psycopg.connect(_dsn()) as conn, conn.cursor() as cur:
-            cur.execute(f'DROP TABLE IF EXISTS {_TABLE}')
-            cur.execute(f'DROP TABLE IF EXISTS {_OUTCOMES}')
-    try:
-        _drop()
-        recorder = CostRecorder(_dsn(), _PRICING, table=_TABLE)
-    except (psycopg.Error, VectorStoreError) as exc:
-        pytest.skip(f'PostgreSQL not available: {exc}')
+def seeded(clean_db: str) -> str:
+    recorder = CostRecorder(clean_db, _PRICING)
     # Real billing rows, attributed per pipeline / source-set.
     recorder.record('llm_eval', 'gpt-4o-mini', 1000, 500, pipeline_id='p1')      # 0.00045
     recorder.record('llm_eval', 'gpt-4o-mini', 1000, 500, pipeline_id='p1')      # 0.00045
     recorder.record('ingest_news', 'text-embedding-3-small', 10_000,
                     pipeline_id='news_set')                                      # 0.0002
     # Two persisted passes for p1 → avg cost/pass = 0.02 (drives the projection).
-    with psycopg.connect(_dsn()) as conn, conn.cursor() as cur:
-        cur.execute(f'CREATE TABLE {_OUTCOMES} (id BIGSERIAL PRIMARY KEY, pipeline_id TEXT, '
-                    'ts TIMESTAMPTZ DEFAULT now(), status TEXT, envelope JSONB)')
+    with psycopg.connect(clean_db) as conn, conn.cursor() as cur:
         for cost in (0.01, 0.03):
-            cur.execute(f'INSERT INTO {_OUTCOMES} (pipeline_id, status, envelope) '
-                        'VALUES (%s, %s, %s)',
+            cur.execute(f'INSERT INTO {_OUTCOMES} (pipeline_id, ts, status, envelope) '
+                        'VALUES (%s, now(), %s, %s)',
                         ('p1', 'success', json.dumps({'metadata': {'cost_usd': cost}})))
-    yield
-    _drop()
+        conn.commit()
+    return clean_db
 
 
 def test_build_aggregates_real_spend_per_pipeline(seeded):
-    report = build_cost_report(_dsn(), cost_table=_TABLE, outcomes_table=_OUTCOMES,
-                               credit_usd=10.0)
+    report = build_cost_report(seeded, credit_usd=10.0)
     all_time = next(w for w in report.real if w.label == 'all-time')
     by = {item.label: item for item in all_time.by_pipeline}
     assert by['p1'].usd == pytest.approx(0.0009)          # two llm_eval calls
@@ -119,8 +100,7 @@ def test_build_aggregates_real_spend_per_pipeline(seeded):
 
 def test_prediction_projects_real_cost_per_pass_over_config_cadence(seeded):
     report = build_cost_report(
-        _dsn(), eval_pipelines={'p1': EvalPipelineInfo(600, symbol_count=2, overridden=True)},
-        cost_table=_TABLE, outcomes_table=_OUTCOMES)
+        seeded, eval_pipelines={'p1': EvalPipelineInfo(600, symbol_count=2, overridden=True)})
     assert report.prediction is not None
     proj = {p.pipeline_id: p for p in report.prediction.per_pipeline}
     assert proj['p1'].usd_per_pass == pytest.approx(0.02)        # avg of 0.01 + 0.03
@@ -132,16 +112,12 @@ def test_prediction_projects_real_cost_per_pass_over_config_cadence(seeded):
 
 
 def test_no_eval_pipelines_means_no_prediction(seeded):
-    report = build_cost_report(_dsn(), eval_pipelines={}, cost_table=_TABLE,
-                               outcomes_table=_OUTCOMES)
+    report = build_cost_report(seeded, eval_pipelines={})
     assert report.prediction is None                            # nothing to project
 
 
-def test_build_survives_missing_cost_table():
-    # Fresh DB, no CostRecorder ever ran: 'nothing spent yet', not a crash.
-    try:
-        report = build_cost_report(_dsn(), cost_table='cost_log_never_created', credit_usd=5.0)
-    except VectorStoreError as exc:
-        pytest.skip(f'PostgreSQL not available: {exc}')
+def test_build_survives_missing_cost_table(db_dsn):
+    # The table the report points at does not exist: 'nothing spent yet', not a crash.
+    report = build_cost_report(db_dsn, cost_table='cost_log_never_created', credit_usd=5.0)
     assert all(w.usd == 0.0 for w in report.real) and report.spent_all_usd == 0.0
     assert report.remaining_usd == pytest.approx(5.0)

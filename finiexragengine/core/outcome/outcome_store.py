@@ -38,30 +38,12 @@ class OutcomeStore:
     def __init__(self, database_url: str, table: str = 'outcomes') -> None:
         self._database_url = database_url
         self._table = table
-        self._ensure_schema()
 
     def _connect(self) -> psycopg.Connection:
         try:
             return psycopg.connect(self._database_url)
         except psycopg.Error as exc:
             raise VectorStoreError(f'cannot connect to the outcome store: {exc}') from exc
-
-    def _ensure_schema(self) -> None:
-        try:
-            with self._connect() as conn, conn.cursor() as cur:
-                cur.execute(
-                    f'CREATE TABLE IF NOT EXISTS {self._table} ('
-                    'id BIGSERIAL PRIMARY KEY, '
-                    'pipeline_id TEXT NOT NULL, '
-                    'ts TIMESTAMPTZ NOT NULL, '        # envelope.timestamp (analysis time)
-                    'status TEXT NOT NULL, '           # success | partial | error
-                    'envelope JSONB NOT NULL, '        # the exact served JSON (source of truth)
-                    'raw_output JSONB)')               # ISSUE_36: {symbol: raw scored dict}
-                # The /latest read path: newest row per pipeline via one index walk.
-                cur.execute(f'CREATE INDEX IF NOT EXISTS idx_{self._table}_latest '
-                            f'ON {self._table} (pipeline_id, ts DESC)')
-        except psycopg.Error as exc:
-            raise VectorStoreError(f'outcome-store schema init failed: {exc}') from exc
 
     def save(self, envelope: AnalysisEnvelope,
              raw_output: Optional[Dict[str, Any]] = None) -> None:

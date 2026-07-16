@@ -1,31 +1,22 @@
 """Tests for the OutcomeStore (ISSUE_8/36) — needs a reachable Postgres (skipped
-otherwise), no API budget. Mirrors the cost-recorder test setup: its own table,
-dropped before and after.
+otherwise), no API budget.
+
+Runs against the canonical `outcomes` table inside the isolated, migration-built test schema
+(the `clean_db` fixture, ISSUE_14) — so this exercises the real schema, not hand-written test DDL.
 """
-import os
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
-pytest.importorskip('psycopg')
-import psycopg  # noqa: E402
-
-from finiexragengine.core.outcome.outcome_store import OutcomeStore  # noqa: E402
-from finiexragengine.exceptions.ragengine_errors import VectorStoreError  # noqa: E402
-from finiexragengine.types.outcome_types import (  # noqa: E402
+from finiexragengine.core.outcome.outcome_store import OutcomeStore
+from finiexragengine.types.outcome_types import (
     RunError,
     RunMetadata,
     SentimentEnvelope,
     SentimentResult,
 )
 
-_TABLE = 'outcomes_test'
 _TS = datetime(2026, 7, 12, 10, 0, tzinfo=timezone.utc)
-
-
-def _dsn() -> str:
-    return os.environ.get(
-        'DATABASE_URL', 'postgresql://ragengine:ragengine@127.0.0.1:5433/ragengine')
 
 
 def _envelope(pipeline_id='p', ts=_TS, status='success') -> SentimentEnvelope:
@@ -44,17 +35,8 @@ def _envelope(pipeline_id='p', ts=_TS, status='success') -> SentimentEnvelope:
 
 
 @pytest.fixture
-def store():
-    def _drop() -> None:
-        with psycopg.connect(_dsn()) as conn, conn.cursor() as cur:
-            cur.execute(f'DROP TABLE IF EXISTS {_TABLE}')
-    try:
-        _drop()
-        outcome_store = OutcomeStore(_dsn(), table=_TABLE)
-    except (psycopg.Error, VectorStoreError) as exc:
-        pytest.skip(f'PostgreSQL not available: {exc}')
-    yield outcome_store
-    _drop()
+def store(clean_db: str) -> OutcomeStore:
+    return OutcomeStore(clean_db)
 
 
 def test_save_get_latest_roundtrip_is_typed_and_lossless(store):

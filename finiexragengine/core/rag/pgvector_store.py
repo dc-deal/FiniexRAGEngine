@@ -10,6 +10,10 @@ from finiexragengine.exceptions.ragengine_errors import VectorStoreError
 from finiexragengine.types.article_types import Article, ScoredArticle
 from finiexragengine.types.config_types.app_config_types import VectorStoreConfig
 
+# The corpus table, owned by migration 001 (ISSUE_14) — not a config value: a config key here
+# could only ever disagree with the schema that actually exists.
+_TABLE = 'articles'
+
 
 def _to_float_list(value: Any) -> List[float]:
     # pgvector deserialises the `vector` column to a numpy array when numpy is
@@ -42,7 +46,8 @@ class PgVectorStore(AbstractVectorStore):
         # The corpus is bound to ONE embedding model (ISSUE_16) — required so the
         # boot guard below can compare config against the corpus stamp.
         self._embedding_model = embedding_model
-        self._ensure_schema()
+        # The schema itself is owned by migrations (ISSUE_14); only the corpus guard runs here.
+        self._verify_corpus_stamp()
 
     def _raw_connect(self) -> psycopg.Connection:
         try:
@@ -51,58 +56,27 @@ class PgVectorStore(AbstractVectorStore):
             raise VectorStoreError(f'cannot connect to the vector store: {exc}') from exc
 
     def _connect(self) -> psycopg.Connection:
-        # register_vector needs the `vector` type to already exist, so this is only
-        # used after _ensure_schema has created the extension.
+        # register_vector needs the `vector` type to already exist — guaranteed by migration
+        # 001, which the boot check (ISSUE_14) verifies has run before anything constructs this.
         conn = self._raw_connect()
         register_vector(conn)
         return conn
 
-    def _ensure_schema(self) -> None:
-        table = self._config.table
+    def _verify_corpus_stamp(self) -> None:
+        """Corpus guard (ISSUE_16) — bind this corpus to exactly one embedding model.
+
+        Vectors from different embedding models live on different "maps" and must never mix, so
+        the corpus carries its model IN THE DATABASE and a mismatch refuses the boot — a config
+        edit can never silently poison it. An unstamped corpus is stamped on first boot (it was
+        built with the configured model). A model change is a deliberate re-embed migration
+        (ISSUE_14), never a config flip.
+
+        This is a *guard*, not schema work: the DDL it used to sit next to moved into migration
+        001, but the check must stay here — dropping it would silently un-guard the corpus.
+        """
+        table = _TABLE
         try:
             with self._raw_connect() as conn, conn.cursor() as cur:
-                cur.execute('CREATE EXTENSION IF NOT EXISTS vector')
-                cur.execute(
-                    f'CREATE TABLE IF NOT EXISTS {table} ('
-                    'article_id TEXT PRIMARY KEY, '
-                    'source_id TEXT NOT NULL, '
-                    'source_weight REAL NOT NULL, '
-                    'url TEXT NOT NULL, '
-                    'title TEXT NOT NULL, '
-                    'summary TEXT NOT NULL, '
-                    'language TEXT NOT NULL, '
-                    'published_at TIMESTAMPTZ NOT NULL, '
-                    'fetched_at TIMESTAMPTZ NOT NULL, '
-                    f'embedding vector({self._dimensions}) NOT NULL, '
-                    'importance SMALLINT, '
-                    'breaking_candidate BOOLEAN NOT NULL DEFAULT FALSE, '
-                    # Detection timestamp (ISSUE_11): when the breaking detector flagged this
-                    # article — the reaction-time report joins it by article_id (detection
-                    # latency = flagged_at − fetched_at). NULL until flagged.
-                    'flagged_at TIMESTAMPTZ)'
-                )
-                # In-place add for a pre-ISSUE_11 corpus (the DDL above only applies to a freshly
-                # created table); idempotent, so a matched-stamp boot just no-ops.
-                cur.execute(f'ALTER TABLE {table} ADD COLUMN IF NOT EXISTS '
-                            'breaking_candidate BOOLEAN NOT NULL DEFAULT FALSE')
-                cur.execute(f'ALTER TABLE {table} ADD COLUMN IF NOT EXISTS flagged_at TIMESTAMPTZ')
-                # No ANN index yet: cosine search is an exact full scan, which is
-                # fine at the current corpus size. Add an HNSW index on `embedding`
-                # (vector_cosine_ops) before the scan dominates query latency.
-
-                # Corpus guard (ISSUE_16): vectors from different embedding models live
-                # on different "maps" and must never mix — stamp the corpus with its
-                # model IN THE DATABASE and refuse to boot on a mismatch, so a config
-                # edit can never silently poison the corpus. A pre-guard corpus is
-                # stamped with the configured model on first boot (in-place upgrade —
-                # the running corpus was built with it). A model change is a deliberate
-                # re-embed migration (ISSUE_14), never a config flip.
-                cur.execute(
-                    'CREATE TABLE IF NOT EXISTS corpus_meta ('
-                    'table_name TEXT PRIMARY KEY, '
-                    'embedding_model TEXT NOT NULL, '
-                    'dimensions INTEGER NOT NULL, '
-                    'created_at TIMESTAMPTZ NOT NULL DEFAULT now())')
                 cur.execute('SELECT embedding_model, dimensions FROM corpus_meta '
                             'WHERE table_name = %s', (table,))
                 stamp = cur.fetchone()
@@ -119,14 +93,14 @@ class PgVectorStore(AbstractVectorStore):
                         'from different models must never mix. Either revert the config '
                         'or re-embed the corpus (migration, ISSUE_14).')
         except psycopg.Error as exc:
-            raise VectorStoreError(f'schema init failed: {exc}') from exc
+            raise VectorStoreError(f'corpus guard check failed: {exc}') from exc
 
     def upsert(self, articles: List[Article], vectors: List[List[float]]) -> int:
         if len(articles) != len(vectors):
             raise VectorStoreError('articles and vectors must be the same length')
         if not articles:
             return 0
-        table = self._config.table
+        table = _TABLE
         sql = (
             f'INSERT INTO {table} (article_id, source_id, source_weight, url, title, '
             'summary, language, published_at, fetched_at, embedding) '
@@ -150,7 +124,7 @@ class PgVectorStore(AbstractVectorStore):
     def existing_ids(self, article_ids: List[str]) -> Set[str]:
         if not article_ids:
             return set()
-        table = self._config.table
+        table = _TABLE
         # One round-trip membership check so ingest can skip re-embedding known ids.
         try:
             with self._raw_connect() as conn, conn.cursor() as cur:
@@ -169,7 +143,7 @@ class PgVectorStore(AbstractVectorStore):
         across feeds is a `COUNT(*)` over the recency window with a cosine-distance filter — pure
         vector math in the DB, no rows materialized, no LLM. `max_distance` = 1 − cluster_similarity.
         """
-        table = self._config.table
+        table = _TABLE
         try:
             with self._connect() as conn, conn.cursor() as cur:
                 cur.execute(
@@ -190,7 +164,7 @@ class PgVectorStore(AbstractVectorStore):
         """
         if not article_ids:
             return 0
-        table = self._config.table
+        table = _TABLE
         try:
             with self._connect() as conn, conn.cursor() as cur:
                 cur.execute(
@@ -203,7 +177,7 @@ class PgVectorStore(AbstractVectorStore):
 
     def query(self, vector: List[float], top_k: int, since: datetime,
               min_importance: Optional[int] = None) -> List[ScoredArticle]:
-        table = self._config.table
+        table = _TABLE
         columns = ', '.join(self._COLUMNS)
         # <=> is pgvector's cosine-distance operator (0.0 = identical direction).
         # Recency filter, distance ranking and the fetch cap run in one round-trip.

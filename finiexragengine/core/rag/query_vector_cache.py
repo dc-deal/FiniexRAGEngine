@@ -44,7 +44,6 @@ class QueryVectorCache:
         self._model = model
         self._dimensions = dimensions
         self._table = table
-        self._ensure_schema()
 
     def _raw_connect(self) -> psycopg.Connection:
         try:
@@ -53,26 +52,11 @@ class QueryVectorCache:
             raise VectorStoreError(f'cannot connect to the query-vector cache: {exc}') from exc
 
     def _connect(self) -> psycopg.Connection:
-        # register_vector needs the `vector` type to exist first (created in _ensure_schema).
+        # register_vector needs the `vector` type to exist — guaranteed by migration 001, which
+        # the boot check (ISSUE_14) verifies has run before anything constructs this.
         conn = self._raw_connect()
         register_vector(conn)
         return conn
-
-    def _ensure_schema(self) -> None:
-        try:
-            with self._raw_connect() as conn, conn.cursor() as cur:
-                cur.execute('CREATE EXTENSION IF NOT EXISTS vector')
-                cur.execute(
-                    f'CREATE TABLE IF NOT EXISTS {self._table} ('
-                    'query_text TEXT NOT NULL, '
-                    'embedding_model TEXT NOT NULL, '
-                    'dimensions INTEGER NOT NULL, '
-                    f'embedding vector({self._dimensions}) NOT NULL, '
-                    'created_at TIMESTAMPTZ NOT NULL DEFAULT now(), '
-                    'PRIMARY KEY (query_text, embedding_model, dimensions))'
-                )
-        except psycopg.Error as exc:
-            raise VectorStoreError(f'query-cache schema init failed: {exc}') from exc
 
     def get_vector(self, query_text: str) -> List[float]:
         """Return the query's embedding — from cache, or embed-and-store on a miss.

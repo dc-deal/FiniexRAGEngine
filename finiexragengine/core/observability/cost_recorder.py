@@ -46,7 +46,6 @@ class CostRecorder:
         # Session accumulators — what this process recorded (for the RunFooter echo).
         self._session_tokens = 0
         self._session_usd = 0.0
-        self._ensure_schema()
 
     @property
     def session_tokens(self) -> int:
@@ -61,31 +60,6 @@ class CostRecorder:
             return psycopg.connect(self._database_url)
         except psycopg.Error as exc:
             raise VectorStoreError(f'cannot connect to the cost log: {exc}') from exc
-
-    def _ensure_schema(self) -> None:
-        try:
-            with self._connect() as conn, conn.cursor() as cur:
-                cur.execute(
-                    f'CREATE TABLE IF NOT EXISTS {self._table} ('
-                    'id BIGSERIAL PRIMARY KEY, '
-                    'ts TIMESTAMPTZ NOT NULL DEFAULT now(), '
-                    'section TEXT NOT NULL, '           # ingest_news | ingest_query | llm_eval | …
-                    'model TEXT NOT NULL, '
-                    'prompt_tokens INTEGER NOT NULL, '
-                    'completion_tokens INTEGER NOT NULL DEFAULT 0, '
-                    'total_tokens INTEGER NOT NULL, '
-                    'usd_cost DOUBLE PRECISION NOT NULL, '   # frozen at record time
-                    'pipeline_id TEXT, '
-                    'duration_ms DOUBLE PRECISION, '         # API-call latency (ISSUE_32)
-                    'model_snapshot TEXT)')                  # served model (response.model)
-                # In-place upgrades for tables created before these columns existed;
-                # older rows keep NULL (real migrations: #14).
-                cur.execute(f'ALTER TABLE {self._table} '
-                            'ADD COLUMN IF NOT EXISTS duration_ms DOUBLE PRECISION')
-                cur.execute(f'ALTER TABLE {self._table} '
-                            'ADD COLUMN IF NOT EXISTS model_snapshot TEXT')
-        except psycopg.Error as exc:
-            raise VectorStoreError(f'cost-log schema init failed: {exc}') from exc
 
     def record(self, section: str, model: str, prompt_tokens: int,
                completion_tokens: int = 0, pipeline_id: Optional[str] = None,

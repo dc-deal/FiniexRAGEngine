@@ -18,6 +18,7 @@ from finiexragengine.core.rag.openai_embedder import OpenAIEmbedder
 from finiexragengine.core.rag.pgvector_store import PgVectorStore
 from finiexragengine.core.rag.query_vector_cache import QueryVectorCache
 from finiexragengine.core.rag.retriever import Retriever
+from finiexragengine.core.schema.schema_guard import verify_schema_current
 from finiexragengine.core.sources.source_factory import build_source
 from finiexragengine.exceptions.ragengine_errors import ConfigurationError
 from finiexragengine.types.config_types.pipeline_config_types import PipelineConfig
@@ -42,6 +43,11 @@ class PipelineAssembler:
         self._app = app
         self._cfg = app.get_config()
         self._database_url = database_url
+        # Schema gate (ISSUE_14): every DB-touching path builds its graph here, so this is the
+        # one place a stale schema can be caught — before any store, worker or paid call exists.
+        # Checks only: applying is the migrate CLI's job (a deploy must not mutate a database
+        # as a side effect of booting).
+        verify_schema_current(database_url, app.get_migrations_dir())
         self._recorder = CostRecorder(database_url, self._cfg.pricing)
         # One cost circuit-breaker for every paid call of this process (ISSUE_47): reacts to the
         # provider's quota limit and suspends paid work. Seed the warn-only day accumulator from

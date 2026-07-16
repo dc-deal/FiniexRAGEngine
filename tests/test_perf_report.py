@@ -1,9 +1,9 @@
 """Tests for the performance report (ISSUE_32).
 
-`test_format_*` is pure rendering (no DB). `test_build_*` seeds a cost_log with
-durations and needs a reachable pgvector Postgres — skipped otherwise; no API budget.
+`test_format_*` is pure rendering (no DB). `test_build_*` seeds the canonical `cost_log` in the
+isolated, migration-built test schema (`clean_db`, ISSUE_14) and needs a reachable Postgres —
+skipped otherwise; no API budget.
 """
-import os
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -18,21 +18,15 @@ from finiexragengine.core.observability.reports.perf_report import (  # noqa: E4
     build_perf_report,
     format_perf_report,
 )
-from finiexragengine.exceptions.ragengine_errors import VectorStoreError  # noqa: E402
 from finiexragengine.types.config_types.app_config_types import (  # noqa: E402
     ModelPrice,
     PricingConfig,
 )
 
-_TABLE = 'cost_log_perf_test'
+_TABLE = 'cost_log'
 _PRICING = PricingConfig(models={
     'text-embedding-3-small': ModelPrice(input_per_1k=0.00002),
 })
-
-
-def _dsn() -> str:
-    return os.environ.get(
-        'DATABASE_URL', 'postgresql://ragengine:ragengine@127.0.0.1:5433/ragengine')
 
 
 def test_format_shows_pattern_table_and_untimed_note():
@@ -57,26 +51,18 @@ def test_format_empty_window():
 
 
 @pytest.fixture
-def seeded():
-    def _drop() -> None:
-        with psycopg.connect(_dsn()) as conn, conn.cursor() as cur:
-            cur.execute(f'DROP TABLE IF EXISTS {_TABLE}')
-    try:
-        _drop()
-        rec = CostRecorder(_dsn(), _PRICING, table=_TABLE)
-    except (psycopg.Error, VectorStoreError) as exc:
-        pytest.skip(f'PostgreSQL not available: {exc}')
+def seeded(clean_db: str) -> str:
+    rec = CostRecorder(clean_db, _PRICING)
     rec.record('llm_eval', 'text-embedding-3-small', 1000, duration_ms=2000.0)
     rec.record('llm_eval', 'text-embedding-3-small', 1000, duration_ms=3000.0)
     rec.record('ingest_news', 'text-embedding-3-small', 500, duration_ms=800.0)
     rec.record('ingest_news', 'text-embedding-3-small', 500)   # legacy: no duration
-    yield
-    _drop()
+    return clean_db
 
 
 def test_build_aggregates_latency_by_section(seeded):
     since = datetime.now(timezone.utc) - timedelta(days=1)
-    report = build_perf_report(_dsn(), since, table=_TABLE)
+    report = build_perf_report(seeded, since)
     by_section = {r.section: r for r in report.rows}
     assert set(by_section) == {'llm_eval', 'ingest_news'}
     llm = by_section['llm_eval']
@@ -88,22 +74,19 @@ def test_build_aggregates_latency_by_section(seeded):
     assert report.window_api_seconds == pytest.approx(5.8)
 
 
-def test_build_survives_missing_table():
-    # The read-only report must answer 'nothing to report', never crash, when no
-    # CostRecorder has ever created the table (fresh DB).
+def test_build_survives_missing_table(db_dsn):
+    # The read-only report must answer 'nothing to report', never crash, when the table it
+    # points at does not exist.
     since = datetime.now(timezone.utc) - timedelta(days=1)
-    try:
-        report = build_perf_report(_dsn(), since, table='cost_log_never_created')
-    except VectorStoreError as exc:
-        pytest.skip(f'PostgreSQL not available: {exc}')
+    report = build_perf_report(db_dsn, since, table='cost_log_never_created')
     assert report.rows == [] and report.untimed_calls == 0
 
 
-def test_build_survives_legacy_table_without_duration_column():
+def test_build_survives_legacy_table_without_duration_column(db_dsn):
     # A cost_log written before ISSUE_32 (no duration_ms) — every row is untimed legacy.
     table = 'cost_log_perf_legacy_test'
     try:
-        with psycopg.connect(_dsn()) as conn, conn.cursor() as cur:
+        with psycopg.connect(db_dsn) as conn, conn.cursor() as cur:
             cur.execute(f'DROP TABLE IF EXISTS {table}')
             cur.execute(
                 f'CREATE TABLE {table} ('
@@ -117,9 +100,9 @@ def test_build_survives_legacy_table_without_duration_column():
         pytest.skip(f'PostgreSQL not available: {exc}')
     try:
         since = datetime.now(timezone.utc) - timedelta(days=1)
-        report = build_perf_report(_dsn(), since, table=table)
+        report = build_perf_report(db_dsn, since, table=table)
         assert report.rows == []
         assert report.untimed_calls == 1                   # legacy row counted, not crashed
     finally:
-        with psycopg.connect(_dsn()) as conn, conn.cursor() as cur:
+        with psycopg.connect(db_dsn) as conn, conn.cursor() as cur:
             cur.execute(f'DROP TABLE IF EXISTS {table}')
