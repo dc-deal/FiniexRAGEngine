@@ -16,7 +16,7 @@ from typing import List, Optional
 
 import feedparser
 
-_UA = 'Mozilla/5.0 (FiniexRAGEngine feed-doctor)'
+from finiexragengine.core.sources.rss_source import USER_AGENT
 
 
 @dataclass
@@ -69,7 +69,7 @@ def diagnose_feed(source_id: str, url: str, *, timeout: int = 20) -> FeedDiagnos
     # 1. Raw fetch — this is where the true HTTP status (e.g. 429) is visible before feedparser
     #    ever tries to treat the body as XML.
     try:
-        request = urllib.request.Request(url, headers={'User-Agent': _UA})
+        request = urllib.request.Request(url, headers={'User-Agent': USER_AGENT})
         with urllib.request.urlopen(request, timeout=timeout) as response:
             diag.http_status = response.status
             diag.content_type = response.headers.get('Content-Type')
@@ -83,8 +83,9 @@ def diagnose_feed(source_id: str, url: str, *, timeout: int = 20) -> FeedDiagnos
     diag.body_bytes = len(raw)
     diag.head = raw[:300].decode('utf-8', 'replace')
 
-    # 2. Parse through feedparser (the worker's path) for bozo / entries.
-    parsed = feedparser.parse(url)
+    # 2. Parse through feedparser (the worker's path) for bozo / entries — same agent as the
+    #    worker, so the diagnosis cannot pass where the real fetch would 403 (or vice versa).
+    parsed = feedparser.parse(url, agent=USER_AGENT)
     diag.bozo = bool(getattr(parsed, 'bozo', 0))
     exc = getattr(parsed, 'bozo_exception', None)
     diag.bozo_exception = str(exc) if exc is not None else None
