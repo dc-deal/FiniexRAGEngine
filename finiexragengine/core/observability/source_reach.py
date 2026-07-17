@@ -20,11 +20,12 @@ A source within its own poll floor needs no special case here: a floor skip deli
 no health, so the source keeps the verdict of its last real poll — correct, because its articles
 are in the corpus either way.
 """
-from typing import List
+from datetime import datetime, timezone
+from typing import List, Optional
 
 from finiexragengine.core.observability.source_health_store import SourceHealthStore
 from finiexragengine.types.config_types.source_set_types import SourceSetConfig
-from finiexragengine.types.ingest_types import ReachCensus
+from finiexragengine.types.ingest_types import ReachCensus, SourceHealthState, UnreachedSource
 
 
 class SourceReach:
@@ -42,11 +43,38 @@ class SourceReach:
         would claim a feed's contribution that never existed.
         """
         active = self._source_set.active_sources()
-        configured_ids = {source.source_id for source in active}
-        reached_ids = self._health_store.reach_of(configured_ids)
-        # Report the gap in the set's declared order — a stable list reads the same run to run.
-        unreached: List[str] = [source.source_id for source in active
-                                if source.source_id not in reached_ids]
+        states = self._health_store.states_of({source.source_id for source in active})
+        # Walk the config, not the health rows — the declared order is stable, and a source with
+        # no row at all must still get a verdict rather than fall out of the census.
+        unreached: List[UnreachedSource] = []
+        for source in active:
+            state = states.get(source.source_id)
+            if state is not None and state.delivering:
+                continue
+            unreached.append(UnreachedSource(source.source_id, _reason(state)))
         return ReachCensus(configured=len(active),
-                           reached=len(configured_ids & reached_ids),
+                           reached=len(active) - len(unreached),
                            unreached=unreached)
+
+
+def _reason(state: Optional[SourceHealthState]) -> str:
+    """Why a source is not delivering, in words — this text lands in the envelope.
+
+    The Sources report shows *now*; the envelope preserves *then*. A run persisted today must
+    still explain itself on replay tomorrow, long after the live health row has moved on, so the
+    cause travels with the outcome rather than only with the store.
+    """
+    if state is None:
+        return 'never polled'
+    last = ' '.join(part for part in (state.last_error_type,
+                                      str(state.last_status) if state.last_status else '')
+                    if part) or 'unknown error'
+    # Only a cool-off that still has time left is one: an *elapsed* quarantine keeps its
+    # `quarantined_until` in the row until a successful poll clears it, so testing the column for
+    # presence alone would report a date in the past as if the feed were still held back. Such a
+    # source is retryable and simply has not succeeded yet — that is a failing feed, not a held one.
+    if (state.quarantined_until is not None
+            and state.quarantined_until > datetime.now(timezone.utc)):
+        return (f'quarantined until {state.quarantined_until:%m-%d %H:%M} UTC '
+                f'({state.consecutive_failures} consecutive failures, last {last})')
+    return f'last poll failed ({last}, {state.consecutive_failures} consecutive)'

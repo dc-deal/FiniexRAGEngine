@@ -109,8 +109,28 @@ Top-down, each new article flows through these units in order:
 
    A source within its **poll floor** needs no special case: a floor skip deliberately records no
    health, so the feed keeps its last real verdict — correct, since its articles are in the corpus
-   either way. And reach is **telemetry, not control**: `_derive_status` reads `errors`, never
-   these counts, so a gap is reported without silently reclassifying a run.
+   either way.
+
+   **A gap degrades the run — in both modes.** Every entry in `census.unreached` raises a
+   `SOURCE_UNREACHABLE` carrying *why* (`quarantined until 07-18 14:39 UTC (5 consecutive
+   failures, last HTTP_ERROR 403)`, `never polled`, `last poll failed (…)`), so the run reports
+   `partial` rather than a clean `success` over incomplete data. Two things this fixes:
+
+   - **The mode no longer decides the status.** Source errors used to come only from the runner's
+     own fetch loop — which worker mode does not have. The identical missing feed degraded an
+     inline run and passed a worker run. The mode is a deployment detail, not a fact about the
+     world.
+   - **The cause is preserved, not just the gap.** The Sources report shows *now*; the envelope
+     is what survives to a replay tomorrow (the outcome store is the metrics warehouse). A reason
+     that lives only in a live health row is gone by then.
+
+   A source that failed its fetch *this* pass is reported once, from `ingest.failed_sources` —
+   its message says more than the census could, and the census entry for it is deduplicated away.
+   A `disabled` feed still raises nothing: it is not in `configured`, so it is never in
+   `unreached`. Consequences accepted deliberately: a quarantined feed means `partial` for the
+   full cool-off (the run *is* continuously incomplete), and a cold start whose eval fires before
+   the first ingest reports every source as `never polled` — honest, and it heals on the next
+   ingest pass.
 
 2. **Fetch — `core/sources/rss_source.py` (`RssSource.fetch`).**
    Actively pulls the RSS feed, maps each entry to an `Article` (title + summary only),

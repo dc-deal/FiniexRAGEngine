@@ -77,8 +77,23 @@ class PipelineRunner:
         # Skipped in worker mode: the ingest worker owns acquisition on its own cadence
         # (ISSUE_10); an empty IngestResult keeps the assembly below uniform.
         ingest = self._ingestor.run() if self._ingestor is not None else IngestResult()
+        # Reach is read here, right after acquisition: an inline pass has just recorded its polls
+        # into source_health, so the census sees this run's own work; in worker mode it sees the
+        # ingest worker's latest. Reading it in phase A (rather than at metadata assembly) is what
+        # lets a gap degrade the run — and keeps source errors ahead of eval errors in the list.
+        census = (self._source_reach.census() if self._source_reach is not None
+                  else ReachCensus(configured=0, reached=0))
+        # A source this pass tried and could not fetch — reported with the fetch's own message.
         for source_id, message in ingest.failed_sources.items():
             errors.append(self._error('SOURCE_UNREACHABLE', f'{source_id}: {message}'))
+        # A source that is not delivering without *this* pass noticing: in cool-off, never polled —
+        # and in worker mode all of them, since acquisition runs on someone else's clock. Without
+        # this, the identical state of the world degraded an inline run and passed a worker run as
+        # clean. Deduplicated against the fetch failures just reported, which say it better.
+        for entry in census.unreached:
+            if entry.source_id not in ingest.failed_sources:
+                errors.append(self._error('SOURCE_UNREACHABLE',
+                                          f'{entry.source_id}: {entry.reason}'))
 
         # --- B+C: evaluate every requested symbol; a failure degrades, never skips ---
         results: List[SentimentResult] = []
@@ -101,12 +116,6 @@ class PipelineRunner:
             per_symbol_tokens[symbol] = ev.usage.total_tokens
 
         # --- D: assemble metadata + envelope ---
-        # Reach is read *after* ingest deliberately: an inline pass has just recorded its polls
-        # into source_health, so the census sees this run's own acquisition; in worker mode it
-        # sees the ingest worker's latest. One definition, both modes — and nothing is derived
-        # from anything, so a source missed for a reason other than a failed fetch still counts.
-        census = (self._source_reach.census() if self._source_reach is not None
-                  else ReachCensus(configured=0, reached=0))
         stage_timings = list(ingest.stage_timings)
         for ev in evals:
             stage_timings.extend(ev.stage_timings)

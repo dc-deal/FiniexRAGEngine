@@ -5,7 +5,7 @@ logs them, the `PipelineRunner` folds them into the envelope, and the ingest CLI
 Behaviour lives in `core/pipeline/` and `core/observability/`; only the shapes live here.
 """
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Literal, Optional
 
 from finiexragengine.types.outcome_types import StageTiming
@@ -48,6 +48,35 @@ class HealthOutcome:
 
 
 @dataclass
+class SourceHealthState:
+    """One source's health as a *reach decision* needs it — not as a report renders it.
+
+    Deliberately not the Sources report's row: that one carries fourteen display fields (host,
+    totals, the event log). These four are what decides whether a feed is delivering, and the
+    engine must not import from `reports/` anyway. The overlap is incidental, not structural.
+    """
+    source_id: str
+    consecutive_failures: int
+    quarantined_until: Optional[datetime] = None
+    last_error_type: Optional[str] = None
+    last_status: Optional[int] = None
+
+    @property
+    def delivering(self) -> bool:
+        """Not in cool-off and its last poll succeeded — the definition of "reached"."""
+        return (self.consecutive_failures == 0
+                and (self.quarantined_until is None
+                     or self.quarantined_until <= datetime.now(timezone.utc)))
+
+
+@dataclass
+class UnreachedSource:
+    """A configured source that is not delivering, and why — the envelope's degradation trail."""
+    source_id: str
+    reason: str          # ready to display: the envelope preserves it, the Sources report does not
+
+
+@dataclass
 class ReachCensus:
     """How many of a source-set's sources are live right now — config ∩ health.
 
@@ -60,7 +89,7 @@ class ReachCensus:
     """
     configured: int                              # the set's active (enabled) sources
     reached: int                                 # of those, the ones whose feed is delivering
-    unreached: List[str] = field(default_factory=list)   # the ids behind the gap, for the trail
+    unreached: List[UnreachedSource] = field(default_factory=list)   # the gap, named and explained
 
 
 @dataclass
