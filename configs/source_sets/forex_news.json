@@ -21,7 +21,8 @@
             "source_id": "fxstreet",
             "type": "rss",
             "url": "https://www.fxstreet.com/rss/news",
-            "weight": 1.0
+            "weight": 1.0,
+            "comment": "High-trust FX source. Behind Cloudflare Bot-Management. Measured 2026-07-16: 200 from a clean egress IP, 403 (Cf-Mitigated: challenge) from a datacenter IP — a JS browser challenge no feed reader can pass, and no User-Agent changes that. Switch off per machine via user_configs/source_sets/ when the egress IP is challenged."
         },
         {
             "source_id": "forexlive",

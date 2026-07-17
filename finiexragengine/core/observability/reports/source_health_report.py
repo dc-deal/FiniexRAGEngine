@@ -35,6 +35,11 @@ class SourceHealthRow:
     flagged: bool
     quarantined_until: Optional[datetime]
     recent_events: List[dict] = field(default_factory=list)
+    # Config state, not health state — the store has no column for it, because whether a feed is
+    # switched off says nothing about how it behaved when it was polled. It has to be marked all
+    # the same: without it a disabled feed's last poll keeps reading `ok` forever, which is stale
+    # history dressed as a live verdict.
+    disabled: bool = False
 
     @property
     def success_rate(self) -> Optional[float]:
@@ -55,10 +60,20 @@ class SourceHealthReport:
     def flagged_count(self) -> int:
         return sum(1 for row in self.rows if row.flagged)
 
+    @property
+    def disabled_count(self) -> int:
+        return sum(1 for row in self.rows if row.disabled)
+
 
 def build_source_health_report(database_url: str, configured_ids: Set[str], *,
+                               disabled_ids: Optional[Set[str]] = None,
                                table: str = 'source_health') -> SourceHealthReport:
-    """Load the health rows and mark orphans against the currently-configured source ids."""
+    """Load the health rows, mark orphans against the currently-configured source ids, and mark
+    the switched-off ones.
+
+    `disabled_ids` is a config fact the store cannot answer (there is no column for it) — an
+    unmarked row would present a disabled feed's frozen last poll as a current `ok`.
+    """
     try:
         with psycopg.connect(database_url) as conn, conn.cursor() as cur:
             cur.execute('SELECT count(*) FROM information_schema.tables WHERE table_name = %s',
@@ -70,7 +85,9 @@ def build_source_health_report(database_url: str, configured_ids: Set[str], *,
                 'total_failures, consecutive_failures, last_success_at, last_failure_at, '
                 'last_status, last_error_type, flagged, quarantined_until, recent_events '
                 f'FROM {table} ORDER BY source_id')
-            rows = [SourceHealthRow(*row[:13], recent_events=list(row[13] or []))
+            disabled = disabled_ids or set()
+            rows = [SourceHealthRow(*row[:13], recent_events=list(row[13] or []),
+                                    disabled=row[0] in disabled)
                     for row in cur.fetchall()]
     except psycopg.Error as exc:
         raise VectorStoreError(f'source health report failed: {exc}') from exc
@@ -102,14 +119,19 @@ def _remaining(moment: Optional[datetime]) -> str:
 
 
 def _status_cell(row: SourceHealthRow) -> str:
+    # `[disabled]` is appended, never substituted — same marker the feed doctor uses. The health
+    # verdict stays visible on purpose: it is the record of how the feed behaved while it *was*
+    # polled, and that is what the operator weighs when deciding to switch it back on.
+    marker = ' [disabled]' if row.disabled else ''
     if row.flagged:
         detail = row.last_error_type or 'error'
         if row.quarantined:
-            return f'FLAGGED({detail}) quarantined {_remaining(row.quarantined_until)} left'
-        return f'FLAGGED({detail}) retrying'
+            return (f'FLAGGED({detail}) quarantined '
+                    f'{_remaining(row.quarantined_until)} left{marker}')
+        return f'FLAGGED({detail}) retrying{marker}'
     if row.consecutive_failures:
-        return f'failing ({row.last_error_type or "error"})'
-    return 'ok'
+        return f'failing ({row.last_error_type or "error"}){marker}'
+    return f'ok{marker}'
 
 
 def _recent_problems(rows: Sequence[SourceHealthRow]) -> List[str]:
@@ -134,8 +156,9 @@ def format_source_health_report(report: SourceHealthReport) -> str:
     quarantined = sum(1 for row in report.rows if row.quarantined)
     lines = [
         'Source Health — feeds & problems',
-        f'sources: {len(report.rows)} tracked · {report.flagged_count} flagged · '
-        f'{quarantined} quarantined · {len(report.orphans)} orphaned',
+        f'sources: {len(report.rows)} tracked · {report.disabled_count} disabled · '
+        f'{report.flagged_count} flagged · {quarantined} quarantined · '
+        f'{len(report.orphans)} orphaned',
         divider,
         f'{"source":18} {"host":22} {"polls":>7} {"ok%":>5} {"consec":>6} '
         f'{"last ok":>8}  status',

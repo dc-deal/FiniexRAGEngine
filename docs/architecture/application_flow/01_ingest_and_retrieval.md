@@ -25,6 +25,93 @@ Top-down, each new article flows through these units in order:
    path never touches the LLM, so frequent is cheap. One worker feeds every pipeline
    referencing the set (1× fetch, N× read).
 
+   **The catalogue vs. what runs.** A set's `sources` is the *declared catalogue*;
+   `SourceSetConfig.active_sources()` is what the engine actually builds and polls — the
+   single definition read both by the ingestor and by `SourceReach`, which takes the
+   envelope's reach census over it, so the set that runs and the set that is reported cannot
+   drift apart. Two per-source fields drive it:
+
+   - **`enabled: false`** — declared but switched off: never built, never polled, no health
+     event, and invisible downstream (in neither envelope reach number, nor in `errors`) —
+     switching a feed off is a decision, not a degradation, so it must not be reported as a
+     source the run failed to reach. Same idiom as a disabled model variant (ISSUE_42).
+   - **`comment`** — editorial knowledge about the feed. JSON has no comments, so this is
+     the sanctioned place to record what was learned ("high-trust FX source"; "behind
+     Cloudflare from datacenter IPs").
+
+   **Where to switch a feed off matters.** Reachability is often an *environment* fact, not
+   a property of the feed: a source behind bot-management answers a clean egress IP with
+   `200` and a datacenter IP with `403` (a JS challenge no feed reader can pass). Deleting
+   it from the tracked set would throw away the knowledge and lie about the world. So the
+   tracked `configs/source_sets/` stays the canonical catalogue, and the *machine-specific*
+   switch lives in the gitignored **`user_configs/source_sets/<id>.json`**, deep-merged at
+   load. Because `sources` merges **by `source_id`**, the override names only the feed it
+   changes:
+
+   ```jsonc
+   // user_configs/source_sets/forex_news.json — this machine only
+   { "source_set_id": "forex_news",
+     "sources": [ { "source_id": "fxstreet", "enabled": false,
+                    "comment": "Cf-Mitigated: challenge from this egress IP." } ] }
+   ```
+
+   The other feeds are inherited untouched. A switched-off feed is **marked, never hidden**, on
+   every operator-facing surface: `feed_doctor` deliberately still probes it (`OK [disabled]`) —
+   it is the tool that answers "can I turn this back on yet?" — and the Sources health report
+   appends the same `[disabled]` marker to its verdict. The marker is appended rather than
+   substituted, because the health record is *how the feed behaved while it was polled*, which is
+   exactly what the decision to re-enable rests on. Note what this costs: `enabled` is a config
+   fact and `source_health` has no column for it, so the report has to be *told* by its CLI.
+   Without the marker a disabled feed's frozen last poll reads `ok` forever — stale history
+   dressed as a live verdict. (Downstream is the exception: the envelope never sees a disabled
+   source at all. Operators get the truth; consumers get the contract.)
+
+   **Every source is accounted for — the pass reports all of them.** A pass records exactly one
+   `SourcePoll` per source it considers (`ok`, `failed`, `quarantined`, `floor_skipped`,
+   `suspended`), appended in config order; `IngestResult.polls` is the single record and the
+   dict views (`per_source`, `failed_sources`, `quarantined_skips`, `floor_skips`) are derived
+   from it. This matters because it was once otherwise: each fate went into its own collection,
+   the CLI iterated two of them, and a feed in **quarantine therefore vanished from the output
+   entirely** — a permanent HTTP 403 rendered as a clean run. `reports/ingest_report.py` renders
+   against the *declared catalogue*, so a switched-off feed and one the pass never reached
+   (a mid-pass budget suspend) also get a labelled line instead of silence:
+
+   ```
+   sources: 8 declared · 6 polled · 1 quarantined · 1 disabled
+   fxstreet         disabled            —         —     —     —  Disabled on this machine …
+   forexlive        ok                 25         0     0    25
+   boe_news         QUARANTINED         —         —     —     —  3h left
+   ```
+
+   The `IngestWorker` cannot use the same table (a quarantine outlives thousands of passes on a
+   15s cadence), so it carries the skip count on the pass line it logs anyway — and in the
+   `WorkerState` the API serves — while the per-skip line stays DEBUG. Entering quarantine still
+   WARNs once.
+
+   **Reach — the envelope's two source numbers.** `core/observability/source_reach.py`
+   (`SourceReach.census`) is the one place a set's config and its feed health are combined, and
+   the only source of `metadata.sources_configured` / `sources_reached`:
+
+   - `configured` = `len(active_sources())` — a **disabled** feed is in neither number. Switching
+     a feed off is a *decision, not a degradation*; reporting it as unreached would claim a
+     contribution that never existed.
+   - `reached` = of those, the ones `source_health` says are delivering (not in cool-off, last
+     poll succeeded). Read **live** per run, never from the store's in-memory quarantine cache:
+     the reader is usually a different instance from the writer.
+
+   This replaced `sources_configured - len(failed_sources)`, which derived one number from the
+   other and so could only ever differ by a *failed fetch*. Everything else — a quarantined feed,
+   an aborted pass — counted as reached; and in **worker mode the runner has no pass at all**
+   (acquisition is the ingest worker's clock), so the field was `configured` on every single run:
+   a full reach the run never attempted, in the one mode that ships. Reading health works in both
+   modes because acquisition records every poll there regardless of who ran it (CLAUDE.md —
+   *capture at the call, report from the store*).
+
+   A source within its **poll floor** needs no special case: a floor skip deliberately records no
+   health, so the feed keeps its last real verdict — correct, since its articles are in the corpus
+   either way. And reach is **telemetry, not control**: `_derive_status` reads `errors`, never
+   these counts, so a gap is reported without silently reclassifying a run.
+
 2. **Fetch — `core/sources/rss_source.py` (`RssSource.fetch`).**
    Actively pulls the RSS feed, maps each entry to an `Article` (title + summary only),
    assigns an **idempotent** `article_id` from the entry guid/link, stamps `fetched_at`

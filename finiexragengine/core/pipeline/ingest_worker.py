@@ -76,6 +76,13 @@ class IngestWorker:
                 # Surface breaking candidates in the pass line when any were flagged (ISSUE_11).
                 if result.candidates:
                     self._state.last_detail += f' · flagged {result.candidates} breaking'
+                # Sources the pass did not poll ride along on the pass line rather than getting
+                # their own log entries: a quarantine lasts hours, so on a 15s cadence a per-skip
+                # line would emit thousands of identical repeats. Here the count is visible on a
+                # line that prints anyway — and on the worker state the API serves.
+                if result.quarantined_skips:
+                    self._state.last_detail += (f' · {len(result.quarantined_skips)} quarantined '
+                                                f'({", ".join(result.quarantined_skips)})')
                 # A quiet pass (nothing new, nothing flagged, $0 — the common case once the
                 # corpus is warm and conditional GET is 304ing) logs at DEBUG so an overnight
                 # run's log stays readable; a pass that stored, flagged or spent logs at INFO —
@@ -105,6 +112,11 @@ class IngestWorker:
         source_health regardless of the console level — the Sources report reads it from there."""
         for source_id in result.recovered_sources:
             logger.info('[%s] source %s recovered', self._state.name, source_id)
+        # A skipped source is traceable at DEBUG only: entering quarantine already WARNed once
+        # (`just_flagged` below), and the steady state is carried by the pass line + the Sources
+        # report. Repeating it per pass would drown the signal it is meant to raise.
+        for source_id in result.quarantined_skips:
+            logger.debug('[%s] source %s skipped — quarantined', self._state.name, source_id)
         for source_id, message in result.failed_sources.items():
             note = result.health_notes.get(source_id)
             if note is not None and note.just_flagged:

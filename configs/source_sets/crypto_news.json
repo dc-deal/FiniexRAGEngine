@@ -51,7 +51,8 @@
             "type": "rss",
             "url": "https://cryptoslate.com/feed/",
             "weight": 0.8,
-            "poll_interval_seconds": 120
+            "poll_interval_seconds": 120,
+            "comment": "Behind Cloudflare Bot-Management. Measured 2026-07-16: 200 from a clean egress IP, 403 (Cf-Mitigated: challenge) from a datacenter IP — a JS browser challenge no feed reader can pass, and no User-Agent changes that. Where it is reachable it still needs the identified UA. Switch off per machine via user_configs/source_sets/ when the egress IP is challenged."
         }
     ]
 }

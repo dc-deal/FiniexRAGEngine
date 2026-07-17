@@ -26,13 +26,22 @@ def main() -> None:
     # Currently-configured source ids across every set — anything in the store but not here is
     # an orphan (a removed feed) the report flags as safe-to-delete.
     manager = AppConfigManager()
-    registry = SourceSetRegistry(manager.get_source_sets_dir())
+    registry = SourceSetRegistry(manager.get_source_sets_dir(),
+                                 manager.get_user_source_sets_dir())
     registry.load()
     configured_ids = {source.source_id
                       for source_set in registry.list_sets()
                       for source in source_set.sources}
+    # Which of them are switched off on this machine — the store cannot know (health is what a
+    # poll did; `enabled` is what the config says), so the report is told, and marks them rather
+    # than presenting a disabled feed's frozen last poll as a current verdict.
+    disabled_ids = {source.source_id
+                    for source_set in registry.list_sets()
+                    for source in source_set.sources
+                    if not source.enabled}
 
-    report = build_source_health_report(database_url, configured_ids)
+    report = build_source_health_report(database_url, configured_ids,
+                                        disabled_ids=disabled_ids)
     print(format_source_health_report(report))
 
 

@@ -33,6 +33,9 @@ class FeedDiagnosis:
     transport_error: Optional[str] = None
     verdict: str = 'OK'            # OK / RATE_LIMITED / HTTP_ERROR / PARSE_ERROR / UNREACHABLE
     suspicious: List[str] = field(default_factory=list)
+    # Switched off in config: still probed on purpose — the doctor is the tool that answers
+    # "can I turn this back on yet?", so it must reach a feed the worker deliberately skips.
+    disabled: bool = False
 
 
 def classify_feed(http_status: Optional[int], transport_error: Optional[str],
@@ -62,9 +65,10 @@ def _scan_suspicious(raw: bytes) -> List[str]:
     return findings
 
 
-def diagnose_feed(source_id: str, url: str, *, timeout: int = 20) -> FeedDiagnosis:
+def diagnose_feed(source_id: str, url: str, *, timeout: int = 20,
+                  disabled: bool = False) -> FeedDiagnosis:
     """Raw GET + feedparser parse + classification for one feed."""
-    diag = FeedDiagnosis(source_id=source_id, url=url)
+    diag = FeedDiagnosis(source_id=source_id, url=url, disabled=disabled)
     raw = b''
     # 1. Raw fetch — this is where the true HTTP status (e.g. 429) is visible before feedparser
     #    ever tries to treat the body as XML.
@@ -106,8 +110,11 @@ def format_diagnoses(diagnoses: List[FeedDiagnosis]) -> str:
              f'{"source":16} {"http":>4} {"bytes":>7} {"entries":>7}  verdict', divider]
     for diag in diagnoses:
         status = diag.http_status if diag.http_status is not None else '—'
+        # A green but switched-off feed would otherwise read as "working" while the worker
+        # never polls it — the marker is what makes the re-enable decision obvious.
+        verdict = f'{diag.verdict} [disabled]' if diag.disabled else diag.verdict
         lines.append(f'{diag.source_id:16.16} {str(status):>4} {diag.body_bytes:>7} '
-                     f'{diag.entries:>7}  {diag.verdict}')
+                     f'{diag.entries:>7}  {verdict}')
     lines.append(divider)
     problems = [d for d in diagnoses if d.verdict != 'OK']
     if not problems:

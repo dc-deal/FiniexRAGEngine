@@ -113,13 +113,17 @@ def test_failing_source_is_recorded_others_proceed():
 class _FakeHealth:
     """In-memory stand-in for SourceHealthStore (ISSUE_11) — no DB."""
 
-    def __init__(self, quarantined=()):
+    def __init__(self, quarantined=(), until=None):
         self.quarantined = set(quarantined)
+        self._until = until
         self.successes = []
         self.failures = []
 
     def should_poll(self, source_id):
         return source_id not in self.quarantined
+
+    def quarantined_until(self, source_id):
+        return self._until if source_id in self.quarantined else None
 
     def record_success(self, source_id, host, source_set):
         self.successes.append((source_id, host))
@@ -151,6 +155,27 @@ def test_quarantined_source_is_skipped_not_polled():
     assert 'bad' not in result.failed_sources              # not polled -> not a failure
     assert health.failures == []                           # never hit while quarantined
     assert result.stored == 1                              # the good source still ingested
+
+
+def test_every_source_gets_exactly_one_poll_in_order():
+    # The invariant the surfaces rely on: whatever happens to a source, it leaves exactly one
+    # record, and the order is the order it was given. Before this, each fate went into its own
+    # collection, so a render that iterated some of them dropped the others without a trace.
+    quarantined = _FakeSource('quarantined', [_article('a1')])
+    floored = _FakeSource('floored', [_article('a2')], due=False)
+    failing = _FakeSource('failing', fail=True)
+    healthy = _FakeSource('healthy', [_article('a3')])
+    health = _FakeHealth(quarantined={'quarantined'}, until=_NOW)
+    result = Ingestor([quarantined, floored, failing, healthy], _CountingEmbedder(),
+                      _FakeStore(), health_store=health, source_set_id='crypto_news').run()
+
+    assert [(poll.source_id, poll.status) for poll in result.polls] == [
+        ('quarantined', 'quarantined'), ('floored', 'floor_skipped'),
+        ('failing', 'failed'), ('healthy', 'ok')]
+    # Only a polled source carries counters; a skip carries a reason instead.
+    assert [poll.source_id for poll in result.polls if poll.ingest is not None] == ['healthy']
+    assert all(poll.detail for poll in result.polls if poll.status != 'ok')
+    assert result.polls[0].until == _NOW                   # the skip says when it ends
 
 
 class _SuspendedEmbedder(AbstractEmbedder):

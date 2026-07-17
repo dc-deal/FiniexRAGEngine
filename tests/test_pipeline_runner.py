@@ -21,7 +21,7 @@ from finiexragengine.exceptions.ragengine_errors import (
 from finiexragengine.types.article_types import Article
 from finiexragengine.types.config_types.pipeline_config_types import PipelineConfig
 from finiexragengine.types.eval_types import SymbolEval
-from finiexragengine.types.ingest_types import IngestResult
+from finiexragengine.types.ingest_types import IngestResult, ReachCensus, SourcePoll
 from finiexragengine.types.llm_types import LlmUsage
 from finiexragengine.types.outcome_types import SentimentResult, StageTiming
 from finiexragengine.types.prompt_metadata import PromptMetadata
@@ -63,8 +63,11 @@ class _FakeIngestor:
         self._failed = failed or {}
 
     def run(self) -> IngestResult:
-        return IngestResult(fetched=10, embedded=4, stored=4,
-                            failed_sources=dict(self._failed),
+        # Build the shape the real ingestor produces: a failure is that source's poll record,
+        # and `failed_sources` is a view over it — the fake must not invent a flatter truth.
+        polls = [SourcePoll(source_id, 'failed', detail=message)
+                 for source_id, message in self._failed.items()]
+        return IngestResult(fetched=10, embedded=4, stored=4, polls=polls,
                             stage_timings=[_timing('fetch', 100.0), _timing('embed', 50.0)])
 
 
@@ -101,12 +104,27 @@ class _FakeStore:
         self.saved.append((envelope, raw_output))
 
 
-def _runner(config, ingestor, evaluator, recorder=None, store=None):
-    # sources_configured mirrors what the assembler injects from the referenced
-    # source-set (ISSUE_10) — the fake set has two feeds.
+class _FakeReach:
+    """Stands in for SourceReach — a fixed census, no DB.
+
+    The runner's job is to *report* the census; deciding what counts as reached (quarantine,
+    a failed last poll, `enabled`) belongs to SourceReach and is tested there.
+    """
+
+    def __init__(self, configured=2, reached=2, unreached=()):
+        self._census = ReachCensus(configured=configured, reached=reached,
+                                   unreached=list(unreached))
+
+    def census(self) -> ReachCensus:
+        return self._census
+
+
+def _runner(config, ingestor, evaluator, recorder=None, store=None, reach=None):
+    # The reach census mirrors what the assembler injects for the referenced source-set
+    # (ISSUE_10) — the fake set has two feeds, both delivering unless a test says otherwise.
     return PipelineRunner(config, ingestor, evaluator, _META,
                           llm_model='gpt-4o-mini', cost_recorder=recorder,
-                          outcome_store=store, sources_configured=2)
+                          outcome_store=store, source_reach=reach or _FakeReach())
 
 
 def test_clean_pass_assembles_success_envelope():
@@ -174,13 +192,29 @@ def test_all_symbols_budget_suspended_is_partial_not_error():
 
 
 def test_failed_source_records_taxonomy_and_partial():
+    # The failure itself is what degrades the pass — an error carries the status, not the count.
     config = _config(['BTCUSD'])
     envelope = _runner(config, _FakeIngestor(failed={'s2': 'connection refused'}),
-                       _FakeEvaluator({'BTCUSD': _eval('BTCUSD')})).run()
+                       _FakeEvaluator({'BTCUSD': _eval('BTCUSD')}),
+                       reach=_FakeReach(configured=2, reached=1, unreached=['s2'])).run()
     assert envelope.status == 'partial'
-    assert envelope.metadata.sources_reached == 1     # 2 configured, 1 failed
     assert envelope.errors[0].type == 'SOURCE_UNREACHABLE'
     assert 's2' in envelope.errors[0].message
+
+
+def test_envelope_reports_the_census_it_is_given_never_a_derivation():
+    # The bug this replaces: `reached = configured - len(failed_sources)`. Deriving one number
+    # from the other meant they could only ever differ by a *failed fetch* — a source missed for
+    # any other reason (quarantine, an aborted pass, an eval that never fetched at all) counted
+    # as reached. The runner now reports what the census measured, and nothing else.
+    config = _config(['BTCUSD'])
+    envelope = _runner(config, _FakeIngestor(),          # no failure this pass ...
+                       _FakeEvaluator({'BTCUSD': _eval('BTCUSD')}),
+                       reach=_FakeReach(configured=7, reached=6, unreached=['boe_news'])).run()
+
+    assert envelope.metadata.sources_configured == 7
+    assert envelope.metadata.sources_reached == 6        # ... yet the gap is still reported
+    assert envelope.status == 'success'                  # reach is telemetry; errors drive status
 
 
 def test_all_symbols_failed_is_error_but_rows_remain():
@@ -245,18 +279,32 @@ def test_store_failure_degrades_pass_never_kills_it():
 
 
 def test_worker_mode_runner_skips_ingest_cleanly():
-    # ISSUE_10: ingestor=None = worker mode — acquisition happens on the ingest
-    # worker's clock; the eval pass touches no source and reports full reach.
+    # ISSUE_10: ingestor=None = worker mode — acquisition happens on the ingest worker's clock,
+    # so this pass touches no source. It used to report *full reach* for exactly that reason
+    # (`configured - 0 failures`), making the field a constant in the one mode that ships. Reach
+    # now comes from source_health, which the ingest worker keeps writing whoever evaluates.
     config = _config(['BTCUSD'])
     envelope = PipelineRunner(config, None,
                               _FakeEvaluator({'BTCUSD': _eval('BTCUSD')}), _META,
-                              llm_model='gpt-4o-mini', sources_configured=2).run()
+                              llm_model='gpt-4o-mini',
+                              source_reach=_FakeReach(configured=2, reached=1,
+                                                      unreached=['s2'])).run()
     assert envelope.status == 'success'
     stages = [t.stage for t in envelope.metadata.stage_timings]
     assert 'fetch' not in stages and 'embed' not in stages   # no Phase A ran
     assert envelope.metadata.sources_configured == 2
-    assert envelope.metadata.sources_reached == 2            # nothing failed — none ran
-    assert envelope.metadata.articles_found == 0             # found *this pass*
+    assert envelope.metadata.sources_reached == 1            # measured, though this pass fetched nothing
+    assert envelope.metadata.articles_found == 0             # found *this pass* (see ISSUE note)
+
+
+def test_runner_without_a_reach_reports_zero_not_full():
+    # No health store to ask (a caller that never wired one) — the honest answer is "unknown",
+    # and 0/0 says that. Defaulting to full reach would be the old lie with a new default.
+    config = _config(['BTCUSD'])
+    envelope = PipelineRunner(config, None, _FakeEvaluator({'BTCUSD': _eval('BTCUSD')}),
+                             _META, llm_model='gpt-4o-mini').run()
+    assert envelope.metadata.sources_configured == 0
+    assert envelope.metadata.sources_reached == 0
 
 
 def test_fanned_config_stamps_variant_hints():

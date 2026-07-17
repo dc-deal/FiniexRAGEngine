@@ -17,10 +17,13 @@ def main() -> None:
     args = parser.parse_args()
 
     manager = AppConfigManager()
-    registry = SourceSetRegistry(manager.get_source_sets_dir())
+    registry = SourceSetRegistry(manager.get_source_sets_dir(),
+                                 manager.get_user_source_sets_dir())
     registry.load()
-    # (source_id, url) across every set — de-duplicated on source_id.
-    feeds = {source.source_id: source.url
+    # Every rss source across every set — de-duplicated on source_id. Disabled feeds are kept
+    # deliberately: the doctor is how the operator checks whether a switched-off feed is
+    # reachable again (it is marked `[disabled]` in the report, never silently skipped).
+    feeds = {source.source_id: source
              for source_set in registry.list_sets()
              for source in source_set.sources
              if source.type == 'rss'}
@@ -29,7 +32,8 @@ def main() -> None:
             parser.error(f'unknown source_id {args.source!r} — known: {sorted(feeds)}')
         feeds = {args.source: feeds[args.source]}
 
-    diagnoses = [diagnose_feed(source_id, url) for source_id, url in sorted(feeds.items())]
+    diagnoses = [diagnose_feed(source_id, source.url, disabled=not source.enabled)
+                 for source_id, source in sorted(feeds.items())]
     print(format_diagnoses(diagnoses))
 
 

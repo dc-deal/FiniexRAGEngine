@@ -5,6 +5,7 @@ from time import perf_counter
 from typing import Dict, List, Optional
 
 from finiexragengine.core.observability.cost_recorder import CostRecorder
+from finiexragengine.core.observability.source_reach import SourceReach
 from finiexragengine.core.outcome.outcome_store import OutcomeStore
 from finiexragengine.core.pipeline.envelope_contract import hold_result, taxonomy_type
 from finiexragengine.core.pipeline.ingestor import Ingestor
@@ -12,7 +13,7 @@ from finiexragengine.core.pipeline.symbol_evaluator import SymbolEvaluator
 from finiexragengine.exceptions.ragengine_errors import FiniexRagError
 from finiexragengine.types.config_types.pipeline_config_types import PipelineConfig
 from finiexragengine.types.eval_types import SymbolEval
-from finiexragengine.types.ingest_types import IngestResult
+from finiexragengine.types.ingest_types import IngestResult, ReachCensus
 from finiexragengine.types.outcome_types import (
     AnalysisEnvelope,
     RunError,
@@ -45,15 +46,17 @@ class PipelineRunner:
                  evaluator: SymbolEvaluator, prompt_metadata: PromptMetadata,
                  llm_model: str, cost_recorder: Optional[CostRecorder] = None,
                  outcome_store: Optional[OutcomeStore] = None,
-                 sources_configured: int = 0) -> None:
+                 source_reach: Optional[SourceReach] = None) -> None:
         self._config = config
         # None = worker mode (ISSUE_10): acquisition runs on the ingest worker's own
         # clock; this runner only evaluates over the shared corpus. Set = the manual,
         # self-contained pass (run CLI / API without workers) — ingest inline as before.
         self._ingestor = ingestor
         self._evaluator = evaluator
-        # The referenced source-set's size — config no longer owns feeds (ISSUE_10).
-        self._sources_configured = sources_configured
+        # Config ∩ health for the referenced source-set (ISSUE_10): both envelope reach numbers
+        # come from here, resolved per run. None = no reach available (a caller with no health
+        # store) — the envelope then reports 0/0 rather than a made-up full reach.
+        self._source_reach = source_reach
         # Resolved once at assembly (ISSUE_33): stamped on every envelope this runner
         # produces, so the outcome names the exact prompt even when every eval fails.
         self._prompt_metadata = prompt_metadata
@@ -98,6 +101,12 @@ class PipelineRunner:
             per_symbol_tokens[symbol] = ev.usage.total_tokens
 
         # --- D: assemble metadata + envelope ---
+        # Reach is read *after* ingest deliberately: an inline pass has just recorded its polls
+        # into source_health, so the census sees this run's own acquisition; in worker mode it
+        # sees the ingest worker's latest. One definition, both modes — and nothing is derived
+        # from anything, so a source missed for a reason other than a failed fetch still counts.
+        census = (self._source_reach.census() if self._source_reach is not None
+                  else ReachCensus(configured=0, reached=0))
         stage_timings = list(ingest.stage_timings)
         for ev in evals:
             stage_timings.extend(ev.stage_timings)
@@ -107,8 +116,8 @@ class PipelineRunner:
         metadata = RunMetadata(
             model=self._llm_model,
             model_snapshot=', '.join(snapshots),
-            sources_configured=self._sources_configured,
-            sources_reached=self._sources_configured - len(ingest.failed_sources),
+            sources_configured=census.configured,
+            sources_reached=census.reached,
             articles_found=ingest.fetched,
             articles_relevant=sum(len(ev.articles) for ev in evals),
             processing_time_ms=(perf_counter() - run_start) * 1000.0,
