@@ -13,7 +13,7 @@ source-sets.
 import json
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 import psycopg
 
@@ -69,6 +69,40 @@ class SourceHealthStore:
         # Cool-off elapsed — drop it and let the next poll retry (re-flags if still failing).
         self._quarantined.pop(source_id, None)
         return True
+
+    def reach_of(self, source_ids: Set[str]) -> Set[str]:
+        """Of the given sources, the ones whose feed is currently delivering.
+
+        Deliberately a live query, never the in-memory quarantine cache: the reader is usually a
+        *different instance* from the writer — in worker mode the ingest worker owns acquisition
+        and this store belongs to an eval runner, so a cache warmed at construction would answer
+        from whenever that runner was assembled. One small SELECT per pipeline run is nothing
+        against the eval cadence.
+
+        "Delivering" = not in cool-off and its last poll succeeded. A source with no row at all is
+        absent from the result, which is the honest answer: it has never delivered anything.
+        """
+        if not source_ids:
+            return set()
+        now = datetime.now(timezone.utc)
+        try:
+            with self._connect() as conn, conn.cursor() as cur:
+                cur.execute(
+                    f'SELECT source_id FROM {self._TABLE} WHERE source_id = ANY(%s) '
+                    'AND consecutive_failures = 0 '
+                    'AND (quarantined_until IS NULL OR quarantined_until <= %s)',
+                    (list(source_ids), now))
+                return {row[0] for row in cur.fetchall()}
+        except psycopg.Error as exc:
+            raise VectorStoreError(f'source reach query failed: {exc}') from exc
+
+    def quarantined_until(self, source_id: str) -> Optional[datetime]:
+        """When the source's cool-off ends, or None if it is not quarantined.
+
+        Lets a caller that just got `should_poll() is False` say *how long* the skip lasts
+        instead of only that it happened — a skip with no end date reads like a broken feed.
+        """
+        return self._quarantined.get(source_id)
 
     def record_success(self, source_id: str, host: str, source_set: str,
                        status: int = 200) -> bool:

@@ -11,6 +11,14 @@ from finiexragengine.types.article_types import Article
 from finiexragengine.types.config_types.source_set_types import SourceConfig
 
 
+# Identify honestly on every feed fetch. feedparser's default agent (and a bare urllib request)
+# is blocked outright by some hosts — fxstreet and cryptoslate answer HTTP 403 to it. An
+# identified, non-browser UA passes their bot filter *and* behaves better than a spoofed browser
+# string (measured: cryptoslate rate-limits a fake Chrome UA with 429). The feed_doctor imports
+# this same constant so its diagnosis mirrors the worker's real request byte-for-byte.
+USER_AGENT = 'Mozilla/5.0 (compatible; FiniexRAGEngine/1.0; +https://github.com/dc-deal/FiniexRAGEngine)'
+
+
 class RssSource(AbstractSource):
     """Fetches and parses an RSS feed into Articles.
 
@@ -100,7 +108,10 @@ class RssSource(AbstractSource):
         A bozo feed that still yielded entries is tolerated (feedparser is lenient).
         """
         for attempt in (1, 2):
-            parsed = feedparser.parse(url, etag=self._etag, modified=self._modified)
+            # agent set explicitly: without it feedparser sends its default UA, which some hosts
+            # (fxstreet, cryptoslate) reject with 403 before the body is ever produced.
+            parsed = feedparser.parse(url, etag=self._etag, modified=self._modified,
+                                      agent=USER_AGENT)
             status = getattr(parsed, 'status', None)
             if status == 304:
                 return None

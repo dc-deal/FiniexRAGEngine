@@ -85,6 +85,31 @@ def test_recent_problems_capped_at_ten():
     assert 'boom 0' in text and 'boom 14' not in text     # newest kept, oldest dropped
 
 
+# --- disabled sources are marked, never hidden ----------------------------------------
+
+def test_disabled_source_is_marked_and_counted_not_hidden():
+    # `enabled` is a config fact and source_health has no column for it, so an unmarked row shows
+    # a switched-off feed's frozen last poll as a live `ok` — which is what it did before this.
+    report = SourceHealthReport([_row('fxstreet', disabled=True), _row('forexlive')], [])
+    text = format_source_health_report(report)
+
+    assert 'ok [disabled]' in text                      # verdict kept, marker appended
+    assert 'sources: 2 tracked · 1 disabled' in text
+    assert 'fxstreet' in text and 'forexlive' in text   # still listed — the operator sees all
+    assert report.disabled_count == 1
+
+
+def test_disabled_source_keeps_its_health_verdict():
+    # The health record is how the feed behaved while it *was* polled — precisely what the
+    # decision to switch it back on rests on. So the marker must not swallow a flag.
+    row = _row('cryptoslate', disabled=True, flagged=True, last_error_type='HTTP_ERROR',
+               consecutive_failures=5, quarantined_until=_NOW + timedelta(hours=3))
+    text = format_source_health_report(SourceHealthReport([row], []))
+
+    assert 'FLAGGED(HTTP_ERROR)' in text and 'quarantined' in text
+    assert '[disabled]' in text
+
+
 # --- feed doctor classifier (pure) ----------------------------------------------------
 
 def test_classify_matches_the_source_taxonomy():

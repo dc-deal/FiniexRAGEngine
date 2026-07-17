@@ -9,6 +9,10 @@ import argparse
 import os
 
 from finiexragengine.configuration.app_config_manager import AppConfigManager
+from finiexragengine.core.observability.reports.ingest_report import (
+    build_ingest_report,
+    format_ingest_report,
+)
 from finiexragengine.core.observability.run_footer import RunFooter
 from finiexragengine.core.pipeline.pipeline_assembler import PipelineAssembler
 from finiexragengine.exceptions.ragengine_errors import ConfigurationError
@@ -32,22 +36,15 @@ def main() -> None:
     assembler = PipelineAssembler(app, database_url)
     try:
         ingestor = assembler.build_ingestor(args.source_set)
+        # The declared catalogue (including the switched-off feeds the ingestor is never given)
+        # — the report renders against it so no declared source can be missing from the table.
+        source_set = assembler.get_source_sets().get(args.source_set)
     except ConfigurationError as exc:
         parser.error(str(exc))
     result = ingestor.run()
 
-    # Cost line first: `embedded` is what was actually paid for this pass.
-    print(f"ingest '{args.source_set}': fetched {result.fetched}, "
-          f'embedded {result.embedded} (paid), stored {result.stored} new, '
-          f'{result.duplicates} duplicates')
-    # The circuit-breaker may have suspended the paid embedding mid-pass (ISSUE_47).
-    if result.suspended:
-        print('  ⏸ paid work suspended (provider quota) — embedding skipped this pass')
-    for source_id, entry in result.per_source.items():
-        print(f'  {source_id:14} fetched {entry.fetched:3}   embedded {entry.embedded:3}   '
-              f'new {entry.stored:3}   dup {entry.duplicates:3}')
-    for source_id, error in result.failed_sources.items():
-        print(f'  {source_id:14} FAILED: {error}')
+    # Cost line first (inside the report's headline): `embedded` is what this pass paid for.
+    print(format_ingest_report(build_ingest_report(args.source_set, result, source_set)))
     # The shared metrics block (ISSUE_32): per-stage times (summed across sources) and
     # what this pass actually spent — read off the recorder's session accumulator.
     recorder = assembler.get_cost_recorder()

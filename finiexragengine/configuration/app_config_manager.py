@@ -13,6 +13,7 @@ _USER_CONFIG_PATH = _PROJECT_ROOT / 'user_configs' / 'app_config.json'
 _PIPELINES_DIR = _PROJECT_ROOT / 'configs' / 'pipelines'
 _USER_PIPELINES_DIR = _PROJECT_ROOT / 'user_configs' / 'pipelines'
 _SOURCE_SETS_DIR = _PROJECT_ROOT / 'configs' / 'source_sets'
+_USER_SOURCE_SETS_DIR = _PROJECT_ROOT / 'user_configs' / 'source_sets'
 _PROMPTS_DIR = _PROJECT_ROOT / 'prompts'
 _MIGRATIONS_DIR = _PROJECT_ROOT / 'migrations'
 
@@ -51,6 +52,14 @@ class AppConfigManager:
 
     def get_source_sets_dir(self) -> Path:
         return _SOURCE_SETS_DIR
+
+    def get_user_source_sets_dir(self) -> Path:
+        """Gitignored per-source-set overrides — deep-merged onto the tracked set.
+
+        Reachability is machine-specific (a feed behind a bot-wall answers one egress IP and
+        refuses another), so switching a feed off belongs here, not in the tracked catalogue.
+        """
+        return _USER_SOURCE_SETS_DIR
 
     def get_prompts_dir(self) -> Path:
         return _PROMPTS_DIR

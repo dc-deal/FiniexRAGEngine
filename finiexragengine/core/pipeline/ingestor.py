@@ -9,7 +9,7 @@ from finiexragengine.core.rag.abstract_vector_store import AbstractVectorStore
 from finiexragengine.core.sources.abstract_source import AbstractSource
 from finiexragengine.exceptions.ragengine_errors import BudgetExceededError, SourceFetchError
 from finiexragengine.types.article_types import Article
-from finiexragengine.types.ingest_types import IngestResult, SourceIngest
+from finiexragengine.types.ingest_types import IngestResult, SourceIngest, SourcePoll
 from finiexragengine.utils.url import normalize_host
 
 
@@ -54,22 +54,29 @@ class Ingestor:
         detect_batch: List[Tuple[Article, List[float]]] = []
         for source in self._sources:
             source_id = source.get_source_id()
+            # Every branch below appends exactly one SourcePoll before it continues — that is what
+            # makes "every source appears in the render" structural rather than a thing each
+            # surface has to remember.
             # 0. Skip a quarantined source (ISSUE_11) — it keeps failing (e.g. rate-limiting us),
             #    so we back off entirely until its cool-off elapses instead of hammering it.
             if self._health_store is not None and not self._health_store.should_poll(source_id):
-                result.quarantined_skips.append(source_id)
+                until = self._health_store.quarantined_until(source_id)
+                result.polls.append(SourcePoll(
+                    source_id, 'quarantined', until=until,
+                    detail='in source-health cool-off after repeated failures'))
                 continue
             # 0b. Skip a source that is within its poll floor — a deliberate local no-op, so it is
             #     NOT recorded as a poll (a floor skip must never reset a failure streak).
             if not source.due_for_fetch():
-                result.floor_skips.append(source_id)
+                result.polls.append(SourcePoll(source_id, 'floor_skipped',
+                                               detail='within its own poll floor'))
                 continue
             host = normalize_host(source.get_url())
             # 1. Pull the source. A failing source is recorded (typed, into health), the rest proceed.
             try:
                 fetched = timer.time('fetch', source.fetch)
             except SourceFetchError as exc:
-                result.failed_sources[source_id] = str(exc)
+                result.polls.append(SourcePoll(source_id, 'failed', detail=str(exc)))
                 if self._health_store is not None:
                     result.health_notes[source_id] = self._health_store.record_failure(
                         source_id, host, self._source_set_id,
@@ -95,15 +102,19 @@ class Ingestor:
                     # Paid work suspended (provider quota, ISSUE_47): skip embedding this pass.
                     # Fetch + health already ran; the un-embedded articles reappear next pass, so
                     # nothing is lost while the feed window still holds them. Stop the pass here —
-                    # every remaining source would suspend too.
+                    # every remaining source would suspend too. The sources after this one get no
+                    # poll entry at all, which is honest: they were never considered. The report
+                    # renders them from the declared catalogue as 'not polled'.
                     result.suspended = True
                     entry.embedded = 0
-                    result.per_source[source_id] = entry
+                    result.polls.append(SourcePoll(
+                        source_id, 'suspended', ingest=entry,
+                        detail='paid work suspended (provider quota) — fetched, not embedded'))
                     result.fetched += entry.fetched
                     break
                 entry.stored = timer.time('upsert', lambda: self._store.upsert(fresh, vectors))
                 detect_batch.extend(zip(fresh, vectors))
-            result.per_source[source_id] = entry
+            result.polls.append(SourcePoll(source_id, 'ok', ingest=entry))
             result.fetched += entry.fetched
             result.embedded += entry.embedded
             result.stored += entry.stored

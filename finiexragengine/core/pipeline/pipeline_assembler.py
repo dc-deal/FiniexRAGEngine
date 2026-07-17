@@ -8,6 +8,7 @@ from finiexragengine.core.llm.provider_factory import build_provider
 from finiexragengine.core.observability.budget_guard import BudgetGuard
 from finiexragengine.core.observability.cost_recorder import CostRecorder
 from finiexragengine.core.observability.source_health_store import SourceHealthStore
+from finiexragengine.core.observability.source_reach import SourceReach
 from finiexragengine.core.outcome.outcome_store import OutcomeStore
 from finiexragengine.core.pipeline.breaking_detector import BreakingDetector
 from finiexragengine.core.pipeline.ingestor import Ingestor
@@ -60,7 +61,8 @@ class PipelineAssembler:
         self._outcome_store = OutcomeStore(database_url)
         # Shared feed groups (ISSUE_10): constellations reference a source-set by id;
         # an unresolved reference fails here at assembly — before any spend.
-        self._source_sets = SourceSetRegistry(app.get_source_sets_dir())
+        self._source_sets = SourceSetRegistry(app.get_source_sets_dir(),
+                                              app.get_user_source_sets_dir())
         self._source_sets.load()
 
     def get_source_sets(self) -> SourceSetRegistry:
@@ -153,7 +155,9 @@ class PipelineAssembler:
         # Source health (ISSUE_11): every poll is recorded; a persistently failing feed is flagged
         # and quarantined. One store per ingestor (long-lived on the worker → in-memory quarantine).
         health_store = SourceHealthStore(self._database_url, self._cfg.source_health)
-        return Ingestor([build_source(source) for source in source_set.sources],
+        # A disabled source is never built, so it is never polled and produces no health event —
+        # the same "defined but toggled off" semantics a disabled model variant has.
+        return Ingestor([build_source(source) for source in source_set.active_sources()],
                         news_embedder, store, breaking_detector=detector,
                         health_store=health_store, source_set_id=source_set_id)
 
@@ -169,6 +173,12 @@ class PipelineAssembler:
         ingestor = (self.build_ingestor(config.source_set, billing_label=config.pipeline_id)
                     if include_ingest else None)
         evaluator = self.build_evaluator(config)
+        # The envelope's reach numbers (ISSUE_10): config ∩ health, resolved per run rather than
+        # counted here at assembly. Its own health store — the runner reads live, so it must not
+        # share the ingestor's in-memory quarantine cache (and in worker mode there is no
+        # ingestor to share one with).
+        source_reach = SourceReach(source_set,
+                                   SourceHealthStore(self._database_url, self._cfg.source_health))
         # The prompt fingerprint is resolved once here (ISSUE_33) — the runner stamps it
         # on every envelope, valid even for a pass where all evals fail.
         prompt_builder = PromptBuilder(self._app.get_prompts_dir())
@@ -176,7 +186,7 @@ class PipelineAssembler:
         return PipelineRunner(config, ingestor, evaluator, prompt_metadata,
                               llm_model=config.llm.model, cost_recorder=self._recorder,
                               outcome_store=self._outcome_store,
-                              sources_configured=len(source_set.sources))
+                              source_reach=source_reach)
 
     def attach_all(self, registry: PipelineRegistry, include_ingest: bool = True) -> None:
         """Give every registered pipeline its real runner (replaces the scaffold mock)."""
