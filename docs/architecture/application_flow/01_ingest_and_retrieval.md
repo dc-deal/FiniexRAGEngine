@@ -221,9 +221,10 @@ Retrieval runs **per symbol**. Top-down, one symbol's query flows through:
 
 4. **Relevance floor — `core/rag/retriever.py` (`Retriever.retrieve`) · ISSUE_24.**
    Before dedup, candidates whose query↔article distance exceeds `floor_distance`
-   (default 0.55) are dropped — nearest is not the same as *near*, and an off-topic
-   article must never reach the prompt. An **empty** survivor set is a result: the
-   evaluator answers it mechanically (`HOLD`, `basis='no_data'`, no LLM call).
+   (crypto constellation 0.68, forex 0.55 — the cut is query-length dependent, see
+   `../retrieval_policy.md`) are dropped — nearest is not the same as *near*, and an
+   off-topic article must never reach the prompt. An **empty** survivor set is a result:
+   the evaluator answers it mechanically (`HOLD`, `basis='no_data'`, no LLM call).
 
 5. **Squeeze — `core/rag/retriever.py` (`Retriever._squeeze`).**
    Walks candidates in rank order and collapses near-duplicates (the same story
@@ -239,9 +240,12 @@ optional two-tier `deep_tier`) and the ranking tie-breaks are documented in
 ## What leaves retrieval — and what does not
 
 The comparison numbers (distance / cosine) are **ephemeral**: computed to rank, used to
-select, then dropped. `Retriever.retrieve` returns `List[Article]`, not the scored
-wrappers — the score does not travel into the prompt, the DB, or the envelope. What
-survives is the **decision** (which articles were selected); the raw vectors stay in the
-corpus, the raw text stays with them. Downstream, the selected articles become the LLM
+select, then dropped. `Retriever.retrieve` returns a `RetrievedContext` — the selected
+`Article`s plus the **funnel counters** (in-window / floor-dropped / dedup collapses /
+kept and the pre-floor `best_distance`; see `../retrieval_policy.md`) — never the scored
+wrappers: per-article scores do not travel into the prompt, the DB, or the envelope.
+What survives is the **decision** (which articles were selected) and the funnel that
+explains it; the raw vectors stay in the corpus, the raw text stays with them.
+Downstream, the selected articles become the LLM
 prompt (ISSUE_6) whose structured output is persisted as the outcome envelope — that path
 continues in `02_analysis_and_outcome.md`.

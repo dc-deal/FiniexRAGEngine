@@ -156,6 +156,10 @@ class PipelineRunner:
             cost_usd=(self._cost_recorder.session_usd - usd_before
                       if self._cost_recorder else 0.0),
             per_symbol_tokens=per_symbol_tokens,
+            # Retrieval funnel per evaluated symbol (ISSUE_24): a thin or empty context
+            # is explainable from the persisted envelope, not just asserted.
+            per_symbol_retrieval={ev.result.symbol: ev.retrieval for ev in evals
+                                  if ev.retrieval is not None},
             # Fan-out hints (ISSUE_42): set by registry expansion, absent otherwise.
             variant_group=self._config.variant_group,
             variant=self._config.variant,

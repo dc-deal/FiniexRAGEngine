@@ -90,9 +90,9 @@ def test_live_end_to_end_retrieval_squeeze(store, clean_db):
     cache = QueryVectorCache(embedder, clean_db, model=EmbeddingConfig().model,
                              dimensions=1536)
     retriever = Retriever(cache, store, config)
-    result = retriever.retrieve('Euro US Dollar EUR/USD euro area ECB')
+    context = retriever.retrieve('Euro US Dollar EUR/USD euro area ECB')
 
-    ids = [article.article_id for article in result]
+    ids = [article.article_id for article in context.articles]
     assert len(ids) <= 3
     assert 'stale' not in ids                          # outside the recency window
     assert ids[0] in ('ecb', 'ecb-syndicated')         # most similar story ranks first

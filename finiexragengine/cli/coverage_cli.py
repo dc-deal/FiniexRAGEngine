@@ -29,8 +29,8 @@ def main() -> None:
     if not database_url:
         parser.error('DATABASE_URL is not set (point it at the pgvector Postgres)')
 
-    # Wiring only: app config (embedding model/dims, corpus table) + the pipeline's
-    # symbol->query map via the Pydantic-validated registry; report logic lives in
+    # Wiring only: app config (embedding model/dims) + the pipeline's symbol->query map
+    # via the Pydantic-validated registry; report logic lives in
     # core.observability.reports.coverage_report.
     app = AppConfigManager()
     cfg = app.get_config()
@@ -54,8 +54,7 @@ def main() -> None:
         pipeline.symbol_queries, cache, database_url,
         pipeline_id=args.pipeline, config_file=f'configs/pipelines/{args.pipeline}.json',
         model=cfg.embedding.model,
-        window_minutes=pipeline.retrieval.recency_window_minutes,
-        article_table=cfg.vector_store.table, floor=floor)
+        window_minutes=pipeline.retrieval.recency_window_minutes, floor=floor)
     print(format_coverage_report(report))
 
 

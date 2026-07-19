@@ -96,7 +96,7 @@ def build_coverage_report(
         pipeline_id: constellation id, for provenance in the report header.
         model: embedding model name, for provenance.
         window_minutes: recency window (the pipeline's retrieval.recency_window_minutes).
-        article_table: corpus table name (app_config vector_store.table).
+        article_table: corpus table name (migrations-owned; default matches pgvector_store).
         floor: relevance floor distance (the pipeline's retrieval.floor_distance).
 
     Returns:

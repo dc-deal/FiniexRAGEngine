@@ -51,15 +51,37 @@ with each match, so dedup needs no re-embedding and no LLM.
 Nearest is not the same as *near*: for a symbol with no news of its own, the top-k
 "nearest" candidates are still generic, off-topic articles. Before dedup, any candidate
 whose query↔article cosine **distance** (`embedding <=> query`, = 1 − similarity) exceeds
-`floor_distance` (default 0.55, tuned on the crypto corpus via the coverage report) is
-dropped. Note the axis: `dedup_similarity` cuts what is **too similar** to another
-article (redundancy); the floor cuts what is **too dissimilar** to the query (irrelevance).
+`floor_distance` is dropped. Note the axis: `dedup_similarity` cuts what is **too
+similar** to another article (redundancy); the floor cuts what is **too dissimilar** to
+the query (irrelevance).
+
+**Calibration is query-length dependent** (coverage report, 2026-07-19): short symbol
+queries ("Bitcoin BTC") embed systematically further from article texts — on-topic lands
+~0.60–0.66, generic crypto ~0.70+, so the crypto constellation uses **0.68**. Long,
+specific queries (forex: "Euro US Dollar EUR/USD euro area ECB") land ~0.37–0.46, so
+**0.55** (the schema default) holds there. Tune with the coverage report's what-if flag
+(`coverage_cli --floor X`); the `n≤f` column predicts the live context per symbol.
 
 An **empty** survivor set is a legitimate result: the evaluator answers it with the
 mechanical contract row (`HOLD / 0.0 / 'No relevant news found' / []`, tagged
 `basis='no_data'`) **without an LLM call** — no tokens, no cost, logged as `[NO_CONTEXT]`
 for traceability. The coverage report's `n≤f` column predicts exactly this: how many
 window articles survive the floor per symbol (0 → the mechanical HOLD).
+
+## Funnel counters
+
+Every retrieval records how it arrived at its context (`RetrievalFunnel`): candidates
+**in window**, **floor-dropped**, **tier-** and **near-duplicates** collapsed, **kept**,
+plus the pre-floor distance spread (`best_distance`/`worst_distance` — best doubles as
+the "nearest miss" when everything was dropped) and the **`floor` applied on this run**
+(snapshot, so a persisted envelope stays interpretable after a retune). The `eval` CLI
+renders the spread with the floor's position as % of the span
+(`min 0.601  [27%]  floor 0.68  [73%]  max 0.892`) — the live calibration view: 0% below
+the floor means nothing passes. The funnel travels
+with the evaluation (`SymbolEval.retrieval`) into the envelope
+(`metadata.per_symbol_retrieval`, additive/non-load-bearing) and renders as the
+`retrieval` line in the `eval` CLI — so a thin or empty context is explainable from the
+persisted run, not just asserted: was the window empty, or did the floor cut everything?
 
 ## Configuration reference
 
@@ -70,7 +92,7 @@ window articles survive the floor per symbol (0 → the mechanical HOLD).
 | `top_k` | 12 | hard cap on articles reaching the prompt |
 | `recency_window_minutes` | 1440 | recent-tier lower bound |
 | `dedup_similarity` | 0.92 | pairwise cosine ≥ this collapses near-duplicates |
-| `floor_distance` | 0.55 | query↔article distance > this drops the candidate; `null` disables (ISSUE_24) |
+| `floor_distance` | 0.55 | query↔article distance > this drops the candidate; `null` disables; crypto constellation: 0.68 (see calibration note) (ISSUE_24) |
 | `deep_tier` | absent | opt-in: `{ "min_importance": 2, "window_minutes": 43200 }` |
 
 `symbol_queries` sits at the top level of the constellation, next to `symbols`.

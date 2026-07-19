@@ -45,7 +45,8 @@ class SymbolEvaluator:
     def evaluate(self, symbol: str, query: str) -> SymbolEval:
         # Every stage is timed (ISSUE_32) — the shared StageTimer collects the records.
         timer = StageTimer()
-        articles = timer.time('retrieve', lambda: self._retriever.retrieve(query))
+        context = timer.time('retrieve', lambda: self._retriever.retrieve(query))
+        articles = context.articles
         # The prompt's front-matter identity travels with the outcome (ISSUE_33) — cached.
         prompt_metadata = self._prompt_builder.metadata(self._prompt_name, self._prompt_version)
         # Empty-context shortcut (ISSUE_24): the floor left nothing on-topic, so there is
@@ -54,14 +55,21 @@ class SymbolEvaluator:
         # deliberately *not* a RunError — no data is a legitimate outcome, the run stays
         # 'success'. The envelope proves it anyway: 0 tokens, empty raw output.
         if not articles:
-            logger.info("[NO_CONTEXT] %s ('%s'): retrieval empty after floor — "
-                        'mechanical HOLD, no LLM call', symbol, query)
+            # The funnel says *why* it is empty (ISSUE_24): empty window vs floor cut —
+            # and how close the nearest miss came (calibration signal for the floor).
+            funnel = context.funnel
+            nearest = (f'{funnel.best_distance:.3f}' if funnel.best_distance is not None
+                       else 'n/a')
+            logger.info("[NO_CONTEXT] %s ('%s'): %d in window, floor dropped %d "
+                        '(nearest %s) — mechanical HOLD, no LLM call',
+                        symbol, query, funnel.in_window, funnel.floor_dropped, nearest)
             result = SentimentResult(
                 symbol=symbol, signal='HOLD', sentiment_score=0.0, confidence=0.0,
                 reasoning='No relevant news found', basis='no_data')
             return SymbolEval(result=result, prompt='', prompt_metadata=prompt_metadata,
                               usage=LlmUsage(0, 0), articles=[],
-                              stage_timings=timer.timings, raw_output={})
+                              stage_timings=timer.timings, raw_output={},
+                              retrieval=context.funnel)
         # The prompt describes the asset in readable terms (the query, e.g. "Bitcoin BTC");
         # the result keys on the raw ticker `symbol` (e.g. "BTCUSD").
         prompt = timer.time('prompt', lambda: self._prompt_builder.build(
@@ -86,4 +94,4 @@ class SymbolEvaluator:
         return SymbolEval(result=result, prompt=prompt, prompt_metadata=prompt_metadata,
                           usage=completion.usage, articles=articles,
                           stage_timings=timer.timings, raw_output=completion.data,
-                          model_snapshot=completion.model)
+                          model_snapshot=completion.model, retrieval=context.funnel)

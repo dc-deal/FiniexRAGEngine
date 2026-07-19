@@ -45,7 +45,7 @@ never attach one just because `DATABASE_URL`/`OPENAI_API_KEY` are set in the env
 | `test_rss_source.py` | RSS → Article mapping, idempotent ids, conditional GET (304), poll floor, typed HTTP/transport failures (429/5xx/retry) | — |
 | `test_openai_embedder.py` | batching, order preservation, dimension guard (mocked client) | — |
 | `test_pgvector_store.py` | idempotent upsert, recency/similarity query, importance filter | PostgreSQL |
-| `test_retriever.py` | two-tier policy, top_k cap, near-dup collapse, tie-breaks (mocked) | — |
+| `test_retriever.py` | two-tier policy, top_k cap, near-dup collapse, tie-breaks, funnel counters (mocked) | — |
 | `test_symbol_query_map.py` | constellation alias + base-currency fallback | — |
 | `test_query_vector_cache.py` | cached query vectors, cache busting on config/model change | PostgreSQL |
 | `test_ingestor.py` | fetch → skip known ids → embed only new → upsert; per-source counts; health record + quarantine skip; budget suspend | — |
@@ -54,7 +54,7 @@ never attach one just because `DATABASE_URL`/`OPENAI_API_KEY` are set in the env
 | `test_pipeline_prompt_config.py` | pipeline-declared `prompt` block (name + version) | — |
 | `test_sentiment_llm_output.py` | strict scored-subset schema (ranges, forbid extras) | — |
 | `test_openai_provider.py` | structured call, error taxonomy mapping, cost capture (mocked) | — |
-| `test_symbol_evaluator.py` | retrieve → prompt → LLM → enrich; provenance, raw-output capture | — |
+| `test_symbol_evaluator.py` | retrieve → prompt → LLM → enrich; provenance, raw-output + funnel capture | — |
 | `test_pipeline_runner.py` | envelope invariants, taxonomy, guard degrade (ISSUE_35), metric capture, prompt fingerprint, persistence wiring | — |
 | `test_output_guard.py` | coherence rules (signal↔score dead zone, HOLD confidence cap, empty reasoning, provenance backstop), knob overrides, basis skip | — |
 | `test_outcome_store.py` | save→get_latest roundtrip, newest-wins, raw-output column, error rows | PostgreSQL |

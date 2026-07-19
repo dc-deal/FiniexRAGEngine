@@ -3,6 +3,8 @@ import hashlib
 from dataclasses import dataclass
 from datetime import datetime
 
+from finiexragengine.types.outcome_types import RetrievalFunnel
+
 
 @dataclass
 class Article:
@@ -59,3 +61,16 @@ class ScoredArticle:
     distance: float
     embedding: list[float]
     importance: int | None = None
+
+
+@dataclass
+class RetrievedContext:
+    """What retrieval handed the evaluator: the squeezed context plus its funnel.
+
+    Args:
+        articles: At most `top_k` relevant, recent, deduped articles — best first.
+        funnel: The counters of how the squeeze arrived there (ISSUE_24) — carried
+            through `SymbolEval` into the envelope metadata.
+    """
+    articles: list[Article]
+    funnel: RetrievalFunnel

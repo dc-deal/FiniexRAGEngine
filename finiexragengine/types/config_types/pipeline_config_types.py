@@ -97,7 +97,10 @@ class RetrievalConfig(BaseModel):
     # empty context becomes the mechanical no_data HOLD instead of a paid LLM call on
     # generic articles. None disables the floor. Note the axis: dedup_similarity cuts
     # what is too similar (article<->article), the floor cuts what is too dissimilar
-    # (query<->article). 0.55 tuned on the crypto corpus (coverage report).
+    # (query<->article). The cut is query-length dependent (coverage report 2026-07-19):
+    # short symbol queries ("Bitcoin BTC") embed further from articles — on-topic lands
+    # ~0.60-0.66, generic ~0.70+ → crypto constellation uses 0.68; long specific queries
+    # (forex) land ~0.37-0.46 → 0.55 (this default) holds there.
     floor_distance: Optional[float] = 0.55
     deep_tier: Optional[DeepTierConfig] = None   # None = recent-only (sentiment default, ISSUE_5)
 

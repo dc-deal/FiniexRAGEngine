@@ -31,7 +31,12 @@ from finiexragengine.types.ingest_types import (
     UnreachedSource,
 )
 from finiexragengine.types.llm_types import LlmUsage
-from finiexragengine.types.outcome_types import ArticleRef, SentimentResult, StageTiming
+from finiexragengine.types.outcome_types import (
+    ArticleRef,
+    RetrievalFunnel,
+    SentimentResult,
+    StageTiming,
+)
 from finiexragengine.types.prompt_metadata import PromptMetadata
 
 _TS = datetime(2026, 7, 1, tzinfo=timezone.utc)
@@ -428,6 +433,18 @@ def test_runner_without_a_reach_reports_zero_not_full():
                              _META, llm_model='gpt-4o-mini').run()
     assert envelope.metadata.sources_configured == 0
     assert envelope.metadata.sources_reached == 0
+
+
+def test_retrieval_funnel_lands_in_metadata():
+    # ISSUE_24: the funnel each evaluation carried is assembled per symbol into the
+    # envelope metadata — the persisted run can explain a thin or empty context.
+    good = _eval('BTCUSD')
+    good.retrieval = RetrievalFunnel(in_window=20, floor_dropped=17, near_duplicates=1,
+                                     kept=2, best_distance=0.61)
+    envelope = _runner(_config(['BTCUSD']), _FakeIngestor(),
+                       _FakeEvaluator({'BTCUSD': good})).run()
+    funnel = envelope.metadata.per_symbol_retrieval['BTCUSD']
+    assert (funnel.in_window, funnel.floor_dropped, funnel.kept) == (20, 17, 2)
 
 
 def test_fanned_config_stamps_variant_hints():

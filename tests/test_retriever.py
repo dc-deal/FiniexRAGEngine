@@ -1,4 +1,4 @@
-"""Unit tests for Retriever — recency, top_k cap, dedup, deep tier, tie-breaks.
+"""Unit tests for Retriever — recency, top_k cap, dedup, deep tier, tie-breaks, funnel.
 
 Embedder and store are faked, so these run offline. The fake store records the
 query arguments (window, min_importance) and returns pre-built ScoredArticle
@@ -77,9 +77,9 @@ def test_recent_tier_window_and_overfetch():
     store = _FakeStore([[_hit('a', 0.1)]])
     retriever = _retriever(store, top_k=3, recency_window_minutes=60)
     before = datetime.now(timezone.utc)
-    result = retriever.retrieve('query text')
+    context = retriever.retrieve('query text')
     after = datetime.now(timezone.utc)
-    assert [a.article_id for a in result] == ['a']
+    assert [a.article_id for a in context.articles] == ['a']
     assert len(store.calls) == 1                      # deep tier off by default
     call = store.calls[0]
     assert call['top_k'] == 6                         # top_k * overfetch headroom
@@ -90,15 +90,16 @@ def test_recent_tier_window_and_overfetch():
 def test_top_k_is_a_hard_cap():
     hits = [_hit(f'a{i}', 0.1 * i) for i in range(6)]
     store = _FakeStore([hits])
-    result = _retriever(store, top_k=2).retrieve('q')
-    assert [a.article_id for a in result] == ['a0', 'a1']
+    context = _retriever(store, top_k=2).retrieve('q')
+    assert [a.article_id for a in context.articles] == ['a0', 'a1']
+    assert (context.funnel.in_window, context.funnel.kept) == (6, 2)
 
 
 def test_orders_by_distance_within_tier():
     # floor off: this test checks pure distance ordering, not the relevance cut.
     store = _FakeStore([[_hit('far', 0.7), _hit('near', 0.1), _hit('mid', 0.4)]])
-    result = _retriever(store, top_k=10, floor_distance=None).retrieve('q')
-    assert [a.article_id for a in result] == ['near', 'mid', 'far']
+    context = _retriever(store, top_k=10, floor_distance=None).retrieve('q')
+    assert [a.article_id for a in context.articles] == ['near', 'mid', 'far']
 
 
 # --- relevance floor (ISSUE_24) ---
@@ -106,21 +107,33 @@ def test_orders_by_distance_within_tier():
 def test_floor_drops_off_topic_candidates():
     # 0.54 stays (on-topic), 0.56/0.70 exceed the default 0.55 floor -> dropped.
     store = _FakeStore([[_hit('on', 0.54), _hit('edge', 0.56), _hit('off', 0.70)]])
-    result = _retriever(store, top_k=10).retrieve('q')
-    assert [a.article_id for a in result] == ['on']
+    context = _retriever(store, top_k=10).retrieve('q')
+    assert [a.article_id for a in context.articles] == ['on']
+    # The funnel records the cut: 3 offered, 2 dropped as off-topic, 1 reached the prompt —
+    # and the spread + applied floor place the cut between best and worst candidate.
+    funnel = context.funnel
+    assert (funnel.in_window, funnel.floor_dropped, funnel.kept) == (3, 2, 1)
+    assert (funnel.best_distance, funnel.worst_distance, funnel.floor) == (0.54, 0.70, 0.55)
 
 
 def test_floor_can_empty_the_context():
     # Nothing on-topic: the empty result is the signal the evaluator's no_data
     # shortcut consumes — better an empty context than 12 generic articles.
     store = _FakeStore([[_hit('g1', 0.62), _hit('g2', 0.71)]])
-    assert _retriever(store, top_k=10).retrieve('q') == []
+    context = _retriever(store, top_k=10).retrieve('q')
+    assert context.articles == []
+    # The funnel explains the emptiness: window had candidates, the floor cut them —
+    # and the nearest miss says how close the best one came (floor calibration signal).
+    funnel = context.funnel
+    assert (funnel.in_window, funnel.floor_dropped, funnel.kept) == (2, 2, 0)
+    assert funnel.best_distance == 0.62
 
 
 def test_floor_none_disables_the_cut():
     store = _FakeStore([[_hit('g1', 0.62), _hit('g2', 0.71)]])
-    result = _retriever(store, top_k=10, floor_distance=None).retrieve('q')
-    assert [a.article_id for a in result] == ['g1', 'g2']
+    context = _retriever(store, top_k=10, floor_distance=None).retrieve('q')
+    assert [a.article_id for a in context.articles] == ['g1', 'g2']
+    assert context.funnel.floor_dropped == 0
 
 
 def test_distance_tie_breaks_on_source_weight_then_importance():
@@ -129,8 +142,8 @@ def test_distance_tie_breaks_on_source_weight_then_importance():
         _hit('heavy', 0.2, weight=1.0),
         _hit('untagged', 0.2, weight=0.5),
     ]])
-    result = _retriever(store, top_k=10).retrieve('q')
-    assert [a.article_id for a in result] == ['heavy', 'light', 'untagged']
+    context = _retriever(store, top_k=10).retrieve('q')
+    assert [a.article_id for a in context.articles] == ['heavy', 'light', 'untagged']
 
 
 def test_near_duplicates_collapse_keeps_better_ranked():
@@ -143,8 +156,9 @@ def test_near_duplicates_collapse_keeps_better_ranked():
         _hit('syndicated', 0.2, embedding=list(shared)),
         _hit('related', 0.3, embedding=related),
     ]])
-    result = _retriever(store, top_k=10).retrieve('q')
-    assert [a.article_id for a in result] == ['original', 'related']
+    context = _retriever(store, top_k=10).retrieve('q')
+    assert [a.article_id for a in context.articles] == ['original', 'related']
+    assert context.funnel.near_duplicates == 1
 
 
 def test_deep_tier_opt_in_queries_and_ranks_behind_recent():
@@ -153,8 +167,8 @@ def test_deep_tier_opt_in_queries_and_ranks_behind_recent():
     store = _FakeStore([recent, deep])
     retriever = _retriever(store, top_k=5, recency_window_minutes=60,
                            deep_tier=DeepTierConfig(min_importance=2, window_minutes=2880))
-    result = retriever.retrieve('q')
-    assert [a.article_id for a in result] == ['recent', 'deep']   # recency dominates
+    context = retriever.retrieve('q')
+    assert [a.article_id for a in context.articles] == ['recent', 'deep']   # recency dominates
     assert len(store.calls) == 2
     assert store.calls[1]['min_importance'] == 2
     assert store.calls[1]['since'] < store.calls[0]['since']      # deep window reaches back further
@@ -166,10 +180,18 @@ def test_deep_tier_does_not_duplicate_recent_articles():
         [_hit('both-tiers', 0.2, importance=3)],
     ])
     retriever = _retriever(store, top_k=5, deep_tier=DeepTierConfig())
-    result = retriever.retrieve('q')
-    assert [a.article_id for a in result] == ['both-tiers']
+    context = retriever.retrieve('q')
+    assert [a.article_id for a in context.articles] == ['both-tiers']
+    # Both tiers offered it, one copy was collapsed — visible in the funnel.
+    assert (context.funnel.in_window, context.funnel.tier_duplicates) == (2, 1)
 
 
 def test_empty_store_yields_empty_context():
     store = _FakeStore([[]])
-    assert _retriever(store, top_k=5).retrieve('q') == []
+    context = _retriever(store, top_k=5).retrieve('q')
+    assert context.articles == []
+    # An empty *window* (vs a floor cut) is distinguishable: no candidates, no spread.
+    funnel = context.funnel
+    assert (funnel.in_window, funnel.floor_dropped, funnel.kept) == (0, 0, 0)
+    assert funnel.best_distance is None and funnel.worst_distance is None
+    assert funnel.floor == 0.55                       # the cut that *would* have applied
