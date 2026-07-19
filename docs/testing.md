@@ -55,7 +55,8 @@ never attach one just because `DATABASE_URL`/`OPENAI_API_KEY` are set in the env
 | `test_sentiment_llm_output.py` | strict scored-subset schema (ranges, forbid extras) | — |
 | `test_openai_provider.py` | structured call, error taxonomy mapping, cost capture (mocked) | — |
 | `test_symbol_evaluator.py` | retrieve → prompt → LLM → enrich; provenance, raw-output capture | — |
-| `test_pipeline_runner.py` | envelope invariants, taxonomy, metric capture, prompt fingerprint, persistence wiring | — |
+| `test_pipeline_runner.py` | envelope invariants, taxonomy, guard degrade (ISSUE_35), metric capture, prompt fingerprint, persistence wiring | — |
+| `test_output_guard.py` | coherence rules (signal↔score dead zone, HOLD confidence cap, empty reasoning, provenance backstop), knob overrides, basis skip | — |
 | `test_outcome_store.py` | save→get_latest roundtrip, newest-wins, raw-output column, error rows | PostgreSQL |
 | `test_corpus_guard.py` | corpus stamped with embedding model; mismatch refuses to boot | PostgreSQL |
 | `test_source_set_registry.py` | source-set loading, duplicate ids, unknown reference, tracked configs | — |

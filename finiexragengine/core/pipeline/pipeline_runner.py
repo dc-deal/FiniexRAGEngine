@@ -9,6 +9,7 @@ from finiexragengine.core.observability.source_reach import SourceReach
 from finiexragengine.core.outcome.outcome_store import OutcomeStore
 from finiexragengine.core.pipeline.envelope_contract import hold_result, taxonomy_type
 from finiexragengine.core.pipeline.ingestor import Ingestor
+from finiexragengine.core.pipeline.output_guard import OutputGuard
 from finiexragengine.core.pipeline.symbol_evaluator import SymbolEvaluator
 from finiexragengine.exceptions.ragengine_errors import FiniexRagError
 from finiexragengine.types.config_types.pipeline_config_types import PipelineConfig
@@ -48,6 +49,9 @@ class PipelineRunner:
                  outcome_store: Optional[OutcomeStore] = None,
                  source_reach: Optional[SourceReach] = None) -> None:
         self._config = config
+        # Output consistency guard (ISSUE_35): deterministic coherence check over each
+        # scored row, built from the constellation's tolerances, applied in phase B+C below.
+        self._guard = OutputGuard(config.output_guard)
         # None = worker mode (ISSUE_10): acquisition runs on the ingest worker's own
         # clock; this runner only evaluates over the shared corpus. Set = the manual,
         # self-contained pass (run CLI / API without workers) — ingest inline as before.
@@ -112,8 +116,24 @@ class PipelineRunner:
                     symbol, f'Analysis degraded to HOLD ({error_type})'))
                 continue
             evals.append(ev)
-            results.append(ev.result)
             per_symbol_tokens[symbol] = ev.usage.total_tokens
+            # Output guard (ISSUE_35): schema-valid but internally contradictory rows (a BUY
+            # with a negative score, a near-certain HOLD, an empty reasoning) degrade to the
+            # contract HOLD under PARTIAL_RESPONSE — the run turns 'partial'. The SymbolEval
+            # above stays in `evals` untouched: the call's tokens/cost/timings are real, and
+            # the raw model output remains persisted for inspection (ISSUE_36). A degraded
+            # row has urgency 0.0 / is_breaking False — it can never push breaking.
+            violations = self._guard.violations(ev.result)
+            if violations:
+                errors.append(self._error(
+                    'PARTIAL_RESPONSE',
+                    f"{symbol}: output guard: {'; '.join(str(v) for v in violations)}"))
+                results.append(hold_result(
+                    symbol,
+                    f"Output guard degraded to HOLD "
+                    f"({', '.join(v.rule for v in violations)})"))
+                continue
+            results.append(ev.result)
 
         # --- D: assemble metadata + envelope ---
         stage_timings = list(ingest.stage_timings)

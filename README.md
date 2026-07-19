@@ -165,6 +165,10 @@ In active development. Implemented and tested today:
 - **Pipeline orchestration**: `POST /run` executes the real staged flow — ingest → per-symbol
   eval → envelope assembly honoring the output contract (every symbol always present,
   `partial` over `error`, taxonomy-typed errors, always a parseable envelope) (#7).
+- **Output consistency guard**: schema-valid but internally contradictory LLM rows (a `BUY`
+  scored negative, a near-certain `HOLD`, an empty reasoning) are caught by a deterministic,
+  zero-cost post-check and degraded to a clean `HOLD` (`partial` run, raw output kept for
+  inspection) — a confidently-wrong signal never leaves the engine unmarked (#35).
 - **Cost & performance tracking**: a per-call token/USD **and latency** billing log, `cost` +
   `perf` CLIs, per-stage timings assembled into every envelope (#23, #32).
 - **Model governance & exact-model tracking**: each pipeline declares its eval model (required)

@@ -19,7 +19,10 @@ from finiexragengine.exceptions.ragengine_errors import (
     VectorStoreError,
 )
 from finiexragengine.types.article_types import Article
-from finiexragengine.types.config_types.pipeline_config_types import PipelineConfig
+from finiexragengine.types.config_types.pipeline_config_types import (
+    OutputGuardConfig,
+    PipelineConfig,
+)
 from finiexragengine.types.eval_types import SymbolEval
 from finiexragengine.types.ingest_types import (
     IngestResult,
@@ -28,7 +31,7 @@ from finiexragengine.types.ingest_types import (
     UnreachedSource,
 )
 from finiexragengine.types.llm_types import LlmUsage
-from finiexragengine.types.outcome_types import SentimentResult, StageTiming
+from finiexragengine.types.outcome_types import ArticleRef, SentimentResult, StageTiming
 from finiexragengine.types.prompt_metadata import PromptMetadata
 
 _TS = datetime(2026, 7, 1, tzinfo=timezone.utc)
@@ -54,8 +57,15 @@ def _timing(stage: str, ms: float) -> StageTiming:
 
 
 def _eval(symbol: str, tokens=(100, 20)) -> SymbolEval:
+    # Mirror the evaluator's enrich: the LLM path always attaches provenance from the
+    # retrieved articles — the guard's structural backstop relies on it (ISSUE_35).
+    article = _article('a')
     result = SentimentResult(symbol=symbol, signal='BUY', sentiment_score=0.5,
-                             confidence=0.8, reasoning='bullish')
+                             confidence=0.8, reasoning='bullish',
+                             sources=[ArticleRef(article_id=article.article_id,
+                                                 url=article.url, title=article.title,
+                                                 published_at=article.published_at,
+                                                 fetched_at=article.fetched_at)])
     return SymbolEval(result=result, prompt='P', prompt_metadata=_META,
                       usage=LlmUsage(*tokens), articles=[_article('a')],
                       stage_timings=[_timing('retrieve', 10.0), _timing('llm', 90.0)],
@@ -171,6 +181,50 @@ def test_failed_symbol_degrades_to_hold_and_partial():
     assert 'LLM_TIMEOUT' in eth.reasoning
     assert eth.basis == 'degraded'                     # failure row, not data shortage (ISSUE_24)
     assert [e.type for e in envelope.errors] == ['LLM_TIMEOUT']
+
+
+def test_incoherent_row_degrades_via_guard_to_hold_and_partial():
+    # ISSUE_35: schema-valid but contradictory — a BUY scored negative. The guard degrades
+    # the row in place: the symbol stays present, the run turns partial, the cause is a
+    # PARTIAL_RESPONSE error naming the rule and the offending value.
+    config = _config(['BTCUSD', 'ETHUSD'])
+    bad = _eval('ETHUSD')
+    bad.result = bad.result.model_copy(update={'sentiment_score': -0.7})
+    envelope = _runner(config, _FakeIngestor(),
+                       _FakeEvaluator({'BTCUSD': _eval('BTCUSD'), 'ETHUSD': bad})).run()
+    assert envelope.status == 'partial'
+    eth = {r.symbol: r for r in envelope.result}['ETHUSD']
+    assert eth.signal == 'HOLD' and eth.confidence == 0.0 and eth.basis == 'degraded'
+    assert 'signal_score_coherence' in eth.reasoning
+    assert not eth.is_breaking                        # a degraded row can never push breaking
+    assert [e.type for e in envelope.errors] == ['PARTIAL_RESPONSE']
+    assert 'ETHUSD: output guard' in envelope.errors[0].message
+    assert '-0.7' in envelope.errors[0].message       # offending value preserved for debugging
+
+
+def test_guard_degraded_row_keeps_tokens_and_raw_output():
+    # The paid call happened: its tokens/cost count, and the raw model output stays
+    # persisted next to the envelope (ISSUE_36) — only the served row is swapped.
+    store = _FakeStore()
+    bad = _eval('BTCUSD')
+    bad.result = bad.result.model_copy(update={'sentiment_score': -0.9})
+    envelope = _runner(_config(['BTCUSD']), _FakeIngestor(),
+                       _FakeEvaluator({'BTCUSD': bad}), store=store).run()
+    assert envelope.metadata.per_symbol_tokens == {'BTCUSD': 120}
+    assert store.saved[0][1] == {'BTCUSD': {'signal': 'BUY'}}
+    assert envelope.result[0].signal == 'HOLD'
+
+
+def test_guard_tolerances_come_from_the_constellation():
+    # The knobs live in the constellation (no magic numbers): a widened dead zone lets the
+    # same row pass that the default tolerance degrades.
+    config = _config(['BTCUSD']).model_copy(
+        update={'output_guard': OutputGuardConfig(score_signal_tolerance=0.8)})
+    bad = _eval('BTCUSD')
+    bad.result = bad.result.model_copy(update={'sentiment_score': -0.7})
+    envelope = _runner(config, _FakeIngestor(), _FakeEvaluator({'BTCUSD': bad})).run()
+    assert envelope.status == 'success'
+    assert envelope.result[0].signal == 'BUY'
 
 
 def test_budget_exceeded_degrades_to_hold_and_partial():

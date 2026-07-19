@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(python3 -c ' *)",
-      "Bash(python -m pytest tests/ -q)"
+      "Bash(python -m pytest tests/ -q)",
+      "Bash(python3 -c \"import json; c=json.load\\(open\\('/app/configs/app_config.json'\\)\\); print\\(list\\(c.keys\\(\\)\\)\\)\")",
+      "Bash(python3 -c \"import json; c=json.load\\(open\\('/app/configs/pipelines/crypto_sentiment.json'\\)\\); print\\(json.dumps\\(c, indent=1\\)[:1200]\\)\")"
     ]
   }
 }
