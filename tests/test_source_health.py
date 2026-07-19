@@ -110,6 +110,29 @@ def test_disabled_source_keeps_its_health_verdict():
     assert '[disabled]' in text
 
 
+def test_disabled_flagged_source_past_quarantine_never_claims_it_is_retrying():
+    # Observed live: a disabled feed's quarantine elapses, its status flips to "retrying", and the
+    # row freezes there forever — it is switched off, so no poll ever comes. "retrying" is the one
+    # cell that is a claim about the *next* poll; for a disabled feed that claim is false.
+    row = _row('fxstreet', disabled=True, flagged=True, last_error_type='HTTP_ERROR',
+               consecutive_failures=5, quarantined_until=_NOW - timedelta(hours=1))  # elapsed
+    text = format_source_health_report(SourceHealthReport([row], []))
+
+    assert 'retrying' not in text                       # the false future-tense claim is gone
+    assert 'FLAGGED(HTTP_ERROR) not polled [disabled]' in text   # verdict kept, honest verb
+
+
+def test_enabled_flagged_source_past_quarantine_still_retries():
+    # The complement: an *enabled* feed that cleared cool-off really will be polled again, so
+    # "retrying" stays — the fix must not blunt the honest signal for feeds that are still live.
+    row = _row('boe_news', flagged=True, last_error_type='HTTP_ERROR',
+               consecutive_failures=5, quarantined_until=_NOW - timedelta(hours=1))
+    text = format_source_health_report(SourceHealthReport([row], []))
+
+    assert 'FLAGGED(HTTP_ERROR) retrying' in text
+    assert '[disabled]' not in text
+
+
 # --- feed doctor classifier (pure) ----------------------------------------------------
 
 def test_classify_matches_the_source_taxonomy():
