@@ -2,9 +2,10 @@
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from finiexragengine.configuration.config_merge import deep_merge
+from finiexragengine.configuration.override_report import OverrideEntry, collect_overrides
 from finiexragengine.core.pipeline.pipeline import Pipeline
 from finiexragengine.exceptions.ragengine_errors import (
     ConfigurationError,
@@ -70,6 +71,9 @@ class PipelineRegistry:
         # Stream ids whose constellation carried a gitignored user override (all variants of
         # an overridden file) — surfaced e.g. in the cost report so a diverging config is visible.
         self._overridden: set = set()
+        # Per overridden file: the touched leaves (old → new), for the startup override
+        # report — collected at load, emitted by the AppConfigManager factory (gated there).
+        self._override_entries: Dict[str, List[OverrideEntry]] = {}
 
     def load(self) -> None:
         """Load every constellation JSON in the pipelines directory."""
@@ -77,10 +81,15 @@ class PipelineRegistry:
         # pipeline_id. PipelineConfig(**data) is the Pydantic validation gate — a
         # malformed constellation fails loudly here at load time, not mid-run.
         for path in sorted(self._pipelines_dir.glob('*.json')):
-            data = self._with_override(path)
-            overridden = (self._user_overrides_dir is not None
-                          and (self._user_overrides_dir / path.name).exists())
-            for config in expand_variants(PipelineConfig(**data)):
+            data, base, override = self._with_override(path)
+            overridden = override is not None
+            declared = PipelineConfig(**data)
+            if overridden:
+                # Collected against the VALIDATED config: a key Pydantic dropped is a
+                # typo candidate; a key with a schema default reads as '(added)'.
+                self._override_entries[path.name] = collect_overrides(
+                    base, override, declared.model_dump(), _OVERRIDE_LIST_KEYS)
+            for config in expand_variants(declared):
                 # A derived stream id colliding with another pipeline (or another
                 # file's expansion) would silently shadow a signal series — refuse.
                 if config.pipeline_id in self._pipelines:
@@ -95,18 +104,27 @@ class PipelineRegistry:
         """Whether this stream's constellation was deep-merged with a user override."""
         return pipeline_id in self._overridden
 
-    def _with_override(self, path: Path) -> Dict[str, Any]:
+    def override_entries(self) -> Dict[str, List[OverrideEntry]]:
+        """Touched leaves per overridden constellation file (empty when none)."""
+        return self._override_entries
+
+    def _with_override(self, path: Path) -> Tuple[Dict[str, Any], Dict[str, Any],
+                                                  Optional[Dict[str, Any]]]:
         """Load a constellation, deep-merging a gitignored user override when one exists.
 
         Override only what differs — everything else is inherited from the tracked base (no
         silent drift, unlike a full copy). Lists (`symbols`, `llm.models`) replace wholesale.
+
+        Returns:
+            (merged, base, override) — base and override stay raw so the override report
+            can render `old → new` per touched leaf; override is None when none exists.
         """
         data = json.loads(path.read_text(encoding='utf-8'))
         if self._user_overrides_dir is None:
-            return data
+            return data, data, None
         override_path = self._user_overrides_dir / path.name
         if not override_path.exists():
-            return data
+            return data, data, None
         override = json.loads(override_path.read_text(encoding='utf-8'))
         merged = deep_merge(data, override, _OVERRIDE_LIST_KEYS)
         # Guard the llm XOR: if the override picks a form (model vs models), drop the base's
@@ -118,9 +136,7 @@ class PipelineRegistry:
                 merged_llm.pop('models', None)
             elif 'models' in override_llm and 'model' not in override_llm:
                 merged_llm.pop('model', None)
-        logger.info("pipeline '%s' overridden from user_configs/pipelines/%s",
-                    data.get('pipeline_id', path.stem), path.name)
-        return merged
+        return merged, data, override
 
     def list_pipelines(self) -> List[Pipeline]:
         return list(self._pipelines.values())

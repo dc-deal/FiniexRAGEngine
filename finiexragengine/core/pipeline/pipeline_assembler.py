@@ -61,9 +61,7 @@ class PipelineAssembler:
         self._outcome_store = OutcomeStore(database_url)
         # Shared feed groups (ISSUE_10): constellations reference a source-set by id;
         # an unresolved reference fails here at assembly — before any spend.
-        self._source_sets = SourceSetRegistry(app.get_source_sets_dir(),
-                                              app.get_user_source_sets_dir())
-        self._source_sets.load()
+        self._source_sets = app.build_source_set_registry()
 
     def get_source_sets(self) -> SourceSetRegistry:
         return self._source_sets

@@ -109,8 +109,28 @@ Top-down, each new article flows through these units in order:
 
    A source within its **poll floor** needs no special case: a floor skip deliberately records no
    health, so the feed keeps its last real verdict — correct, since its articles are in the corpus
-   either way. And reach is **telemetry, not control**: `_derive_status` reads `errors`, never
-   these counts, so a gap is reported without silently reclassifying a run.
+   either way.
+
+   **A gap degrades the run — in both modes.** Every entry in `census.unreached` raises a
+   `SOURCE_UNREACHABLE` carrying *why* (`quarantined until 07-18 14:39 UTC (5 consecutive
+   failures, last HTTP_ERROR 403)`, `never polled`, `last poll failed (…)`), so the run reports
+   `partial` rather than a clean `success` over incomplete data. Two things this fixes:
+
+   - **The mode no longer decides the status.** Source errors used to come only from the runner's
+     own fetch loop — which worker mode does not have. The identical missing feed degraded an
+     inline run and passed a worker run. The mode is a deployment detail, not a fact about the
+     world.
+   - **The cause is preserved, not just the gap.** The Sources report shows *now*; the envelope
+     is what survives to a replay tomorrow (the outcome store is the metrics warehouse). A reason
+     that lives only in a live health row is gone by then.
+
+   A source that failed its fetch *this* pass is reported once, from `ingest.failed_sources` —
+   its message says more than the census could, and the census entry for it is deduplicated away.
+   A `disabled` feed still raises nothing: it is not in `configured`, so it is never in
+   `unreached`. Consequences accepted deliberately: a quarantined feed means `partial` for the
+   full cool-off (the run *is* continuously incomplete), and a cold start whose eval fires before
+   the first ingest reports every source as `never polled` — honest, and it heals on the next
+   ingest pass.
 
 2. **Fetch — `core/sources/rss_source.py` (`RssSource.fetch`).**
    Actively pulls the RSS feed, maps each entry to an `Article` (title + summary only),
@@ -201,9 +221,10 @@ Retrieval runs **per symbol**. Top-down, one symbol's query flows through:
 
 4. **Relevance floor — `core/rag/retriever.py` (`Retriever.retrieve`) · ISSUE_24.**
    Before dedup, candidates whose query↔article distance exceeds `floor_distance`
-   (default 0.55) are dropped — nearest is not the same as *near*, and an off-topic
-   article must never reach the prompt. An **empty** survivor set is a result: the
-   evaluator answers it mechanically (`HOLD`, `basis='no_data'`, no LLM call).
+   (crypto constellation 0.68, forex 0.55 — the cut is query-length dependent, see
+   `../retrieval_policy.md`) are dropped — nearest is not the same as *near*, and an
+   off-topic article must never reach the prompt. An **empty** survivor set is a result:
+   the evaluator answers it mechanically (`HOLD`, `basis='no_data'`, no LLM call).
 
 5. **Squeeze — `core/rag/retriever.py` (`Retriever._squeeze`).**
    Walks candidates in rank order and collapses near-duplicates (the same story
@@ -219,9 +240,12 @@ optional two-tier `deep_tier`) and the ranking tie-breaks are documented in
 ## What leaves retrieval — and what does not
 
 The comparison numbers (distance / cosine) are **ephemeral**: computed to rank, used to
-select, then dropped. `Retriever.retrieve` returns `List[Article]`, not the scored
-wrappers — the score does not travel into the prompt, the DB, or the envelope. What
-survives is the **decision** (which articles were selected); the raw vectors stay in the
-corpus, the raw text stays with them. Downstream, the selected articles become the LLM
+select, then dropped. `Retriever.retrieve` returns a `RetrievedContext` — the selected
+`Article`s plus the **funnel counters** (in-window / floor-dropped / dedup collapses /
+kept and the pre-floor `best_distance`; see `../retrieval_policy.md`) — never the scored
+wrappers: per-article scores do not travel into the prompt, the DB, or the envelope.
+What survives is the **decision** (which articles were selected) and the funnel that
+explains it; the raw vectors stay in the corpus, the raw text stays with them.
+Downstream, the selected articles become the LLM
 prompt (ISSUE_6) whose structured output is persisted as the outcome envelope — that path
 continues in `02_analysis_and_outcome.md`.

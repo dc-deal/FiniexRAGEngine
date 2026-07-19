@@ -34,6 +34,29 @@ class StageTiming(BaseModel):
     duration_ms: float
 
 
+class RetrievalFunnel(BaseModel):
+    """Per-query retrieval funnel counters (ISSUE_24) — how the prompt context came to be.
+
+    Captured by the retriever as a byproduct of the squeeze and persisted with the
+    envelope (`metadata.per_symbol_retrieval`), so a thin or empty context is explainable
+    after the fact: was the window empty, or did the floor drop everything? Additive and
+    non-load-bearing — never bumps `schema_version`.
+
+    `best_distance`/`worst_distance` span the candidate distances *before* the floor
+    (None when the window was empty); `floor` is the cut applied on this run — snapshot
+    at the call, so a persisted envelope stays interpretable after a config retune.
+    Together they place the floor inside the spread (the live calibration view).
+    """
+    in_window: int = 0        # candidates fetched inside the recency/deep windows
+    floor_dropped: int = 0    # dropped as off-topic (distance > floor_distance)
+    tier_duplicates: int = 0  # same article surfaced by both tiers
+    near_duplicates: int = 0  # near-duplicate stories collapsed (>= dedup_similarity)
+    kept: int = 0             # what reached the prompt (<= top_k)
+    best_distance: Optional[float] = None    # nearest candidate pre-floor (nearest miss on 0 kept)
+    worst_distance: Optional[float] = None   # farthest candidate pre-floor
+    floor: Optional[float] = None            # floor_distance applied this run (None = disabled)
+
+
 class SentimentResult(BaseModel):
     """Per-symbol sentiment outcome — the first outcome_type payload.
 
@@ -98,6 +121,9 @@ class RunMetadata(BaseModel):
     completion_tokens: int = 0
     cost_usd: float = 0.0
     per_symbol_tokens: Dict[str, int] = Field(default_factory=dict)
+    # Retrieval funnel per symbol (ISSUE_24): why a context was rich, thin or empty —
+    # in-window candidates, floor drops, dedup collapses, kept. Additive, non-load-bearing.
+    per_symbol_retrieval: Dict[str, RetrievalFunnel] = Field(default_factory=dict)
     # Variant grouping hints (ISSUE_42, additive — confirmed with the Testing IDE):
     # present only on streams of a fanned constellation. `variant_group` = the default
     # stream's pipeline_id ("this series derives from that one"); `variant` = this

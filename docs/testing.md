@@ -45,7 +45,7 @@ never attach one just because `DATABASE_URL`/`OPENAI_API_KEY` are set in the env
 | `test_rss_source.py` | RSS → Article mapping, idempotent ids, conditional GET (304), poll floor, typed HTTP/transport failures (429/5xx/retry) | — |
 | `test_openai_embedder.py` | batching, order preservation, dimension guard (mocked client) | — |
 | `test_pgvector_store.py` | idempotent upsert, recency/similarity query, importance filter | PostgreSQL |
-| `test_retriever.py` | two-tier policy, top_k cap, near-dup collapse, tie-breaks (mocked) | — |
+| `test_retriever.py` | two-tier policy, top_k cap, near-dup collapse, tie-breaks, funnel counters (mocked) | — |
 | `test_symbol_query_map.py` | constellation alias + base-currency fallback | — |
 | `test_query_vector_cache.py` | cached query vectors, cache busting on config/model change | PostgreSQL |
 | `test_ingestor.py` | fetch → skip known ids → embed only new → upsert; per-source counts; health record + quarantine skip; budget suspend | — |
@@ -54,8 +54,9 @@ never attach one just because `DATABASE_URL`/`OPENAI_API_KEY` are set in the env
 | `test_pipeline_prompt_config.py` | pipeline-declared `prompt` block (name + version) | — |
 | `test_sentiment_llm_output.py` | strict scored-subset schema (ranges, forbid extras) | — |
 | `test_openai_provider.py` | structured call, error taxonomy mapping, cost capture (mocked) | — |
-| `test_symbol_evaluator.py` | retrieve → prompt → LLM → enrich; provenance, raw-output capture | — |
-| `test_pipeline_runner.py` | envelope invariants, taxonomy, metric capture, prompt fingerprint, persistence wiring | — |
+| `test_symbol_evaluator.py` | retrieve → prompt → LLM → enrich; provenance, raw-output + funnel capture | — |
+| `test_pipeline_runner.py` | envelope invariants, taxonomy, guard degrade (ISSUE_35), metric capture, prompt fingerprint, persistence wiring | — |
+| `test_output_guard.py` | coherence rules (signal↔score dead zone, HOLD confidence cap, empty reasoning, provenance backstop), knob overrides, basis skip | — |
 | `test_outcome_store.py` | save→get_latest roundtrip, newest-wins, raw-output column, error rows | PostgreSQL |
 | `test_corpus_guard.py` | corpus stamped with embedding model; mismatch refuses to boot | PostgreSQL |
 | `test_source_set_registry.py` | source-set loading, duplicate ids, unknown reference, tracked configs | — |
@@ -76,7 +77,8 @@ never attach one just because `DATABASE_URL`/`OPENAI_API_KEY` are set in the env
 | `test_cost_report.py` / `test_perf_report.py` | section aggregation + pattern tables; fresh/legacy-DB guards | PostgreSQL |
 | `test_migration_runner.py` | ordered apply + record, re-run no-op, column added to a populated table, failed migration rolls back whole, checksum drift refuses, duplicate version, boot guard checks-but-never-applies, `-- finiex:no-transaction` (concurrent index needs it / builds with it / one statement only) | PostgreSQL |
 | `test_stage_timer.py` / `test_run_footer.py` | shared timing capture + run-metrics footer | — |
-| `test_embedder_cost.py` / `test_config_override.py` | embed cost wiring · base+user config deep-merge | — |
+| `test_embedder_cost.py` / `test_config_override.py` | embed cost wiring · base+user config deep-merge + registry-factory wiring (overrides on every surface) | — |
+| `test_override_report.py` | startup override report: leaf diffs (old → new), id-list paths, `(added)` vs typo flag, once-per-process emit | — |
 | `test_rag_live.py` 💸 | real embeddings end-to-end through store + retriever | `OPENAI_API_KEY` + PostgreSQL, `-m paid` |
 | `test_llm_live.py` 💸 | one real structured LLM call (schema + usage) | `OPENAI_API_KEY`, `-m paid` |
 

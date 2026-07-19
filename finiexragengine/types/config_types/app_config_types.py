@@ -104,6 +104,9 @@ class LoggingConfig(BaseModel):
     # Third-party loggers pinned to WARNING so the file is signal, not per-request noise
     # (httpx logs every OpenAI call at INFO — thousands a night otherwise).
     quiet_loggers: List[str] = Field(default_factory=lambda: ['httpx', 'httpcore'])
+    # Startup override report: log WHAT each user_configs/ file changes (old → new per
+    # leaf, typo'd keys flagged) — once per process. False = only the compact markers.
+    warn_on_override: bool = True
 
 
 class SourceHealthConfig(BaseModel):

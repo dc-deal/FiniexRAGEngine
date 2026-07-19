@@ -55,6 +55,31 @@ def format_symbol_eval(ev: SymbolEval, pipeline_id: str, usd: Optional[float] = 
         f'urgency {r.urgency:.2f}    breaking {"yes" if r.is_breaking else "no"}',
         f'  reasoning   {reasoning}',
         f'  sources     {len(r.sources)} articles  ({titles})',
+    ]
+    # Retrieval funnel (ISSUE_24): how the context above came to be — makes an empty
+    # context diagnosable at a glance (empty window vs floor cut).
+    if ev.retrieval is not None:
+        f = ev.retrieval
+        lines.append(f'  retrieval   {f.in_window} in window → floor dropped '
+                     f'{f.floor_dropped} → deduped {f.tier_duplicates + f.near_duplicates} '
+                     f'→ kept {f.kept}')
+        # Distance spread: where the floor sits between the best and worst candidate,
+        # as % of the span — the live calibration view (0% below floor = nothing passes).
+        if f.best_distance is not None and f.worst_distance is not None:
+            span = f.worst_distance - f.best_distance
+            if f.floor is None:
+                lines.append(f'  distance    min {f.best_distance:.3f} · '
+                             f'max {f.worst_distance:.3f}   (floor disabled)')
+            elif span > 0:
+                below = max(0.0, min(1.0, (f.floor - f.best_distance) / span))
+                # Segment shares in brackets — a dash before the number reads as a minus.
+                lines.append(f'  distance    min {f.best_distance:.3f}  [{below:.0%}]  '
+                             f'floor {f.floor:.2f}  [{1 - below:.0%}]  '
+                             f'max {f.worst_distance:.3f}')
+            else:
+                lines.append(f'  distance    min {f.best_distance:.3f} · '
+                             f'floor {f.floor:.2f} · max {f.worst_distance:.3f}')
+    lines += [
         '',
         footer.render(),
         '',

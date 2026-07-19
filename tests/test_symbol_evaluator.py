@@ -3,11 +3,15 @@ from datetime import datetime, timezone
 
 import pytest
 
-from finiexragengine.core.observability.reports.eval_report import _compact_prompt
+from finiexragengine.core.observability.reports.eval_report import (
+    _compact_prompt,
+    format_symbol_eval,
+)
 from finiexragengine.core.pipeline.symbol_evaluator import SymbolEvaluator
 from finiexragengine.exceptions.ragengine_errors import LLMParseError
-from finiexragengine.types.article_types import Article
+from finiexragengine.types.article_types import Article, RetrievedContext
 from finiexragengine.types.llm_types import LlmCompletion, LlmUsage
+from finiexragengine.types.outcome_types import RetrievalFunnel
 from finiexragengine.types.prompt_metadata import PromptMetadata
 
 _TS = datetime(2026, 7, 1, tzinfo=timezone.utc)
@@ -24,7 +28,9 @@ class _FakeRetriever:
         self._articles = articles
 
     def retrieve(self, query):
-        return self._articles
+        # Mirror the real return shape: context + its funnel (ISSUE_24).
+        return RetrievedContext(articles=self._articles, funnel=RetrievalFunnel(
+            in_window=len(self._articles), kept=len(self._articles)))
 
 
 class _FakeBuilder:
@@ -60,6 +66,7 @@ def test_enriches_with_provenance_and_times_stages():
     assert ev.usage.total_tokens == 120
     assert ev.prompt_metadata.content_hash == 'deadbeef0000'   # prompt identity travels along
     assert ev.raw_output == data                # raw model output retained (ISSUE_36)
+    assert ev.retrieval is not None and ev.retrieval.kept == 2   # funnel travels along
 
 
 def test_not_breaking_below_threshold():
@@ -102,6 +109,21 @@ def test_empty_context_shortcuts_to_no_data_hold():
     assert ev.usage.total_tokens == 0 and ev.prompt == '' and ev.raw_output == {}
     assert [t.stage for t in ev.stage_timings] == ['retrieve']   # only retrieval ran
     assert ev.prompt_metadata.content_hash == 'deadbeef0000'     # fingerprint still resolved
+    # The funnel still travels with a no_data row — the envelope can say *why* it is empty.
+    assert ev.retrieval is not None and ev.retrieval.kept == 0
+
+
+def test_eval_report_renders_funnel_and_distance_spread():
+    # The signal card places the floor inside the candidate spread as % of the span —
+    # min 0.60 [27%] floor 0.68 [73%] max 0.90 (ISSUE_24 calibration view).
+    data = {'signal': 'BUY', 'sentiment_score': 0.4, 'confidence': 0.7,
+            'reasoning': 'bullish', 'urgency': 0.2}
+    ev = _evaluator([_article('a')], data).evaluate('BTCUSD', 'q')
+    ev.retrieval = RetrievalFunnel(in_window=20, floor_dropped=14, kept=6,
+                                   best_distance=0.601, worst_distance=0.892, floor=0.68)
+    text = format_symbol_eval(ev, 'crypto_sentiment')
+    assert 'retrieval   20 in window → floor dropped 14 → deduped 0 → kept 6' in text
+    assert 'min 0.601  [27%]  floor 0.68  [73%]  max 0.892' in text
 
 
 def test_llm_path_keeps_default_basis():

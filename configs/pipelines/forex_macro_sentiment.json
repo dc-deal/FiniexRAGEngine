@@ -31,5 +31,9 @@
     "breaking": {
         "urgency_threshold": 0.8,
         "min_importance": 2
+    },
+    "output_guard": {
+        "score_signal_tolerance": 0.1,
+        "hold_confidence_max": 0.9
     }
 }

@@ -97,7 +97,10 @@ class RetrievalConfig(BaseModel):
     # empty context becomes the mechanical no_data HOLD instead of a paid LLM call on
     # generic articles. None disables the floor. Note the axis: dedup_similarity cuts
     # what is too similar (article<->article), the floor cuts what is too dissimilar
-    # (query<->article). 0.55 tuned on the crypto corpus (coverage report).
+    # (query<->article). The cut is query-length dependent (coverage report 2026-07-19):
+    # short symbol queries ("Bitcoin BTC") embed further from articles — on-topic lands
+    # ~0.60-0.66, generic ~0.70+ → crypto constellation uses 0.68; long specific queries
+    # (forex) land ~0.37-0.46 → 0.55 (this default) holds there.
     floor_distance: Optional[float] = 0.55
     deep_tier: Optional[DeepTierConfig] = None   # None = recent-only (sentiment default, ISSUE_5)
 
@@ -119,6 +122,24 @@ class BreakingConfig(BaseModel):
     min_importance: int = 2              # wake sensitivity: MID+ clusters wake this pipeline (ISSUE_11)
 
 
+class OutputGuardConfig(BaseModel):
+    """Output consistency guard tolerances (ISSUE_35) — the semantic layer over the schema.
+
+    Schema validation (`SentimentLlmOutput`) proves a completion is well-formed and in
+    range; these knobs bound what still counts as *coherent*. Per-pipeline like
+    `retrieval`/`breaking`: score semantics differ per prompt family, so another
+    constellation may tolerate different contradictions.
+
+    - `score_signal_tolerance` — dead zone around 0 for the signal<->score rule: a BUY
+      passes while `sentiment_score >= -this` (SELL mirrored). 0 degrades every wobble
+      around zero; 1 disables the rule.
+    - `hold_confidence_max` — the highest `confidence` a no-signal HOLD may carry; above
+      it the row reads as a degenerate completion, not a judgement. 1 disables the rule.
+    """
+    score_signal_tolerance: float = 0.1
+    hold_confidence_max: float = 0.9
+
+
 class PipelineConfig(BaseModel):
     pipeline_id: str
     outcome_type: str
@@ -134,6 +155,7 @@ class PipelineConfig(BaseModel):
     source_set: str
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
     breaking: BreakingConfig = Field(default_factory=BreakingConfig)
+    output_guard: OutputGuardConfig = Field(default_factory=OutputGuardConfig)   # coherence tolerances (ISSUE_35)
     # Variant provenance (ISSUE_42) — set ONLY by the registry's fan-out expansion,
     # never in a constellation file: which constellation this stream derives from
     # (`variant_group` = the default stream's id) and which variant it is.

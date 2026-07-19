@@ -9,6 +9,7 @@ from finiexragengine.core.observability.source_reach import SourceReach
 from finiexragengine.core.outcome.outcome_store import OutcomeStore
 from finiexragengine.core.pipeline.envelope_contract import hold_result, taxonomy_type
 from finiexragengine.core.pipeline.ingestor import Ingestor
+from finiexragengine.core.pipeline.output_guard import OutputGuard
 from finiexragengine.core.pipeline.symbol_evaluator import SymbolEvaluator
 from finiexragengine.exceptions.ragengine_errors import FiniexRagError
 from finiexragengine.types.config_types.pipeline_config_types import PipelineConfig
@@ -48,6 +49,9 @@ class PipelineRunner:
                  outcome_store: Optional[OutcomeStore] = None,
                  source_reach: Optional[SourceReach] = None) -> None:
         self._config = config
+        # Output consistency guard (ISSUE_35): deterministic coherence check over each
+        # scored row, built from the constellation's tolerances, applied in phase B+C below.
+        self._guard = OutputGuard(config.output_guard)
         # None = worker mode (ISSUE_10): acquisition runs on the ingest worker's own
         # clock; this runner only evaluates over the shared corpus. Set = the manual,
         # self-contained pass (run CLI / API without workers) — ingest inline as before.
@@ -77,8 +81,23 @@ class PipelineRunner:
         # Skipped in worker mode: the ingest worker owns acquisition on its own cadence
         # (ISSUE_10); an empty IngestResult keeps the assembly below uniform.
         ingest = self._ingestor.run() if self._ingestor is not None else IngestResult()
+        # Reach is read here, right after acquisition: an inline pass has just recorded its polls
+        # into source_health, so the census sees this run's own work; in worker mode it sees the
+        # ingest worker's latest. Reading it in phase A (rather than at metadata assembly) is what
+        # lets a gap degrade the run — and keeps source errors ahead of eval errors in the list.
+        census = (self._source_reach.census() if self._source_reach is not None
+                  else ReachCensus(configured=0, reached=0))
+        # A source this pass tried and could not fetch — reported with the fetch's own message.
         for source_id, message in ingest.failed_sources.items():
             errors.append(self._error('SOURCE_UNREACHABLE', f'{source_id}: {message}'))
+        # A source that is not delivering without *this* pass noticing: in cool-off, never polled —
+        # and in worker mode all of them, since acquisition runs on someone else's clock. Without
+        # this, the identical state of the world degraded an inline run and passed a worker run as
+        # clean. Deduplicated against the fetch failures just reported, which say it better.
+        for entry in census.unreached:
+            if entry.source_id not in ingest.failed_sources:
+                errors.append(self._error('SOURCE_UNREACHABLE',
+                                          f'{entry.source_id}: {entry.reason}'))
 
         # --- B+C: evaluate every requested symbol; a failure degrades, never skips ---
         results: List[SentimentResult] = []
@@ -97,16 +116,26 @@ class PipelineRunner:
                     symbol, f'Analysis degraded to HOLD ({error_type})'))
                 continue
             evals.append(ev)
-            results.append(ev.result)
             per_symbol_tokens[symbol] = ev.usage.total_tokens
+            # Output guard (ISSUE_35): schema-valid but internally contradictory rows (a BUY
+            # with a negative score, a near-certain HOLD, an empty reasoning) degrade to the
+            # contract HOLD under PARTIAL_RESPONSE — the run turns 'partial'. The SymbolEval
+            # above stays in `evals` untouched: the call's tokens/cost/timings are real, and
+            # the raw model output remains persisted for inspection (ISSUE_36). A degraded
+            # row has urgency 0.0 / is_breaking False — it can never push breaking.
+            violations = self._guard.violations(ev.result)
+            if violations:
+                errors.append(self._error(
+                    'PARTIAL_RESPONSE',
+                    f"{symbol}: output guard: {'; '.join(str(v) for v in violations)}"))
+                results.append(hold_result(
+                    symbol,
+                    f"Output guard degraded to HOLD "
+                    f"({', '.join(v.rule for v in violations)})"))
+                continue
+            results.append(ev.result)
 
         # --- D: assemble metadata + envelope ---
-        # Reach is read *after* ingest deliberately: an inline pass has just recorded its polls
-        # into source_health, so the census sees this run's own acquisition; in worker mode it
-        # sees the ingest worker's latest. One definition, both modes — and nothing is derived
-        # from anything, so a source missed for a reason other than a failed fetch still counts.
-        census = (self._source_reach.census() if self._source_reach is not None
-                  else ReachCensus(configured=0, reached=0))
         stage_timings = list(ingest.stage_timings)
         for ev in evals:
             stage_timings.extend(ev.stage_timings)
@@ -127,6 +156,10 @@ class PipelineRunner:
             cost_usd=(self._cost_recorder.session_usd - usd_before
                       if self._cost_recorder else 0.0),
             per_symbol_tokens=per_symbol_tokens,
+            # Retrieval funnel per evaluated symbol (ISSUE_24): a thin or empty context
+            # is explainable from the persisted envelope, not just asserted.
+            per_symbol_retrieval={ev.result.symbol: ev.retrieval for ev in evals
+                                  if ev.retrieval is not None},
             # Fan-out hints (ISSUE_42): set by registry expansion, absent otherwise.
             variant_group=self._config.variant_group,
             variant=self._config.variant,

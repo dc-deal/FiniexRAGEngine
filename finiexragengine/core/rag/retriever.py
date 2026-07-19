@@ -4,8 +4,9 @@ from typing import List, Tuple
 
 from finiexragengine.core.rag.abstract_vector_store import AbstractVectorStore
 from finiexragengine.core.rag.query_vector_cache import QueryVectorCache
-from finiexragengine.types.article_types import Article, ScoredArticle
+from finiexragengine.types.article_types import Article, RetrievedContext, ScoredArticle
 from finiexragengine.types.config_types.pipeline_config_types import RetrievalConfig
+from finiexragengine.types.outcome_types import RetrievalFunnel
 
 
 def _cosine(a: List[float], b: List[float]) -> float:
@@ -51,14 +52,16 @@ class Retriever:
         self._store = store
         self._config = config
 
-    def retrieve(self, query: str) -> List[Article]:
-        """Return the relevant, recent, deduped context for `query`.
+    def retrieve(self, query: str) -> RetrievedContext:
+        """Return the relevant, recent, deduped context for `query` — plus its funnel.
 
         Args:
             query: Query text (e.g. from SymbolQueryMap.query_for).
 
         Returns:
-            At most `top_k` articles, best candidate first.
+            At most `top_k` articles (best candidate first) and the funnel counters of
+            how the squeeze arrived there (ISSUE_24) — so an empty context is
+            explainable: was the window empty, or did the floor drop everything?
         """
         vector = self._query_cache.get_vector(query)   # cached — embeds once, then reused (ISSUE_19)
         now = datetime.now(timezone.utc)
@@ -70,6 +73,12 @@ class Retriever:
             deep_since = now - timedelta(minutes=deep.window_minutes)
             candidates += [(1, hit) for hit in self._store.query(
                 vector, fetch_k, deep_since, min_importance=deep.min_importance)]
+        # Funnel capture starts here: everything the windows offered, and the distance
+        # spread *before* the floor — best doubles as the "nearest miss" when the floor
+        # empties the set; together with the applied floor it places the cut in the spread.
+        in_window = len(candidates)
+        best_distance = min((hit.distance for _tier, hit in candidates), default=None)
+        worst_distance = max((hit.distance for _tier, hit in candidates), default=None)
         # Relevance floor (ISSUE_24), before dedup: an off-topic candidate must never
         # reach the prompt, and dropping it here also spares the pairwise dedup work.
         # An empty survivor set is a *result* — the evaluator answers it with the
@@ -77,21 +86,35 @@ class Retriever:
         floor = self._config.floor_distance
         if floor is not None:
             candidates = [(tier, hit) for tier, hit in candidates if hit.distance <= floor]
+        floor_dropped = in_window - len(candidates)
         candidates.sort(key=_rank_key)
-        return self._squeeze(candidates)
+        articles, tier_duplicates, near_duplicates = self._squeeze(candidates)
+        return RetrievedContext(articles=articles, funnel=RetrievalFunnel(
+            in_window=in_window, floor_dropped=floor_dropped,
+            tier_duplicates=tier_duplicates, near_duplicates=near_duplicates,
+            kept=len(articles), best_distance=best_distance,
+            worst_distance=worst_distance, floor=floor))
 
-    def _squeeze(self, ranked: List[Tuple[int, ScoredArticle]]) -> List[Article]:
-        """Collapse id- and near-duplicates in rank order and cap at top_k."""
+    def _squeeze(self, ranked: List[Tuple[int, ScoredArticle]]) -> Tuple[List[Article], int, int]:
+        """Collapse id- and near-duplicates in rank order and cap at top_k.
+
+        Returns the kept articles plus the two collapse counters (tier duplicates,
+        near-duplicates) for the funnel.
+        """
         kept: List[ScoredArticle] = []
         seen_ids = set()
+        tier_duplicates = 0
+        near_duplicates = 0
         for _tier, hit in ranked:
             if hit.article.article_id in seen_ids:
+                tier_duplicates += 1
                 continue   # same article surfaced by both tiers
             if any(_cosine(hit.embedding, other.embedding) >= self._config.dedup_similarity
                    for other in kept):
+                near_duplicates += 1
                 continue   # near-duplicate story from another feed
             seen_ids.add(hit.article.article_id)
             kept.append(hit)
             if len(kept) == self._config.top_k:
                 break   # cap applied after dedup, so duplicates never consume a slot
-        return [hit.article for hit in kept]
+        return [hit.article for hit in kept], tier_duplicates, near_duplicates

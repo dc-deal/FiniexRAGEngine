@@ -6,7 +6,6 @@ feed URLs from the source-set configs; `--source <id>` narrows to one, otherwise
 import argparse
 
 from finiexragengine.configuration.app_config_manager import AppConfigManager
-from finiexragengine.configuration.source_set_registry import SourceSetRegistry
 from finiexragengine.core.sources.feed_doctor import diagnose_feed, format_diagnoses
 
 
@@ -17,9 +16,7 @@ def main() -> None:
     args = parser.parse_args()
 
     manager = AppConfigManager()
-    registry = SourceSetRegistry(manager.get_source_sets_dir(),
-                                 manager.get_user_source_sets_dir())
-    registry.load()
+    registry = manager.build_source_set_registry()
     # Every rss source across every set — de-duplicated on source_id. Disabled feeds are kept
     # deliberately: the doctor is how the operator checks whether a switched-off feed is
     # reachable again (it is marked `[disabled]` in the report, never silently skipped).

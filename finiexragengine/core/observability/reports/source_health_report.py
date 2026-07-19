@@ -128,7 +128,11 @@ def _status_cell(row: SourceHealthRow) -> str:
         if row.quarantined:
             return (f'FLAGGED({detail}) quarantined '
                     f'{_remaining(row.quarantined_until)} left{marker}')
-        return f'FLAGGED({detail}) retrying{marker}'
+        # Cool-off elapsed. Every other verdict here describes the *last* poll; this one alone is
+        # a claim about the *next* one — and a disabled feed has no next poll, so its row would
+        # freeze reading "retrying" forever while nothing ever retries. Say what actually happens.
+        verb = 'not polled' if row.disabled else 'retrying'
+        return f'FLAGGED({detail}) {verb}{marker}'
     if row.consecutive_failures:
         return f'failing ({row.last_error_type or "error"}){marker}'
     return f'ok{marker}'

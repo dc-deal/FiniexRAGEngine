@@ -4,11 +4,11 @@ The shape the `SymbolEvaluator` produces and the `PipelineRunner` folds into the
 Behaviour lives in `core/pipeline/`; only the shape lives here.
 """
 from dataclasses import dataclass, field
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from finiexragengine.types.article_types import Article
 from finiexragengine.types.llm_types import LlmUsage
-from finiexragengine.types.outcome_types import SentimentResult, StageTiming
+from finiexragengine.types.outcome_types import RetrievalFunnel, SentimentResult, StageTiming
 from finiexragengine.types.prompt_metadata import PromptMetadata
 
 
@@ -26,6 +26,9 @@ class SymbolEval:
     raw_output: Dict[str, Any] = field(default_factory=dict)
     # The *served* model (response.model, the dated snapshot) — '' when no LLM ran.
     model_snapshot: str = ''
+    # How retrieval arrived at this context (ISSUE_24) — folded into the envelope's
+    # `metadata.per_symbol_retrieval` by the runner; None only for legacy callers.
+    retrieval: Optional[RetrievalFunnel] = None
 
     def total_ms(self) -> float:
         return sum(timing.duration_ms for timing in self.stage_timings)

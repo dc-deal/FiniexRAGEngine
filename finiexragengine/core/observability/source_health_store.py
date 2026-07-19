@@ -19,7 +19,7 @@ import psycopg
 
 from finiexragengine.exceptions.ragengine_errors import VectorStoreError
 from finiexragengine.types.config_types.app_config_types import SourceHealthConfig
-from finiexragengine.types.ingest_types import HealthOutcome
+from finiexragengine.types.ingest_types import HealthOutcome, SourceHealthState
 
 logger = logging.getLogger(__name__)
 
@@ -70,8 +70,11 @@ class SourceHealthStore:
         self._quarantined.pop(source_id, None)
         return True
 
-    def reach_of(self, source_ids: Set[str]) -> Set[str]:
-        """Of the given sources, the ones whose feed is currently delivering.
+    def states_of(self, source_ids: Set[str]) -> Dict[str, SourceHealthState]:
+        """The current health state of the given sources — the rows a reach decision reads.
+
+        Reports facts, judges nothing: whether a state counts as "delivering" (and how to say so
+        to a human) is `SourceReach`'s call, not the store's.
 
         Deliberately a live query, never the in-memory quarantine cache: the reader is usually a
         *different instance* from the writer — in worker mode the ingest worker owns acquisition
@@ -79,22 +82,22 @@ class SourceHealthStore:
         from whenever that runner was assembled. One small SELECT per pipeline run is nothing
         against the eval cadence.
 
-        "Delivering" = not in cool-off and its last poll succeeded. A source with no row at all is
-        absent from the result, which is the honest answer: it has never delivered anything.
+        A source with no row is simply absent from the result — it has never been polled.
         """
         if not source_ids:
-            return set()
-        now = datetime.now(timezone.utc)
+            return {}
         try:
             with self._connect() as conn, conn.cursor() as cur:
                 cur.execute(
-                    f'SELECT source_id FROM {self._TABLE} WHERE source_id = ANY(%s) '
-                    'AND consecutive_failures = 0 '
-                    'AND (quarantined_until IS NULL OR quarantined_until <= %s)',
-                    (list(source_ids), now))
-                return {row[0] for row in cur.fetchall()}
+                    f'SELECT source_id, consecutive_failures, quarantined_until, '
+                    f'last_error_type, last_status FROM {self._TABLE} WHERE source_id = ANY(%s)',
+                    (list(source_ids),))
+                return {row[0]: SourceHealthState(source_id=row[0], consecutive_failures=row[1],
+                                                  quarantined_until=row[2], last_error_type=row[3],
+                                                  last_status=row[4])
+                        for row in cur.fetchall()}
         except psycopg.Error as exc:
-            raise VectorStoreError(f'source reach query failed: {exc}') from exc
+            raise VectorStoreError(f'source health state query failed: {exc}') from exc
 
     def quarantined_until(self, source_id: str) -> Optional[datetime]:
         """When the source's cool-off ends, or None if it is not quarantined.

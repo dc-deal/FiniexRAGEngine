@@ -11,7 +11,6 @@ from finiexragengine.configuration.app_config_manager import AppConfigManager
 from finiexragengine.core.observability.cost_recorder import derive_usd
 from finiexragengine.core.observability.reports.eval_report import format_symbol_eval
 from finiexragengine.core.pipeline.pipeline_assembler import PipelineAssembler
-from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
 from finiexragengine.exceptions.ragengine_errors import (
     BudgetExceededError,
     PipelineNotFoundError,
@@ -35,8 +34,7 @@ def main() -> None:
 
     app = AppConfigManager()
     cfg = app.get_config()
-    registry = PipelineRegistry(app.get_pipelines_dir())
-    registry.load()
+    registry = app.build_pipeline_registry()
     try:
         pipeline = registry.get(args.pipeline).get_config()
     except PipelineNotFoundError as exc:

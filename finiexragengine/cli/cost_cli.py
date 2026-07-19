@@ -12,7 +12,6 @@ from finiexragengine.core.observability.reports.cost_report import (
     build_cost_report,
     format_cost_report,
 )
-from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
 
 
 def main() -> None:
@@ -30,8 +29,7 @@ def main() -> None:
     cfg = manager.get_config()
     # Eval cadence from the EFFECTIVE config (base + user override) — the projection reflects
     # what actually runs, so a dev override (fewer symbols / other models) is included.
-    registry = PipelineRegistry(manager.get_pipelines_dir(), manager.get_user_pipelines_dir())
-    registry.load()
+    registry = manager.build_pipeline_registry()
     eval_pipelines = {
         p.get_config().pipeline_id: EvalPipelineInfo(
             interval_seconds=p.get_config().trigger.interval_seconds,

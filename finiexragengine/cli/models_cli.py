@@ -9,7 +9,6 @@ import argparse
 
 from finiexragengine.configuration.app_config_manager import AppConfigManager
 from finiexragengine.core.llm.model_catalog import check_configured_models, format_model_check
-from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
 from finiexragengine.exceptions.ragengine_errors import LLMApiError
 
 
@@ -20,8 +19,7 @@ def main() -> None:
 
     app = AppConfigManager()
     cfg = app.get_config()
-    registry = PipelineRegistry(app.get_pipelines_dir())
-    registry.load()
+    registry = app.build_pipeline_registry()
 
     # The 'used by' column: the embedding model backs the shared corpus + query vectors
     # for every pipeline; each eval model lists the pipelines that declare it.

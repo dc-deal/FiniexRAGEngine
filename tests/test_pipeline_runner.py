@@ -19,11 +19,24 @@ from finiexragengine.exceptions.ragengine_errors import (
     VectorStoreError,
 )
 from finiexragengine.types.article_types import Article
-from finiexragengine.types.config_types.pipeline_config_types import PipelineConfig
+from finiexragengine.types.config_types.pipeline_config_types import (
+    OutputGuardConfig,
+    PipelineConfig,
+)
 from finiexragengine.types.eval_types import SymbolEval
-from finiexragengine.types.ingest_types import IngestResult, ReachCensus, SourcePoll
+from finiexragengine.types.ingest_types import (
+    IngestResult,
+    ReachCensus,
+    SourcePoll,
+    UnreachedSource,
+)
 from finiexragengine.types.llm_types import LlmUsage
-from finiexragengine.types.outcome_types import SentimentResult, StageTiming
+from finiexragengine.types.outcome_types import (
+    ArticleRef,
+    RetrievalFunnel,
+    SentimentResult,
+    StageTiming,
+)
 from finiexragengine.types.prompt_metadata import PromptMetadata
 
 _TS = datetime(2026, 7, 1, tzinfo=timezone.utc)
@@ -49,8 +62,15 @@ def _timing(stage: str, ms: float) -> StageTiming:
 
 
 def _eval(symbol: str, tokens=(100, 20)) -> SymbolEval:
+    # Mirror the evaluator's enrich: the LLM path always attaches provenance from the
+    # retrieved articles — the guard's structural backstop relies on it (ISSUE_35).
+    article = _article('a')
     result = SentimentResult(symbol=symbol, signal='BUY', sentiment_score=0.5,
-                             confidence=0.8, reasoning='bullish')
+                             confidence=0.8, reasoning='bullish',
+                             sources=[ArticleRef(article_id=article.article_id,
+                                                 url=article.url, title=article.title,
+                                                 published_at=article.published_at,
+                                                 fetched_at=article.fetched_at)])
     return SymbolEval(result=result, prompt='P', prompt_metadata=_META,
                       usage=LlmUsage(*tokens), articles=[_article('a')],
                       stage_timings=[_timing('retrieve', 10.0), _timing('llm', 90.0)],
@@ -112,8 +132,10 @@ class _FakeReach:
     """
 
     def __init__(self, configured=2, reached=2, unreached=()):
-        self._census = ReachCensus(configured=configured, reached=reached,
-                                   unreached=list(unreached))
+        self._census = ReachCensus(
+            configured=configured, reached=reached,
+            unreached=[u if isinstance(u, UnreachedSource) else UnreachedSource(u, 'not delivering')
+                       for u in unreached])
 
     def census(self) -> ReachCensus:
         return self._census
@@ -166,6 +188,50 @@ def test_failed_symbol_degrades_to_hold_and_partial():
     assert [e.type for e in envelope.errors] == ['LLM_TIMEOUT']
 
 
+def test_incoherent_row_degrades_via_guard_to_hold_and_partial():
+    # ISSUE_35: schema-valid but contradictory — a BUY scored negative. The guard degrades
+    # the row in place: the symbol stays present, the run turns partial, the cause is a
+    # PARTIAL_RESPONSE error naming the rule and the offending value.
+    config = _config(['BTCUSD', 'ETHUSD'])
+    bad = _eval('ETHUSD')
+    bad.result = bad.result.model_copy(update={'sentiment_score': -0.7})
+    envelope = _runner(config, _FakeIngestor(),
+                       _FakeEvaluator({'BTCUSD': _eval('BTCUSD'), 'ETHUSD': bad})).run()
+    assert envelope.status == 'partial'
+    eth = {r.symbol: r for r in envelope.result}['ETHUSD']
+    assert eth.signal == 'HOLD' and eth.confidence == 0.0 and eth.basis == 'degraded'
+    assert 'signal_score_coherence' in eth.reasoning
+    assert not eth.is_breaking                        # a degraded row can never push breaking
+    assert [e.type for e in envelope.errors] == ['PARTIAL_RESPONSE']
+    assert 'ETHUSD: output guard' in envelope.errors[0].message
+    assert '-0.7' in envelope.errors[0].message       # offending value preserved for debugging
+
+
+def test_guard_degraded_row_keeps_tokens_and_raw_output():
+    # The paid call happened: its tokens/cost count, and the raw model output stays
+    # persisted next to the envelope (ISSUE_36) — only the served row is swapped.
+    store = _FakeStore()
+    bad = _eval('BTCUSD')
+    bad.result = bad.result.model_copy(update={'sentiment_score': -0.9})
+    envelope = _runner(_config(['BTCUSD']), _FakeIngestor(),
+                       _FakeEvaluator({'BTCUSD': bad}), store=store).run()
+    assert envelope.metadata.per_symbol_tokens == {'BTCUSD': 120}
+    assert store.saved[0][1] == {'BTCUSD': {'signal': 'BUY'}}
+    assert envelope.result[0].signal == 'HOLD'
+
+
+def test_guard_tolerances_come_from_the_constellation():
+    # The knobs live in the constellation (no magic numbers): a widened dead zone lets the
+    # same row pass that the default tolerance degrades.
+    config = _config(['BTCUSD']).model_copy(
+        update={'output_guard': OutputGuardConfig(score_signal_tolerance=0.8)})
+    bad = _eval('BTCUSD')
+    bad.result = bad.result.model_copy(update={'sentiment_score': -0.7})
+    envelope = _runner(config, _FakeIngestor(), _FakeEvaluator({'BTCUSD': bad})).run()
+    assert envelope.status == 'success'
+    assert envelope.result[0].signal == 'BUY'
+
+
 def test_budget_exceeded_degrades_to_hold_and_partial():
     # ISSUE_47: a provider quota stop surfaces as BudgetExceededError from the eval seam; the
     # runner degrades the symbol to a clean HOLD tagged BUDGET_EXCEEDED — the contract holds.
@@ -214,7 +280,66 @@ def test_envelope_reports_the_census_it_is_given_never_a_derivation():
 
     assert envelope.metadata.sources_configured == 7
     assert envelope.metadata.sources_reached == 6        # ... yet the gap is still reported
-    assert envelope.status == 'success'                  # reach is telemetry; errors drive status
+
+
+def test_a_gap_in_reach_degrades_the_run_even_with_no_failed_fetch():
+    # A source missing without *this* pass failing at it — quarantine, or worker mode where the
+    # runner never fetches. The count alone used to carry that: reach said 6/7 while the status
+    # said `success`, so a consumer reading the status saw a clean run over incomplete data.
+    config = _config(['BTCUSD'])
+    envelope = _runner(config, _FakeIngestor(),
+                       _FakeEvaluator({'BTCUSD': _eval('BTCUSD')}),
+                       reach=_FakeReach(configured=7, reached=6, unreached=[
+                           UnreachedSource('boe_news', 'quarantined until 07-18 14:39 UTC')])).run()
+
+    assert envelope.status == 'partial'
+    assert envelope.errors[0].type == 'SOURCE_UNREACHABLE'
+    assert 'boe_news' in envelope.errors[0].message
+    assert 'quarantined until' in envelope.errors[0].message   # the cause is preserved, not just the gap
+
+
+def test_a_failed_fetch_is_reported_once_not_twice():
+    # The source failed the fetch *and* is unreached in the census (the ingestor wrote that very
+    # failure into source_health moments earlier). Only the fetch's own message survives — it says
+    # more than the census could — and the run must not carry the same source twice.
+    config = _config(['BTCUSD'])
+    envelope = _runner(config, _FakeIngestor(failed={'s2': 'connection refused'}),
+                       _FakeEvaluator({'BTCUSD': _eval('BTCUSD')}),
+                       reach=_FakeReach(configured=2, reached=1, unreached=[
+                           UnreachedSource('s2', 'last poll failed (UNREACHABLE, 1 consecutive)')])).run()
+
+    source_errors = [e for e in envelope.errors if e.type == 'SOURCE_UNREACHABLE']
+    assert len(source_errors) == 1
+    assert 'connection refused' in source_errors[0].message   # the richer of the two texts won
+
+
+@pytest.mark.parametrize('inline', [True, False], ids=['inline_mode', 'worker_mode'])
+def test_the_same_gap_degrades_both_modes(inline):
+    # The promise of this design: the mode is a deployment detail, not a fact about the world.
+    # An identical health state must yield an identical status whether acquisition ran on this
+    # runner's own clock or on the ingest worker's. It did not before — worker mode had no fetch
+    # loop, so it had no source errors, so the same missing feed passed as a clean run.
+    config = _config(['BTCUSD'])
+    envelope = PipelineRunner(config, _FakeIngestor() if inline else None,
+                              _FakeEvaluator({'BTCUSD': _eval('BTCUSD')}), _META,
+                              llm_model='gpt-4o-mini',
+                              source_reach=_FakeReach(configured=7, reached=6,
+                                                      unreached=['boe_news'])).run()
+    assert envelope.status == 'partial'
+    assert envelope.metadata.sources_reached == 6
+    assert envelope.errors[0].type == 'SOURCE_UNREACHABLE'
+
+
+def test_a_disabled_source_never_degrades_the_run():
+    # A switched-off feed is not in `configured`, so it is never in `unreached` either: it cannot
+    # produce an error. Switching a feed off is a decision — the run is not degraded by it.
+    config = _config(['BTCUSD'])
+    envelope = _runner(config, _FakeIngestor(),
+                       _FakeEvaluator({'BTCUSD': _eval('BTCUSD')}),
+                       reach=_FakeReach(configured=7, reached=7, unreached=[])).run()
+
+    assert envelope.status == 'success'
+    assert envelope.errors == []
 
 
 def test_all_symbols_failed_is_error_but_rows_remain():
@@ -289,12 +414,15 @@ def test_worker_mode_runner_skips_ingest_cleanly():
                               llm_model='gpt-4o-mini',
                               source_reach=_FakeReach(configured=2, reached=1,
                                                       unreached=['s2'])).run()
-    assert envelope.status == 'success'
     stages = [t.stage for t in envelope.metadata.stage_timings]
     assert 'fetch' not in stages and 'embed' not in stages   # no Phase A ran
     assert envelope.metadata.sources_configured == 2
     assert envelope.metadata.sources_reached == 1            # measured, though this pass fetched nothing
-    assert envelope.metadata.articles_found == 0             # found *this pass* (see ISSUE note)
+    assert envelope.metadata.articles_found == 0             # found *this pass*
+    # The same state of the world an inline pass degrades on. It used to pass as `success` here
+    # purely because this mode has no fetch loop to fail — the mode decided the status, not reality.
+    assert envelope.status == 'partial'
+    assert envelope.errors[0].type == 'SOURCE_UNREACHABLE'
 
 
 def test_runner_without_a_reach_reports_zero_not_full():
@@ -305,6 +433,18 @@ def test_runner_without_a_reach_reports_zero_not_full():
                              _META, llm_model='gpt-4o-mini').run()
     assert envelope.metadata.sources_configured == 0
     assert envelope.metadata.sources_reached == 0
+
+
+def test_retrieval_funnel_lands_in_metadata():
+    # ISSUE_24: the funnel each evaluation carried is assembled per symbol into the
+    # envelope metadata — the persisted run can explain a thin or empty context.
+    good = _eval('BTCUSD')
+    good.retrieval = RetrievalFunnel(in_window=20, floor_dropped=17, near_duplicates=1,
+                                     kept=2, best_distance=0.61)
+    envelope = _runner(_config(['BTCUSD']), _FakeIngestor(),
+                       _FakeEvaluator({'BTCUSD': good})).run()
+    funnel = envelope.metadata.per_symbol_retrieval['BTCUSD']
+    assert (funnel.in_window, funnel.floor_dropped, funnel.kept) == (20, 17, 2)
 
 
 def test_fanned_config_stamps_variant_hints():

@@ -74,36 +74,42 @@ def test_quarantine_survives_a_restart(store, clean_db):
     assert reborn.should_poll('cryptoslate') is False
 
 
-# --- reach_of: what the envelope's `sources_reached` is measured from --------------------
+# --- states_of: what the envelope's `sources_reached` is measured from --------------------
 
-def test_reach_of_counts_only_the_feeds_actually_delivering(store):
-    # Every way a source can be "not delivering", in one pass. The middle two are the ones the
-    # old envelope arithmetic (`configured - failed_sources`) could never see: a quarantined feed
-    # is not polled, so it never fails a fetch, so it used to count as reached.
+def test_states_of_reads_back_what_a_reach_decision_needs(store):
+    # Every way a source can be "not delivering", in one pass. The middle two are the ones the old
+    # envelope arithmetic (`configured - failed_sources`) could never see: a quarantined feed is
+    # not polled, so it never fails a fetch, so it used to count as reached.
     store.record_success('forexlive', 'forexlive.com', 'forex_news')
-    _fail(store, 'boe_news')                              # last poll failed, not yet flagged
+    _fail(store, 'boe_news', error_type='HTTP_ERROR', status=500)   # last poll failed, not flagged
     for _ in range(3):
-        _fail(store, 'fxstreet')                          # crosses the threshold -> quarantined
+        _fail(store, 'fxstreet', error_type='HTTP_ERROR', status=403)   # threshold -> quarantined
 
-    reach = store.reach_of({'forexlive', 'boe_news', 'fxstreet', 'never_polled'})
+    states = store.states_of({'forexlive', 'boe_news', 'fxstreet', 'never_polled'})
 
-    assert reach == {'forexlive'}                         # 'never_polled' has no row: never delivered
+    assert 'never_polled' not in states                    # no row: never polled, never delivered
+    assert states['forexlive'].delivering is True
+    assert states['boe_news'].delivering is False          # streak of 1, no quarantine yet
+    assert states['boe_news'].quarantined_until is None
+    assert states['fxstreet'].delivering is False
+    assert states['fxstreet'].quarantined_until is not None
+    assert (states['fxstreet'].last_error_type, states['fxstreet'].last_status) == ('HTTP_ERROR', 403)
 
 
-def test_reach_of_only_answers_about_what_it_was_asked(store):
+def test_states_of_only_answers_about_what_it_was_asked(store):
     store.record_success('forexlive', 'forexlive.com', 'forex_news')
     store.record_success('cnbc_forex', 'cnbc.com', 'forex_news')
 
-    assert store.reach_of({'forexlive'}) == {'forexlive'}   # a healthy sibling is not volunteered
-    assert store.reach_of(set()) == set()                   # empty in, empty out (no query)
+    assert set(store.states_of({'forexlive'})) == {'forexlive'}   # a sibling is not volunteered
+    assert store.states_of(set()) == {}                           # empty in, empty out (no query)
 
 
-def test_a_recovered_source_is_reachable_again(store):
+def test_a_recovered_source_is_delivering_again(store):
     # Recovery is a successful poll, not merely an elapsed cool-off: record_success clears the
     # streak and the quarantine together, and only then does the feed count as delivering.
     for _ in range(3):
         _fail(store, 'fxstreet')
-    assert store.reach_of({'fxstreet'}) == set()
+    assert store.states_of({'fxstreet'})['fxstreet'].delivering is False
 
     store.record_success('fxstreet', 'fxstreet.com', 'forex_news')
-    assert store.reach_of({'fxstreet'}) == {'fxstreet'}
+    assert store.states_of({'fxstreet'})['fxstreet'].delivering is True

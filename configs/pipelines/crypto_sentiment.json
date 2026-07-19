@@ -50,10 +50,14 @@
         "top_k": 12,
         "recency_window_minutes": 1440,
         "dedup_similarity": 0.85,
-        "floor_distance": 0.55
+        "floor_distance": 0.70
     },
     "breaking": {
         "urgency_threshold": 0.8,
         "min_importance": 2
+    },
+    "output_guard": {
+        "score_signal_tolerance": 0.1,
+        "hold_confidence_max": 0.9
     }
 }
