@@ -12,7 +12,6 @@ from finiexragengine.configuration.app_config_manager import AppConfigManager
 from finiexragengine.core.llm.model_catalog import verify_configured_models
 from finiexragengine.core.observability.logging_setup import configure_logging
 from finiexragengine.core.pipeline.pipeline_assembler import PipelineAssembler
-from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
 from finiexragengine.core.pipeline.worker_supervisor import WorkerSupervisor
 
 logger = logging.getLogger(__name__)
@@ -45,9 +44,7 @@ def create_app(attach_runners: Optional[bool] = None,
     # configure_logging adds a console handler *and* a daily-rotating file so an overnight
     # worker run survives the scrollback (ISSUE_11), and quiets httpx's per-request noise.
     configure_logging(config_manager.get_config())
-    registry = PipelineRegistry(config_manager.get_pipelines_dir(),
-                                config_manager.get_user_pipelines_dir())
-    registry.load()
+    registry = config_manager.build_pipeline_registry()
 
     # Real staged flow (ISSUE_7) needs the pgvector Postgres; without DATABASE_URL the
     # pipelines keep their scaffold mock so the API still boots (contract tests, dev

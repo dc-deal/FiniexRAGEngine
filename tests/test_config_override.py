@@ -1,6 +1,8 @@
 """AppConfigManager base <- user_configs override (ISSUE_23; groundwork for #27 secrets)."""
 import json
+import logging
 
+from finiexragengine.configuration import override_report
 from finiexragengine.configuration.app_config_manager import AppConfigManager
 
 
@@ -33,3 +35,57 @@ def test_no_user_file_uses_base(tmp_path):
     _write(base, {'cost': {'account_credit_usd': 7.0}})
     cfg = AppConfigManager(config_path=base, user_config_path=tmp_path / 'nope.json').get_config()
     assert cfg.cost.account_credit_usd == 7.0
+
+
+# --- factory wiring: the ONE way to build registries applies the overrides ---
+# Four CLIs once constructed PipelineRegistry raw and silently dropped user_configs/;
+# the factories make the omission impossible. These tests pin exactly that wiring.
+
+def _manager(tmp_path, monkeypatch, tracked, user) -> AppConfigManager:
+    # Point the canonical dirs at tmp fixtures — the factories read them via the getters.
+    monkeypatch.setattr(AppConfigManager, 'get_pipelines_dir', lambda self: tracked)
+    monkeypatch.setattr(AppConfigManager, 'get_user_pipelines_dir', lambda self: user)
+    monkeypatch.setattr(AppConfigManager, 'get_source_sets_dir', lambda self: tracked)
+    monkeypatch.setattr(AppConfigManager, 'get_user_source_sets_dir', lambda self: user)
+    base = tmp_path / 'app_config.json'
+    _write(base, {})
+    return AppConfigManager(config_path=base, user_config_path=tmp_path / 'nope.json')
+
+
+def test_pipeline_factory_applies_user_override(tmp_path, monkeypatch, caplog):
+    override_report._REPORTED.clear()                      # per-process spam guard
+    tracked = tmp_path / 'pipelines'
+    user = tmp_path / 'user_pipelines'
+    tracked.mkdir(), user.mkdir()
+    _write(tracked / 'p.json', {
+        'pipeline_id': 'p', 'outcome_type': 'sentiment_fear_greed', 'market': 'crypto',
+        'symbols': ['BTCUSD', 'ETHUSD'], 'llm': {'model': 'gpt-4o-mini'},
+        'source_set': 's', 'retrieval': {'floor_distance': 0.70}})
+    _write(user / 'p.json', {'symbols': ['BTCUSD'], 'retrieval': {'floor_distance': 0.65}})
+
+    with caplog.at_level(logging.WARNING):
+        registry = _manager(tmp_path, monkeypatch, tracked, user).build_pipeline_registry()
+    config = registry.get('p').get_config()
+    assert config.symbols == ['BTCUSD']                    # list replaced wholesale
+    assert config.retrieval.floor_distance == 0.65         # nested scalar overridden
+    assert registry.is_overridden('p')                     # divergence is visible
+    # The startup one-liner says WHAT diverges (gated by warn_on_override).
+    report = '\n'.join(r.getMessage() for r in caplog.records if '[OVERRIDE]' in r.getMessage())
+    assert 'pipelines/p.json' in report
+    assert 'floor_distance 0.7→0.65' in report and 'symbols 2→1' in report
+
+
+def test_source_set_factory_applies_user_override(tmp_path, monkeypatch):
+    tracked = tmp_path / 'source_sets'
+    user = tmp_path / 'user_source_sets'
+    tracked.mkdir(), user.mkdir()
+    _write(tracked / 's.json', {
+        'source_set_id': 's',
+        'sources': [{'source_id': 'f1', 'type': 'rss', 'url': 'https://a.test/rss'},
+                    {'source_id': 'f2', 'type': 'rss', 'url': 'https://b.test/rss'}]})
+    _write(user / 's.json', {'sources': [{'source_id': 'f2', 'enabled': False}]})
+
+    registry = _manager(tmp_path, monkeypatch, tracked, user).build_source_set_registry()
+    sources = {s.source_id: s for s in registry.get('s').sources}
+    assert sources['f1'].enabled is True                   # untouched sibling kept
+    assert sources['f2'].enabled is False                  # patched by source_id

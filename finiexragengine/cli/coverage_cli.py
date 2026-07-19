@@ -4,7 +4,6 @@ import os
 
 from finiexragengine.configuration.app_config_manager import AppConfigManager
 from finiexragengine.core.observability.cost_recorder import CostRecorder
-from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
 from finiexragengine.core.observability.reports.coverage_report import (
     COVERAGE_FLOOR,
     build_coverage_report,
@@ -34,12 +33,15 @@ def main() -> None:
     # core.observability.reports.coverage_report.
     app = AppConfigManager()
     cfg = app.get_config()
-    registry = PipelineRegistry(app.get_pipelines_dir())
-    registry.load()
+    registry = app.build_pipeline_registry()
     try:
         pipeline = registry.get(args.pipeline).get_config()
     except PipelineNotFoundError as exc:
         parser.error(str(exc))
+    # Honest header: say when the measured config diverges from the tracked file.
+    config_label = f'configs/pipelines/{args.pipeline}.json'
+    if registry.is_overridden(args.pipeline):
+        config_label += ' (+ user override)'
 
     # The report measures against the *active* floor (retrieval.floor_distance) so its
     # n≤f column predicts real retrieval; --floor overrides for what-if tuning runs.
@@ -52,7 +54,7 @@ def main() -> None:
                              dimensions=cfg.embedding.dimensions)
     report = build_coverage_report(
         pipeline.symbol_queries, cache, database_url,
-        pipeline_id=args.pipeline, config_file=f'configs/pipelines/{args.pipeline}.json',
+        pipeline_id=args.pipeline, config_file=config_label,
         model=cfg.embedding.model,
         window_minutes=pipeline.retrieval.recency_window_minutes, floor=floor)
     print(format_coverage_report(report))

@@ -77,7 +77,8 @@ never attach one just because `DATABASE_URL`/`OPENAI_API_KEY` are set in the env
 | `test_cost_report.py` / `test_perf_report.py` | section aggregation + pattern tables; fresh/legacy-DB guards | PostgreSQL |
 | `test_migration_runner.py` | ordered apply + record, re-run no-op, column added to a populated table, failed migration rolls back whole, checksum drift refuses, duplicate version, boot guard checks-but-never-applies, `-- finiex:no-transaction` (concurrent index needs it / builds with it / one statement only) | PostgreSQL |
 | `test_stage_timer.py` / `test_run_footer.py` | shared timing capture + run-metrics footer | — |
-| `test_embedder_cost.py` / `test_config_override.py` | embed cost wiring · base+user config deep-merge | — |
+| `test_embedder_cost.py` / `test_config_override.py` | embed cost wiring · base+user config deep-merge + registry-factory wiring (overrides on every surface) | — |
+| `test_override_report.py` | startup override report: leaf diffs (old → new), id-list paths, `(added)` vs typo flag, once-per-process emit | — |
 | `test_rag_live.py` 💸 | real embeddings end-to-end through store + retriever | `OPENAI_API_KEY` + PostgreSQL, `-m paid` |
 | `test_llm_live.py` 💸 | one real structured LLM call (schema + usage) | `OPENAI_API_KEY`, `-m paid` |
 

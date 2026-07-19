@@ -9,7 +9,6 @@ import os
 from finiexragengine.configuration.app_config_manager import AppConfigManager
 from finiexragengine.core.observability.reports.envelope_report import format_envelope_run
 from finiexragengine.core.pipeline.pipeline_assembler import PipelineAssembler
-from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
 from finiexragengine.exceptions.ragengine_errors import PipelineNotFoundError
 
 
@@ -28,8 +27,7 @@ def main() -> None:
     # Same wiring the API uses: registry validates the config, the assembler builds
     # the graph — the CLI only receives parameters and prints.
     app = AppConfigManager()
-    registry = PipelineRegistry(app.get_pipelines_dir())
-    registry.load()
+    registry = app.build_pipeline_registry()
     try:
         config = registry.get(args.pipeline).get_config()
     except PipelineNotFoundError as exc:

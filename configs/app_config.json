@@ -64,7 +64,8 @@
         "quiet_loggers": [
             "httpx",
             "httpcore"
-        ]
+        ],
+        "warn_on_override": true
     },
     "source_health": {
         "flag_after_consecutive_failures": 5,

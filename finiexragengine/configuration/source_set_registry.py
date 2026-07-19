@@ -1,14 +1,12 @@
 """Loads source-set JSONs and serves them by id (ISSUE_10)."""
 import json
-import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from finiexragengine.configuration.config_merge import deep_merge
+from finiexragengine.configuration.override_report import OverrideEntry, collect_overrides
 from finiexragengine.exceptions.ragengine_errors import ConfigurationError
 from finiexragengine.types.config_types.source_set_types import SourceSetConfig
-
-logger = logging.getLogger(__name__)
 
 # `sources` is a list of objects with a stable id, so an override patches a single feed *by id*
 # instead of restating the whole array — flipping one `enabled` cannot silently drop the others.
@@ -32,12 +30,20 @@ class SourceSetRegistry:
         # without touching the committed catalogue. None = no overrides.
         self._user_overrides_dir = user_overrides_dir
         self._source_sets: Dict[str, SourceSetConfig] = {}
+        # Per overridden file: the touched leaves (old → new), for the startup override
+        # report — collected at load, emitted by the AppConfigManager factory (gated there).
+        self._override_entries: Dict[str, List[OverrideEntry]] = {}
 
     def load(self) -> None:
         """Load every source-set JSON in the source-sets directory."""
         for path in sorted(self._source_sets_dir.glob('*.json')):
-            data = self._with_override(path)
+            data, base, override = self._with_override(path)
             config = SourceSetConfig(**data)
+            if override is not None:
+                # Collected against the VALIDATED config: a key Pydantic dropped is a
+                # typo candidate; a key with a schema default reads as '(added)'.
+                self._override_entries[path.name] = collect_overrides(
+                    base, override, config.model_dump(), _OVERRIDE_LIST_KEYS)
             # Two files claiming one id would silently swap feeds under a pipeline.
             if config.source_set_id in self._source_sets:
                 raise ConfigurationError(
@@ -45,24 +51,30 @@ class SourceSetRegistry:
                     f'(from {path.name}) — source-set ids must be unique')
             self._source_sets[config.source_set_id] = config
 
-    def _with_override(self, path: Path) -> Dict[str, Any]:
+    def _with_override(self, path: Path) -> Tuple[Dict[str, Any], Dict[str, Any],
+                                                  Optional[Dict[str, Any]]]:
         """Load a source-set, deep-merging a gitignored user override when one exists.
 
         Override only what differs — everything else is inherited from the tracked base. Because
         `sources` merges by `source_id`, an override states just the feed it changes (e.g. one
         `enabled: false` plus the reason in `comment`); the other feeds are kept untouched.
+
+        Returns:
+            (merged, base, override) — base and override stay raw so the override report
+            can render `old → new` per touched leaf; override is None when none exists.
         """
         data = json.loads(path.read_text(encoding='utf-8'))
         if self._user_overrides_dir is None:
-            return data
+            return data, data, None
         override_path = self._user_overrides_dir / path.name
         if not override_path.exists():
-            return data
+            return data, data, None
         override = json.loads(override_path.read_text(encoding='utf-8'))
-        merged = deep_merge(data, override, _OVERRIDE_LIST_KEYS)
-        logger.info("source-set '%s' overridden from user_configs/source_sets/%s",
-                    data.get('source_set_id', path.stem), path.name)
-        return merged
+        return deep_merge(data, override, _OVERRIDE_LIST_KEYS), data, override
+
+    def override_entries(self) -> Dict[str, List[OverrideEntry]]:
+        """Touched leaves per overridden source-set file (empty when none)."""
+        return self._override_entries
 
     def list_sets(self) -> List[SourceSetConfig]:
         return list(self._source_sets.values())

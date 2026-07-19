@@ -118,7 +118,16 @@ CI runs the free suite on every pull request and merge (see `.github/workflows/t
 - `configs/pipelines/*.json` — one file per pipeline ("constellation"): sources, symbols,
   retrieval parameters, trigger, and the breaking-news threshold.
 
-Both are validated into typed Pydantic models on load.
+Both are validated into typed Pydantic models on load. Every level has a gitignored
+**user override** (`user_configs/app_config.json`, `user_configs/pipelines/*.json`,
+`user_configs/source_sets/*.json`) deep-merged onto the tracked file — machine-specific
+values (secrets, a dev symbol subset, a feed switched off on this egress IP) without
+touching committed config. Applied uniformly on every surface: all loading goes through
+`AppConfigManager` (its constructor for the app config, its `build_*_registry()`
+factories for constellations and source-sets). On startup, every applied override is
+reported once as a one-liner (`[OVERRIDE] pipelines/crypto_sentiment.json ·
+floor_distance 0.7→0.65 · symbols 8→2`), with typo'd keys flagged (`⚠ key?`) — a
+forgotten override never steers a run silently (`logging.warn_on_override`, default on).
 
 The **database schema is not configuration** — it is owned by the numbered SQL files in
 `migrations/` and applied with the migrate CLI, so it can evolve on a populated database
