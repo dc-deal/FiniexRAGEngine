@@ -17,9 +17,10 @@ Two failure modes it exists for:
 
 Display compression: paths keep only what the file context does not already say (the
 leaf key; from the last `[id]` segment on for patch-by-id lists; a bare `sources[x]`
-collapses to `x` — a source-set file is nothing but sources). String values are never
-quoted, just `~changed`/`~added` — the full text lives in the override file. More than
-six leaves collapse to `+N more`.
+collapses to `x` — a source-set file is nothing but sources). Two leaves that would
+collapse to the same label (`telegram.enabled` / `weekly_report.enabled`) keep their
+full path instead. String values are never quoted, just `~changed`/`~added` — the full
+text lives in the override file. More than six leaves collapse to `+N more`.
 
 Spam guard: `emit_override_report` logs each file's line at most once per process —
 worker/API boot and every CLI say it exactly once (console + rotating file via the
@@ -29,6 +30,7 @@ config.
 """
 import json
 import logging
+from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -125,9 +127,14 @@ def _collect_keyed_list(base_list: List[Any], override_list: List[Any],
 
 def format_override_report(file_label: str, entries: List[OverrideEntry]) -> str:
     """One line: `[OVERRIDE] <file> · <leaf> <old>→<new> · …` (typos as `⚠ key?`)."""
+    # Compression must stay unambiguous: when two leaves collapse to the same label
+    # (`telegram.enabled` and `weekly_report.enabled` both → `enabled`), those keep
+    # their full path — a reader must never have to guess which section changed.
+    shorts = [_short_path(entry.path) for entry in entries]
+    counts = Counter(shorts)
     parts: List[str] = []
-    for entry in entries:
-        path = _short_path(entry.path)
+    for entry, short in zip(entries, shorts):
+        path = entry.path if counts[short] > 1 else short
         if entry.unknown:
             parts.append(f'⚠ {path}?')
         elif isinstance(entry.override_value, str) or isinstance(entry.base_value, str):

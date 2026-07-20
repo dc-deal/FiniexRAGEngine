@@ -33,6 +33,21 @@ def test_scalar_change_renders_old_to_new():
     assert _line(entries) == '[OVERRIDE] pipelines/p.json · floor_distance 0.7→0.65'
 
 
+def test_ambiguous_leaves_keep_their_full_path():
+    # `telegram.enabled` and `weekly_report.enabled` both compress to `enabled` —
+    # colliding labels fall back to the full path; unique leaves stay compressed.
+    base = {'telegram': {'enabled': False, 'chat_id': ''},
+            'weekly_report': {'enabled': False}}
+    override = {'telegram': {'enabled': True, 'chat_id': '42'},
+                'weekly_report': {'enabled': True}}
+    validated = {'telegram': {'enabled': True, 'chat_id': '42'},
+                 'weekly_report': {'enabled': True}}
+    line = _line(collect_overrides(base, override, validated))
+    assert 'telegram.enabled false→true' in line
+    assert 'weekly_report.enabled false→true' in line
+    assert 'chat_id ~changed' in line                    # unique leaf: still compressed
+
+
 def test_wholesale_list_renders_lengths():
     base = {'symbols': ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']}
     override = {'symbols': ['A', 'B']}
