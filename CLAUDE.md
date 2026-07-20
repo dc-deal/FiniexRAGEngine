@@ -85,6 +85,11 @@ Read first, in order:
   module (a report's row/section) stays with it — do not scatter a self-contained unit.
   **`types/` never imports from `core/`** (checked: it does not today) — so when a shape moves,
   everything it references moves with it or the move is wrong.
+- **Stage boundaries return result objects, never bare collections.** A seam another layer
+  calls returns a typed result `@dataclass` (`RetrievedContext`), not a bare `List[…]` or a
+  tuple — a result object extends additively, a bare return refactors every call site (the
+  funnel build's one expensive step was exactly this conversion). When an existing bare
+  return needs a second value, refactor it into a result object then — never bolt on a tuple.
 - **Group by domain, never by mechanism.** Every `core/` directory names a domain (`sources`,
   `rag`, `llm`, `pipeline`, `outcome`, `observability`, `triggers`) — never a technique. "It
   touches psycopg", "it is a store", "it is a report" is not a domain: a unit lives with its
@@ -113,6 +118,15 @@ Read first, in order:
 - **Custom exceptions** in `finiexragengine/exceptions/` (`*_errors.py`), rooted at `FiniexRagError`.
 - **Config managers** in `finiexragengine/configuration/`; instantiate and use directly.
   Config defaults must mirror the JSON config file exactly.
+- **Config truth is layered — and the factories are the only load paths.** Tracked `configs/`
+  carries the shared defaults; a gitignored `user_configs/` overlay (`app_config.json`,
+  `pipelines/*.json`, `source_sets/*.json`) deep-merges on top at load — secrets,
+  machine-specific switches, local experiments. Registries load **only** via
+  `AppConfigManager.build_pipeline_registry()` / `build_source_set_registry()` (raw
+  constructors are test-only) — a call site assembling its own registry silently drops
+  the override layer. Every applied override reports at startup, leaf by leaf
+  (`[OVERRIDE] …`, gated by `logging.warn_on_override`).
+  Details: `docs/development/user_configs_overrides.md`.
 - **CLI entry points** in `finiexragengine/cli/` — parameter reception only, no logic.
 - Early-exit pattern preferred. Keep diffs minimal; no changelog/version comments in code.
 - **Comment the flow generously as you build.** Comment each meaningful step —

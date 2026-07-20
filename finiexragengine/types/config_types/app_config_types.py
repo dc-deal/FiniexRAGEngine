@@ -80,7 +80,7 @@ class CircuitBreakerConfig(BaseModel):
     warn-only early line *under* that ceiling; it never suspends (the provider stays the hard stop).
     """
     enabled: bool = True                   # master switch for the reaction
-    reprobe_interval_seconds: int = 600    # cool-off before one re-probe after a quota suspend
+    reprobe_interval_seconds: int = 120    # cool-off before one re-probe after a quota suspend
     soft_daily_usd: float = 0.0            # warn-only day line (0 = off); does NOT suspend
 
 
@@ -122,6 +122,33 @@ class SourceHealthConfig(BaseModel):
     recent_events_kept: int = 10                # capped warn/error ring per source (overview)
 
 
+class TelegramConfig(BaseModel):
+    """Telegram delivery channel (ISSUE_27) — the operator's alert surface.
+
+    `bot_token` and `chat_id` are credentials: they belong in the gitignored
+    `user_configs/app_config.json` override, never in the tracked file (which carries
+    empty placeholders). The bot only ever reacts to `chat_id` — commands from any
+    other chat are ignored.
+    """
+    enabled: bool = False              # master switch: bot polling + any Telegram send
+    bot_token: str = ''                # secret — set via user_configs override
+    chat_id: str = ''                  # secret — the one chat the bot serves
+    poll_interval_seconds: int = 30    # long-poll timeout for the /report command loop
+
+
+class WeeklyReportConfig(BaseModel):
+    """Weekly report schedule (ISSUE_27) — cron fields for the APScheduler job.
+
+    Structured fields (not a raw cron string) so Pydantic validates them; they map 1:1
+    onto APScheduler's CronTrigger. Requires `telegram.enabled` to actually deliver.
+    """
+    enabled: bool = False
+    day_of_week: str = 'sun'           # CronTrigger day_of_week (mon..sun)
+    hour: int = 18
+    minute: int = 0
+    timezone: str = 'UTC'
+
+
 class AppConfig(BaseModel):
     version: str = '0.2.0'
     schema_version: str = '1.0'
@@ -134,3 +161,5 @@ class AppConfig(BaseModel):
     log_level: str = 'INFO'
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     source_health: SourceHealthConfig = Field(default_factory=SourceHealthConfig)
+    telegram: TelegramConfig = Field(default_factory=TelegramConfig)
+    weekly_report: WeeklyReportConfig = Field(default_factory=WeeklyReportConfig)

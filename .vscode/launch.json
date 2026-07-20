@@ -118,6 +118,34 @@
         // 📊 DIAGNOSTICS (read-only DB reports — free on cached query vectors)
         // ====================================================
         {
+            "name": "📊 RAGEngine: Weekly Report (console)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/finiexragengine/cli/report_cli.py",
+            "args": [],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "04_diagnostics",
+                "order": 0
+            }
+        },
+        {
+            "name": "📨 RAGEngine: Weekly Report → Telegram (--send)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/finiexragengine/cli/report_cli.py",
+            "args": [
+                "--send"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "04_diagnostics",
+                "order": 1
+            }
+        },
+        {
             "name": "📊 RAGEngine: Corpus Coverage Report",
             "type": "debugpy",
             "request": "launch",
@@ -130,7 +158,7 @@
             "justMyCode": false,
             "presentation": {
                 "group": "04_diagnostics",
-                "order": 1
+                "order": 2
             }
         },
         {
@@ -143,7 +171,7 @@
             "justMyCode": false,
             "presentation": {
                 "group": "04_diagnostics",
-                "order": 2
+                "order": 3
             }
         },
         {
@@ -159,7 +187,7 @@
             "justMyCode": false,
             "presentation": {
                 "group": "04_diagnostics",
-                "order": 3
+                "order": 4
             }
         },
         {
@@ -175,7 +203,7 @@
             "justMyCode": false,
             "presentation": {
                 "group": "04_diagnostics",
-                "order": 4
+                "order": 5
             }
         },
         {
@@ -187,7 +215,7 @@
             "justMyCode": false,
             "presentation": {
                 "group": "04_diagnostics",
-                "order": 5
+                "order": 6
             }
         },
         {
@@ -199,7 +227,7 @@
             "justMyCode": false,
             "presentation": {
                 "group": "04_diagnostics",
-                "order": 6
+                "order": 7
             }
         },
         {
@@ -214,7 +242,7 @@
             "justMyCode": false,
             "presentation": {
                 "group": "04_diagnostics",
-                "order": 7
+                "order": 8
             }
         },
         // ====================================================

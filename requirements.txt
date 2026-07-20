@@ -18,6 +18,9 @@ openai>=1.0.0
 # Prompt templates (Jinja2 Markdown templates under prompts/)
 jinja2>=3.1.0
 
+# Weekly report cron (ISSUE_27) — in-process scheduler; Telegram itself rides on httpx
+apscheduler>=3.10.0,<4
+
 # Optional: local embeddings (run on host GPU, decouples cost). Uncomment to use.
 # sentence-transformers>=2.2.0
 

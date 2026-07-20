@@ -83,6 +83,12 @@ with the evaluation (`SymbolEval.retrieval`) into the envelope
 `retrieval` line in the `eval` CLI — so a thin or empty context is explainable from the
 persisted run, not just asserted: was the window empty, or did the floor cut everything?
 
+The weekly report aggregates these persisted funnels into the **no-data / coverage
+block** (ISSUE_27): per-symbol share of `no_data` passes, nearest miss vs the floor
+snapshot, and a *calibration-candidate* flag when a mostly-silent symbol's nearest miss
+sits within 0.02 of the floor — the operator's retune signal until ISSUE_55 automates it.
+See `docs/architecture/weekly_report_and_alerts.md`.
+
 ## Configuration reference
 
 `retrieval` block per constellation:

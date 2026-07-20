@@ -79,6 +79,12 @@ never attach one just because `DATABASE_URL`/`OPENAI_API_KEY` are set in the env
 | `test_stage_timer.py` / `test_run_footer.py` | shared timing capture + run-metrics footer | — |
 | `test_embedder_cost.py` / `test_config_override.py` | embed cost wiring · base+user config deep-merge + registry-factory wiring (overrides on every surface) | — |
 | `test_override_report.py` | startup override report: leaf diffs (old → new), id-list paths, `(added)` vs typo flag, once-per-process emit | — |
+| `test_no_data_report.py` | per-symbol no-data aggregation: share, nearest miss vs latest floor snapshot, candidate flag, clean-week render | — |
+| `test_weekly_report.py` | weekly model: section stitching, STALE derivation + pass census/error taxonomy from the store | PostgreSQL |
+| `test_telegram_client.py` | Bot-API mechanics against a mock transport; the token never leaks into error texts | — |
+| `test_telegram_weekly_format.py` | typed model → HTML sections, section-bound packing ≤ 4096, escaping | — |
+| `test_weekly_scheduler.py` | config→CronTrigger mapping, next_run lifecycle, job failure caught | — |
+| `test_telegram_command_poller.py` | `/report`/`/help` handling, chat restriction, offset advance, backoff + recovery | — |
 | `test_rag_live.py` 💸 | real embeddings end-to-end through store + retriever | `OPENAI_API_KEY` + PostgreSQL, `-m paid` |
 | `test_llm_live.py` 💸 | one real structured LLM call (schema + usage) | `OPENAI_API_KEY`, `-m paid` |
 

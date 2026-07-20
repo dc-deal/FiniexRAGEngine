@@ -71,5 +71,18 @@
         "flag_after_consecutive_failures": 5,
         "quarantine_hours": 24,
         "recent_events_kept": 10
+    },
+    "telegram": {
+        "enabled": false,
+        "bot_token": "",
+        "chat_id": "",
+        "poll_interval_seconds": 30
+    },
+    "weekly_report": {
+        "enabled": false,
+        "day_of_week": "sun",
+        "hour": 18,
+        "minute": 0,
+        "timezone": "UTC"
     }
 }
