@@ -114,7 +114,8 @@ CI runs the free suite on every pull request and merge (see `.github/workflows/t
 
 ## Configuration
 
-- `configs/app_config.json` — service-wide defaults (API, LLM model, embeddings, vector store).
+- `configs/app_config.json` — service-wide defaults (API, LLM model, embeddings, vector store,
+  telegram + weekly report).
 - `configs/pipelines/*.json` — one file per pipeline ("constellation"): sources, symbols,
   retrieval parameters, trigger, and the breaking-news threshold.
 
@@ -128,6 +129,8 @@ factories for constellations and source-sets). On startup, every applied overrid
 reported once as a one-liner (`[OVERRIDE] pipelines/crypto_sentiment.json ·
 floor_distance 0.7→0.65 · symbols 8→2`), with typo'd keys flagged (`⚠ key?`) — a
 forgotten override never steers a run silently (`logging.warn_on_override`, default on).
+Full guide — merge semantics, load paths, report format:
+[docs/development/user_configs_overrides.md](docs/development/user_configs_overrides.md).
 
 The **database schema is not configuration** — it is owned by the numbered SQL files in
 `migrations/` and applied with the migrate CLI, so it can evolve on a populated database
@@ -214,6 +217,13 @@ In active development. Implemented and tested today:
   (raw-output diagnosis) make a bad feed one command away; the console now also writes a **daily
   rotating file** so an overnight run survives the scrollback. See
   [source_health_and_logging.md](docs/architecture/source_health_and_logging.md).
+- **Weekly report & Telegram alert surface (#27)**: one typed `WeeklyReport` model — cost,
+  latency, source health, **no-data/coverage** (per-symbol no-data share vs the retrieval floor,
+  with a calibration-candidate flag), breaking funnel, storage, and **store-derived worker
+  liveness** (a silent stream reads `STALE`, no heartbeat needed) — rendered by two surfaces
+  from the same numbers: the console (`report_cli`) and a **Telegram bot** (scheduled weekly
+  cron + on-demand `/report`). Pure store reads, no paid calls; credentials live only in
+  `user_configs/`. See [weekly_report_and_alerts.md](docs/architecture/weekly_report_and_alerts.md).
 
 Next up: the **collector handshake (#9)** + the live **SSE breaking push** (#11 Stage C). See the
 full **[Vision & Roadmap](https://github.com/dc-deal/FiniexRAGEngine/issues/1)** (issue #1).

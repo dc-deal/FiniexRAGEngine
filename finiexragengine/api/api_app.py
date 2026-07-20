@@ -1,16 +1,22 @@
 """FastAPI application factory."""
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
-from typing import AsyncIterator, Optional
+from typing import AsyncIterator, List, Optional
 
 from fastapi import FastAPI
 
 from finiexragengine.api.endpoints.health_router import build_health_router
 from finiexragengine.api.endpoints.sentiment_router import build_sentiment_router
 from finiexragengine.configuration.app_config_manager import AppConfigManager
+from finiexragengine.core.alerts.telegram_client import TelegramClient
+from finiexragengine.core.alerts.telegram_command_poller import TelegramCommandPoller
+from finiexragengine.core.alerts.telegram_weekly_format import render_weekly_messages
+from finiexragengine.core.alerts.weekly_scheduler import WeeklyScheduler
 from finiexragengine.core.llm.model_catalog import verify_configured_models
 from finiexragengine.core.observability.logging_setup import configure_logging
+from finiexragengine.core.observability.reports.weekly_report import collect_weekly_report
 from finiexragengine.core.pipeline.pipeline_assembler import PipelineAssembler
 from finiexragengine.core.pipeline.worker_supervisor import WorkerSupervisor
 
@@ -83,13 +89,53 @@ def create_app(attach_runners: Optional[bool] = None,
                                '(scaffold-mock mode cannot ingest or evaluate)')
         logger.warning('runners not attached — pipelines run in scaffold-mock mode')
 
+    # Operator alert surface (ISSUE_27): /report command loop + the weekly cron. Lives in
+    # the API process like the workers (guaranteed event loop); pure store reads + a
+    # Telegram send — no paid calls, so no FINIEX_WORKERS gate, but the report needs the
+    # store: DATABASE_URL gates it alongside the credentials.
+    telegram_client: Optional[TelegramClient] = None
+    command_poller: Optional[TelegramCommandPoller] = None
+    weekly_scheduler: Optional[WeeklyScheduler] = None
+    telegram_cfg = config_manager.get_config().telegram
+    weekly_cfg = config_manager.get_config().weekly_report
+    if telegram_cfg.enabled:
+        if not (telegram_cfg.bot_token and telegram_cfg.chat_id and database_url):
+            logger.warning('telegram.enabled but bot_token/chat_id (user_configs) or '
+                           'DATABASE_URL missing — alert surface stays off')
+        else:
+            telegram_client = TelegramClient(telegram_cfg)
+
+            async def _weekly_messages() -> List[str]:
+                # Build off-loop (sync psycopg reads) — the API stays responsive.
+                report = await asyncio.to_thread(collect_weekly_report,
+                                                 config_manager, database_url)
+                return render_weekly_messages(report)
+
+            async def _send_weekly() -> None:
+                await telegram_client.send_messages(await _weekly_messages())
+
+            command_poller = TelegramCommandPoller(telegram_client, telegram_cfg,
+                                                   _weekly_messages)
+            if weekly_cfg.enabled:
+                weekly_scheduler = WeeklyScheduler(weekly_cfg, _send_weekly)
+
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # The background heartbeat lives inside the server process: started once the
         # event loop exists, stopped on shutdown after in-flight passes finish.
         if supervisor is not None:
             await supervisor.start_all()
+        if command_poller is not None:
+            await command_poller.start()
+        if weekly_scheduler is not None:
+            weekly_scheduler.start()
         yield
+        if weekly_scheduler is not None:
+            weekly_scheduler.stop()
+        if command_poller is not None:
+            await command_poller.stop()
+        if telegram_client is not None:
+            await telegram_client.close()
         if supervisor is not None:
             await supervisor.stop_all()
 

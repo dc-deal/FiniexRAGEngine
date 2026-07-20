@@ -1,13 +1,23 @@
 """AppConfigManager base <- user_configs override (ISSUE_23; groundwork for #27 secrets)."""
 import json
 import logging
+from pathlib import Path
 
 from finiexragengine.configuration import override_report
 from finiexragengine.configuration.app_config_manager import AppConfigManager
+from finiexragengine.types.config_types.app_config_types import AppConfig
 
 
 def _write(path, data) -> None:
     path.write_text(json.dumps(data), encoding='utf-8')
+
+
+def test_defaults_mirror_tracked_json():
+    # The convention "config defaults must mirror configs/app_config.json exactly",
+    # checked mechanically: applying the tracked file must change nothing vs pure defaults.
+    tracked = json.loads((Path(__file__).resolve().parents[1] / 'configs'
+                          / 'app_config.json').read_text(encoding='utf-8'))
+    assert AppConfig(**tracked).model_dump() == AppConfig().model_dump()
 
 
 def test_user_override_deep_merges(tmp_path):
