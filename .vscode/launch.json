@@ -245,6 +245,25 @@
                 "order": 8
             }
         },
+        {
+            // Handover/backfill: reads the outcomes journal, writes the rotated JSONL archive
+            // (<stream>/<bucket>.jsonl). Closed UTC days only (the open day is skipped) — a
+            // handed-over day is frozen, so re-running never duplicates. No API cost.
+            "name": "📦 RAGEngine: Export Outcomes → JSONL archive (closed days)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/finiexragengine/cli/export_cli.py",
+            "args": [
+                "--out",
+                "data/signal_export"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "04_diagnostics",
+                "order": 9
+            }
+        },
         // ====================================================
         // 🗄 DATABASE MANAGEMENT (the schema itself — ISSUE_14)
         // ====================================================

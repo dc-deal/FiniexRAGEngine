@@ -58,5 +58,30 @@ For a query range `[start, end]`:
 
 The **collector owns the durable rotated JSONL** — it writes the history. The engine's
 `OutcomeStore` stays a **database table** (`/latest` + replay + metrics warehouse; see
-`core/outcome/outcome_store.py`) — nothing in the engine rotates files. The engine owns
-the *format*: envelope schema, line shape, and this layout.
+`core/outcome/outcome_store.py`) — nothing in the engine rotates files during a live run.
+The engine owns the *format*: envelope schema, line shape, and this layout.
+
+## Manual export from the DB (the handover path)
+
+Until the collector runs — or for a backfill — the engine can write the same layout from
+its own journal: `export_cli` (→ `core/outcome/outcome_exporter.py`) reads `outcomes` and
+writes `<out>/<stream_id>/<bucket>.jsonl`.
+
+```bash
+python -m finiexragengine.cli.export_cli --out data/signal_export        # all closed days
+python -m finiexragengine.cli.export_cli --day 2026-07-21                 # one bucket
+```
+
+Two properties keep the handover redundancy-free — the whole reason it exists:
+
+- **Closed buckets only.** The current, still-growing bucket is skipped (reported as
+  `skipped open`); `--include-open` overrides it for a throwaway peek, but an open day is
+  not safe to hand over (a later export rewrites it).
+- **Idempotent full rewrite.** Each bucket file is rewritten in full from the journal,
+  ordered by `(ts, id)`. A closed day never gains rows, so re-running yields a
+  byte-identical file — no append, no dedup bookkeeping.
+
+In a DB export, `collected_msc` is the envelope's analysis `timestamp` in epoch-ms (there
+is no collector receive-time to stamp; this matches the validated mock). When the live
+collector runs, it stamps its own receive time instead — the durable archive is still the
+collector's, this is the manual twin.

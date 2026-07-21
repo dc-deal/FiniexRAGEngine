@@ -158,8 +158,10 @@ preview a single symbol's **evaluation** (`eval_cli.py` — signal + rendered pr
 per-symbol corpus **coverage** (`coverage_cli.py`), and read the **cost** and **performance**
 reports (`cost_cli.py` / `perf_cli.py` — token/USD spend and API latency by section). Check **feed
 health** (`sources_cli.py` — poll reliability, flag/quarantine, recent problems, orphan notice) and
-diagnose a failing feed's raw output (`feed_doctor_cli.py`). Every paid pass ends with a
-`--- run metrics ---` footer, so spend is never silent. All entries are in `.vscode/launch.json`;
+diagnose a failing feed's raw output (`feed_doctor_cli.py`). Read the **weekly report** in the
+console (`report_cli.py`) and **export** produced signals to the rotated JSONL archive
+(`export_cli.py` — closed UTC days only, idempotent, for handover/backfill). Every paid pass ends
+with a `--- run metrics ---` footer, so spend is never silent. All entries are in `.vscode/launch.json`;
 details in the [DB inspection doc](docs/development/database_inspection.md#coverage-report-cli).
 
 ---
