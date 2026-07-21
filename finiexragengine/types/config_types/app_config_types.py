@@ -129,11 +129,21 @@ class TelegramConfig(BaseModel):
     `user_configs/app_config.json` override, never in the tracked file (which carries
     empty placeholders). The bot only ever reacts to `chat_id` — commands from any
     other chat are ignored.
+
+    Sending and command-polling are separate switches. `enabled` governs *sending* (the
+    weekly report, `/report` replies); `commands_enabled` additionally runs the long-poll
+    command loop. Telegram allows only **one** getUpdates consumer per bot, so a bot
+    shared with another service (e.g. the data collector polling the same token) must keep
+    `commands_enabled = false` here — otherwise both poll and each gets `409 Conflict`.
+    Chat-triggered reports on a shared bot need a *dedicated* bot for this engine.
     """
-    enabled: bool = False              # master switch: bot polling + any Telegram send
+    enabled: bool = False              # master switch: any Telegram send (weekly report)
     bot_token: str = ''                # secret — set via user_configs override
     chat_id: str = ''                  # secret — the one chat the bot serves
-    poll_interval_seconds: int = 30    # long-poll timeout for the /report command loop
+    poll_interval_seconds: int = 30    # long-poll timeout for the command loop
+    commands_enabled: bool = False     # run the command poller (needs a bot ONLY this
+                                       # process polls — see the class docstring)
+    report_command: str = '/report'    # the command that triggers an on-demand report
 
 
 class WeeklyReportConfig(BaseModel):

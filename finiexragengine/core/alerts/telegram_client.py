@@ -66,7 +66,15 @@ class TelegramClient:
             # str(exc) may embed the URL (and so the token) — report only the class.
             raise TelegramError(f'{method} failed: {type(exc).__name__}') from exc
         if response.status_code != 200:
-            raise TelegramError(f'{method} failed: HTTP {response.status_code}')
+            # Telegram puts the reason in the JSON body even on a non-200 (e.g. a 409
+            # `Conflict: terminated by other getUpdates request` when a second poller
+            # shares the bot) — surface it so the log names the cause, not just the code.
+            detail = ''
+            try:
+                detail = f": {response.json().get('description', '')}".rstrip(': ')
+            except ValueError:
+                pass
+            raise TelegramError(f'{method} failed: HTTP {response.status_code}{detail}')
         body = response.json()
         if not body.get('ok'):
             raise TelegramError(f"{method} failed: {body.get('description', 'not ok')}")

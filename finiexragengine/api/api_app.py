@@ -114,8 +114,13 @@ def create_app(attach_runners: Optional[bool] = None,
             async def _send_weekly() -> None:
                 await telegram_client.send_messages(await _weekly_messages())
 
-            command_poller = TelegramCommandPoller(telegram_client, telegram_cfg,
-                                                   _weekly_messages)
+            # The command poller is a separate opt-in: it long-polls getUpdates, and
+            # Telegram allows only one poller per bot — so it stays off unless this engine
+            # owns a bot no other service polls (see TelegramConfig). Sending (the weekly
+            # cron below) is unaffected and works on a shared bot.
+            if telegram_cfg.commands_enabled:
+                command_poller = TelegramCommandPoller(telegram_client, telegram_cfg,
+                                                       _weekly_messages)
             if weekly_cfg.enabled:
                 weekly_scheduler = WeeklyScheduler(weekly_cfg, _send_weekly)
 

@@ -70,7 +70,8 @@ supervisor — gated by `telegram.enabled` + credentials + `DATABASE_URL`, indep
 
 ```json
 "telegram":      { "enabled": false, "bot_token": "", "chat_id": "",
-                   "poll_interval_seconds": 30 },
+                   "poll_interval_seconds": 30, "commands_enabled": false,
+                   "report_command": "/report" },
 "weekly_report": { "enabled": false, "day_of_week": "sun", "hour": 18,
                    "minute": 0, "timezone": "UTC" }
 ```
@@ -79,6 +80,19 @@ The tracked file carries the switches and empty placeholders. **`bot_token` and
 `chat_id` are credentials** — they go into the gitignored `user_configs/app_config.json`
 (deep-merged at load, visible in the startup override report); see
 `docs/development/user_configs_overrides.md`. Never in a tracked file, never in an issue.
+
+### One poller per bot (`commands_enabled`)
+
+Sending and command-polling are **separate switches**. `enabled` turns on *sending* (the
+weekly cron, `/report` replies); `commands_enabled` additionally runs the `getUpdates`
+long-poll loop. Telegram permits only **one** getUpdates consumer per bot — so a bot
+**shared** with another service (e.g. a data collector polling the same token) must keep
+`commands_enabled = false` here, or both pollers get `409 Conflict` and neither receives
+anything. Sending is unaffected by sharing (many senders are fine), so the weekly report
+still works on a shared bot; only the on-demand command loop needs a bot this engine alone
+polls. To offer chat-triggered reports alongside a shared collector bot, give the engine a
+**dedicated** bot and set `commands_enabled = true` (optionally rename `report_command`,
+e.g. `/report-rag`). On-demand without a dedicated bot: run `report_cli` on the host.
 
 ## Surfaces
 

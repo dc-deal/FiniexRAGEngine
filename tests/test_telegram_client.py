@@ -43,9 +43,24 @@ def test_send_messages_keeps_order():
     assert texts == ['part 1', 'part 2']
 
 
-def test_http_error_raises_without_leaking_the_token():
+def test_http_error_surfaces_status_and_description_without_leaking_the_token():
+    # Telegram carries the reason in the body even on a non-200 (e.g. a 409 conflict when
+    # a second poller shares the bot) — the error names both the code and the description.
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(401, json={'ok': False})
+        return httpx.Response(409, json={
+            'ok': False, 'error_code': 409,
+            'description': 'Conflict: terminated by other getUpdates request'})
+
+    with pytest.raises(TelegramError) as err:
+        asyncio.run(_client(handler).get_updates(None, timeout_seconds=1))
+    assert 'HTTP 409' in str(err.value)
+    assert 'Conflict: terminated by other getUpdates request' in str(err.value)
+    assert 'sekret' not in str(err.value)
+
+
+def test_http_error_without_body_still_reports_the_status():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, text='nope')      # not JSON
 
     with pytest.raises(TelegramError) as err:
         asyncio.run(_client(handler).send_message('x'))
