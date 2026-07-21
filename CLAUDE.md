@@ -57,6 +57,22 @@ Before committing to a design for a non-trivial feature or change:
 - **Never create git commits.** The operator commits manually after reviewing each change.
 - **Commit messages describe the change, not the tooling** — concise and imperative, no automated trailers.
 
+## Versioning & releases
+
+- **Scheme:** semver `MAJOR.MINOR.PATCH`; pre-1.0 tags carry an `-alpha` suffix
+  (`v0.3.0-alpha`). The `version` string lives in `configs/app_config.json` and is mirrored
+  by the `AppConfig` Pydantic default — the defaults-mirror test enforces they agree.
+- **A version ships when its roadmap batch merges.** The operator tags the release (like
+  closing issues — the assistant never tags, never runs `gh release`). Bump the `version`
+  string in the same change that finishes the batch.
+- **Release notes are the tag's description on GitHub** — the human-readable "what shipped"
+  under the version tag (a one-paragraph framing + "Implemented & tested" + "Quality").
+  `export_github_issues.sh` pulls every release's notes into
+  `github_issues/release_notes/<tag>.md` — check there for orientation on what a past
+  version delivered.
+- **Roadmap #1** ticks a batch's checkbox only when it merges; the version's 🏷️ line is the
+  batch's Definition of Done.
+
 ## Session start
 
 Read first, in order:

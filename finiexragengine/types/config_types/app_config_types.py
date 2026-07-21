@@ -150,7 +150,7 @@ class WeeklyReportConfig(BaseModel):
 
 
 class AppConfig(BaseModel):
-    version: str = '0.2.0'
+    version: str = '0.3.0'
     schema_version: str = '1.0'
     api: ApiConfig = Field(default_factory=ApiConfig)
     llm: LlmConfig = Field(default_factory=LlmConfig)
