@@ -18,11 +18,19 @@ sources, same source-side failures); only the model reading differs — correlat
 genuine disagreement near the signal thresholds, per-model latency/cost, per-model timeout
 cycles. That is the comparison dataset the IDE validates the format against.
 
+Archive rotation (ISSUE_13): `--rotate daily|weekly` emits the collector's bucketed
+file layout instead of one file per stream — `<out>/<stream_id>/<bucket>.jsonl`, buckets
+named from each line's `collected_msc` via `finiexragengine.utils.archive_layout` (the
+shared naming contract). This is the IDE's material for smoke-testing the multi-file
+range read (#141) before the real collector exists.
+
 Run from the repo root:
     python experiments/mock_signal_data/generate.py            # 5-cycle fixture sample
     python experiments/mock_signal_data/generate.py --cycles 1008 --out data/mock_signals/full_week.jsonl
     python experiments/mock_signal_data/generate.py --cycles 1008 \
         --variants "mini=gpt-4o-mini,4o_enhanced=gpt-4o" --out data/mock_signals/variant_week
+    python experiments/mock_signal_data/generate.py --cycles 1008 --rotate daily \
+        --out data/mock_signals/rotated_week
 """
 import argparse
 import json
@@ -45,6 +53,7 @@ from finiexragengine.types.outcome_types import (
     SentimentResult,
     StageTiming,
 )
+from finiexragengine.utils.archive_layout import bucket_path
 
 # The eight crypto_sentiment symbols; the IDE has kraken_spot tick data for all of them.
 DEFAULT_SYMBOLS = ['BTCUSD', 'ETHUSD', 'SOLUSD', 'ADAUSD', 'XRPUSD', 'DASHUSD', 'LTCUSD', 'ETHEUR']
@@ -274,6 +283,9 @@ def main() -> None:
                         help="variant fan-out (ISSUE_42): 'sub_id=model,sub_id=model'; "
                              'first entry = default stream (keeps the bare pipeline id); '
                              '--out becomes a directory, one JSONL per stream')
+    parser.add_argument('--rotate', choices=['daily', 'weekly'], default=None,
+                        help='bucketed archive layout (ISSUE_13): --out becomes a directory '
+                             'root, files land at <out>/<stream_id>/<bucket>.jsonl')
     parser.add_argument('--out', default=DEFAULT_OUT)
     args = parser.parse_args()
 
@@ -321,17 +333,36 @@ def main() -> None:
 
     # Output: single mode writes one file (unchanged); variant mode writes a directory
     # with one JSONL per stream — mirroring the collector's per-stream archives.
+    # --rotate (ISSUE_13) switches either mode to the bucketed layout
+    # <out>/<stream_id>/<bucket>.jsonl, buckets named from each line's collected_msc.
     paths = {}
-    if multi:
+    handles = {}
+    counts = {}
+    if args.rotate:
+        out_root = Path(f'data/mock_signals/rotated_{args.rotate}'
+                        if args.out == DEFAULT_OUT else args.out)
+    elif multi:
         out_dir = Path('data/mock_signals/variant_week' if args.out == DEFAULT_OUT else args.out)
-        out_dir.mkdir(parents=True, exist_ok=True)
         for variant in variants:
             paths[variant.stream_id] = out_dir / f'{variant.stream_id}.jsonl'
     else:
         paths[variants[0].stream_id] = Path(args.out)
-        paths[variants[0].stream_id].parent.mkdir(parents=True, exist_ok=True)
 
-    handles = {stream_id: path.open('w') for stream_id, path in paths.items()}
+    def _sink(stream_id, collected_at):
+        # One lazily-opened handle per target file. When rotating, the line's collection
+        # time picks the bucket — each bucket file is written exactly once per run
+        # (closed buckets immutable by construction).
+        key = stream_id
+        if args.rotate:
+            rel = bucket_path(stream_id, collected_at, args.rotate)
+            key = str(rel)
+            paths.setdefault(key, out_root / rel)
+        if key not in handles:
+            paths[key].parent.mkdir(parents=True, exist_ok=True)
+            handles[key] = paths[key].open('w')
+        counts[key] = counts.get(key, 0) + 1
+        return handles[key]
+
     for i in range(args.cycles):
         collected_at = start + i * INTERVAL
         facts = _cycle_facts(rng, scores, symbols, i, short, no_news_by_cycle,
@@ -341,11 +372,11 @@ def main() -> None:
             envelope = _render_variant(variant, facts, symbols, collected_at, force_error)
             line = {'collected_msc': int(collected_at.timestamp() * 1000),
                     **json.loads(envelope.model_dump_json())}
-            handles[variant.stream_id].write(json.dumps(line) + '\n')
+            _sink(variant.stream_id, collected_at).write(json.dumps(line) + '\n')
     for handle in handles.values():
         handle.close()
-    for stream_id, path in paths.items():
-        print(f'wrote {args.cycles} snapshots ({len(symbols)} symbols, pipeline_id={stream_id}) → {path}')
+    for key in sorted(paths):
+        print(f'wrote {counts[key]} snapshots ({len(symbols)} symbols, {key}) → {paths[key]}')
 
 
 if __name__ == '__main__':

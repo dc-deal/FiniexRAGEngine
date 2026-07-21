@@ -35,10 +35,25 @@ python experiments/mock_signal_data/generate.py --cycles 1008 --out data/mock_si
 # variant fan-out week (#42): two model streams, one file each → data/mock_signals/variant_week/
 python experiments/mock_signal_data/generate.py --cycles 1008 \
     --variants "mini=gpt-4o-mini,4o_enhanced=gpt-4o" --out data/mock_signals/variant_week
+
+# rotated archive week (#13): the collector's bucketed layout, 7 day-files per stream
+python experiments/mock_signal_data/generate.py --cycles 1008 --rotate daily \
+    --out data/mock_signals/rotated_week
 ```
 
-Flags: `--cycles --start --seed --symbols --out --variants`. Default symbols = all 8 crypto
-pairs. The short sample is `tests/fixtures/signals/` (tracked); the weeks → `data/` (gitignored).
+Flags: `--cycles --start --seed --symbols --out --variants --rotate`. Default symbols = all 8
+crypto pairs. The short sample is `tests/fixtures/signals/` (tracked); the weeks → `data/`
+(gitignored).
+
+## Rotated archive layout (#13)
+
+`--rotate daily|weekly` emits the **collector's bucketed file layout** instead of one file
+per stream: `--out` becomes a directory root, lines land in
+`<out>/<stream_id>/<bucket>.jsonl` — bucket named from each line's `collected_msc` via
+`finiexragengine.utils.archive_layout` (daily `2026-04-27`, weekly ISO `2026-W18`).
+Combines with `--variants` (one bucket set per stream). This is the smoke material for the
+IDE's **multi-file range read** (#141): load only the buckets overlapping the query range,
+concatenate in order. Full contract: `docs/architecture/output_archive_layout.md`.
 
 ## Variant fan-out week (#42 — format A, confirmed by the IDE)
 
