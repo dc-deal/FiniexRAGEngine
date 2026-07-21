@@ -33,6 +33,8 @@ logs/
 INTERNAL_*.md
 ISSUE_*.md
 HANDOFF_*.md
+# Cross-repo handover notes (e.g. to the Testing IDE) — operator transfer artifact
+IMPORT_NOTES_*.md
 
 # Local issue snapshot utility + its output (personal, never published)
 export_github_issues.sh

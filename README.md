@@ -4,9 +4,11 @@
 
 **A configurable RAG engine that turns unstructured sources into typed trading signals.**
 
-> **Status:** Alpha · `v0.2.0-alpha` · the engine runs as a live service — background
-> ingest/eval workers on independent cadences over one shared corpus (`--workers`),
-> `GET /latest` serves the persisted outcome instantly, `POST /run` forces a fresh pass
+> **Status:** Alpha · `v0.3.0-alpha` · a **live-capable, cost-safe signal producer** —
+> background ingest/eval workers on independent cadences over one shared corpus
+> (`--workers`), a hard budget circuit-breaker, an output-consistency guard, and a weekly
+> Telegram report make an *unattended* run safe. `GET /latest` serves the persisted outcome
+> instantly, `POST /run` forces a fresh pass.
 
 FiniexRAGEngine fetches unstructured external content (news feeds, blogs, and later
 event/socket streams), retrieves the relevant subset via a vector store, and asks a large
@@ -18,6 +20,8 @@ The first pipeline turns crypto news into a per-symbol **fear/greed sentiment** 
 
 > 📋 **[Vision & Roadmap](https://github.com/dc-deal/FiniexRAGEngine/issues/1)** (issue #1) —
 > the full vision, the phased plan, and where the build currently stands.
+> 📖 **[Documentation](docs/index.md)** — architecture overview, per-stage flow maps, and
+> the development/operations guides.
 
 ---
 
@@ -162,68 +166,79 @@ details in the [DB inspection doc](docs/development/database_inspection.md#cover
 
 ## Status
 
-In active development. Implemented and tested today:
+In active development — a live-capable, cost-safe signal producer. Implemented and tested
+today, most load-bearing first:
 
-- **RSS ingest** into an idempotent, shared **pgvector article corpus** (store everything,
-  filter at retrieval).
-- **OpenAI embeddings** (`text-embedding-3-small`, app-wide, 1536 dims).
-- **Retrieval stage**: two-tier top-k with recency window, symbol-aware query expansion,
-  semantic dedup before the token cap, and a min-similarity floor — a symbol with only
-  off-topic coverage degrades to a clean, zero-cost `no_data` HOLD instead of a signal
-  hallucinated from generic news (#24).
-- **LLM analysis stage**: versioned prompt templates + structured OpenAI output — typed,
-  validated per-symbol sentiment (#6), with prompt **metadata + content-hash fingerprint**
-  recorded in every envelope (#33).
-- **Pipeline orchestration**: `POST /run` executes the real staged flow — ingest → per-symbol
-  eval → envelope assembly honoring the output contract (every symbol always present,
-  `partial` over `error`, taxonomy-typed errors, always a parseable envelope) (#7).
-- **Output consistency guard**: schema-valid but internally contradictory LLM rows (a `BUY`
-  scored negative, a near-certain `HOLD`, an empty reasoning) are caught by a deterministic,
-  zero-cost post-check and degraded to a clean `HOLD` (`partial` run, raw output kept for
-  inspection) — a confidently-wrong signal never leaves the engine unmarked (#35).
-- **Cost & performance tracking**: a per-call token/USD **and latency** billing log, `cost` +
-  `perf` CLIs, per-stage timings assembled into every envelope (#23, #32).
-- **Model governance & exact-model tracking**: each pipeline declares its eval model (required)
-  behind an `allowed_models` gate; alias models (`gpt-4o-mini`) are allowed for convenience while
-  the **served snapshot** (`response.model`, e.g. `gpt-4o-mini-2024-07-18`) is recorded per call
-  and per envelope — a silent alias retarget is detected and warned, so signal series stay
-  attributable to the exact model (and prompt) that produced them (#40, #33).
-
-- **Outcome store & cached serving**: every produced envelope is persisted (Postgres — the
-  source of truth for replay and error statistics) with the **raw LLM output** stored next to
-  it, so a run is fully reconstructable: raw output ↔ normalized result ↔ prompt fingerprint
-  (#8, #36). `GET /latest` is an indexed read — instant, zero spend.
-- **Two-worker live service**: acquisition and evaluation run as independently-clocked
-  background workers over one shared corpus (#10) — ingest per **source-set** (declared once,
-  referenced by N pipelines; fast and LLM-free, because RSS windows slide), eval per signal
-  stream (fan-out variants included). Opt-in via `--workers`; every pass logs its own spend,
-  worker states surface in `/health`. The corpus is **stamped with its embedding model** in the
-  database and refuses to boot on a mismatch (#16) — mixed vector spaces are impossible.
-- **Breaking detection (#11)**: the flash-crash path. **Near-continuous ingest** (conditional GET,
-  so fast polling stays cheap + polite) feeds an **LLM-free** cluster-burst + keyword detector that
-  flags candidates on the corpus; a flagged candidate **wakes the eval worker out-of-band** (jumps
-  the interval) at each pipeline's own sensitivity, the LLM **confirms** (`urgency ≥ threshold`),
-  and a **reaction-time report** (engine vs end-to-end, from the store) shows the flagged→confirmed
-  funnel. The live SSE push wire is the next slice (Stage C, IDE-accepted, paired with #9).
-- **Cost circuit-breaker (#47)**: the engine reacts to the provider's own spend limit — an OpenAI
-  `insufficient_quota` at any paid seam (embeddings or LLM) **suspends paid work**, backs off, and
-  **re-probes** on a cool-off (auto-resume); a suspended eval degrades to a clean `BUDGET_EXCEEDED`
-  HOLD, a suspended ingest pass logs `suspended (quota)`, and the state shows on `/health`. No
-  dollar-accounting to keep in sync with the provider — it reacts to the authoritative signal.
-- **Source health & rotating logs (#11)**: every poll is recorded per feed (`source_health`);
-  status-aware fetch classifies failures (a fast loop's HTTP 429 is `RATE_LIMITED`, not a fake parse
-  error), and a persistently failing feed is **flagged + quarantined** so the loop backs off. A
-  **Sources report** (reliability, flags, recent problems, orphan notice) and a **feed doctor**
-  (raw-output diagnosis) make a bad feed one command away; the console now also writes a **daily
-  rotating file** so an overnight run survives the scrollback. See
-  [source_health_and_logging.md](docs/architecture/source_health_and_logging.md).
+- **Two-worker live service (#10, #16)**: acquisition and evaluation run as
+  independently-clocked background workers over one shared corpus — ingest per
+  **source-set** (declared once, referenced by N pipelines; fast and LLM-free, because RSS
+  windows slide), eval per signal stream (fan-out variants included). Opt-in via
+  `--workers`; every pass logs its own spend, worker states surface in `/health`. The corpus
+  is **stamped with its embedding model** in the database and refuses to boot on a mismatch —
+  mixed vector spaces are impossible.
+- **Pipeline orchestration & a strict output contract (#7)**: `POST /run` executes the real
+  staged flow — ingest → per-symbol eval → envelope assembly — honoring the contract on
+  every response: **every symbol always present**, `partial` preferred over `error`,
+  taxonomy-typed `RunError`s, and *always a parseable envelope* (the API answers `200` +
+  `status: 'error'` on internal failure, never a bare 500). A downstream collector can parse
+  every response.
+- **Cost circuit-breaker (#47)**: the top risk of an unattended paid run, handled. The engine
+  reacts to the provider's own spend limit — an OpenAI `insufficient_quota` at any paid seam
+  **suspends paid work**, backs off, and **re-probes** on a cool-off (auto-resume); a
+  suspended eval degrades to a clean `BUDGET_EXCEEDED` HOLD, a suspended ingest logs
+  `suspended (quota)`, and the state shows on `/health` — no dollar-accounting to drift out
+  of sync with the provider.
+- **Breaking detection (#11)**: the flash-crash path. **Near-continuous ingest** (conditional
+  GET, so fast polling stays cheap + polite) feeds an **LLM-free** cluster-burst + keyword
+  detector that flags candidates on the corpus; a flag **wakes the eval worker out-of-band**
+  (jumps the interval) at each pipeline's own sensitivity, the LLM **confirms**
+  (`urgency ≥ threshold`), and a **reaction-time report** (engine vs end-to-end, from the
+  store) shows the flagged→confirmed funnel. The live SSE push is the next slice (Stage C,
+  IDE-accepted, paired with #9). See [breaking_detection.md](docs/architecture/breaking_detection.md).
+- **Honest retrieval — the "squeeze" (#5, #24)**: two-tier top-k with a recency window,
+  symbol-aware query expansion, semantic dedup before the token cap, and a min-similarity
+  floor — a symbol with only off-topic coverage degrades to a clean, zero-cost `no_data`
+  HOLD instead of a signal hallucinated from generic news. A per-symbol **retrieval funnel**
+  in every envelope explains how each context was built. See
+  [retrieval_policy.md](docs/architecture/retrieval_policy.md).
+- **LLM analysis with governed, reproducible series (#6, #33, #40)**: versioned Jinja2
+  prompt templates + structured OpenAI output → typed, validated per-symbol sentiment. Every
+  envelope carries the prompt **content-hash fingerprint**; each pipeline declares its eval
+  model behind an `allowed_models` gate, and the **served snapshot** (`response.model`) is
+  recorded per call — a silent alias retarget is detected, so a signal series stays
+  attributable to the exact model *and* prompt that produced it. See
+  [prompt_and_llm_stage.md](docs/architecture/prompt_and_llm_stage.md).
+- **Output consistency guard (#35)**: schema-valid but internally contradictory LLM rows (a
+  `BUY` scored negative, a near-certain `HOLD`, an empty reasoning) are caught by a
+  deterministic, zero-cost post-check and degraded to a clean `HOLD` (`partial` run, raw
+  output kept) — a confidently-wrong signal never leaves the engine unmarked, and it can
+  never trigger a breaking push.
+- **Cost & performance, captured at the call (#23, #32)**: one billing-log row per paid API
+  call (exact tokens + USD, frozen from the price table at record time) *and* its latency; a
+  shared stage timer; `cost` + `perf` CLIs with per-section avg/p95/max; every spending pass
+  ends with a `--- run metrics ---` footer. The store is the metrics warehouse — reports read
+  from it, they are not a separate telemetry system.
 - **Weekly report & Telegram alert surface (#27)**: one typed `WeeklyReport` model — cost,
-  latency, source health, **no-data/coverage** (per-symbol no-data share vs the retrieval floor,
-  with a calibration-candidate flag), breaking funnel, storage, and **store-derived worker
-  liveness** (a silent stream reads `STALE`, no heartbeat needed) — rendered by two surfaces
-  from the same numbers: the console (`report_cli`) and a **Telegram bot** (scheduled weekly
+  latency, source health, **no-data/coverage** (per-symbol no-data share vs the retrieval
+  floor, with a calibration-candidate flag), breaking funnel, storage, and **store-derived
+  worker liveness** (a silent stream reads `STALE`, no heartbeat needed) — rendered by two
+  surfaces from the same numbers: the console (`report_cli`) and a **Telegram bot** (weekly
   cron + on-demand `/report`). Pure store reads, no paid calls; credentials live only in
   `user_configs/`. See [weekly_report_and_alerts.md](docs/architecture/weekly_report_and_alerts.md).
+- **Outcome store & cached serving (#8, #36)**: every produced envelope is persisted
+  (Postgres — the source of truth for replay and error statistics) with the **raw LLM output**
+  next to it, so a run is fully reconstructable: raw output ↔ normalized result ↔ prompt
+  fingerprint. `GET /latest` is an indexed read — instant, zero spend.
+- **Source health & rotating logs (#11, #49)**: every poll is recorded per feed; status-aware
+  fetch classifies failures (a fast loop's HTTP 429 is `RATE_LIMITED`, not a fake parse
+  error), and a persistently failing feed is **flagged + quarantined** so the loop backs off.
+  A **Sources report** and a **feed doctor** make a bad feed one command away; a **daily
+  rotating file** log means an overnight run survives the scrollback. See
+  [source_health_and_logging.md](docs/architecture/source_health_and_logging.md).
+- **Foundation — corpus & embeddings (#2, #3, #4, #14, #19)**: RSS ingest into an idempotent,
+  shared **pgvector** corpus (store everything, filter at retrieval); OpenAI embeddings
+  (`text-embedding-3-small`, 1536 dims) with a query-vector cache; versioned **schema
+  migrations** so a populated database evolves without drop-and-recreate.
 
 Next up: the **collector handshake (#9)** + the live **SSE breaking push** (#11 Stage C). See the
 full **[Vision & Roadmap](https://github.com/dc-deal/FiniexRAGEngine/issues/1)** (issue #1).
