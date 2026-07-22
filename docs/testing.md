@@ -77,6 +77,7 @@ never attach one just because `DATABASE_URL`/`OPENAI_API_KEY` are set in the env
 | `test_cost_report.py` / `test_perf_report.py` | section aggregation + pattern tables; fresh/legacy-DB guards | PostgreSQL |
 | `test_migration_runner.py` | ordered apply + record, re-run no-op, column added to a populated table, failed migration rolls back whole, checksum drift refuses, duplicate version, boot guard checks-but-never-applies, `-- finiex:no-transaction` (concurrent index needs it / builds with it / one statement only) | PostgreSQL |
 | `test_stage_timer.py` / `test_run_footer.py` | shared timing capture + run-metrics footer | — |
+| `test_engine_stats.py` / `test_live_display.py` | live dashboard (ISSUE_26): atomic per-stage snapshot swaps, cumulative breaking counters, bounded activity stream, lock-free concurrent writer/reader; rich render on empty/updated stats, healthy sources collapse to `N/N ok` vs a named deviation, activity window | — |
 | `test_embedder_cost.py` / `test_config_override.py` | embed cost wiring · base+user config deep-merge + registry-factory wiring (overrides on every surface) | — |
 | `test_override_report.py` | startup override report: leaf diffs (old → new), id-list paths, `(added)` vs typo flag, once-per-process emit | — |
 | `test_no_data_report.py` | per-symbol no-data aggregation: share, nearest miss vs latest floor snapshot, candidate flag, clean-week render | — |

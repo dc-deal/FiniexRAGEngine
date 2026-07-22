@@ -3,8 +3,9 @@
 One place configures the root logger so every unit's `logging.getLogger(__name__)` lands in
 both the live console *and* a flat, rotating file. The file is what survives an overnight
 worker run past the terminal scrollback and stays grep-able the morning after — the console
-stays on regardless (live liveness). Noisy third-party loggers (httpx logs every OpenAI call
-at INFO) are pinned to WARNING so the file is signal, not per-request noise.
+is on by default (live liveness), but the live display (ISSUE_26) suppresses it: rich.Live
+owns stdout, so the file becomes the sole durable record. Noisy third-party loggers (httpx logs
+every OpenAI call at INFO) are pinned to WARNING so the file is signal, not per-request noise.
 
 Called once at server boot (`api_app`). CLIs stay console-only — they are short-lived report
 surfaces, not long-running services, so they do not spin up a file.
@@ -23,8 +24,13 @@ _FINIEX_HANDLER = '_finiex_managed'
 _FORMAT = '%(asctime)s %(levelname)s %(name)s: %(message)s'
 
 
-def configure_logging(config: AppConfig) -> None:
-    """Wire the root logger: console + optional daily/size-rotating file, per app config."""
+def configure_logging(config: AppConfig, *, live_mode: bool = False) -> None:
+    """Wire the root logger: console + optional daily/size-rotating file, per app config.
+
+    ``live_mode`` (ISSUE_26): while the live display runs, rich.Live owns stdout — so the console
+    handler is suppressed to avoid torn frames, leaving the rotating file as the sole durable
+    record. Default off: the console is on, exactly as before (every existing call is unchanged).
+    """
     level = getattr(logging, config.log_level.upper(), logging.INFO)
     formatter = logging.Formatter(_FORMAT)
     root = logging.getLogger()
@@ -36,11 +42,14 @@ def configure_logging(config: AppConfig) -> None:
         if getattr(handler, _FINIEX_HANDLER, False):
             root.removeHandler(handler)
 
-    # Console — always on (live output the operator watches while the workers run).
-    console = logging.StreamHandler()
-    console.setFormatter(formatter)
-    setattr(console, _FINIEX_HANDLER, True)
-    root.addHandler(console)
+    # Console — on by default (the live output the operator watches while the workers run).
+    # In live-display mode (ISSUE_26) rich.Live owns stdout, so the console handler is suppressed
+    # to avoid torn frames; the file handler below stays on as the durable record.
+    if not live_mode:
+        console = logging.StreamHandler()
+        console.setFormatter(formatter)
+        setattr(console, _FINIEX_HANDLER, True)
+        root.addHandler(console)
 
     # File — the durable, rotating record. Created lazily (dir made on demand) so importing
     # this module never touches the filesystem; only an actual boot writes. The `FINIEX_LOG_FILE`

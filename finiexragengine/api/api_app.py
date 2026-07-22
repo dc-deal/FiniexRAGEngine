@@ -20,6 +20,8 @@ from finiexragengine.core.observability.reports.weekly_report import collect_wee
 from finiexragengine.core.outcome.outcome_exporter import auto_export_weekly
 from finiexragengine.core.pipeline.pipeline_assembler import PipelineAssembler
 from finiexragengine.core.pipeline.worker_supervisor import WorkerSupervisor
+from finiexragengine.core.ui.engine_stats import EngineStats
+from finiexragengine.core.ui.live_display import LiveDisplay
 
 logger = logging.getLogger(__name__)
 
@@ -46,11 +48,18 @@ def create_app(attach_runners: Optional[bool] = None,
     # real runners → build the app → mount routers. Dependencies are wired here and
     # injected into the routers (build_*_router takes them as args) — no globals.
     config_manager = AppConfigManager()
+    # Live-display mode (ISSUE_26): server_cli sets FINIEX_LIVE when --live wins its TTY/workers
+    # guards. In live mode rich.Live owns the terminal, so the console log handler is suppressed
+    # (the rotating file keeps recording); server_cli also routed uvicorn's own logs to the file.
+    # Both flags: server_cli sets FINIEX_LIVE only alongside FINIEX_WORKERS, so requiring both
+    # here means a stray FINIEX_LIVE never suppresses the console without a dashboard to replace it.
+    live_mode = (os.environ.get('FINIEX_LIVE') == '1'
+                 and os.environ.get('FINIEX_WORKERS') == '1')
     # Levelled logging per app config (CLAUDE.md): uvicorn only configures its own loggers —
     # without this the workers' INFO pass lines (incl. spend, ISSUE_10) would be invisible.
-    # configure_logging adds a console handler *and* a daily-rotating file so an overnight
-    # worker run survives the scrollback (ISSUE_11), and quiets httpx's per-request noise.
-    configure_logging(config_manager.get_config())
+    # configure_logging adds a console handler (unless live_mode) *and* a daily-rotating file so an
+    # overnight worker run survives the scrollback (ISSUE_11), and quiets httpx's per-request noise.
+    configure_logging(config_manager.get_config(), live_mode=live_mode)
     registry = config_manager.build_pipeline_registry()
 
     # Real staged flow (ISSUE_7) needs the pgvector Postgres; without DATABASE_URL the
@@ -65,6 +74,16 @@ def create_app(attach_runners: Optional[bool] = None,
     outcome_store = None
     supervisor = None
     budget_guard = None
+    # Live dashboard's shared state (ISSUE_26): built only in live mode, injected into every
+    # worker so each pass pushes its snapshot/events; None otherwise (zero overhead). Keys are
+    # pre-registered from the same ids the supervisor builds workers from, so the dashboard's
+    # per-worker dicts never resize at runtime (lock-free render).
+    engine_stats: Optional[EngineStats] = None
+    if live_mode:
+        pipeline_ids = [pipeline.get_config().pipeline_id for pipeline in registry.list_pipelines()]
+        source_set_ids = sorted({pipeline.get_config().source_set
+                                 for pipeline in registry.list_pipelines()})
+        engine_stats = EngineStats(source_set_ids=source_set_ids, pipeline_ids=pipeline_ids)
     if attach_runners:
         if not database_url:
             raise RuntimeError('attach_runners=True requires DATABASE_URL')
@@ -83,12 +102,20 @@ def create_app(attach_runners: Optional[bool] = None,
         # logs (the allowlist stays the hard gate).
         verify_configured_models(config_manager.get_config())
         if start_workers:
-            supervisor = WorkerSupervisor(assembler, registry)
+            supervisor = WorkerSupervisor(assembler, registry, engine_stats=engine_stats)
     else:
         if start_workers:
             raise RuntimeError('workers need real runners — set DATABASE_URL '
                                '(scaffold-mock mode cannot ingest or evaluate)')
         logger.warning('runners not attached — pipelines run in scaffold-mock mode')
+
+    # Live terminal dashboard (ISSUE_26): only when live mode won its guards in server_cli AND
+    # workers run — it renders the workers' shared EngineStats plus the live BudgetGuard state on
+    # an interval. The console log handler is already suppressed above, so it owns the terminal.
+    live_display: Optional[LiveDisplay] = None
+    if live_mode and supervisor is not None and engine_stats is not None:
+        live_display = LiveDisplay(engine_stats, budget_guard=budget_guard,
+                                   worker_count=len(supervisor.states()))
 
     # Operator alert surface (ISSUE_27): /report command loop + the weekly cron. Lives in
     # the API process like the workers (guaranteed event loop); pure store reads + a
@@ -136,8 +163,12 @@ def create_app(attach_runners: Optional[bool] = None,
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # The background heartbeat lives inside the server process: started once the
         # event loop exists, stopped on shutdown after in-flight passes finish.
+        live_task: Optional[asyncio.Task] = None
         if supervisor is not None:
             await supervisor.start_all()
+        # The dashboard renders on its own task once the workers exist (ISSUE_26).
+        if live_display is not None:
+            live_task = asyncio.create_task(live_display.run(), name='live-display')
         if command_poller is not None:
             await command_poller.start()
         if weekly_scheduler is not None:
@@ -151,6 +182,11 @@ def create_app(attach_runners: Optional[bool] = None,
             await telegram_client.close()
         if supervisor is not None:
             await supervisor.stop_all()
+        # Stop the display last, so it shows the drained state, then releases the terminal.
+        if live_display is not None:
+            await live_display.stop()
+            if live_task is not None:
+                await live_task
 
     app = FastAPI(
         title='FiniexRAGEngine',

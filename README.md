@@ -96,7 +96,15 @@ python finiexragengine/cli/server_cli.py --reload --port 8100
 # live mode: + background ingest/eval workers on their own cadences (continuous,
 # PAID OpenAI activity — deliberate opt-in)
 python finiexragengine/cli/server_cli.py --workers --port 8100
+
+# + a live terminal dashboard (needs a TTY; console logs move to the file log)
+python finiexragengine/cli/server_cli.py --workers --live --port 8100
 ```
+
+The `--live` dashboard while the engine runs — one row per worker (source-set and pipeline),
+stage state on top, a colour-coded activity stream below:
+
+![Live terminal dashboard: per-worker SOURCES / INGEST / RETRIEVAL / LLM rows, engine-wide BUDGET and BREAKING, and a scrolling activity stream](docs/assets/live_display.png)
 
 ```bash
 curl localhost:8100/v1/health

@@ -107,7 +107,7 @@ Read first, in order:
   funnel build's one expensive step was exactly this conversion). When an existing bare
   return needs a second value, refactor it into a result object then — never bolt on a tuple.
 - **Group by domain, never by mechanism.** Every `core/` directory names a domain (`sources`,
-  `rag`, `llm`, `pipeline`, `outcome`, `observability`, `triggers`) — never a technique. "It
+  `rag`, `llm`, `pipeline`, `outcome`, `observability`, `triggers`, `ui`) — never a technique. "It
   touches psycopg", "it is a store", "it is a report" is not a domain: a unit lives with its
   consumers and its lifecycle. So `pgvector_store` stays in `rag/` (meaningless without the
   retriever/embedder) and `source_health_store` in `observability/` (meaningless without its
@@ -115,7 +115,10 @@ Read first, in order:
   bond is a driver, and would flatten the deliberate *"two stores, distinct roles"* split below.
   Sub-folders group by domain too (`observability/reports/`), and only once a directory is
   genuinely crowded — a prefix (`ingest_*`, `eval_*`) already groups an alphabetical listing for
-  free, at zero import churn.
+  free, at zero import churn. `ui/` is the live operator console (`EngineStats` live state +
+  `LiveDisplay` renderer, ISSUE_26) — a domain distinct from `observability/reports/`'s
+  store-backed batch surfaces (live in-memory vs read/aggregate over the store), not an "it
+  renders" mechanism bucket.
 - **A file's name says what it *is*.** `openai_errors.py` holding no exception (only a
   classifier) is a naming bug, not a placement one — it invited "move it to `exceptions/`",
   which would have leaked one vendor's vocabulary into a shared leaf. Rename before relocating.
@@ -243,6 +246,7 @@ finiexragengine/        package root (no __init__.py)
     sources/  triggers/  rag/  llm/  pipeline/  outcome/
     observability/      metrics units (recorder, guard, timer, footer, logging)
       reports/          the console surfaces (build_* + format_*)
+    ui/                 the live operator console — EngineStats (live state) + LiveDisplay (rich renderer)
   exceptions/           custom errors
   types/                @dataclass domain types + config_types/ (Pydantic)
   utils/                dependency-free helpers (pure functions, no engine imports)

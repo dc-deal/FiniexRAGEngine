@@ -8,6 +8,11 @@ from typing import Callable, Optional
 from finiexragengine.core.observability.cost_recorder import CostRecorder
 from finiexragengine.core.pipeline.ingestor import Ingestor
 from finiexragengine.core.triggers.abstract_trigger import AbstractTrigger
+from finiexragengine.core.ui.engine_stats import (
+    EngineStats,
+    IngestSnapshot,
+    SourcesSnapshot,
+)
 from finiexragengine.types.config_types.source_set_types import SourceSetConfig
 from finiexragengine.types.ingest_types import IngestResult
 from finiexragengine.types.worker_types import WorkerState
@@ -27,7 +32,8 @@ class IngestWorker:
     def __init__(self, source_set: SourceSetConfig, ingestor: Ingestor,
                  trigger: AbstractTrigger, pass_lock: asyncio.Lock,
                  cost_recorder: Optional[CostRecorder] = None,
-                 on_candidates: Optional[Callable[[int], None]] = None) -> None:
+                 on_candidates: Optional[Callable[[int], None]] = None,
+                 engine_stats: Optional[EngineStats] = None) -> None:
         self._ingestor = ingestor
         self._trigger = trigger
         # One lock across ALL workers: passes are seconds on minute cadences, so
@@ -38,6 +44,9 @@ class IngestWorker:
         # Optional (ISSUE_11): called with the highest importance tier flagged this pass, to
         # nudge the eval workers on this set out-of-band (the breaking bus). None = no wake.
         self._on_candidates = on_candidates
+        # Optional (ISSUE_26): the live dashboard's shared state. None = no display (the
+        # /health-only and CLI paths), in which case every push below is skipped — zero overhead.
+        self._engine_stats = engine_stats
         self._state = WorkerState(name=f'ingest:{source_set.source_set_id}',
                                   kind='ingest',
                                   interval_seconds=source_set.trigger.interval_seconds)
@@ -90,11 +99,14 @@ class IngestWorker:
                 # workers' INFO passes remain the regular liveness heartbeat either way.
                 eventful = (result.stored or result.candidates or usd
                             or result.failed_sources or result.suspended)
+                duration_ms = (perf_counter() - started) * 1000.0
                 logger.log(logging.INFO if eventful else logging.DEBUG,
                            '[%s] %s · $%.6f · %.0fms', self._state.name,
-                           self._state.last_detail, usd,
-                           (perf_counter() - started) * 1000.0)
+                           self._state.last_detail, usd, duration_ms)
                 self._log_source_health(result)
+                # Feed the live dashboard from the same structured pass (ISSUE_26) — next to the
+                # log call, never parsed back from it. Skipped entirely without a display.
+                self._push_stats(result, usd, duration_ms, eventful)
                 # Nudge the eval workers on this set out-of-band (ISSUE_11) — in the event
                 # loop thread, after the sync pass returned. A missed nudge is harmless: the
                 # candidate is already persisted, the eval worker still catches it next interval.
@@ -102,6 +114,42 @@ class IngestWorker:
                     self._on_candidates(result.max_tier)
             self._state.runs += 1
             self._state.last_duration_ms = (perf_counter() - started) * 1000.0
+
+    def _push_stats(self, result: IngestResult, usd: float, duration_ms: float,
+                    eventful: bool) -> None:
+        """Push this pass into the live dashboard's shared state (ISSUE_26); a no-op without one."""
+        stats = self._engine_stats
+        if stats is None:
+            return
+        now = datetime.now(timezone.utc)
+        source_set_id = self._set_name()          # this worker's key — one SOURCES/INGEST row per set
+        # SOURCES row: healthy collapses to `N/N ok`; only failed/quarantined feeds are named.
+        ok = sum(1 for poll in result.polls if poll.status == 'ok')
+        deviations = ([f'{source_id} quarantined' for source_id in result.quarantined_skips]
+                      + [f'{source_id} failed' for source_id in result.failed_sources])
+        stats.set_sources(source_set_id, SourcesSnapshot(last=now, ok=ok, total=len(result.polls),
+                                                         deviations=deviations))
+        # INGEST row + the activity line (only an eventful pass streams — mirrors the log level so
+        # a warm 304-ing corpus does not flood the stream).
+        stats.set_ingest(source_set_id, IngestSnapshot(last=now, fetched=result.fetched,
+                                                       new=result.stored, cost_usd=usd,
+                                                       duration_ms=duration_ms,
+                                                       suspended=result.suspended))
+        if eventful:
+            stats.push_event('INGEST', f'{source_set_id} {self._state.last_detail}')
+        if result.suspended:
+            stats.push_event('BUDGET', 'embedding suspended — provider quota')
+        # BREAKING (detected side): cumulative HIGH-tier candidates flagged by ingest (ISSUE_11).
+        if result.candidates:
+            stats.add_breaking_detected(result.candidates, at=now)
+        # A feed crossing into flagged+quarantined this pass gets its own red activity line.
+        for source_id, note in result.health_notes.items():
+            if note.just_flagged:
+                stats.push_event('SOURCE', f'{source_id} flagged + quarantined')
+
+    def _set_name(self) -> str:
+        # 'ingest:crypto_news' -> 'crypto_news' for the compact stream line.
+        return self._state.name.split(':', 1)[-1]
 
     def _log_source_health(self, result: IngestResult) -> None:
         """Emit source-failure lines at a level that denoises repeats (ISSUE_11).

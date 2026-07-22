@@ -3,7 +3,7 @@ import asyncio
 import functools
 import logging
 from datetime import datetime, timezone
-from typing import List
+from typing import List, Optional
 
 from finiexragengine.core.pipeline.breaking_bus import BreakingBus, BreakingSubscription
 from finiexragengine.core.pipeline.eval_worker import EvalWorker
@@ -12,6 +12,7 @@ from finiexragengine.core.pipeline.pipeline_assembler import PipelineAssembler
 from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
 from finiexragengine.core.triggers.event_trigger import EventTrigger
 from finiexragengine.core.triggers.interval_trigger import IntervalTrigger
+from finiexragengine.core.ui.engine_stats import EngineStats
 from finiexragengine.exceptions.ragengine_errors import ConfigurationError
 from finiexragengine.types.config_types.pipeline_config_types import TriggerConfig
 from finiexragengine.types.worker_types import WorkerState
@@ -28,7 +29,11 @@ class WorkerSupervisor:
     a deliberate choice).
     """
 
-    def __init__(self, assembler: PipelineAssembler, registry: PipelineRegistry) -> None:
+    def __init__(self, assembler: PipelineAssembler, registry: PipelineRegistry,
+                 engine_stats: Optional[EngineStats] = None) -> None:
+        # Optional (ISSUE_26): the live dashboard's shared state, injected into every worker so
+        # each pass pushes its snapshot/events. None = no display (the default /health-only path).
+        self._engine_stats = engine_stats
         # One lock across every pass — see IngestWorker for the attribution rationale.
         pass_lock = asyncio.Lock()
         # The breaking wake bus (ISSUE_11): ingest workers publish flagged candidates, eval
@@ -48,7 +53,7 @@ class WorkerSupervisor:
                 source_set, assembler.build_ingestor(source_set_id),
                 self._interval_trigger(source_set.trigger, f'source-set {source_set_id}'),
                 pass_lock, cost_recorder=assembler.get_cost_recorder(),
-                on_candidates=publish))
+                on_candidates=publish, engine_stats=engine_stats))
 
         for pipeline in registry.list_pipelines():
             config = pipeline.get_config()
@@ -59,7 +64,7 @@ class WorkerSupervisor:
                 pipeline,
                 self._eval_trigger(config.trigger, subscription,
                                    f'pipeline {config.pipeline_id}'),
-                pass_lock))
+                pass_lock, engine_stats=engine_stats))
 
     @staticmethod
     def _interval_trigger(trigger_config: TriggerConfig, owner: str) -> IntervalTrigger:

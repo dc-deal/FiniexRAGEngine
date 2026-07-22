@@ -152,6 +152,15 @@ def test_include_open_bucket_is_never_flagged(seeded, tmp_path):
     assert '2026-07-22' in {f.bucket for f in after_close.files}
 
 
+def test_export_writes_atomically_leaving_no_temp_file(seeded, tmp_path):
+    # Files are written via a temp + os.replace (atomic rename) so two racing exporters never
+    # tear a file. After a clean run the target exists and no .tmp sidecar is left behind.
+    OutcomeArchiveExporter(seeded).export(tmp_path, now=_NOW)
+    stream_dir = tmp_path / 'crypto_sentiment'
+    assert (stream_dir / '2026-07-20.jsonl').read_text().count('\n') == 2
+    assert [p.name for p in stream_dir.iterdir() if p.name.endswith('.tmp')] == []
+
+
 def test_auto_export_weekly_is_incremental_across_runs(seeded, tmp_path):
     cfg = WeeklyReportConfig(export_outcomes=True, export_dir=str(tmp_path))
     first = auto_export_weekly(cfg, seeded, now=_NOW)
