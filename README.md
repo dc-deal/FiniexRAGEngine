@@ -4,7 +4,7 @@
 
 **A configurable RAG engine that turns unstructured sources into typed trading signals.**
 
-> **Status:** Alpha · `v0.3.0-alpha` · a **live-capable, cost-safe signal producer** —
+> **Status:** Alpha · `v0.3.1-alpha` · a **live-capable, cost-safe signal producer** —
 > background ingest/eval workers on independent cadences over one shared corpus
 > (`--workers`), a hard budget circuit-breaker, an output-consistency guard, and a weekly
 > Telegram report make an *unattended* run safe. `GET /latest` serves the persisted outcome
@@ -174,7 +174,9 @@ today, most load-bearing first:
 - **Two-worker live service (#10, #16)**: acquisition and evaluation run as
   independently-clocked background workers over one shared corpus — ingest per
   **source-set** (declared once, referenced by N pipelines; fast and LLM-free, because RSS
-  windows slide), eval per signal stream (fan-out variants included). Opt-in via
+  windows slide), eval per signal stream (fan-out variants included), each firing on a
+  **bar-close timeframe grid** (M1…D1 — deterministic, restart-independent trigger times that
+  pair with the consumer's bars; cadence stays decoupled from the retrieval lookback). Opt-in via
   `--workers`; every pass logs its own spend, worker states surface in `/health`. The corpus
   is **stamped with its embedding model** in the database and refuses to boot on a mismatch —
   mixed vector spaces are impossible.
@@ -226,7 +228,8 @@ today, most load-bearing first:
   worker liveness** (a silent stream reads `STALE`, no heartbeat needed) — rendered by two
   surfaces from the same numbers: the console (`report_cli`) and a **Telegram bot** (weekly
   cron + on-demand `/report`). Pure store reads, no paid calls; credentials live only in
-  `user_configs/`. Each weekly run also **auto-exports** the closed-day JSONL archive
+  `user_configs/`. Each weekly run also **incrementally auto-exports** the closed-day JSONL
+  archive — a DB flag tracks handed-over days, so only newly-closed days are written
   (default on; `--no-export` skips). See [weekly_report_and_alerts.md](docs/architecture/weekly_report_and_alerts.md).
 - **Outcome store & cached serving (#8, #36)**: every produced envelope is persisted
   (Postgres — the source of truth for replay and error statistics) with the **raw LLM output**
