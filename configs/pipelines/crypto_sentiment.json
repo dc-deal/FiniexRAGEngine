@@ -43,7 +43,7 @@
     },
     "trigger": {
         "type": "interval",
-        "interval_seconds": 600
+        "timeframe": "M10"
     },
     "source_set": "crypto_news",
     "retrieval": {

@@ -32,7 +32,7 @@ articles than fit into a prompt, they repeat across feeds, and only the recent, 
 ones matter. FiniexRAGEngine treats this as a declarative dataflow:
 
 ```
-Trigger (interval now · event/push planned)
+Trigger (timeframe bar-close · breaking-wake · event-socket planned)
   └─ Pipeline (declared as a "constellation" JSON)
        ├─ Sources[]   RSS · blog · socket · API   (pluggable connectors)
        ├─ Scope       market + symbols

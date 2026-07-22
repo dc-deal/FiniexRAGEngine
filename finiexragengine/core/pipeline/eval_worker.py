@@ -59,8 +59,11 @@ class EvalWorker:
         # attribution race-free; serialization is free at these cadences.
         self._pass_lock = pass_lock
         config = pipeline.get_config()
+        # Eval cadence is a bar-close timeframe (ISSUE_timeframe); expose it as the label plus
+        # the derived seconds value (via cadence_seconds) so /health still shows a number.
         self._state = WorkerState(name=f'eval:{config.pipeline_id}', kind='eval',
-                                  interval_seconds=config.trigger.interval_seconds)
+                                  interval_seconds=config.trigger.cadence_seconds,
+                                  timeframe=config.trigger.timeframe)
 
     def get_state(self) -> WorkerState:
         return self._state

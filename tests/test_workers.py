@@ -119,7 +119,7 @@ class _FakePipeline:
         return PipelineConfig(
             pipeline_id='p', outcome_type='sentiment_fear_greed', market='crypto',
             symbols=['BTCUSD'], llm={'model': 'gpt-4o-mini'}, source_set='crypto_news',
-            trigger={'type': 'interval', 'interval_seconds': 600})
+            trigger={'type': 'interval', 'timeframe': 'M10'})
 
     def run(self) -> SentimentEnvelope:
         self.runs += 1
@@ -158,6 +158,7 @@ def test_supervisor_builds_one_ingest_per_referenced_set_and_one_eval_per_stream
     (tmp_path / 'pipes' / 'crypto.json').write_text(json.dumps({
         'pipeline_id': 'crypto_sentiment', 'outcome_type': 'sentiment_fear_greed',
         'market': 'crypto', 'symbols': ['BTCUSD'], 'source_set': 'crypto_news',
+        'trigger': {'type': 'interval', 'timeframe': 'M10'},
         'llm': {'models': [
             {'name': 'gpt-4o-mini', 'sub_pipeline_id': 'mini', 'default': True},
             {'name': 'gpt-4o', 'sub_pipeline_id': '4o_enhanced'}]}}))
@@ -193,6 +194,9 @@ def test_supervisor_builds_one_ingest_per_referenced_set_and_one_eval_per_stream
                      'ingest:crypto_news']
     by_name = {s.name: s for s in states}
     assert by_name['ingest:crypto_news'].interval_seconds == 300   # set's own cadence
+    assert by_name['ingest:crypto_news'].timeframe is None         # ingest is relative, no bar
+    # Eval cadence is a bar-close timeframe; interval_seconds is derived (M10 = 600s).
+    assert by_name['eval:crypto_sentiment'].timeframe == 'M10'
     assert by_name['eval:crypto_sentiment'].interval_seconds == 600
 
 
@@ -202,6 +206,14 @@ def test_supervisor_refuses_unknown_trigger_type():
     with pytest.raises(ConfigurationError, match='event'):
         WorkerSupervisor._interval_trigger(
             TriggerConfig(type='event'), 'pipeline p')
+
+
+def test_eval_trigger_requires_a_timeframe():
+    # ISSUE_timeframe: an eval worker without a bar-close frame is a config error, not a default.
+    from finiexragengine.core.pipeline.worker_supervisor import WorkerSupervisor
+    from finiexragengine.types.config_types.pipeline_config_types import TriggerConfig
+    with pytest.raises(ConfigurationError, match='timeframe'):
+        WorkerSupervisor._eval_trigger(TriggerConfig(), None, 'pipeline p')
 
 
 def test_breaking_confirmation_log_reports_reaction_time():

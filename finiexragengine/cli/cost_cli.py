@@ -32,7 +32,7 @@ def main() -> None:
     registry = manager.build_pipeline_registry()
     eval_pipelines = {
         p.get_config().pipeline_id: EvalPipelineInfo(
-            interval_seconds=p.get_config().trigger.interval_seconds,
+            interval_seconds=p.get_config().trigger.cadence_seconds,
             symbol_count=len(p.get_config().symbols),
             overridden=registry.is_overridden(p.get_config().pipeline_id))
         for p in registry.list_pipelines()}
