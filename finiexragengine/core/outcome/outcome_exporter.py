@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import psycopg
 
 from finiexragengine.exceptions.ragengine_errors import VectorStoreError
+from finiexragengine.types.config_types.app_config_types import WeeklyReportConfig
 from finiexragengine.utils.archive_layout import Boundary, bucket_name
 
 
@@ -127,3 +128,19 @@ class OutcomeArchiveExporter:
 def _parse_day(day: str) -> datetime:
     parsed = datetime.fromisoformat(day)
     return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
+
+
+def auto_export_weekly(weekly_cfg: WeeklyReportConfig, database_url: str, *,
+                       now: Optional[datetime] = None) -> Optional[ExportResult]:
+    """Dump the closed-day archive alongside a weekly report, when enabled (ISSUE_13).
+
+    The shared coupling for the CLI (`report_cli`) and the scheduled weekly (API lifespan):
+    every closed bucket is (re)written whole and idempotently, so this week's days are present
+    and the files stay byte-identical to a manual `export_cli` run (whole buckets only — a
+    time-window cut could split a day and break that guarantee). Returns None when the knob is
+    off, so the caller can stay silent.
+    """
+    if not weekly_cfg.export_outcomes:
+        return None
+    return OutcomeArchiveExporter(database_url).export(
+        Path(weekly_cfg.export_dir), boundary='daily', now=now)

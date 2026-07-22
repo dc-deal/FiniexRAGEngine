@@ -85,3 +85,10 @@ In a DB export, `collected_msc` is the envelope's analysis `timestamp` in epoch-
 is no collector receive-time to stamp; this matches the validated mock). When the live
 collector runs, it stamps its own receive time instead — the durable archive is still the
 collector's, this is the manual twin.
+
+**Auto-export with the weekly report.** The same export runs automatically alongside the
+weekly report (`weekly_report.export_outcomes`, default `true`) — both the scheduled Telegram
+weekly and every `report_cli` run — writing to `weekly_report.export_dir`
+(default `data/signal_export`). It is the identical closed-days-only call
+(`auto_export_weekly` → `OutcomeArchiveExporter.export`), so the files are byte-identical to a
+manual `export_cli` run and never redundant. `report_cli --no-export` skips it for one run.

@@ -62,6 +62,13 @@ never parsed from logs.
   `CronTrigger` job from `weekly_report` config (validated fields, no raw cron strings).
   Logs `next run …` at boot. ISSUE_55 will add its calibration job to this same unit.
 
+**Auto-export alongside the report (ISSUE_13).** With `weekly_report.export_outcomes` (default
+on), each weekly run also dumps the closed-day JSONL archive to `weekly_report.export_dir`
+(`auto_export_weekly` → `OutcomeArchiveExporter`, see `output_archive_layout.md`). The scheduled
+path exports **before** sending, so a failed Telegram delivery never costs the durable dump; the
+console CLI exports too (skip with `report_cli --no-export`). Closed buckets only, idempotent —
+byte-identical to a manual `export_cli` run.
+
 All three start/stop in the **API lifespan** (`api_app.py`), next to the worker
 supervisor — gated by `telegram.enabled` + credentials + `DATABASE_URL`, independent of
 `FINIEX_WORKERS` (report-only deployments work).

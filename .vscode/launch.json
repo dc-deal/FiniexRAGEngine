@@ -118,34 +118,6 @@
         // 📊 DIAGNOSTICS (read-only DB reports — free on cached query vectors)
         // ====================================================
         {
-            "name": "📊 RAGEngine: Weekly Report (console)",
-            "type": "debugpy",
-            "request": "launch",
-            "program": "${workspaceFolder}/finiexragengine/cli/report_cli.py",
-            "args": [],
-            "console": "integratedTerminal",
-            "justMyCode": false,
-            "presentation": {
-                "group": "04_diagnostics",
-                "order": 0
-            }
-        },
-        {
-            "name": "📨 RAGEngine: Weekly Report → Telegram (--send)",
-            "type": "debugpy",
-            "request": "launch",
-            "program": "${workspaceFolder}/finiexragengine/cli/report_cli.py",
-            "args": [
-                "--send"
-            ],
-            "console": "integratedTerminal",
-            "justMyCode": false,
-            "presentation": {
-                "group": "04_diagnostics",
-                "order": 1
-            }
-        },
-        {
             "name": "📊 RAGEngine: Corpus Coverage Report",
             "type": "debugpy",
             "request": "launch",
@@ -245,6 +217,40 @@
                 "order": 8
             }
         },
+        // ====================================================
+        // Weekly
+        // ====================================================
+        {
+            "name": "📊 RAGEngine: Weekly Report (console)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/finiexragengine/cli/report_cli.py",
+            "args": [],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "05_weekly",
+                "order": 0
+            }
+        },
+        {
+            "name": "📨 RAGEngine: Weekly Report → Telegram (--send)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/finiexragengine/cli/report_cli.py",
+            "args": [
+                "--send"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "05_weekly",
+                "order": 1
+            }
+        },
+        // ====================================================
+        // output
+        // ====================================================      
         {
             // Handover/backfill: reads the outcomes journal, writes the rotated JSONL archive
             // (<stream>/<bucket>.jsonl). Closed UTC days only (the open day is skipped) — a
@@ -260,7 +266,7 @@
             "console": "integratedTerminal",
             "justMyCode": false,
             "presentation": {
-                "group": "04_diagnostics",
+                "group": "06_output",
                 "order": 9
             }
         },
@@ -280,7 +286,7 @@
             "console": "integratedTerminal",
             "justMyCode": false,
             "presentation": {
-                "group": "05_database",
+                "group": "07_database",
                 "order": 1
             }
         },
@@ -297,7 +303,7 @@
             "console": "integratedTerminal",
             "justMyCode": false,
             "presentation": {
-                "group": "05_database",
+                "group": "07_database",
                 "order": 2
             }
         },

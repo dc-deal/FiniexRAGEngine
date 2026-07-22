@@ -9,8 +9,12 @@ from pathlib import Path
 
 import pytest
 
-from finiexragengine.core.outcome.outcome_exporter import OutcomeArchiveExporter
+from finiexragengine.core.outcome.outcome_exporter import (
+    OutcomeArchiveExporter,
+    auto_export_weekly,
+)
 from finiexragengine.core.outcome.outcome_store import OutcomeStore
+from finiexragengine.types.config_types.app_config_types import WeeklyReportConfig
 from finiexragengine.types.outcome_types import (
     RunMetadata,
     SentimentEnvelope,
@@ -86,3 +90,18 @@ def test_day_filter_exports_only_that_bucket(seeded, tmp_path):
 def test_empty_store_exports_nothing_cleanly(clean_db, tmp_path):
     result = OutcomeArchiveExporter(clean_db).export(tmp_path, now=_NOW)
     assert result.files == [] and result.total_lines == 0
+
+
+def test_auto_export_weekly_dumps_closed_days_when_enabled(seeded, tmp_path):
+    # The weekly-report coupling: default-on, writes the same closed-day layout as export_cli.
+    cfg = WeeklyReportConfig(export_outcomes=True, export_dir=str(tmp_path))
+    result = auto_export_weekly(cfg, seeded, now=_NOW)
+    assert result is not None
+    assert {f.bucket for f in result.files} == {'2026-07-20', '2026-07-21'}   # open 22nd skipped
+    assert (tmp_path / 'crypto_sentiment' / '2026-07-20.jsonl').exists()
+
+
+def test_auto_export_weekly_is_silent_when_disabled(seeded, tmp_path):
+    cfg = WeeklyReportConfig(export_outcomes=False, export_dir=str(tmp_path))
+    assert auto_export_weekly(cfg, seeded, now=_NOW) is None
+    assert not (tmp_path / 'crypto_sentiment').exists()          # nothing written

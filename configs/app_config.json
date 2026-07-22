@@ -85,6 +85,8 @@
         "day_of_week": "sun",
         "hour": 18,
         "minute": 0,
-        "timezone": "UTC"
+        "timezone": "UTC",
+        "export_outcomes": true,
+        "export_dir": "data/signal_export"
     }
 }

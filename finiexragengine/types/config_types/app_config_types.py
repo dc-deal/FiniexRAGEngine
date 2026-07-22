@@ -157,6 +157,11 @@ class WeeklyReportConfig(BaseModel):
     hour: int = 18
     minute: int = 0
     timezone: str = 'UTC'
+    # Alongside each weekly report, dump the closed-day JSONL archive (ISSUE_13 export path).
+    # All closed buckets are (re)written idempotently — whole buckets only, so it stays
+    # byte-identical to a manual `export_cli` run. Default on; `report_cli --no-export` skips it.
+    export_outcomes: bool = True
+    export_dir: str = 'data/signal_export'   # archive root: <dir>/<stream_id>/<bucket>.jsonl
 
 
 class AppConfig(BaseModel):

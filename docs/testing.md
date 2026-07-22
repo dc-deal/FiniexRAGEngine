@@ -87,7 +87,7 @@ never attach one just because `DATABASE_URL`/`OPENAI_API_KEY` are set in the env
 | `test_telegram_command_poller.py` | `/report`/`/help` handling, chat restriction, offset advance, backoff + recovery | — |
 | `test_archive_layout.py` | archive bucket naming (UTC dates, ISO weeks + year edge), per-stream paths, range→bucket selection — the shared #13 contract | — |
 | `test_timeframe.py` | bar-close grid math: frame alignment (M1…D1), strictly-after at an exact boundary, non-UTC normalisation, naive rejection, unknown frame | — |
-| `test_outcome_exporter.py` | DB journal → rotated JSONL: closed-days-only (open bucket skipped), `collected_msc = ts`, per-stream layout, idempotent byte-identical re-export, day filter | PostgreSQL |
+| `test_outcome_exporter.py` | DB journal → rotated JSONL: closed-days-only (open bucket skipped), `collected_msc = ts`, per-stream layout, idempotent byte-identical re-export, day filter; weekly auto-export coupling (on writes closed days · off is silent) | PostgreSQL |
 | `test_rag_live.py` 💸 | real embeddings end-to-end through store + retriever | `OPENAI_API_KEY` + PostgreSQL, `-m paid` |
 | `test_llm_live.py` 💸 | one real structured LLM call (schema + usage) | `OPENAI_API_KEY`, `-m paid` |
 

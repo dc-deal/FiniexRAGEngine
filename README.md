@@ -226,7 +226,8 @@ today, most load-bearing first:
   worker liveness** (a silent stream reads `STALE`, no heartbeat needed) — rendered by two
   surfaces from the same numbers: the console (`report_cli`) and a **Telegram bot** (weekly
   cron + on-demand `/report`). Pure store reads, no paid calls; credentials live only in
-  `user_configs/`. See [weekly_report_and_alerts.md](docs/architecture/weekly_report_and_alerts.md).
+  `user_configs/`. Each weekly run also **auto-exports** the closed-day JSONL archive
+  (default on; `--no-export` skips). See [weekly_report_and_alerts.md](docs/architecture/weekly_report_and_alerts.md).
 - **Outcome store & cached serving (#8, #36)**: every produced envelope is persisted
   (Postgres — the source of truth for replay and error statistics) with the **raw LLM output**
   next to it, so a run is fully reconstructable: raw output ↔ normalized result ↔ prompt
