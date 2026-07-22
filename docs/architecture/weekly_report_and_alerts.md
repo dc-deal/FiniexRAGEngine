@@ -64,10 +64,12 @@ never parsed from logs.
 
 **Auto-export alongside the report (ISSUE_13).** With `weekly_report.export_outcomes` (default
 on), each weekly run also dumps the closed-day JSONL archive to `weekly_report.export_dir`
-(`auto_export_weekly` → `OutcomeArchiveExporter`, see `output_archive_layout.md`). The scheduled
-path exports **before** sending, so a failed Telegram delivery never costs the durable dump; the
-console CLI exports too (skip with `report_cli --no-export`). Closed buckets only, idempotent —
-byte-identical to a manual `export_cli` run.
+(`auto_export_weekly` → `OutcomeArchiveExporter`, see `output_archive_layout.md`). It runs in
+**`--incremental`** mode — only the days that closed since the last export (tracked by the
+`archive_export_log` DB flag), never a full-history rebuild. The scheduled path exports **before**
+sending, so a failed Telegram delivery never costs the durable dump; the console CLI exports too
+(skip with `report_cli --no-export`). Whole closed buckets only — byte-identical to a manual
+`export_cli` run.
 
 All three start/stop in the **API lifespan** (`api_app.py`), next to the worker
 supervisor — gated by `telegram.enabled` + credentials + `DATABASE_URL`, independent of

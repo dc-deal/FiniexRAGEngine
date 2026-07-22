@@ -252,22 +252,81 @@
         // output
         // ====================================================      
         {
-            // Handover/backfill: reads the outcomes journal, writes the rotated JSONL archive
-            // (<stream>/<bucket>.jsonl). Closed UTC days only (the open day is skipped) — a
-            // handed-over day is frozen, so re-running never duplicates. No API cost.
-            "name": "📦 RAGEngine: Export Outcomes → JSONL archive (closed days)",
+            // The regular handgriff: only days that closed since the last export (reads the
+            // archive_export_log DB flag). Idempotent, no re-writing the whole history. Same
+            // mode the weekly report uses. No API cost.
+            "name": "📦 RAGEngine: Export Outcomes — incremental (new closed days)",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/finiexragengine/cli/export_cli.py",
             "args": [
                 "--out",
-                "data/signal_export"
+                "data/signal_export",
+                "--incremental"
             ],
             "console": "integratedTerminal",
             "justMyCode": false,
             "presentation": {
                 "group": "06_output",
-                "order": 9
+                "order": 0
+            }
+        },
+        {
+            // Whole closed days of the current ISO week (Mon 00:00 UTC onward), regardless of the
+            // flag — but flags what it writes. Handy for re-cutting this week for a handover.
+            "name": "📦 RAGEngine: Export Outcomes — since this week",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/finiexragengine/cli/export_cli.py",
+            "args": [
+                "--out",
+                "data/signal_export",
+                "--since",
+                "week"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "06_output",
+                "order": 1
+            }
+        },
+        {
+            // Deliberate full re-export: every closed day, all-time (ignores the flag, flags all).
+            // Explicit --all so a full rebuild is never accidental.
+            "name": "📦 RAGEngine: Export Outcomes — ALL (all-time, deliberate)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/finiexragengine/cli/export_cli.py",
+            "args": [
+                "--out",
+                "data/signal_export",
+                "--all"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "06_output",
+                "order": 2
+            }
+        },
+        {
+            // One bucket: the day a YYYY-MM-DD falls into (prompted). Ignores the flag, flags it.
+            "name": "📦 RAGEngine: Export Outcomes — single day",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/finiexragengine/cli/export_cli.py",
+            "args": [
+                "--out",
+                "data/signal_export",
+                "--day",
+                "${input:day}"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "06_output",
+                "order": 3
             }
         },
         // ====================================================
@@ -370,6 +429,12 @@
             "type": "promptString",
             "description": "Source-set id (configs/source_sets/<id>.json)",
             "default": "crypto_news"
+        },
+        {
+            "id": "day",
+            "type": "promptString",
+            "description": "Export the bucket this UTC day falls into (YYYY-MM-DD)",
+            "default": "2026-07-21"
         }
     ]
 }

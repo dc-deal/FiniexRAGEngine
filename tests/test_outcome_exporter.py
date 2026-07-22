@@ -105,3 +105,56 @@ def test_auto_export_weekly_is_silent_when_disabled(seeded, tmp_path):
     cfg = WeeklyReportConfig(export_outcomes=False, export_dir=str(tmp_path))
     assert auto_export_weekly(cfg, seeded, now=_NOW) is None
     assert not (tmp_path / 'crypto_sentiment').exists()          # nothing written
+
+
+# --- incremental scope + the DB export flag (ISSUE_13) --------------------------------------
+
+def test_incremental_skips_already_flagged_buckets(seeded, tmp_path):
+    exporter = OutcomeArchiveExporter(seeded)
+    first = exporter.export(tmp_path, incremental=True, now=_NOW)
+    assert {f.bucket for f in first.files} == {'2026-07-20', '2026-07-21'}
+    assert first.skipped_flagged == []
+    # Second incremental run: both closed days are flagged now → nothing new, both skipped.
+    second = exporter.export(tmp_path, incremental=True, now=_NOW)
+    assert second.files == []
+    assert second.skipped_flagged == ['crypto_sentiment/2026-07-20',
+                                      'crypto_sentiment/2026-07-21']
+
+
+def test_incremental_writes_only_newly_closed_days(seeded, tmp_path):
+    exporter = OutcomeArchiveExporter(seeded)
+    exporter.export(tmp_path, incremental=True, now=_NOW)          # flags 20 + 21
+    OutcomeStore(seeded).save(_env('crypto_sentiment',
+                                   datetime(2026, 7, 19, 12, 0, tzinfo=timezone.utc)))
+    third = exporter.export(tmp_path, incremental=True, now=_NOW)  # only the unflagged 19
+    assert {f.bucket for f in third.files} == {'2026-07-19'}
+
+
+def test_since_and_all_ignore_the_flag_but_still_write(seeded, tmp_path):
+    exporter = OutcomeArchiveExporter(seeded)
+    exporter.export(tmp_path, incremental=True, now=_NOW)          # flags 20 + 21
+    # --since re-exports flagged days (ignores the flag for selection).
+    since = exporter.export(tmp_path, since='2026-07-20', now=_NOW)
+    assert {f.bucket for f in since.files} == {'2026-07-20', '2026-07-21'}
+    # --all (no scope narrowing) likewise re-exports everything closed, flag or not.
+    everything = exporter.export(tmp_path, now=_NOW)
+    assert {f.bucket for f in everything.files} == {'2026-07-20', '2026-07-21'}
+
+
+def test_include_open_bucket_is_never_flagged(seeded, tmp_path):
+    exporter = OutcomeArchiveExporter(seeded)
+    # Peek writes the open 22nd too, but must not flag it (still growing).
+    peek = exporter.export(tmp_path, incremental=True, include_open=True, now=_NOW)
+    assert '2026-07-22' in {f.bucket for f in peek.files}
+    # Once the 22nd has closed, an incremental run still writes it — proof the peek never flagged.
+    later = datetime(2026, 7, 23, 8, 0, tzinfo=timezone.utc)
+    after_close = exporter.export(tmp_path, incremental=True, now=later)
+    assert '2026-07-22' in {f.bucket for f in after_close.files}
+
+
+def test_auto_export_weekly_is_incremental_across_runs(seeded, tmp_path):
+    cfg = WeeklyReportConfig(export_outcomes=True, export_dir=str(tmp_path))
+    first = auto_export_weekly(cfg, seeded, now=_NOW)
+    assert {f.bucket for f in first.files} == {'2026-07-20', '2026-07-21'}
+    second = auto_export_weekly(cfg, seeded, now=_NOW)
+    assert second.files == [] and second.skipped_flagged     # nothing new the next run

@@ -21,7 +21,7 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import psycopg
 
@@ -43,7 +43,8 @@ class ExportedFile:
 class ExportResult:
     """What the export produced — a typed result, not a bare list (stage-boundary rule)."""
     files: List[ExportedFile] = field(default_factory=list)
-    skipped_open: List[str] = field(default_factory=list)   # bucket names still growing
+    skipped_open: List[str] = field(default_factory=list)      # bucket names still growing
+    skipped_flagged: List[str] = field(default_factory=list)   # 'stream/bucket' already exported
     total_lines: int = 0
 
 
@@ -56,33 +57,53 @@ class OutcomeArchiveExporter:
 
     def export(self, out_dir: Path, *, boundary: Boundary = 'daily',
                pipeline: Optional[str] = None, day: Optional[str] = None,
+               since: Optional[str] = None, incremental: bool = False,
                include_open: bool = False,
                now: Optional[datetime] = None) -> ExportResult:
         """Write one JSONL file per (stream, closed bucket) under `out_dir`.
+
+        The scope selectors narrow *which* closed buckets are written; every written closed
+        bucket is then flagged in `archive_export_log` (the "already handed over" record).
 
         Args:
             out_dir: archive root; files land at `<out_dir>/<stream_id>/<bucket>.jsonl`.
             boundary: 'daily' | 'weekly' bucket size.
             pipeline: restrict to one stream id (default: every stream in the store).
-            day: restrict to the bucket a given `YYYY-MM-DD` falls into (default: all).
-            include_open: also write the current, still-growing bucket (NOT redundancy-safe
-                — a later run rewrites it; use only for a throwaway peek).
+            day: restrict to the bucket a given `YYYY-MM-DD` falls into.
+            since: lower bound — only buckets on/after the one `YYYY-MM-DD` falls into (whole
+                buckets, so a mid-day cut can never split one).
+            incremental: skip closed buckets already flagged in `archive_export_log` (only the
+                not-yet-exported ones). The other selectors ignore the flag but still set it.
+            include_open: also write the current, still-growing bucket — a throwaway peek, NOT
+                redundancy-safe and never flagged (a later run rewrites the then-closed day).
             now: reference time for the closed-bucket cut (default: wall-clock UTC).
         """
         now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
         current = bucket_name(now, boundary)
         target = bucket_name(_parse_day(day), boundary) if day else None
+        since_bucket = bucket_name(_parse_day(since), boundary) if since else None
 
         buckets = self._grouped_lines(boundary, pipeline)   # {(stream, bucket): [line, ...]}
+        # Incremental consults the flag; every other mode ignores it for *selection* (but still
+        # writes it below), so a re-export of an already-handed-over day stays possible on demand.
+        flagged = self._flagged_buckets(boundary) if incremental else set()
+
         result = ExportResult()
+        written_flags: List[Tuple[str, str, int]] = []       # (stream, bucket, lines) to flag
         for (stream, bucket), lines in sorted(buckets.items()):
             if target is not None and bucket != target:
                 continue
+            if since_bucket is not None and bucket < since_bucket:
+                continue
             # A bucket is closed once the clock has moved past it (sortable names ⇒ a plain
             # comparison is chronological). The open one is skipped unless asked for.
-            if bucket >= current and not include_open:
+            is_open = bucket >= current
+            if is_open and not include_open:
                 if bucket not in result.skipped_open:
                     result.skipped_open.append(bucket)
+                continue
+            if incremental and not is_open and (stream, bucket) in flagged:
+                result.skipped_flagged.append(f'{stream}/{bucket}')
                 continue
             path = out_dir / stream / f'{bucket}.jsonl'
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -90,7 +111,15 @@ class OutcomeArchiveExporter:
                             encoding='utf-8')
             result.files.append(ExportedFile(path, stream, bucket, len(lines)))
             result.total_lines += len(lines)
+            # A finished (closed) handover is flagged; an --include-open peek is not — the day
+            # still grows, and its real, frozen export comes once it closes.
+            if not is_open:
+                written_flags.append((stream, bucket, len(lines)))
+
+        if written_flags:
+            self._flag_exported(boundary, written_flags)
         result.skipped_open.sort()
+        result.skipped_flagged.sort()
         return result
 
     def _grouped_lines(self, boundary: Boundary, pipeline: Optional[str],
@@ -124,6 +153,35 @@ class OutcomeArchiveExporter:
             grouped.setdefault((pipeline_id, bucket_name(ts, boundary)), []).append(line)
         return grouped
 
+    def _flagged_buckets(self, boundary: Boundary) -> Set[Tuple[str, str]]:
+        """The (stream, bucket) pairs already exported for this boundary — the incremental skip
+        set. A missing table (fresh DB, migration pending) means nothing is flagged yet."""
+        try:
+            with psycopg.connect(self._database_url) as conn, conn.cursor() as cur:
+                cur.execute('SELECT count(*) FROM information_schema.tables '
+                            'WHERE table_name = %s', ('archive_export_log',))
+                if cur.fetchone()[0] == 0:
+                    return set()
+                cur.execute('SELECT stream_id, bucket FROM archive_export_log '
+                            'WHERE boundary = %s', (boundary,))
+                return {(row[0], row[1]) for row in cur.fetchall()}
+        except psycopg.Error as exc:
+            raise VectorStoreError(f'reading archive export log failed: {exc}') from exc
+
+    def _flag_exported(self, boundary: Boundary,
+                       written: List[Tuple[str, str, int]]) -> None:
+        """Mark each written closed bucket as handed over (upsert — a re-export refreshes it)."""
+        try:
+            with psycopg.connect(self._database_url) as conn, conn.cursor() as cur:
+                cur.executemany(
+                    'INSERT INTO archive_export_log (stream_id, bucket, boundary, lines) '
+                    'VALUES (%s, %s, %s, %s) '
+                    'ON CONFLICT (stream_id, bucket, boundary) '
+                    'DO UPDATE SET exported_at = now(), lines = EXCLUDED.lines',
+                    [(stream, bucket, boundary, lines) for stream, bucket, lines in written])
+        except psycopg.Error as exc:
+            raise VectorStoreError(f'writing archive export log failed: {exc}') from exc
+
 
 def _parse_day(day: str) -> datetime:
     parsed = datetime.fromisoformat(day)
@@ -134,13 +192,15 @@ def auto_export_weekly(weekly_cfg: WeeklyReportConfig, database_url: str, *,
                        now: Optional[datetime] = None) -> Optional[ExportResult]:
     """Dump the closed-day archive alongside a weekly report, when enabled (ISSUE_13).
 
-    The shared coupling for the CLI (`report_cli`) and the scheduled weekly (API lifespan):
-    every closed bucket is (re)written whole and idempotently, so this week's days are present
-    and the files stay byte-identical to a manual `export_cli` run (whole buckets only — a
-    time-window cut could split a day and break that guarantee). Returns None when the knob is
-    off, so the caller can stay silent.
+    The shared coupling for the CLI (`report_cli`) and the scheduled weekly (API lifespan). Runs
+    **incrementally**: only days that have closed since the last export are written (the
+    `archive_export_log` flag), so the weekly never rebuilds the whole history. Whole buckets
+    only — byte-identical to a manual `export_cli` run. Returns None when the knob is off, so the
+    caller can stay silent.
     """
     if not weekly_cfg.export_outcomes:
         return None
+    # Incremental: the weekly run writes only the days that closed since the last export
+    # (via the archive_export_log flag) — never a full-history rebuild.
     return OutcomeArchiveExporter(database_url).export(
-        Path(weekly_cfg.export_dir), boundary='daily', now=now)
+        Path(weekly_cfg.export_dir), boundary='daily', incremental=True, now=now)
