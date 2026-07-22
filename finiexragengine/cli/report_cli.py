@@ -11,6 +11,7 @@ import os
 from finiexragengine.configuration.app_config_manager import AppConfigManager
 from finiexragengine.core.alerts.telegram_client import TelegramClient
 from finiexragengine.core.alerts.telegram_weekly_format import render_weekly_messages
+from finiexragengine.exceptions.alert_errors import TelegramError
 from finiexragengine.core.observability.reports.weekly_report import (
     collect_weekly_report,
     format_weekly_report,
@@ -38,7 +39,14 @@ def main() -> None:
             parser.error('telegram is not configured — enable it and set bot_token/chat_id '
                          'in the gitignored user_configs/app_config.json')
         messages = render_weekly_messages(report)
-        asyncio.run(TelegramClient(telegram).send_messages(messages))
+        try:
+            asyncio.run(TelegramClient(telegram).send_messages(messages))
+        except TelegramError as exc:
+            # The report already printed in full above — delivery is a separate, best-effort
+            # step. Fail on one line (no stack trace) with a non-zero exit, not a crash.
+            raise SystemExit(
+                f'⚠ not sent to Telegram — {exc}\n'
+                '  (the report above is complete; --send delivery is what failed)')
         print(f'sent to Telegram ({len(messages)} message(s))')
 
 

@@ -76,14 +76,18 @@ def test_api_level_not_ok_raises_with_description():
         asyncio.run(_client(handler).send_message('x'))
 
 
-def test_transport_error_reports_only_the_exception_class():
+def test_transport_error_is_human_and_hides_the_token():
+    # A DNS/connect failure (no network) becomes a plain-language reason — network/DNS plus the
+    # class in parentheses for diagnostics — built from the type, never from str(exc) (which
+    # embeds the URL and so the token).
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError('boom https://api.telegram.org/botsekret-token/x')
 
     with pytest.raises(TelegramError) as err:
         asyncio.run(_client(handler).send_message('x'))
-    assert 'ConnectError' in str(err.value)
-    assert 'sekret' not in str(err.value)
+    message = str(err.value)
+    assert 'network/DNS' in message and 'ConnectError' in message
+    assert 'sekret' not in message
 
 
 def test_get_updates_passes_offset_and_returns_result():

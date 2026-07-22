@@ -20,6 +20,18 @@ _API_BASE = 'https://api.telegram.org'
 _MAX_MESSAGE = 4096
 
 
+def _reason(exc: httpx.HTTPError) -> str:
+    """Human, token-safe cause for a transport failure — never `str(exc)` (it may embed the
+    URL, hence the token). The class name is kept in parentheses for diagnostics."""
+    kind = type(exc).__name__
+    if isinstance(exc, httpx.ConnectError):
+        # The common one: no network / DNS did not resolve api.telegram.org.
+        return f'could not reach {_API_BASE} — network/DNS ({kind})'
+    if isinstance(exc, httpx.TimeoutException):
+        return f'timed out reaching {_API_BASE} ({kind})'
+    return kind
+
+
 class TelegramClient:
     """Bot-API mechanics for one bot + one chat (the configured operator chat)."""
 
@@ -63,8 +75,8 @@ class TelegramClient:
         try:
             response = await self._client.post(url, json=payload, timeout=timeout)
         except httpx.HTTPError as exc:
-            # str(exc) may embed the URL (and so the token) — report only the class.
-            raise TelegramError(f'{method} failed: {type(exc).__name__}') from exc
+            # str(exc) may embed the URL (and so the token) — build the reason from the type.
+            raise TelegramError(f'{method} failed: {_reason(exc)}') from exc
         if response.status_code != 200:
             # Telegram puts the reason in the JSON body even on a non-200 (e.g. a 409
             # `Conflict: terminated by other getUpdates request` when a second poller
