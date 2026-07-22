@@ -45,6 +45,21 @@ def test_reconfigure_is_idempotent(tmp_path, monkeypatch):
         _cleanup()
 
 
+def test_live_mode_suppresses_console_keeps_file(tmp_path, monkeypatch):
+    monkeypatch.delenv('FINIEX_LOG_FILE', raising=False)   # test the config-driven path
+    log_file = tmp_path / 'finiex.log'
+    config = AppConfig(logging=LoggingConfig(file=str(log_file)))
+    try:
+        configure_logging(config, live_mode=True)             # rich.Live owns stdout (ISSUE_26)
+        kinds = {type(h).__name__ for h in _finiex_handlers()}
+        assert 'StreamHandler' not in kinds                   # console suppressed — no torn frames
+        assert 'TimedRotatingFileHandler' in kinds            # file stays the durable record
+        logging.getLogger('finiex.test').warning('still to file')
+        assert 'still to file' in log_file.read_text()
+    finally:
+        _cleanup()
+
+
 def test_console_only_when_no_file():
     config = AppConfig(logging=LoggingConfig(file=None))
     try:

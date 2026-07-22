@@ -7,6 +7,11 @@ from typing import List, Optional
 
 from finiexragengine.core.pipeline.pipeline import Pipeline
 from finiexragengine.core.triggers.abstract_trigger import AbstractTrigger
+from finiexragengine.core.ui.engine_stats import (
+    EngineStats,
+    LlmSnapshot,
+    RetrievalSnapshot,
+)
 from finiexragengine.types.outcome_types import AnalysisEnvelope
 from finiexragengine.types.worker_types import WorkerState
 
@@ -52,12 +57,16 @@ class EvalWorker:
     """
 
     def __init__(self, pipeline: Pipeline, trigger: AbstractTrigger,
-                 pass_lock: asyncio.Lock) -> None:
+                 pass_lock: asyncio.Lock,
+                 engine_stats: Optional[EngineStats] = None) -> None:
         self._pipeline = pipeline
         self._trigger = trigger
         # Shared across all workers — see IngestWorker: keeps session-delta cost
         # attribution race-free; serialization is free at these cadences.
         self._pass_lock = pass_lock
+        # Optional (ISSUE_26): the live dashboard's shared state. None = no display — every
+        # push below is skipped, so the /health-only and CLI paths carry zero overhead.
+        self._engine_stats = engine_stats
         config = pipeline.get_config()
         # Eval cadence is a bar-close timeframe (ISSUE_timeframe); expose it as the label plus
         # the derived seconds value (via cadence_seconds) so /health still shows a number.
@@ -90,15 +99,45 @@ class EvalWorker:
                 self._state.last_status = 'ok' if envelope.status != 'error' else 'error'
                 self._state.last_detail = (f'{envelope.status} · {len(envelope.result)} symbols '
                                            f'({llm_rows} llm · {len(envelope.result) - llm_rows} other)')
+                duration_ms = (perf_counter() - started) * 1000.0
+                tokens = m.prompt_tokens + m.completion_tokens
                 # Spend is never silent: tokens + USD per pass, right where it runs.
                 logger.info('[%s] %s · %d tok · $%.6f · %.0fms → outcomes',
                             self._state.name, self._state.last_detail,
-                            m.prompt_tokens + m.completion_tokens, m.cost_usd,
-                            (perf_counter() - started) * 1000.0)
+                            tokens, m.cost_usd, duration_ms)
                 # Per-breaking reaction time, logged the moment it is confirmed (ISSUE_11) — so an
                 # overnight run is self-documenting: every confirmed breaking shows its latency
                 # inline, and it cross-checks the store-based `breaking` report.
-                for line in _breaking_confirmations(envelope):
+                confirmations = _breaking_confirmations(envelope)
+                for line in confirmations:
                     logger.info(line)
+                # Feed the live dashboard from the same envelope (ISSUE_26); no-op without a display.
+                self._push_stats(envelope, tokens, duration_ms, confirmations)
             self._state.runs += 1
             self._state.last_duration_ms = (perf_counter() - started) * 1000.0
+
+    def _push_stats(self, envelope: AnalysisEnvelope, tokens: int, duration_ms: float,
+                    confirmations: List[str]) -> None:
+        """Push this eval pass into the live dashboard's shared state (ISSUE_26); no-op without one."""
+        stats = self._engine_stats
+        if stats is None:
+            return
+        now = datetime.now(timezone.utc)
+        m = envelope.metadata
+        pipeline_id = envelope.pipeline_id        # this worker's key — one RETRIEVAL/LLM row per pipeline
+        # RETRIEVAL folds off the eval pass (no clock of its own): what the LLM actually read.
+        stats.set_retrieval(pipeline_id, RetrievalSnapshot(last=now, retrieved=m.articles_relevant,
+                                                           symbols=len(envelope.result)))
+        # LLM row: spend + one signal per symbol, in symbol order (a single arrow would lie).
+        stats.set_llm(pipeline_id, LlmSnapshot(last=now, tokens=tokens, cost_usd=m.cost_usd,
+                                               duration_ms=duration_ms,
+                                               signals=[r.signal for r in envelope.result]))
+        stats.push_event('LLM', f'{pipeline_id} {self._state.last_detail}')
+        # BREAKING (confirmed side): one activity line each + the cumulative count with its
+        # reaction time (the `engine …/ e2e …` segment of the confirmation line).
+        for line in confirmations:
+            stats.push_event('BREAKING', line)
+        if confirmations:
+            detail = next((segment for segment in confirmations[-1].split(' · ')
+                           if segment.startswith('engine ')), '')
+            stats.add_breaking_confirmed(len(confirmations), detail, at=now)

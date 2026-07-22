@@ -3,7 +3,7 @@
     "version": "0.2.0",
     "configurations": [
         // ====================================================
-        // 🚀 SERVICE
+        // 🚀 SERVICE (run the engine)
         // ====================================================
         {
             "name": "🚀 RAGEngine: API Server (reload)",
@@ -22,9 +22,6 @@
                 "order": 1
             }
         },
-        // ====================================================
-        // 💸 PAID GATE (real OpenAI API cost — run deliberately)
-        // ====================================================
         {
             // Live mode (ISSUE_10): background ingest+eval workers on their own
             // cadences — continuous paid activity, run deliberately.
@@ -40,10 +37,33 @@
             "console": "integratedTerminal",
             "justMyCode": false,
             "presentation": {
-                "group": "03_paid_gate",
-                "order": 0
+                "group": "01_service",
+                "order": 2
             }
         },
+        {
+            // + the live terminal dashboard (ISSUE_26): needs a TTY; console logs move to
+            // the rotating file so rich.Live owns the terminal exclusively.
+            "name": "🖥️💸 RAGEngine: API Server + Workers + Live Display (paid)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/finiexragengine/cli/server_cli.py",
+            "args": [
+                "--workers",
+                "--live",
+                "--port",
+                "8100"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "01_service",
+                "order": 3
+            }
+        },
+        // ====================================================
+        // ⚙️ STAGE CLIs (real OpenAI API cost — a single stage, run deliberately)
+        // ====================================================
         {
             "name": "💸 RAGEngine: Run Pipeline (full envelope, paid)",
             "type": "debugpy",
@@ -56,7 +76,7 @@
             "console": "integratedTerminal",
             "justMyCode": false,
             "presentation": {
-                "group": "03_paid_gate",
+                "group": "03_stage_clis",
                 "order": 1
             }
         },
@@ -72,7 +92,7 @@
             "console": "integratedTerminal",
             "justMyCode": false,
             "presentation": {
-                "group": "03_paid_gate",
+                "group": "03_stage_clis",
                 "order": 2
             }
         },
@@ -90,7 +110,7 @@
             "console": "integratedTerminal",
             "justMyCode": false,
             "presentation": {
-                "group": "03_paid_gate",
+                "group": "03_stage_clis",
                 "order": 3
             }
         },
@@ -110,7 +130,7 @@
             "console": "integratedTerminal",
             "justMyCode": false,
             "presentation": {
-                "group": "03_paid_gate",
+                "group": "03_stage_clis",
                 "order": 4
             }
         },
