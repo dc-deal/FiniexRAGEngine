@@ -82,10 +82,13 @@ The fix is state, not more logging.
   worker ids, so the dicts never resize at runtime. The workers push into it next to their
   existing log calls (structured fields, never re-parsed from log text). The `BudgetGuard` is
   *not* copied in — its row is read live at render time (report from the live source).
-- **`live_display.py` — `LiveDisplay`** (read side). Renders `EngineStats` on an interval via
-  `rich.Live`. `render()` is pure (returns a rich renderable), which is what the tests exercise;
-  `run()` / `stop()` drive the Live context, started and stopped by the API lifespan alongside the
-  workers (the display releases the terminal last, after the workers drain).
+- **`live_display.py` — `LiveDisplay`** (read side). Renders `EngineStats` **full-screen** via
+  `rich.Live` (`screen=True`, the alternate screen buffer): a `Layout` splits a fixed-height state
+  panel on top from the activity panel that fills the rest, so a taller terminal grows only the
+  log region. Every state row is `no_wrap` (one line each), which is what makes the reserved state
+  height exact. `render()` is pure (returns a rich renderable), which the tests exercise; `run()` /
+  `stop()` drive the Live context, started and stopped by the API lifespan alongside the workers.
+  On exit the alternate screen is restored — the terminal is left clean (the file log is durable).
 
 ### Thread-safety without a lock
 

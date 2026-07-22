@@ -3,8 +3,8 @@
 The read side of the live display: renders `EngineStats` (plus the live `BudgetGuard` state) on
 an interval via `rich.Live`, so an unattended `server_cli --workers --live` run answers three
 questions at a glance — is it alive · what did it just do · is anything broken / what is it
-spending. Stage rows on top are *state* (always complete, ~6 lines); the single stage-tagged
-activity stream below is *history* (the only region that grows).
+spending. The layout fills the screen: stage rows on top are *state* (fixed height, one row per
+worker), and the activity stream below is *history*, filling the rest of the terminal.
 
 In live mode rich.Live owns stdout exclusively — the console log handler is suppressed
 (`configure_logging(live_mode=True)`, ISSUE_26 Slice 0) and uvicorn's own logging is routed to
@@ -12,11 +12,11 @@ the file, so nothing else writes to the terminal and frames never tear.
 """
 import asyncio
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, Optional
 
-from rich.console import Console, Group, RenderableType
+from rich.console import Console, RenderableType
+from rich.layout import Layout
 from rich.panel import Panel
-from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 
@@ -29,10 +29,6 @@ from finiexragengine.core.ui.engine_stats import (
     RetrievalSnapshot,
     SourcesSnapshot,
 )
-
-# How many activity lines the stream shows at once (the deque holds more for scrollback-in-memory;
-# only this many are painted so the panel height stays bounded).
-_STREAM_ROWS = 12
 
 
 def _format_age(seconds: float) -> str:
@@ -78,13 +74,13 @@ class LiveDisplay:
         # misbehave (tests render via `render()` directly, never entering Live).
         from rich.live import Live
 
-        # auto_refresh OFF: we own the repaint cadence with an explicit refresh each tick, so
-        # rich's background thread never races our update() mid-run. transient=True clears the
-        # live region when Live stops, so shutdown leaves nothing behind — this kills the doubled
-        # top border seen on exit (ISSUE_26), which was our final repaint plus rich's own exit
-        # paint. The durable record is the file log; the panel does not need to persist.
-        with Live(self.render(), console=self._console, screen=False,
-                  auto_refresh=False, transient=True) as live:
+        # screen=True: the dashboard owns the full terminal via the alternate screen buffer, so the
+        # layout fills the whole screen (state block on top, activity stream filling the rest) and
+        # exit restores the previous terminal cleanly — no leftover/doubled frame (ISSUE_26).
+        # auto_refresh OFF: we own the repaint cadence with an explicit refresh each tick, so rich's
+        # background thread never races our update() mid-run. The durable record is the file log.
+        with Live(self.render(), console=self._console, screen=True,
+                  auto_refresh=False) as live:
             while not self._stop.is_set():
                 live.update(self.render(), refresh=True)
                 # Wake early if stop is signalled; otherwise tick on the refresh interval.
@@ -92,7 +88,7 @@ class LiveDisplay:
                     await asyncio.wait_for(self._stop.wait(), timeout=self._refresh_seconds)
                 except asyncio.TimeoutError:
                     pass
-        # Leaving the `with` block stops Live and (transient) clears the region — no extra paint.
+        # Leaving the `with` block stops Live and restores the pre-run terminal (alternate screen).
 
     async def stop(self) -> None:
         self._stop.set()
@@ -100,10 +96,27 @@ class LiveDisplay:
     # --- rendering -------------------------------------------------------------------------
 
     def render(self) -> RenderableType:
-        """Build the full panel: header + stage state rows + activity stream. Pure (testable)."""
+        """Full-screen layout: a fixed state panel on top, the activity stream fills the rest. Pure."""
         now = datetime.now(timezone.utc)
-        body = Group(self._stage_rows(now), Rule('activity', style='dim'), self._activity(now))
-        return Panel(body, title=self._header(now), title_align='left', border_style='cyan')
+        state = Panel(self._stage_rows(now), title=self._header(now), title_align='left',
+                      border_style='cyan')
+        activity = Panel(self._activity(now), title='activity', title_align='left',
+                         border_style='blue')
+        layout = Layout()
+        # The state block is fixed to its row count; the activity panel takes all remaining height,
+        # so a taller terminal grows only the log region (ISSUE_26 — enlarge only the log).
+        layout.split_column(
+            Layout(state, name='state', size=self._state_height()),
+            Layout(activity, name='activity', ratio=1),
+        )
+        return layout
+
+    def _state_height(self) -> int:
+        # One row per worker for SOURCES/INGEST (source-sets) and RETRIEVAL/LLM (pipelines), at
+        # least one idle row each, plus the BUDGET + BREAKING rows, plus the panel's two borders.
+        sets = max(1, len(self._stats.sources()))
+        pipelines = max(1, len(self._stats.retrieval()))
+        return 2 * sets + 2 * pipelines + 2 + 2
 
     def _header(self, now: datetime) -> str:
         uptime = _format_age((now - self._started_at).total_seconds())
@@ -114,10 +127,13 @@ class LiveDisplay:
     def _stage_rows(self, now: datetime) -> Table:
         # A grid (no borders): stage label + per-worker id + `last` cell + a free detail column.
         table = Table.grid(padding=(0, 2))
-        table.add_column('stage', style='bold', width=10)
-        table.add_column('id', width=22)
-        table.add_column('last', width=9)
-        table.add_column('detail', overflow='fold')
+        # Every column is no_wrap so each stage row is exactly one line — that is what makes
+        # `_state_height` (rows + border) the real panel height and stops a wrapped cell from
+        # pushing a later row out of the reserved block. `id` auto-fits the longest worker id.
+        table.add_column('stage', style='bold', width=10, no_wrap=True)
+        table.add_column('id', no_wrap=True)
+        table.add_column('last', width=11, no_wrap=True)
+        table.add_column('detail', no_wrap=True, overflow='ellipsis')
 
         # One row per worker (source-set for SOURCES/INGEST, pipeline for RETRIEVAL/LLM), so the
         # concurrent workers never clobber each other's state (ISSUE_26).
@@ -212,13 +228,11 @@ class LiveDisplay:
 
     def _activity(self, now: datetime) -> Table:
         table = Table.grid(padding=(0, 2))
-        table.add_column('time', style='dim', width=8)
-        table.add_column('stage', style='bold', width=8)
-        table.add_column('message', overflow='fold')
-        # Newest first, capped at _STREAM_ROWS so the panel height stays bounded.
-        for event in reversed(self._recent_events()):
+        table.add_column('time', style='dim', width=8, no_wrap=True)
+        table.add_column('stage', style='bold', width=8, no_wrap=True)
+        # One line per event (crop, don't wrap). Newest first; the activity panel crops to its
+        # height, so a taller terminal simply shows more history — no manual row cap needed.
+        table.add_column('message', no_wrap=True, overflow='ellipsis')
+        for event in reversed(self._stats.events()):
             table.add_row(event.ts.strftime('%H:%M:%S'), event.stage, event.message)
         return table
-
-    def _recent_events(self) -> List:
-        return self._stats.events()[-_STREAM_ROWS:]

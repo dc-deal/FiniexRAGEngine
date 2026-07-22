@@ -101,6 +101,11 @@ python finiexragengine/cli/server_cli.py --workers --port 8100
 python finiexragengine/cli/server_cli.py --workers --live --port 8100
 ```
 
+The `--live` dashboard while the engine runs — one row per worker (source-set and pipeline),
+stage state on top, a colour-coded activity stream below:
+
+![Live terminal dashboard: per-worker SOURCES / INGEST / RETRIEVAL / LLM rows, engine-wide BUDGET and BREAKING, and a scrolling activity stream](docs/assets/live_display.png)
+
 ```bash
 curl localhost:8100/v1/health
 curl localhost:8100/v1/pipelines

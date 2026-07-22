@@ -21,8 +21,9 @@ def _stats() -> EngineStats:
 
 
 def _render(display: LiveDisplay) -> str:
-    # Render the pure renderable to text — no rich.Live, no terminal probing.
-    console = Console(record=True, width=110)
+    # Render the pure renderable to text — no rich.Live, no terminal probing. The layout fills the
+    # console, so a fixed height is given for a deterministic activity region.
+    console = Console(record=True, width=110, height=40)
     console.print(display.render())
     return console.export_text()
 
