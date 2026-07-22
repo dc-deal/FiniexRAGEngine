@@ -8,6 +8,8 @@ from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
+from finiexragengine.utils.timeframe import TIMEFRAMES, timeframe_minutes
+
 
 class LlmVariant(BaseModel):
     """One model variant of a fanned constellation (ISSUE_42).
@@ -78,8 +80,35 @@ class PromptRef(BaseModel):
 
 
 class TriggerConfig(BaseModel):
+    # `type` is the pull-vs-event-socket axis (unchanged). Cadence is expressed differently
+    # per worker: an eval trigger declares a `timeframe` (bar-close aligned, ISSUE_timeframe);
+    # an ingest trigger keeps a relative `interval_seconds` (corpus refresh has no bar).
     type: Literal['interval', 'event'] = 'interval'
-    interval_seconds: int = 600
+    timeframe: Optional[str] = None        # eval cadence: 'M1'..'D1' (see utils/timeframe.py)
+    interval_seconds: int = 600            # ingest cadence in seconds; eval ignores it
+
+    @model_validator(mode='after')
+    def _validate_timeframe(self) -> 'TriggerConfig':
+        # Reject an unknown frame at load, before a worker is built — fail fast, like the
+        # model allowlist. None is allowed here (the ingest path has no timeframe); the
+        # eval-trigger builder is what requires one.
+        if self.timeframe is not None and self.timeframe not in TIMEFRAMES:
+            raise ValueError(
+                f'unknown trigger.timeframe {self.timeframe!r} — '
+                f'supported: {", ".join(TIMEFRAMES)}')
+        return self
+
+    @property
+    def cadence_seconds(self) -> int:
+        """Effective cadence in seconds — the one place the two knobs collapse to a number.
+
+        A `timeframe` (eval, bar-close) wins and is converted from minutes; otherwise the raw
+        `interval_seconds` (ingest, relative). Cost projection, staleness and /health all read
+        this so a non-M10 pipeline is not mis-projected against the stale 600s default.
+        """
+        if self.timeframe is not None:
+            return timeframe_minutes(self.timeframe) * 60
+        return self.interval_seconds
 
 
 class DeepTierConfig(BaseModel):

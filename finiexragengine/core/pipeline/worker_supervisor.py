@@ -2,6 +2,7 @@
 import asyncio
 import functools
 import logging
+from datetime import datetime, timezone
 from typing import List
 
 from finiexragengine.core.pipeline.breaking_bus import BreakingBus, BreakingSubscription
@@ -14,6 +15,7 @@ from finiexragengine.core.triggers.interval_trigger import IntervalTrigger
 from finiexragengine.exceptions.ragengine_errors import ConfigurationError
 from finiexragengine.types.config_types.pipeline_config_types import TriggerConfig
 from finiexragengine.types.worker_types import WorkerState
+from finiexragengine.utils.timeframe import TIMEFRAMES, seconds_until_next_boundary
 
 logger = logging.getLogger(__name__)
 
@@ -71,12 +73,21 @@ class WorkerSupervisor:
     @staticmethod
     def _eval_trigger(trigger_config: TriggerConfig, subscription: BreakingSubscription,
                       owner: str) -> EventTrigger:
-        # Eval workers run on their interval AND jump the queue on a breaking wake (ISSUE_11).
+        # Eval workers fire on their bar-close grid AND jump the queue on a breaking wake
+        # (ISSUE_11 + ISSUE_timeframe). The wait is recomputed each cycle from the live clock,
+        # so the grid stays exact regardless of boot time or pass duration.
         if trigger_config.type != 'interval':
             raise ConfigurationError(
                 f"unsupported trigger type '{trigger_config.type}' on {owner} — "
                 "only 'interval' is implemented")
-        return EventTrigger(trigger_config.interval_seconds, subscription)
+        timeframe = trigger_config.timeframe
+        if timeframe is None:
+            raise ConfigurationError(
+                f'eval trigger on {owner} needs a `timeframe` (bar-close cadence) — '
+                f'one of {", ".join(TIMEFRAMES)}')
+        return EventTrigger(
+            lambda: seconds_until_next_boundary(datetime.now(timezone.utc), timeframe),
+            subscription)
 
     def states(self) -> List[WorkerState]:
         return [worker.get_state() for worker in self._workers]
@@ -84,7 +95,12 @@ class WorkerSupervisor:
     async def start_all(self) -> None:
         """Launch every worker as its own task; returns immediately."""
         for state in self.states():
-            logger.info('worker %s every %ds', state.name, state.interval_seconds)
+            # Eval workers announce their bar-close frame; ingest workers their raw interval.
+            if state.timeframe is not None:
+                logger.info('worker %s on %s (bar-close, %ds grid)',
+                            state.name, state.timeframe, state.interval_seconds)
+            else:
+                logger.info('worker %s every %ds', state.name, state.interval_seconds)
         self._tasks = [asyncio.create_task(worker.start(), name=worker.get_state().name)
                        for worker in self._workers]
 

@@ -17,10 +17,6 @@ logger = logging.getLogger(__name__)
 # The on-demand report: build + render, returns the ready-to-send messages.
 BuildReport = Callable[[], Awaitable[List[str]]]
 
-_HELP = ('🤖 <b>FiniexRAGEngine</b>\n'
-         '/report — the weekly report, built now\n'
-         '/help — this message')
-
 _BACKOFF_START = 1.0
 _BACKOFF_MAX = 300.0
 
@@ -62,10 +58,10 @@ class TelegramCommandPoller:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                # Network blips and API hiccups are expected across a live week —
-                # log, back off (capped), keep polling.
-                logger.warning('telegram poll failed (%s) — retry in %.0fs',
-                               type(exc).__name__, backoff)
+                # Network blips and API hiccups are expected across a live week — log the
+                # actual reason (a 409 from a second poller on a shared bot reads clearly),
+                # back off (capped), keep polling.
+                logger.warning('telegram poll failed: %s — retry in %.0fs', exc, backoff)
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, _BACKOFF_MAX)
 
@@ -75,16 +71,21 @@ class TelegramCommandPoller:
         if chat_id != self._config.chat_id:
             return                                    # not the operator chat — consumed, ignored
         text = (message.get('text') or '').strip()
-        # Commands may arrive as `/report@BotName` in groups — prefix match covers both.
-        if text.startswith('/report'):
-            logger.info('telegram /report requested')
+        # Match the command word exactly, tolerating a `/cmd@BotName` group suffix — so a
+        # configured `/report-rag` is distinct from `/report` (no prefix false-match).
+        command = (text.split() or [''])[0].split('@')[0]
+        if command == self._config.report_command:
+            logger.info('telegram %s requested', command)
             try:
                 await self._client.send_messages(await self._build_report())
             except Exception:
                 logger.exception('on-demand report failed')
                 await self._send_quietly('⚠ report failed — check the engine logs')
-        elif text.startswith('/help'):
-            await self._send_quietly(_HELP)
+        elif command == '/help':
+            await self._send_quietly(
+                '🤖 <b>FiniexRAGEngine</b>\n'
+                f'{self._config.report_command} — the weekly report, built now\n'
+                '/help — this message')
 
     async def _send_quietly(self, text: str) -> None:
         """Best-effort notice — a failing send must not take the poll loop down."""

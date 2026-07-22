@@ -77,6 +77,28 @@ def test_help_answers_and_other_text_is_ignored():
     assert len(client.sent) == 1 and '/report' in client.sent[0]
 
 
+def test_configured_command_matches_exactly_not_by_prefix():
+    cfg = TelegramConfig(enabled=True, bot_token='t', chat_id='4242',
+                         poll_interval_seconds=1, report_command='/report-rag')
+
+    async def scenario() -> None:
+        # The distinct RAG command fires; a bare /report (the collector's) and a prefix
+        # near-miss are both ignored — exact-token match, tolerating a @Bot suffix.
+        client = FakeClient([[_update(1, '/report'), _update(2, '/reportx'),
+                              _update(3, '/report-rag@FiniexBot')]])
+
+        async def build() -> List[str]:
+            return ['rag weekly']
+
+        poller = TelegramCommandPoller(client, cfg, build)
+        await poller.start()
+        await asyncio.sleep(0.05)
+        await poller.stop()
+        assert client.sent == ['rag weekly']          # only /report-rag triggered
+
+    asyncio.run(scenario())
+
+
 def test_build_failure_sends_a_notice_and_loop_survives(monkeypatch):
     monkeypatch.setattr(telegram_command_poller, '_BACKOFF_START', 0.001)
 

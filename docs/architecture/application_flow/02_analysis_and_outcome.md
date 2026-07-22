@@ -142,3 +142,29 @@ existing `is_breaking = urgency ≥ breaking.urgency_threshold` (SymbolEvaluator
 wake only makes eval run *sooner*, not differently, so the envelope stays model/fingerprint-
 consistent. Everything is persisted regardless; the gate governs only what would *push* (Stage C).
 Two knobs, two stages (wake vs confirm) — see `../breaking_detection.md`.
+
+**Bar-close cadence (ISSUE_timeframe, built).** The eval worker's scheduled tick is aligned to a
+trading **timeframe**, not a relative interval: the pipeline declares `trigger.timeframe`, and the
+`EventTrigger` waits until the next wall-clock bar close (recomputed each cycle from the live clock,
+so the grid is exact regardless of boot time or pass duration). It still fires **immediately on
+boot** (freshness across a restart) and then snaps to the grid — and a breaking wake still jumps the
+queue *between* bars. The trigger times are therefore deterministic and restart-independent
+(`:00/:10/:20` for M10, midnight UTC for D1), so a redeploy resumes seamlessly and a missing bar on
+the grid is unambiguous.
+
+Cadence is **decoupled from the retrieval lookback**: `trigger.timeframe` governs *how often* a
+signal is produced; `retrieval.recency_window_minutes` governs *how far back* the RAG reads. News is
+sparse, so a short timeframe must not shrink the lookback — an M10 signal still reads the last N
+hours of news. The boundary math is `finiexragengine/utils/timeframe.py` (pure, tested); the ingest
+worker keeps a relative `interval_seconds` (corpus refresh has no bar). Supported frames:
+
+| Frame | Bar | Grid (UTC) |
+|---|---|---|
+| `M1` | 1 min | every minute |
+| `M5` | 5 min | `:00 :05 :10 …` |
+| `M10` | 10 min | `:00 :10 :20 …` |
+| `M15` | 15 min | `:00 :15 :30 :45` |
+| `M30` | 30 min | `:00 :30` |
+| `H1` | 1 h | top of the hour |
+| `H4` | 4 h | `00 04 08 12 16 20:00` |
+| `D1` | 1 day | `00:00` |

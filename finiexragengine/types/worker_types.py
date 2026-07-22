@@ -9,7 +9,8 @@ class WorkerState:
     """One worker's live status — what /health (and later the live display, #26) shows."""
     name: str                    # 'ingest:crypto_news' | 'eval:crypto_sentiment'
     kind: str                    # 'ingest' | 'eval'
-    interval_seconds: int
+    interval_seconds: int        # cadence in seconds (for eval, derived from `timeframe`)
+    timeframe: Optional[str] = None       # eval bar-close frame ('M10'); None for ingest
     runs: int = 0
     last_status: str = 'pending'          # pending | ok | error
     last_run_at: Optional[datetime] = None

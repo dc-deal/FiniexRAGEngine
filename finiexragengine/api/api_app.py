@@ -17,6 +17,7 @@ from finiexragengine.core.alerts.weekly_scheduler import WeeklyScheduler
 from finiexragengine.core.llm.model_catalog import verify_configured_models
 from finiexragengine.core.observability.logging_setup import configure_logging
 from finiexragengine.core.observability.reports.weekly_report import collect_weekly_report
+from finiexragengine.core.outcome.outcome_exporter import auto_export_weekly
 from finiexragengine.core.pipeline.pipeline_assembler import PipelineAssembler
 from finiexragengine.core.pipeline.worker_supervisor import WorkerSupervisor
 
@@ -112,10 +113,22 @@ def create_app(attach_runners: Optional[bool] = None,
                 return render_weekly_messages(report)
 
             async def _send_weekly() -> None:
+                # Durable artifact first: dump the closed-day archive (default on), independent
+                # of delivery — a failed Telegram send must not cost the export. Off-loop: it is
+                # blocking DB reads + file writes.
+                result = await asyncio.to_thread(auto_export_weekly, weekly_cfg, database_url)
+                if result is not None:
+                    logger.info('weekly export: %d file(s), %d line(s) → %s',
+                                len(result.files), result.total_lines, weekly_cfg.export_dir)
                 await telegram_client.send_messages(await _weekly_messages())
 
-            command_poller = TelegramCommandPoller(telegram_client, telegram_cfg,
-                                                   _weekly_messages)
+            # The command poller is a separate opt-in: it long-polls getUpdates, and
+            # Telegram allows only one poller per bot — so it stays off unless this engine
+            # owns a bot no other service polls (see TelegramConfig). Sending (the weekly
+            # cron below) is unaffected and works on a shared bot.
+            if telegram_cfg.commands_enabled:
+                command_poller = TelegramCommandPoller(telegram_client, telegram_cfg,
+                                                       _weekly_messages)
             if weekly_cfg.enabled:
                 weekly_scheduler = WeeklyScheduler(weekly_cfg, _send_weekly)
 

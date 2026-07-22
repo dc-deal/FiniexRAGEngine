@@ -58,5 +58,57 @@ For a query range `[start, end]`:
 
 The **collector owns the durable rotated JSONL** — it writes the history. The engine's
 `OutcomeStore` stays a **database table** (`/latest` + replay + metrics warehouse; see
-`core/outcome/outcome_store.py`) — nothing in the engine rotates files. The engine owns
-the *format*: envelope schema, line shape, and this layout.
+`core/outcome/outcome_store.py`) — nothing in the engine rotates files during a live run.
+The engine owns the *format*: envelope schema, line shape, and this layout.
+
+## Manual export from the DB (the handover path)
+
+Until the collector runs — or for a backfill — the engine can write the same layout from
+its own journal: `export_cli` (→ `core/outcome/outcome_exporter.py`) reads `outcomes` and
+writes `<out>/<stream_id>/<bucket>.jsonl`.
+
+**Exactly one scope selector is required — no default, so a bare run is an error** (it prevents
+silently re-writing the whole history as it grows):
+
+| Flag | Selects | Reads the flag? | Sets the flag? |
+|---|---|---|---|
+| `--incremental` | closed days **not yet exported** | **yes** (only unflagged) | yes |
+| `--since <date\|week>` | whole buckets on/after the date (`week` = current ISO week) | no | yes |
+| `--all` | every closed day (all-time) — the deliberate full re-export | no | yes |
+| `--day <date>` | the single bucket a `YYYY-MM-DD` falls into | no | yes |
+
+Modifier (any scope): `--include-open` also writes the current, still-growing bucket — a
+throwaway peek, never flagged and not handover-safe (a later run rewrites the then-closed day).
+
+```bash
+python -m finiexragengine.cli.export_cli --out data/signal_export --incremental   # the regular run
+python -m finiexragengine.cli.export_cli --out data/signal_export --since week
+python -m finiexragengine.cli.export_cli --out data/signal_export --all
+python -m finiexragengine.cli.export_cli --day 2026-07-21
+```
+
+Two properties keep the handover redundancy-free — the whole reason it exists:
+
+- **The DB flag = the "already handed over" record.** `archive_export_log` (migration `002`)
+  holds one row per exported `(stream_id, bucket, boundary)`. `--incremental` reads it and writes
+  only the not-yet-flagged days; the explicit scopes ignore it for selection but still set it, so
+  a re-export stays possible on demand. Open buckets are never flagged. The flag lives in the DB,
+  not the filesystem — a deleted/moved export dir does not confuse it, and a `--all`/`--since`
+  rebuilds regardless.
+- **Whole closed buckets only, idempotent.** Each bucket file is rewritten in full from the
+  journal, ordered by `(ts, id)`. A closed day never gains rows, so any re-export is
+  byte-identical — no append, no partial days (a time-window cut would split a bucket and break
+  this).
+
+In a DB export, `collected_msc` is the envelope's analysis `timestamp` in epoch-ms (there
+is no collector receive-time to stamp; this matches the validated mock). When the live
+collector runs, it stamps its own receive time instead — the durable archive is still the
+collector's, this is the manual twin.
+
+**Auto-export with the weekly report.** The same export runs automatically alongside the
+weekly report (`weekly_report.export_outcomes`, default `true`) — both the scheduled Telegram
+weekly and every `report_cli` run — writing to `weekly_report.export_dir`
+(default `data/signal_export`). It runs in **`--incremental`** mode
+(`auto_export_weekly` → `OutcomeArchiveExporter.export`), so a weekly run only writes the days
+that closed since the last export — never a full-history rebuild. `report_cli --no-export` skips
+it for one run.

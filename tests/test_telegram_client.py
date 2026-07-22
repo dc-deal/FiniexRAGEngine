@@ -43,9 +43,24 @@ def test_send_messages_keeps_order():
     assert texts == ['part 1', 'part 2']
 
 
-def test_http_error_raises_without_leaking_the_token():
+def test_http_error_surfaces_status_and_description_without_leaking_the_token():
+    # Telegram carries the reason in the body even on a non-200 (e.g. a 409 conflict when
+    # a second poller shares the bot) — the error names both the code and the description.
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(401, json={'ok': False})
+        return httpx.Response(409, json={
+            'ok': False, 'error_code': 409,
+            'description': 'Conflict: terminated by other getUpdates request'})
+
+    with pytest.raises(TelegramError) as err:
+        asyncio.run(_client(handler).get_updates(None, timeout_seconds=1))
+    assert 'HTTP 409' in str(err.value)
+    assert 'Conflict: terminated by other getUpdates request' in str(err.value)
+    assert 'sekret' not in str(err.value)
+
+
+def test_http_error_without_body_still_reports_the_status():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, text='nope')      # not JSON
 
     with pytest.raises(TelegramError) as err:
         asyncio.run(_client(handler).send_message('x'))
@@ -61,14 +76,18 @@ def test_api_level_not_ok_raises_with_description():
         asyncio.run(_client(handler).send_message('x'))
 
 
-def test_transport_error_reports_only_the_exception_class():
+def test_transport_error_is_human_and_hides_the_token():
+    # A DNS/connect failure (no network) becomes a plain-language reason — network/DNS plus the
+    # class in parentheses for diagnostics — built from the type, never from str(exc) (which
+    # embeds the URL and so the token).
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError('boom https://api.telegram.org/botsekret-token/x')
 
     with pytest.raises(TelegramError) as err:
         asyncio.run(_client(handler).send_message('x'))
-    assert 'ConnectError' in str(err.value)
-    assert 'sekret' not in str(err.value)
+    message = str(err.value)
+    assert 'network/DNS' in message and 'ConnectError' in message
+    assert 'sekret' not in message
 
 
 def test_get_updates_passes_offset_and_returns_result():
