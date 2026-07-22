@@ -18,6 +18,7 @@ Two properties make it redundancy-proof, which is the whole point:
 collector receive-time in a DB export, and this matches the mock the IDE validated against.
 """
 import json
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -107,8 +108,7 @@ class OutcomeArchiveExporter:
                 continue
             path = out_dir / stream / f'{bucket}.jsonl'
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(''.join(json.dumps(line) + '\n' for line in lines),
-                            encoding='utf-8')
+            _atomic_write(path, ''.join(json.dumps(line) + '\n' for line in lines))
             result.files.append(ExportedFile(path, stream, bucket, len(lines)))
             result.total_lines += len(lines)
             # A finished (closed) handover is flagged; an --include-open peek is not — the day
@@ -186,6 +186,16 @@ class OutcomeArchiveExporter:
 def _parse_day(day: str) -> datetime:
     parsed = datetime.fromisoformat(day)
     return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    """Write `text` to `path` atomically — a per-process temp file in the same directory, then
+    `os.replace` (an atomic rename on one filesystem). Two exporters racing on the same closed
+    bucket then resolve to last-writer-wins with a *whole* file, never a torn one — the guarantee
+    the incremental export needs once a second scheduled writer exists (ISSUE_13)."""
+    tmp = path.parent / f'.{path.name}.{os.getpid()}.tmp'
+    tmp.write_text(text, encoding='utf-8')
+    os.replace(tmp, path)
 
 
 def auto_export_weekly(weekly_cfg: WeeklyReportConfig, database_url: str, *,
