@@ -211,6 +211,21 @@ funnel: 17 flagged → 11 confirmed → push (Stage C, pending)
 
 The same counts feed the live display (#26) and the weekly report (#27, a per-pipeline section).
 
+### Why it broke — the reason + duration surfaces (ISSUE_64)
+
+A breaking episode is the engine's most important event, so both surfaces show *why* it fired and
+whether it is still live — not just that it did:
+
+- **Live** (#26): the BREAKING section lists up to three recent episodes, one line each —
+  `SYMBOL SIGNAL` · **live** (`● <running>`, a pass within `EPISODE_GAP` still saw it breaking) or
+  **ended** (`<age> ago`, closed by the gap rule) · **why** (the LLM's `reasoning`).
+- **Weekly** (`breaking_report`): a per-episode listing grouped by pipeline — `started`, `duration`
+  (last pass − start), and the same reason — read from each episode's *first* confirming envelope.
+
+Phase 1 reuses the existing per-symbol `reasoning`; Phase 2 swaps in a dedicated `breaking_reason`
+field (a `prompt_version` bump) — see #64. The reason belongs to a persisted episode identity
+(`breaking_episode_id`, #65), so live/report/push/export share one authoritative event.
+
 ## Live push channel (Stage C — deferred, IDE-accepted)
 
 The live low-latency wire is a one-way **SSE** push of confirmed breaking envelopes

@@ -76,3 +76,9 @@ def test_estimated_publish_is_excluded_from_e2e():
 
 def test_non_breaking_results_are_ignored():
     assert BreakingEpisodeTracker().new_episodes(_envelope(_T0, is_breaking=False)) == []
+
+
+def test_reason_is_carried_from_reasoning():
+    # ISSUE_64 Phase 1: the LLM's per-symbol reasoning rides along as the episode's `reason`.
+    episode = BreakingEpisodeTracker().new_episodes(_envelope(_T0))[0]
+    assert episode.reason == 'x'                                    # _envelope's reasoning

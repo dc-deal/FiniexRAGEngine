@@ -132,9 +132,16 @@ class EvalWorker:
             signals=[(r.symbol, r.signal) for r in envelope.result]))
         stats.push_event('LLM', f'{pipeline_id} {self._state.last_detail}')
         # BREAKING (confirmed side): one activity line + one recorded episode per NEW episode —
-        # bumps the count, sets the frozen reaction detail, and feeds the RECENT summary line.
+        # bumps the count, sets the frozen reaction detail, and feeds the BREAKING section with the
+        # episode's reason (ISSUE_64).
+        started_symbols = {episode.symbol for episode in episodes}
         for episode in episodes:
             stats.push_event('BREAKING', _breaking_line(envelope.pipeline_id, episode))
             detail = (f'engine {_fmt_seconds(episode.engine_s)} / '
                       f'e2e {_fmt_seconds(episode.end_to_end_s)}')
-            stats.add_breaking_episode(episode.symbol, episode.signal, detail, at=now)
+            stats.add_breaking_episode(episode.symbol, episode.signal, episode.reason, detail, at=now)
+        # A symbol still breaking but NOT a new episode is an ongoing story (edge-triggered): advance
+        # its record's last_seen so the section keeps it 'live' and grows its duration (ISSUE_64).
+        for result in envelope.result:
+            if result.is_breaking and result.symbol not in started_symbols:
+                stats.touch_breaking_episode(result.symbol, at=now)

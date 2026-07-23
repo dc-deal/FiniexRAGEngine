@@ -21,7 +21,9 @@ from rich.table import Table
 from rich.text import Text
 
 from finiexragengine.core.observability.budget_guard import BudgetGuard
+from finiexragengine.core.pipeline.breaking_episode import EPISODE_GAP
 from finiexragengine.core.ui.engine_stats import (
+    BreakingRecord,
     BreakingSnapshot,
     EngineStats,
     IngestSnapshot,
@@ -30,6 +32,10 @@ from finiexragengine.core.ui.engine_stats import (
     SourcesSnapshot,
 )
 from finiexragengine.utils.windows_console import disable_quickedit
+
+# The BREAKING section reserves this many episode rows (newest first, blank-padded) so the state
+# panel stays fixed-height while listing recent episodes one per line (ISSUE_64).
+_MAX_EPISODE_ROWS = 3
 
 
 def _format_age(seconds: float) -> str:
@@ -117,11 +123,12 @@ class LiveDisplay:
         return layout
 
     def _state_height(self) -> int:
-        # One row per worker for SOURCES/INGEST (source-sets) and RETRIEVAL/LLM (pipelines), at
-        # least one idle row each, plus BUDGET + BREAKING + the RECENT line, plus the two borders.
+        # One row per worker for SOURCES/INGEST (source-sets) and RETRIEVAL/LLM (pipelines), at least
+        # one idle row each, plus BUDGET + the BREAKING summary + the reserved episode rows, plus the
+        # two borders.
         sets = max(1, len(self._stats.sources()))
         pipelines = max(1, len(self._stats.retrieval()))
-        return 2 * sets + 2 * pipelines + 3 + 2
+        return 2 * sets + 2 * pipelines + 2 + _MAX_EPISODE_ROWS + 2
 
     def _header(self, now: datetime) -> str:
         uptime = _format_age((now - self._started_at).total_seconds())
@@ -151,8 +158,9 @@ class LiveDisplay:
         table.add_row('BUDGET', '', self._budget_last(), self._budget_detail())
         table.add_row('BREAKING', '', _last(now, self._stats.breaking().last),
                       self._breaking_detail(self._stats.breaking()))
-        # RECENT: the last few confirmed episodes as `SYMBOL SIGNAL age` chips, newest first.
-        table.add_row('', Text('recent', style='dim'), '', self._recent_breaking_detail(now))
+        # Up to N per-episode lines under the summary: `SYMBOL SIGNAL` · live/ended + duration · why
+        # it broke (ISSUE_64). A fixed row count keeps the panel height exact.
+        self._breaking_episode_rows(table, now)
         return table
 
     def _keyed_rows(self, table: Table, now: datetime, label: str,
@@ -218,15 +226,40 @@ class LiveDisplay:
         style = 'red' if snapshot.confirmed else ('yellow' if snapshot.detected else 'dim')
         return Text(base, style=style)
 
-    def _recent_breaking_detail(self, now: datetime) -> Text:
-        # The last few confirmed episodes as `SYMBOL SIGNAL age` chips, newest first — a glance at
-        # what just broke, without scanning the activity stream.
-        records = self._stats.recent_breaking()
+    def _breaking_episode_rows(self, table: Table, now: datetime) -> None:
+        # The last few confirmed episodes, newest first, one per line — a glance at *what* broke,
+        # whether it is still live, and *why*, without scanning the activity stream (ISSUE_64).
+        # Always emits exactly _MAX_EPISODE_ROWS rows (blank-padded) so the panel height is exact.
+        records = list(reversed(self._stats.recent_breaking()))[:_MAX_EPISODE_ROWS]
         if not records:
-            return Text('none yet', style='dim')
-        chips = ' · '.join(f'{r.symbol} {r.signal} {_format_age((now - r.ts).total_seconds())}'
-                           for r in reversed(records))
-        return Text(chips)
+            table.add_row('', Text('episodes', style='dim'), '', Text('none active', style='dim'))
+            shown = 1
+        else:
+            for record in records:
+                table.add_row('', Text(f'{record.symbol} {record.signal}'),
+                              self._episode_status(now, record), self._episode_reason(record))
+            shown = len(records)
+        for _ in range(_MAX_EPISODE_ROWS - shown):
+            table.add_row('', '', '', '')
+
+    @staticmethod
+    def _episode_status(now: datetime, record: BreakingRecord) -> Text:
+        # Live vs ended, edge-triggered on EPISODE_GAP: a pass within the gap still saw it breaking
+        # (live → a red dot + how long it has been running); otherwise the episode closed by the gap
+        # rule (ended → how long ago it last broke). Matches the store report's grouping.
+        since_seen = (now - record.last_seen).total_seconds()
+        if since_seen <= EPISODE_GAP.total_seconds():
+            running = _format_age((now - record.started).total_seconds())
+            return Text(f'● {running}', style='red')
+        return Text(f'{_format_age(since_seen)} ago', style='dim')
+
+    @staticmethod
+    def _episode_reason(record: BreakingRecord) -> Text:
+        # The why (the LLM's reasoning), truncated by the column's ellipsis; dim so the symbol +
+        # status read first. Phase 2 (ISSUE_64) swaps in a dedicated breaking_reason field.
+        if not record.reason:
+            return Text('—', style='dim')
+        return Text(record.reason, style='dim')
 
     def _budget_status(self) -> dict:
         return self._budget_guard.status() if self._budget_guard is not None else {}

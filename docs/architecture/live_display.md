@@ -44,8 +44,10 @@ and M eval workers run concurrently, so a single row per stage would let them cl
 │ LLM        crypto_sentiment        last 5m    6698 tok · $0.0011 → BTC:SELL · ETH:SELL │
 │            forex_macro_sentiment   last 5m    4102 tok · $0.0007 → EUR:HOLD · GBP:BUY  │
 │ BUDGET                             ok         re-probe —                        │
-│ BREAKING                           last 42s   9 detected · 3 confirmed · …      │
-│            recent                             ADAUSD SELL 8m · ETHUSD SELL 42m  │
+│ BREAKING                           last 42s   9 detected · 3 confirmed · engine 1.4m/e2e 6.2m │
+│            ETHUSD SELL             ● 14m      greed rising — Musk confirms ETH mining buy-in   │
+│            SOLUSD BUY              ● 3m       ETF inflows surge, desks flip risk-on            │
+│            ADAUSD SELL             22m ago    regulatory-probe headlines cluster, risk-off     │
 ├─ activity ───────────────────────────────────────────────────── (grows) ───────┤
 │ 20:58:33  INGEST   crypto_news 89 fetched · 14 new · $0.000017                 │
 │ 20:56:19  SOURCE   cryptoslate flagged + quarantined                          │
@@ -62,9 +64,13 @@ Notes on the rows:
   alive?'. Only named when stuck; a healthy slow feed cycles within its interval and stays folded
   into `N/N ok`. Already-quarantined/failed feeds keep their own marker. The full per-feed last-poll
   view lives in the Sources report (`sources_cli`).
-- **BREAKING `recent`** — the last few confirmed *episodes* as `SYMBOL SIGNAL age` chips, newest
-  first: what just broke, at a glance, without scanning the activity stream. Episodes are
-  edge-triggered (see `breaking_detection.md`), so a lingering story appears once, not every pass.
+- **BREAKING section** (ISSUE_64) — the summary row (`N detected · M confirmed · reaction`)
+  followed by up to three recent *episodes*, one line each: `SYMBOL SIGNAL` · **live/ended** ·
+  **why it broke**. A live episode shows `● <running>` (a pass within `EPISODE_GAP` still saw it
+  breaking); an ended one shows `<age> ago` (closed by the gap rule). The *why* is the LLM's own
+  `reasoning` (Phase 1; Phase 2 swaps in a dedicated `breaking_reason`). Episodes are edge-triggered
+  (see `breaking_detection.md`), so a lingering story appears once with a growing duration, not every
+  pass. The row count is fixed (blank-padded), so the panel height stays exact.
 
 BUDGET and BREAKING are engine-wide (one budget guard; session-cumulative breaking counts), so
 they carry no per-worker id.

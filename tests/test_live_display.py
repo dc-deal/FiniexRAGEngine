@@ -1,8 +1,9 @@
 """LiveDisplay — the rich dashboard renderer (ISSUE_26). Pure render(), no Live context."""
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from rich.console import Console
 
+from finiexragengine.core.pipeline.breaking_episode import EPISODE_GAP
 from finiexragengine.core.ui.engine_stats import (
     EngineStats,
     IngestSnapshot,
@@ -37,15 +38,32 @@ def test_render_smoke_on_empty_stats():
     assert 'crypto_news' in text and 'forex_news' in text
     assert 'idle' in text
     assert '4 workers' in text
-    assert 'recent' in text and 'none yet' in text           # RECENT line, empty until an episode
+    assert 'episodes' in text and 'none active' in text      # BREAKING section, empty until an episode
 
 
-def test_recent_breaking_line_shows_last_episodes():
+def test_breaking_section_lists_live_episodes_with_reason():
+    # ISSUE_64: each confirmed episode is one line — symbol+signal, a live marker, and *why* it broke
+    # (the reused reasoning). Added at real `now` so they render as live (within EPISODE_GAP).
+    now = datetime.now(timezone.utc)
     stats = _stats()
-    stats.add_breaking_episode('ADAUSD', 'SELL', 'engine 1.4m / e2e 6.2m', at=_NOW)
-    stats.add_breaking_episode('ETHUSD', 'BUY', 'engine 12s / e2e 30s', at=_NOW)
+    stats.add_breaking_episode('ADAUSD', 'SELL', 'regulatory probe cluster', 'engine 1.4m', at=now)
+    stats.add_breaking_episode('ETHUSD', 'BUY', 'Musk confirms ETH buy-in', 'engine 12s', at=now)
     text = _render(LiveDisplay(stats, worker_count=4))
-    assert 'ADAUSD SELL' in text and 'ETHUSD BUY' in text     # per-episode symbol+signal chips
+    assert 'ADAUSD SELL' in text and 'ETHUSD BUY' in text     # per-episode symbol+signal
+    assert 'regulatory probe cluster' in text                 # the why (reused reasoning)
+    assert 'Musk confirms ETH buy-in' in text
+    assert '●' in text                                        # both just broke → live marker
+
+
+def test_breaking_section_marks_an_ended_episode():
+    # A last-seen older than EPISODE_GAP means the episode closed by the gap rule → 'N ago', not live.
+    now = datetime.now(timezone.utc)
+    stats = _stats()
+    stats.add_breaking_episode('BTCUSD', 'SELL', 'old crash story', 'engine 2m',
+                               at=now - EPISODE_GAP - timedelta(minutes=5))
+    text = _render(LiveDisplay(stats, worker_count=4))
+    assert 'BTCUSD SELL' in text
+    assert 'ago' in text                                      # ended → recency, not a live dot
 
 
 def test_two_workers_render_as_separate_rows():

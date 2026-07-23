@@ -27,6 +27,9 @@ class BreakingEpisode:
     engine_s: Optional[float]        # envelope ts − earliest source fetched_at (what we control)
     end_to_end_s: Optional[float]    # envelope ts − earliest REAL published_at (estimated excluded)
     n_sources: int
+    # Why it broke (ISSUE_64 Phase 1): the LLM's own per-symbol `reasoning`, carried through so the
+    # dashboard/report can show the trigger. Phase 2 replaces this with a dedicated `breaking_reason`.
+    reason: str = ''
 
 
 def reaction_times(result: SentimentResult, ts: datetime) -> Tuple[Optional[float], Optional[float]]:
@@ -69,5 +72,6 @@ class BreakingEpisodeTracker:
                 continue                          # same ongoing story — not a new episode
             engine, end_to_end = reaction_times(result, ts)
             started.append(BreakingEpisode(result.symbol, result.signal, result.urgency,
-                                           engine, end_to_end, len(result.sources)))
+                                           engine, end_to_end, len(result.sources),
+                                           reason=result.reasoning))
         return started

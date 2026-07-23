@@ -14,7 +14,8 @@ _T1 = datetime(2026, 7, 13, 14, 0, 12, tzinfo=timezone.utc)
 _T3 = datetime(2026, 7, 13, 14, 0, 54, tzinfo=timezone.utc)
 
 
-def _row(pipeline, t3, *, symbol='BTCUSD', is_breaking=True, published=None, fetched=None):
+def _row(pipeline, t3, *, symbol='BTCUSD', is_breaking=True, published=None, fetched=None,
+         signal='SELL', reason=''):
     source = {}
     if published is not None:
         source['published_at'] = published.isoformat()
@@ -22,8 +23,8 @@ def _row(pipeline, t3, *, symbol='BTCUSD', is_breaking=True, published=None, fet
         source['fetched_at'] = fetched.isoformat()
     return (pipeline, {
         'timestamp': t3.isoformat(),
-        'result': [{'symbol': symbol, 'is_breaking': is_breaking,
-                    'sources': [source] if source else []}],
+        'result': [{'symbol': symbol, 'is_breaking': is_breaking, 'signal': signal,
+                    'reasoning': reason, 'sources': [source] if source else []}],
     })
 
 
@@ -71,3 +72,24 @@ def test_format_renders_windows_and_funnel():
     assert 'Breaking Detection' in out
     assert 'window: last 7d' in out
     assert '3 flagged → 1 confirmed' in out
+
+
+def test_episode_listing_shows_started_duration_and_reason():
+    # ISSUE_64: the per-episode listing groups by pipeline, one line each — started, duration, why.
+    base = datetime(2026, 7, 13, 14, 0, 0, tzinfo=timezone.utc)
+    rows = [
+        _row('crypto_sentiment', base, symbol='ETHUSD', signal='SELL',
+             reason='greed rising — Musk confirms ETH buy-in', fetched=base - timedelta(seconds=30)),
+        _row('crypto_sentiment', base + timedelta(minutes=5), symbol='ETHUSD', signal='SELL',
+             reason='still hot', fetched=base),                     # same episode → extends duration
+    ]
+    report = _aggregate(rows, 0, '7d')
+    assert len(report.episodes) == 1                                # one edge-triggered episode
+    episode = report.episodes[0]
+    assert episode.symbol == 'ETHUSD' and episode.signal == 'SELL'
+    assert episode.duration_s == 300.0                              # 5-min span (last − start)
+    assert episode.reason == 'greed rising — Musk confirms ETH buy-in'   # frozen at the start
+    out = format_breaking_report(report)
+    assert 'Breaking episodes — last 7d' in out
+    assert 'ETHUSD' in out and 'Musk confirms ETH buy-in' in out
+    assert '5.0m' in out                                            # duration rendered
