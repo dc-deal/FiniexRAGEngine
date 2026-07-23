@@ -17,7 +17,7 @@ only ever reads them, and reading an int reference is atomic.
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Deque, Dict, List, Optional
+from typing import Deque, Dict, List, Optional, Tuple
 
 
 # --- per-stage snapshots -------------------------------------------------------------------
@@ -62,7 +62,7 @@ class LlmSnapshot:
     tokens: int
     cost_usd: float
     duration_ms: float
-    signals: List[str] = field(default_factory=list)      # one per symbol, in symbol order
+    signals: List[Tuple[str, str]] = field(default_factory=list)   # (symbol, signal), in symbol order
 
 
 @dataclass(frozen=True)

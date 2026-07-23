@@ -29,6 +29,7 @@ from finiexragengine.core.ui.engine_stats import (
     RetrievalSnapshot,
     SourcesSnapshot,
 )
+from finiexragengine.utils.windows_console import disable_quickedit
 
 
 def _format_age(seconds: float) -> str:
@@ -73,6 +74,10 @@ class LiveDisplay:
         # Import here so the module imports cleanly even where rich.Live's terminal probing would
         # misbehave (tests render via `render()` directly, never entering Live).
         from rich.live import Live
+
+        # Harden the Windows console first: clear QuickEdit so a stray click/keypress can't pause
+        # our stdout writes and freeze the event loop (ISSUE_26); a no-op off Windows.
+        disable_quickedit()
 
         # screen=True: the dashboard owns the full terminal via the alternate screen buffer, so the
         # layout fills the whole screen (state block on top, activity stream filling the rest) and
@@ -126,14 +131,15 @@ class LiveDisplay:
 
     def _stage_rows(self, now: datetime) -> Table:
         # A grid (no borders): stage label + per-worker id + `last` cell + a free detail column.
-        table = Table.grid(padding=(0, 2))
         # Every column is no_wrap so each stage row is exactly one line — that is what makes
-        # `_state_height` (rows + border) the real panel height and stops a wrapped cell from
-        # pushing a later row out of the reserved block. `id` auto-fits the longest worker id.
+        # `_state_height` (rows + border) the real panel height. expand=True + a ratio detail
+        # column make rich shrink ONLY the detail (ellipsis) when a long line (many symbol:signal
+        # pairs) overflows — the fixed stage/id/last columns never collapse.
+        table = Table.grid(padding=(0, 2), expand=True)
         table.add_column('stage', style='bold', width=10, no_wrap=True)
-        table.add_column('id', no_wrap=True)
+        table.add_column('id', width=22, no_wrap=True, overflow='ellipsis')
         table.add_column('last', width=11, no_wrap=True)
-        table.add_column('detail', no_wrap=True, overflow='ellipsis')
+        table.add_column('detail', no_wrap=True, overflow='ellipsis', ratio=1)
 
         # One row per worker (source-set for SOURCES/INGEST, pipeline for RETRIEVAL/LLM), so the
         # concurrent workers never clobber each other's state (ISSUE_26).
@@ -194,7 +200,11 @@ class LiveDisplay:
     def _llm_detail(snapshot: Optional[LlmSnapshot]) -> Text:
         if snapshot is None:
             return Text('—', style='dim')
-        arrow = f' → {"/".join(snapshot.signals)}' if snapshot.signals else ''
+        # One `SYMBOL:signal` per evaluated symbol, in symbol order — so the row says *which*
+        # symbol got which signal, not an anonymous slash-list (ISSUE_26).
+        arrow = ''
+        if snapshot.signals:
+            arrow = ' → ' + ' · '.join(f'{symbol}:{signal}' for symbol, signal in snapshot.signals)
         return Text(f'{snapshot.tokens} tok · ${snapshot.cost_usd:.6f} · '
                     f'{snapshot.duration_ms:.0f}ms{arrow}')
 
@@ -227,12 +237,13 @@ class LiveDisplay:
         return Text('re-probe —', style='dim')
 
     def _activity(self, now: datetime) -> Table:
-        table = Table.grid(padding=(0, 2))
+        table = Table.grid(padding=(0, 2), expand=True)
         table.add_column('time', style='dim', width=8, no_wrap=True)
         table.add_column('stage', style='bold', width=8, no_wrap=True)
         # One line per event (crop, don't wrap). Newest first; the activity panel crops to its
         # height, so a taller terminal simply shows more history — no manual row cap needed.
-        table.add_column('message', no_wrap=True, overflow='ellipsis')
+        # ratio=1 makes a long message shrink itself, not collapse the time/stage columns.
+        table.add_column('message', no_wrap=True, overflow='ellipsis', ratio=1)
         for event in reversed(self._stats.events()):
             table.add_row(event.ts.strftime('%H:%M:%S'), event.stage, event.message)
         return table

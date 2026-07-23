@@ -129,9 +129,9 @@ class EvalWorker:
         stats.set_retrieval(pipeline_id, RetrievalSnapshot(last=now, retrieved=m.articles_relevant,
                                                            symbols=len(envelope.result)))
         # LLM row: spend + one signal per symbol, in symbol order (a single arrow would lie).
-        stats.set_llm(pipeline_id, LlmSnapshot(last=now, tokens=tokens, cost_usd=m.cost_usd,
-                                               duration_ms=duration_ms,
-                                               signals=[r.signal for r in envelope.result]))
+        stats.set_llm(pipeline_id, LlmSnapshot(
+            last=now, tokens=tokens, cost_usd=m.cost_usd, duration_ms=duration_ms,
+            signals=[(r.symbol, r.signal) for r in envelope.result]))
         stats.push_event('LLM', f'{pipeline_id} {self._state.last_detail}')
         # BREAKING (confirmed side): one activity line each + the cumulative count with its
         # reaction time (the `engine …/ e2e …` segment of the confirmation line).

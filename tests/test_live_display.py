@@ -44,13 +44,16 @@ def test_two_workers_render_as_separate_rows():
     stats = _stats()
     stats.set_sources('crypto_news', SourcesSnapshot(last=_NOW, ok=5, total=5))
     stats.set_sources('forex_news', SourcesSnapshot(last=_NOW, ok=7, total=7))
-    stats.set_llm('crypto_sentiment', LlmSnapshot(last=_NOW, tokens=6698, cost_usd=0.0011,
-                                                  duration_ms=2800, signals=['SELL', 'SELL']))
-    stats.set_llm('forex_macro_sentiment', LlmSnapshot(last=_NOW, tokens=4102, cost_usd=0.0007,
-                                                       duration_ms=2400, signals=['HOLD', 'BUY']))
+    stats.set_llm('crypto_sentiment', LlmSnapshot(
+        last=_NOW, tokens=6698, cost_usd=0.0011, duration_ms=2800,
+        signals=[('BTCUSD', 'SELL'), ('ETHUSD', 'SELL')]))
+    stats.set_llm('forex_macro_sentiment', LlmSnapshot(
+        last=_NOW, tokens=4102, cost_usd=0.0007, duration_ms=2400,
+        signals=[('EURUSD', 'HOLD'), ('GBPUSD', 'BUY')]))
     text = _render(LiveDisplay(stats, worker_count=4))
     assert '5/5 ok' in text and '7/7 ok' in text              # both source-sets, no clobber
-    assert 'SELL/SELL' in text and 'HOLD/BUY' in text         # both pipelines' signals
+    assert 'BTCUSD:SELL' in text and 'ETHUSD:SELL' in text    # per-symbol attribution, not a slash-list
+    assert 'EURUSD:HOLD' in text and 'GBPUSD:BUY' in text     # both pipelines' symbols
     assert 'crypto_sentiment' in text and 'forex_macro_sentiment' in text
 
 
