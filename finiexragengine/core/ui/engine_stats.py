@@ -70,8 +70,16 @@ class BreakingSnapshot:
     """BREAKING row — cumulative over the session (detected by ingest, confirmed by eval)."""
     last: Optional[datetime]
     detected: int                                # candidates flagged (ISSUE_11 ingest side)
-    confirmed: int                               # confirmed breaking results (eval side)
+    confirmed: int                               # confirmed breaking EPISODES (eval side, edge-triggered)
     detail: str = ''                             # last reaction time, e.g. 'engine 42s / e2e 3.1m'
+
+
+@dataclass(frozen=True)
+class BreakingRecord:
+    """One recent confirmed episode — for the RECENT summary line (newest kept, oldest drops)."""
+    ts: datetime
+    symbol: str
+    signal: str
 
 
 @dataclass(frozen=True)
@@ -113,6 +121,8 @@ class EngineStats:
         # Breaking is session-cumulative and engine-wide (detected by any ingest, confirmed by any
         # eval) — one global row, not per worker. Starts at zero, never None.
         self._breaking: BreakingSnapshot = BreakingSnapshot(last=None, detected=0, confirmed=0)
+        # The last few confirmed episodes (edge-triggered, ISSUE_11) for the RECENT summary line.
+        self._recent_breaking: Deque[BreakingRecord] = deque(maxlen=6)
         # Bounded history: O(1) memory regardless of uptime; oldest events fall off the back.
         self._events: Deque[StreamEvent] = deque(maxlen=max_events)
 
@@ -136,11 +146,14 @@ class EngineStats:
         self._breaking = BreakingSnapshot(last=at, detected=current.detected + count,
                                           confirmed=current.confirmed, detail=current.detail)
 
-    def add_breaking_confirmed(self, count: int, detail: str, *, at: datetime) -> None:
-        """Eval confirmed `count` breaking results — bump confirmed, record the reaction line."""
+    def add_breaking_episode(self, symbol: str, signal: str, detail: str, *,
+                             at: datetime) -> None:
+        """One confirmed breaking episode (edge-triggered, ISSUE_11): bump the episode count, set
+        the reaction detail, and record it for the RECENT summary line."""
         current = self._breaking
         self._breaking = BreakingSnapshot(last=at, detected=current.detected,
-                                          confirmed=current.confirmed + count, detail=detail)
+                                          confirmed=current.confirmed + 1, detail=detail)
+        self._recent_breaking.append(BreakingRecord(at, symbol, signal))
 
     def push_event(self, stage: str, message: str) -> None:
         """Append one activity line (thread-safe deque.append); oldest falls off at maxlen."""
@@ -162,6 +175,10 @@ class EngineStats:
 
     def breaking(self) -> BreakingSnapshot:
         return self._breaking
+
+    def recent_breaking(self) -> List[BreakingRecord]:
+        """The last few confirmed episodes (oldest→newest) for the RECENT summary line."""
+        return list(self._recent_breaking)
 
     def events(self) -> List[StreamEvent]:
         """A stable copy for the renderer — iterating the live deque under append is avoided."""

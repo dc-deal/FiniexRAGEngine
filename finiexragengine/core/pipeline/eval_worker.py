@@ -5,6 +5,10 @@ from datetime import datetime, timezone
 from time import perf_counter
 from typing import List, Optional
 
+from finiexragengine.core.pipeline.breaking_episode import (
+    BreakingEpisode,
+    BreakingEpisodeTracker,
+)
 from finiexragengine.core.pipeline.pipeline import Pipeline
 from finiexragengine.core.triggers.abstract_trigger import AbstractTrigger
 from finiexragengine.core.ui.engine_stats import (
@@ -24,26 +28,16 @@ def _fmt_seconds(seconds: Optional[float]) -> str:
     return f'{seconds:.0f}s' if seconds < 90 else f'{seconds / 60:.1f}m'
 
 
-def _breaking_confirmations(envelope: AnalysisEnvelope) -> List[str]:
-    """One `[BREAKING ✓]` line per confirmed breaking result, with its reaction time (ISSUE_11).
+def _breaking_line(pipeline_id: str, episode: BreakingEpisode) -> str:
+    """The `[BREAKING ✓]` log/stream line for one episode start, with its frozen reaction time.
 
     Engine reaction = envelope timestamp − earliest source `fetched_at` (what we control);
-    end-to-end = − earliest `published_at` (what the consumer feels). Both from the envelope,
-    so it matches the store-based report exactly.
+    end-to-end = − earliest REAL `published_at` (estimated dates excluded). Anchored once at the
+    episode start (see `breaking_episode`), so it matches the store-based report by construction.
     """
-    lines = []
-    for result in envelope.result:
-        if not result.is_breaking:
-            continue
-        fetched = [s.fetched_at for s in result.sources if s.fetched_at]
-        published = [s.published_at for s in result.sources if s.published_at]
-        engine = (envelope.timestamp - min(fetched)).total_seconds() if fetched else None
-        end_to_end = (envelope.timestamp - min(published)).total_seconds() if published else None
-        lines.append(
-            f'[BREAKING ✓] {envelope.pipeline_id} {result.symbol} {result.signal} '
-            f'urgency {result.urgency:.2f} · engine {_fmt_seconds(engine)} / '
-            f'e2e {_fmt_seconds(end_to_end)} · {len(result.sources)} sources')
-    return lines
+    return (f'[BREAKING ✓] {pipeline_id} {episode.symbol} {episode.signal} '
+            f'urgency {episode.urgency:.2f} · engine {_fmt_seconds(episode.engine_s)} / '
+            f'e2e {_fmt_seconds(episode.end_to_end_s)} · {episode.n_sources} sources')
 
 
 class EvalWorker:
@@ -67,6 +61,9 @@ class EvalWorker:
         # Optional (ISSUE_26): the live dashboard's shared state. None = no display — every
         # push below is skipped, so the /health-only and CLI paths carry zero overhead.
         self._engine_stats = engine_stats
+        # Edge-triggered breaking (ISSUE_11): a hot story is counted/logged once, on the transition
+        # into breaking — not every pass it lingers. Session-scoped; the store report is durable.
+        self._episodes = BreakingEpisodeTracker()
         config = pipeline.get_config()
         # Eval cadence is a bar-close timeframe (ISSUE_timeframe); expose it as the label plus
         # the derived seconds value (via cadence_seconds) so /health still shows a number.
@@ -105,19 +102,20 @@ class EvalWorker:
                 logger.info('[%s] %s · %d tok · $%.6f · %.0fms → outcomes',
                             self._state.name, self._state.last_detail,
                             tokens, m.cost_usd, duration_ms)
-                # Per-breaking reaction time, logged the moment it is confirmed (ISSUE_11) — so an
-                # overnight run is self-documenting: every confirmed breaking shows its latency
-                # inline, and it cross-checks the store-based `breaking` report.
-                confirmations = _breaking_confirmations(envelope)
-                for line in confirmations:
-                    logger.info(line)
+                # Confirmed breaking, edge-triggered (ISSUE_11): a hot story is logged once, on the
+                # transition into breaking — not every pass it lingers (that flooded the log with 59
+                # identical lines/day and inflated the count). Cross-checks the store `breaking`
+                # report, which groups the same episodes.
+                episodes = self._episodes.new_episodes(envelope)
+                for episode in episodes:
+                    logger.info(_breaking_line(envelope.pipeline_id, episode))
                 # Feed the live dashboard from the same envelope (ISSUE_26); no-op without a display.
-                self._push_stats(envelope, tokens, duration_ms, confirmations)
+                self._push_stats(envelope, tokens, duration_ms, episodes)
             self._state.runs += 1
             self._state.last_duration_ms = (perf_counter() - started) * 1000.0
 
     def _push_stats(self, envelope: AnalysisEnvelope, tokens: int, duration_ms: float,
-                    confirmations: List[str]) -> None:
+                    episodes: List[BreakingEpisode]) -> None:
         """Push this eval pass into the live dashboard's shared state (ISSUE_26); no-op without one."""
         stats = self._engine_stats
         if stats is None:
@@ -133,11 +131,10 @@ class EvalWorker:
             last=now, tokens=tokens, cost_usd=m.cost_usd, duration_ms=duration_ms,
             signals=[(r.symbol, r.signal) for r in envelope.result]))
         stats.push_event('LLM', f'{pipeline_id} {self._state.last_detail}')
-        # BREAKING (confirmed side): one activity line each + the cumulative count with its
-        # reaction time (the `engine …/ e2e …` segment of the confirmation line).
-        for line in confirmations:
-            stats.push_event('BREAKING', line)
-        if confirmations:
-            detail = next((segment for segment in confirmations[-1].split(' · ')
-                           if segment.startswith('engine ')), '')
-            stats.add_breaking_confirmed(len(confirmations), detail, at=now)
+        # BREAKING (confirmed side): one activity line + one recorded episode per NEW episode —
+        # bumps the count, sets the frozen reaction detail, and feeds the RECENT summary line.
+        for episode in episodes:
+            stats.push_event('BREAKING', _breaking_line(envelope.pipeline_id, episode))
+            detail = (f'engine {_fmt_seconds(episode.engine_s)} / '
+                      f'e2e {_fmt_seconds(episode.end_to_end_s)}')
+            stats.add_breaking_episode(episode.symbol, episode.signal, detail, at=now)

@@ -3,7 +3,7 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 from time import perf_counter
-from typing import Callable, Optional
+from typing import Callable, Dict, List, Optional, Set
 
 from finiexragengine.core.observability.cost_recorder import CostRecorder
 from finiexragengine.core.pipeline.ingestor import Ingestor
@@ -18,6 +18,31 @@ from finiexragengine.types.ingest_types import IngestResult
 from finiexragengine.types.worker_types import WorkerState
 
 logger = logging.getLogger(__name__)
+
+# A feed polled less than this many times its expected cadence reads as stuck, not merely slow.
+_OVERDUE_FACTOR = 2.0
+
+
+def _overdue_feeds(last_ok: Dict[str, datetime], expected: Dict[str, int],
+                   now: datetime, skip: Set[str]) -> List[str]:
+    """Feeds whose last successful poll is overdue vs their expected cadence — 'is it still alive?'.
+
+    A healthy slow feed (its own `poll_interval_seconds`, politeness) cycles ok → floor_skip → ok,
+    so its `last_ok` stays within its interval; only a feed that stopped polling for more than
+    `_OVERDUE_FACTOR`× its expected gap is flagged. A feed already named this pass (quarantined /
+    failed) is skipped to avoid a double marker; a feed never yet polled is normal at startup.
+    """
+    overdue: List[str] = []
+    for source_id, interval in expected.items():
+        if source_id in skip:
+            continue
+        last = last_ok.get(source_id)
+        if last is None:
+            continue
+        overdue_s = (now - last).total_seconds()
+        if overdue_s > interval * _OVERDUE_FACTOR:
+            overdue.append(f'{source_id} overdue {int(overdue_s / 60)}m')
+    return overdue
 
 
 class IngestWorker:
@@ -47,6 +72,13 @@ class IngestWorker:
         # Optional (ISSUE_26): the live dashboard's shared state. None = no display (the
         # /health-only and CLI paths), in which case every push below is skipped — zero overhead.
         self._engine_stats = engine_stats
+        # Per-feed expected cadence (its own poll_interval / politeness, else the set's interval)
+        # + the last successful poll, so a stuck slow feed can be flagged overdue on the dashboard.
+        set_interval = source_set.trigger.interval_seconds
+        self._expected: Dict[str, int] = {
+            source.source_id: (source.poll_interval_seconds or set_interval)
+            for source in source_set.active_sources()}
+        self._last_ok: Dict[str, datetime] = {}
         self._state = WorkerState(name=f'ingest:{source_set.source_set_id}',
                                   kind='ingest',
                                   interval_seconds=source_set.trigger.interval_seconds)
@@ -123,10 +155,18 @@ class IngestWorker:
             return
         now = datetime.now(timezone.utc)
         source_set_id = self._set_name()          # this worker's key — one SOURCES/INGEST row per set
-        # SOURCES row: healthy collapses to `N/N ok`; only failed/quarantined feeds are named.
+        # Track each feed's last successful poll, then flag one that stopped polling vs its expected
+        # cadence — 'is my slow (politeness) feed still alive?' A healthy slow feed cycles within its
+        # interval and is not flagged; a quarantined/failed feed is already named, so it is skipped.
+        for poll in result.polls:
+            if poll.status == 'ok':
+                self._last_ok[poll.source_id] = now
+        already: Set[str] = set(result.quarantined_skips) | set(result.failed_sources)
+        # SOURCES row: healthy collapses to `N/N ok`; only failed/quarantined/overdue feeds named.
         ok = sum(1 for poll in result.polls if poll.status == 'ok')
         deviations = ([f'{source_id} quarantined' for source_id in result.quarantined_skips]
-                      + [f'{source_id} failed' for source_id in result.failed_sources])
+                      + [f'{source_id} failed' for source_id in result.failed_sources]
+                      + _overdue_feeds(self._last_ok, self._expected, now, already))
         stats.set_sources(source_set_id, SourcesSnapshot(last=now, ok=ok, total=len(result.polls),
                                                          deviations=deviations))
         # INGEST row + the activity line (only an eventful pass streams — mirrors the log level so

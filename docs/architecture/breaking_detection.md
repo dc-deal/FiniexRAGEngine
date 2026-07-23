@@ -145,10 +145,51 @@ t3 envelope ts    ─┘
 - **What's captured:** `ArticleRef.fetched_at` (t1, on the envelope, additive/back-compat) +
   `published_at` (t0, already there) + envelope `timestamp` (t3). `articles.flagged_at` (t2) lives
   in the corpus; the report joins it by `article_id` for detection latency.
-- **Episode de-dup:** a hot story stays `is_breaking` across several envelopes — the report counts
-  breaking *episodes* (consecutive `is_breaking` per pipeline+symbol within a 30-min gap) and
-  anchors reaction on the **first** confirming envelope, not every re-confirmation (report-time
-  grouping, restart-robust).
+- **Episode de-dup (live AND store):** a hot story stays `is_breaking` across many envelopes —
+  counting/logging every pass inflates "confirmed" (one lingering ADAUSD story = 89 raw hits, 2
+  episodes) and lets reaction grow with the wall-clock. So a breaking *episode* (consecutive
+  `is_breaking` per pipeline+symbol within `EPISODE_GAP` = 30 min) is counted **once**, on the
+  transition into breaking, with reaction anchored on the **first** confirming envelope. The store
+  report groups this in batch (`breaking_report._aggregate`, restart-robust); the live eval worker
+  +dashboard do it streaming (`core/pipeline/breaking_episode.py` — `BreakingEpisodeTracker`,
+  session-scoped). Both import the same `EPISODE_GAP`, so they agree by construction (verified: 14
+  episodes each on the same day). The `[BREAKING ✓]` log now fires once per episode, not per pass.
+- **Estimated publish dates excluded from e2e:** a date-less feed falls back `published_at :=
+  fetched_at` (so recency filtering still works). Those estimated dates would collapse e2e onto
+  engine, so both surfaces drop sources where `published_at == fetched_at` from the e2e sample;
+  if every source is estimated, e2e is `—` (honest), not a fake number.
+
+### Episodes — state vs. event (worked example)
+
+`is_breaking` is a **state** (is this symbol breaking *right now*?), recomputed every eval pass —
+not an **event**. A symbol with ongoing news scores `urgency ≥ threshold` pass after pass, so
+counting each observation counts the *state*, not distinct breaks — like counting every second a
+fire alarm rings instead of counting one fire. That is the "confirmed" inflation.
+
+An **episode** is the fix: one continuous stretch of breaking, counted **once** on the transition
+into breaking. It stays the same episode while breaking continues (or resumes within `EPISODE_GAP`);
+a quiet gap longer than `EPISODE_GAP` re-arms it, so the next break is a new episode.
+
+A real day for `ADAUSD` — **89 breaking passes → 2 episodes**:
+
+```
+09:37 │ breaking · breaking · … · breaking      ◀ EPISODE 1 (the transition into breaking)
+      │ (ON every 10-min pass — the same story)
+      ┊   … 101 min quiet (not breaking) …       > 30 min ⇒ the episode is considered over
+14:41 │ breaking · breaking · … · 23:50          ◀ EPISODE 2 (gap 101 min > 30 → new)
+```
+
+The gap rule in three cases (`EPISODE_GAP` = 30 min):
+
+| breaking at | episodes | why |
+|---|---|---|
+| 10:00 · 10:10 · 10:20 · 10:30 | 1 | every gap ≤ 30 min → one story |
+| 10:00 · 10:10 · [25 min] · 10:35 | 1 | 25 ≤ 30 → still the same |
+| 10:00 · 10:10 · [40 min] · 10:50 | 2 | 40 > 30 → a new episode |
+
+Reaction time follows the same logic: sampled once, at the episode's first confirming pass, then
+frozen. Otherwise it re-anchors on the ageing oldest article every pass and grows with the
+wall-clock (a lingering story drifted `863m → 873m → 883m` — a symptom, not a signal).
 
 **The report** (`core/observability/breaking_report.py`, CLI `cli/breaking_cli.py`) — the shared
 pattern table, windowed all-time / this week / recent, aggregated from the store; **no per-run

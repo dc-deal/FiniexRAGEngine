@@ -45,11 +45,15 @@ def test_breaking_counters_accumulate():
     assert stats.breaking().detected == 0 and stats.breaking().confirmed == 0
     stats.add_breaking_detected(2, at=_NOW)
     stats.add_breaking_detected(1, at=_NOW)
-    stats.add_breaking_confirmed(1, 'engine 42s / e2e 3.1m', at=_NOW)
+    stats.add_breaking_episode('ADAUSD', 'SELL', 'engine 42s / e2e 3.1m', at=_NOW)
+    stats.add_breaking_episode('ETHUSD', 'BUY', 'engine 12s / e2e 30s', at=_NOW)
     breaking = stats.breaking()
     assert breaking.detected == 3                             # cumulative, engine-wide
-    assert breaking.confirmed == 1
-    assert breaking.detail == 'engine 42s / e2e 3.1m'
+    assert breaking.confirmed == 2                            # one per episode (edge-triggered)
+    assert breaking.detail == 'engine 12s / e2e 30s'         # last episode's reaction
+    # RECENT summary keeps the episodes (oldest→newest) for the dashboard's recent line.
+    recent = stats.recent_breaking()
+    assert [(r.symbol, r.signal) for r in recent] == [('ADAUSD', 'SELL'), ('ETHUSD', 'BUY')]
 
 
 def test_event_stream_is_capped_at_maxlen():

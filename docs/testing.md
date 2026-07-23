@@ -65,6 +65,7 @@ never attach one just because `DATABASE_URL`/`OPENAI_API_KEY` are set in the env
 | `test_breaking_bus.py` | per-pipeline `min_importance` wake filter, re-arm, cross-set isolation | — |
 | `test_event_trigger.py` | eval clock: immediate + interval + breaking wake before interval, clean stop | — |
 | `test_breaking_report.py` | reaction math (engine vs end-to-end), episode grouping, funnel render | — |
+| `test_breaking_episode.py` | edge-triggered breaking episodes (ISSUE_11): first breaking = one episode, re-break within/after the 30-min gap, ongoing story counts once, reaction anchored+frozen at the start, estimated publish (published==fetched) excluded from e2e | — |
 | `test_source_health.py` | host normalization, warn/error split, report format, orphan notice, feed-doctor classifier | — |
 | `test_source_health_store.py` | poll counters, flag+quarantine threshold, recovery reset, event cap, restart-survives quarantine | PostgreSQL |
 | `test_logging_setup.py` | console + daily-rotating file, idempotent reconfigure, quiet loggers | — |

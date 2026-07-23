@@ -37,6 +37,15 @@ def test_render_smoke_on_empty_stats():
     assert 'crypto_news' in text and 'forex_news' in text
     assert 'idle' in text
     assert '4 workers' in text
+    assert 'recent' in text and 'none yet' in text           # RECENT line, empty until an episode
+
+
+def test_recent_breaking_line_shows_last_episodes():
+    stats = _stats()
+    stats.add_breaking_episode('ADAUSD', 'SELL', 'engine 1.4m / e2e 6.2m', at=_NOW)
+    stats.add_breaking_episode('ETHUSD', 'BUY', 'engine 12s / e2e 30s', at=_NOW)
+    text = _render(LiveDisplay(stats, worker_count=4))
+    assert 'ADAUSD SELL' in text and 'ETHUSD BUY' in text     # per-episode symbol+signal chips
 
 
 def test_two_workers_render_as_separate_rows():

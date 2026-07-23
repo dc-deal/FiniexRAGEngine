@@ -8,17 +8,17 @@ cannot be rebuilt after the fact, so it rides on fields captured at the event: t
 """
 import json
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
 import psycopg
 
+from finiexragengine.core.pipeline.breaking_episode import EPISODE_GAP
 from finiexragengine.exceptions.ragengine_errors import VectorStoreError
 
-# Consecutive is_breaking envelopes for one symbol within this gap = one breaking *episode*
-# (a hot story stays breaking across several passes; reaction anchors on the FIRST confirming
-# envelope, not every re-confirmation — report-time grouping, restart-robust).
-_EPISODE_GAP = timedelta(minutes=30)
+# `EPISODE_GAP` (consecutive is_breaking within the gap = one episode; reaction anchors on the
+# FIRST confirming envelope) is shared with the live path (breaking_episode) so the store report
+# and the dashboard never diverge.
 
 
 @dataclass
@@ -97,7 +97,10 @@ def _aggregate(rows: List[Tuple[str, object]], flagged: int,
             if not result.get('is_breaking'):
                 continue
             sources = result.get('sources', [])
-            published = [_parse_dt(s['published_at']) for s in sources if s.get('published_at')]
+            # Exclude estimated publish dates (a date-less feed falls back published := fetched) so
+            # e2e does not collapse onto engine — the same rule as the live path (breaking_episode).
+            published = [_parse_dt(s['published_at']) for s in sources
+                         if s.get('published_at') and s['published_at'] != s.get('fetched_at')]
             fetched = [_parse_dt(s['fetched_at']) for s in sources if s.get('fetched_at')]
             end_to_end = (t3 - min(published)).total_seconds() if published else None
             engine = (t3 - min(fetched)).total_seconds() if fetched else None
@@ -111,7 +114,7 @@ def _aggregate(rows: List[Tuple[str, object]], flagged: int,
         for t3, engine, end_to_end in events:
             # A new episode: the first breaking seen, or a re-break after a gap. Reaction time
             # is sampled only here — later re-confirmations of the same story do not reset it.
-            if last_ts is None or (t3 - last_ts) > _EPISODE_GAP:
+            if last_ts is None or (t3 - last_ts) > EPISODE_GAP:
                 row.confirmed += 1
                 if engine is not None:
                     row.engine_reaction_s.append(engine)

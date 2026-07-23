@@ -118,10 +118,10 @@ class LiveDisplay:
 
     def _state_height(self) -> int:
         # One row per worker for SOURCES/INGEST (source-sets) and RETRIEVAL/LLM (pipelines), at
-        # least one idle row each, plus the BUDGET + BREAKING rows, plus the panel's two borders.
+        # least one idle row each, plus BUDGET + BREAKING + the RECENT line, plus the two borders.
         sets = max(1, len(self._stats.sources()))
         pipelines = max(1, len(self._stats.retrieval()))
-        return 2 * sets + 2 * pipelines + 2 + 2
+        return 2 * sets + 2 * pipelines + 3 + 2
 
     def _header(self, now: datetime) -> str:
         uptime = _format_age((now - self._started_at).total_seconds())
@@ -151,6 +151,8 @@ class LiveDisplay:
         table.add_row('BUDGET', '', self._budget_last(), self._budget_detail())
         table.add_row('BREAKING', '', _last(now, self._stats.breaking().last),
                       self._breaking_detail(self._stats.breaking()))
+        # RECENT: the last few confirmed episodes as `SYMBOL SIGNAL age` chips, newest first.
+        table.add_row('', Text('recent', style='dim'), '', self._recent_breaking_detail(now))
         return table
 
     def _keyed_rows(self, table: Table, now: datetime, label: str,
@@ -215,6 +217,16 @@ class LiveDisplay:
             base += f' · {snapshot.detail}'
         style = 'red' if snapshot.confirmed else ('yellow' if snapshot.detected else 'dim')
         return Text(base, style=style)
+
+    def _recent_breaking_detail(self, now: datetime) -> Text:
+        # The last few confirmed episodes as `SYMBOL SIGNAL age` chips, newest first — a glance at
+        # what just broke, without scanning the activity stream.
+        records = self._stats.recent_breaking()
+        if not records:
+            return Text('none yet', style='dim')
+        chips = ' · '.join(f'{r.symbol} {r.signal} {_format_age((now - r.ts).total_seconds())}'
+                           for r in reversed(records))
+        return Text(chips)
 
     def _budget_status(self) -> dict:
         return self._budget_guard.status() if self._budget_guard is not None else {}
