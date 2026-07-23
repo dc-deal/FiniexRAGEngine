@@ -7,6 +7,7 @@ cannot be rebuilt after the fact, so it rides on fields captured at the event: t
 `flagged_at` lives in the corpus and feeds the funnel's numerator.
 """
 import json
+import shutil
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
@@ -150,7 +151,9 @@ def _aggregate(rows: List[Tuple[str, object]], flagged: int,
             last_ts = t3
 
     ordered = sorted(per_pipeline.values(), key=lambda row: row.pipeline_id)
-    episodes.sort(key=lambda episode: (episode.pipeline_id, episode.started))
+    # Group the listing by pipeline THEN symbol (then time): a symbol's episodes cluster, so signal
+    # consistency (all BUY vs a BUY→SELL flip) is scannable at a glance (ISSUE_64 feedback).
+    episodes.sort(key=lambda episode: (episode.pipeline_id, episode.symbol, episode.started))
     return BreakingReport(since_label, ordered, flagged,
                           sum(row.confirmed for row in ordered), episodes)
 
@@ -168,8 +171,18 @@ def _fmt_pair(values: List[float]) -> str:
     return f'{_fmt_seconds(median)} / {_fmt_seconds(_percentile(values, 0.9))}'
 
 
-def format_breaking_report(report: BreakingReport) -> str:
-    """Render the report as the shared console pattern (no per-run footer — this is an aggregate)."""
+def _truncate(text: str, budget: int) -> str:
+    """Cut `text` to `budget` cells, ellipsis-marked — so a long reason never overruns the console."""
+    return text if len(text) <= budget else text[:budget - 1] + '…'
+
+
+def format_breaking_report(report: BreakingReport, *, width: Optional[int] = None) -> str:
+    """Render the report as the shared console pattern (no per-run footer — this is an aggregate).
+
+    `width` (default: the live terminal via `shutil.get_terminal_size`, cross-shell, 80 when piped)
+    caps the reason column so a long line adapts to the console instead of a fixed cut.
+    """
+    term_width = width if width is not None else shutil.get_terminal_size((80, 24)).columns
     divider = '-' * 72
     lines = [
         'Breaking Detection — reaction & funnel',
@@ -200,14 +213,23 @@ def format_breaking_report(report: BreakingReport) -> str:
     if not report.episodes:
         lines.append('  (none)')
     else:
+        # The fixed prefix is 37 cells (`  {sym:8} {sig:4} {started:>11}  {dur:>6}  `); the reason
+        # fills whatever the console has left, minus a 5-cell safety margin so a slightly-miscounted
+        # width (or a console that reports one column too many) never wraps a line (ISSUE_64 feedback).
+        reason_budget = max(20, term_width - 37 - 5)
         current_pipeline: Optional[str] = None
+        current_symbol: Optional[str] = None
         for episode in report.episodes:
             if episode.pipeline_id != current_pipeline:
                 lines.append(episode.pipeline_id)          # section header per pipeline
                 current_pipeline = episode.pipeline_id
+                current_symbol = None                      # reset the symbol grouping under it
+            # Show the symbol once per group (blank on repeats), so a symbol's rows read as a block
+            # and its signal column (BUY/SELL) is scannable for consistency (ISSUE_64 feedback).
+            symbol_cell = episode.symbol if episode.symbol != current_symbol else ''
+            current_symbol = episode.symbol
             started = episode.started.strftime('%m-%d %H:%M')
             duration = _fmt_seconds(episode.duration_s) if episode.duration_s else '—'
-            reason = episode.reason if len(episode.reason) <= 60 else episode.reason[:59] + '…'
-            lines.append(f'  {episode.symbol:8} {episode.signal:4} {started:>11}  '
-                         f'{duration:>6}  {reason}')
+            lines.append(f'  {symbol_cell:8} {episode.signal:4} {started:>11}  '
+                         f'{duration:>6}  {_truncate(episode.reason, reason_budget)}')
     return '\n'.join(lines)

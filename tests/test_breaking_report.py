@@ -89,7 +89,22 @@ def test_episode_listing_shows_started_duration_and_reason():
     assert episode.symbol == 'ETHUSD' and episode.signal == 'SELL'
     assert episode.duration_s == 300.0                              # 5-min span (last − start)
     assert episode.reason == 'greed rising — Musk confirms ETH buy-in'   # frozen at the start
-    out = format_breaking_report(report)
+    out = format_breaking_report(report, width=120)               # explicit width — no ambient TTY dep
     assert 'Breaking episodes — last 7d' in out
     assert 'ETHUSD' in out and 'Musk confirms ETH buy-in' in out
     assert '5.0m' in out                                            # duration rendered
+
+
+def test_episode_listing_groups_by_symbol_and_adapts_width():
+    # ISSUE_64 feedback: cluster a pipeline's episodes by symbol (so signal consistency is scannable)
+    # and cap the reason to the console width instead of a fixed cut.
+    base = datetime(2026, 7, 13, 14, 0, 0, tzinfo=timezone.utc)
+    rows = [
+        _row('p', base, symbol='ETHUSD', signal='BUY', reason='x' * 200),
+        _row('p', base + timedelta(hours=2), symbol='ADAUSD', signal='SELL', reason='y'),
+        _row('p', base + timedelta(hours=4), symbol='ETHUSD', signal='SELL', reason='z'),
+    ]
+    report = _aggregate(rows, 0, '7d')
+    assert [e.symbol for e in report.episodes] == ['ADAUSD', 'ETHUSD', 'ETHUSD']   # grouped by symbol
+    out = format_breaking_report(report, width=100)
+    assert 'x' * 57 in out and 'x' * 58 not in out                  # cut to width budget (100−37−5=58 → 57 + …)
