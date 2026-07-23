@@ -32,6 +32,8 @@ every change is committed manually after review.
 
 Before committing to a design for a non-trivial feature or change:
 
+- **Check /app/.vscode/launch.json**
+  As a central launch library, it provides a quick overview of the project's most important capabilities from the operator's perspective. Every command listed here has its own purpose and justification. If something is not included, it may have been intentionally omitted for clarity and overview reasons. The `launch.json` is structured into sections. Make sure to extend the appropriate sections when adding new entries, and always consider the section headings and comments as guidance.
 - **Plan first, build second — the two-eyes principle.** Implementation starts only after
   the operator has seen the plan. For an **issue-feature: always** — the operator may have
   read the issue days ago; the plan re-anchors it. Small-but-real changes get a short pitch

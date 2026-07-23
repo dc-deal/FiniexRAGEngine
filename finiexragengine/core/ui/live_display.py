@@ -21,7 +21,9 @@ from rich.table import Table
 from rich.text import Text
 
 from finiexragengine.core.observability.budget_guard import BudgetGuard
+from finiexragengine.core.pipeline.breaking_episode import EPISODE_GAP
 from finiexragengine.core.ui.engine_stats import (
+    BreakingRecord,
     BreakingSnapshot,
     EngineStats,
     IngestSnapshot,
@@ -29,6 +31,11 @@ from finiexragengine.core.ui.engine_stats import (
     RetrievalSnapshot,
     SourcesSnapshot,
 )
+from finiexragengine.utils.windows_console import disable_quickedit
+
+# The BREAKING section reserves this many episode rows (newest first, blank-padded) so the state
+# panel stays fixed-height while listing recent episodes one per line (ISSUE_64).
+_MAX_EPISODE_ROWS = 3
 
 
 def _format_age(seconds: float) -> str:
@@ -74,6 +81,10 @@ class LiveDisplay:
         # misbehave (tests render via `render()` directly, never entering Live).
         from rich.live import Live
 
+        # Harden the Windows console first: clear QuickEdit so a stray click/keypress can't pause
+        # our stdout writes and freeze the event loop (ISSUE_26); a no-op off Windows.
+        disable_quickedit()
+
         # screen=True: the dashboard owns the full terminal via the alternate screen buffer, so the
         # layout fills the whole screen (state block on top, activity stream filling the rest) and
         # exit restores the previous terminal cleanly — no leftover/doubled frame (ISSUE_26).
@@ -112,11 +123,12 @@ class LiveDisplay:
         return layout
 
     def _state_height(self) -> int:
-        # One row per worker for SOURCES/INGEST (source-sets) and RETRIEVAL/LLM (pipelines), at
-        # least one idle row each, plus the BUDGET + BREAKING rows, plus the panel's two borders.
+        # One row per worker for SOURCES/INGEST (source-sets) and RETRIEVAL/LLM (pipelines), at least
+        # one idle row each, plus BUDGET + the BREAKING summary + the reserved episode rows, plus the
+        # two borders.
         sets = max(1, len(self._stats.sources()))
         pipelines = max(1, len(self._stats.retrieval()))
-        return 2 * sets + 2 * pipelines + 2 + 2
+        return 2 * sets + 2 * pipelines + 2 + _MAX_EPISODE_ROWS + 2
 
     def _header(self, now: datetime) -> str:
         uptime = _format_age((now - self._started_at).total_seconds())
@@ -126,14 +138,15 @@ class LiveDisplay:
 
     def _stage_rows(self, now: datetime) -> Table:
         # A grid (no borders): stage label + per-worker id + `last` cell + a free detail column.
-        table = Table.grid(padding=(0, 2))
         # Every column is no_wrap so each stage row is exactly one line — that is what makes
-        # `_state_height` (rows + border) the real panel height and stops a wrapped cell from
-        # pushing a later row out of the reserved block. `id` auto-fits the longest worker id.
+        # `_state_height` (rows + border) the real panel height. expand=True + a ratio detail
+        # column make rich shrink ONLY the detail (ellipsis) when a long line (many symbol:signal
+        # pairs) overflows — the fixed stage/id/last columns never collapse.
+        table = Table.grid(padding=(0, 2), expand=True)
         table.add_column('stage', style='bold', width=10, no_wrap=True)
-        table.add_column('id', no_wrap=True)
+        table.add_column('id', width=22, no_wrap=True, overflow='ellipsis')
         table.add_column('last', width=11, no_wrap=True)
-        table.add_column('detail', no_wrap=True, overflow='ellipsis')
+        table.add_column('detail', no_wrap=True, overflow='ellipsis', ratio=1)
 
         # One row per worker (source-set for SOURCES/INGEST, pipeline for RETRIEVAL/LLM), so the
         # concurrent workers never clobber each other's state (ISSUE_26).
@@ -145,6 +158,9 @@ class LiveDisplay:
         table.add_row('BUDGET', '', self._budget_last(), self._budget_detail())
         table.add_row('BREAKING', '', _last(now, self._stats.breaking().last),
                       self._breaking_detail(self._stats.breaking()))
+        # Up to N per-episode lines under the summary: `SYMBOL SIGNAL` · live/ended + duration · why
+        # it broke (ISSUE_64). A fixed row count keeps the panel height exact.
+        self._breaking_episode_rows(table, now)
         return table
 
     def _keyed_rows(self, table: Table, now: datetime, label: str,
@@ -194,7 +210,11 @@ class LiveDisplay:
     def _llm_detail(snapshot: Optional[LlmSnapshot]) -> Text:
         if snapshot is None:
             return Text('—', style='dim')
-        arrow = f' → {"/".join(snapshot.signals)}' if snapshot.signals else ''
+        # One `SYMBOL:signal` per evaluated symbol, in symbol order — so the row says *which*
+        # symbol got which signal, not an anonymous slash-list (ISSUE_26).
+        arrow = ''
+        if snapshot.signals:
+            arrow = ' → ' + ' · '.join(f'{symbol}:{signal}' for symbol, signal in snapshot.signals)
         return Text(f'{snapshot.tokens} tok · ${snapshot.cost_usd:.6f} · '
                     f'{snapshot.duration_ms:.0f}ms{arrow}')
 
@@ -205,6 +225,41 @@ class LiveDisplay:
             base += f' · {snapshot.detail}'
         style = 'red' if snapshot.confirmed else ('yellow' if snapshot.detected else 'dim')
         return Text(base, style=style)
+
+    def _breaking_episode_rows(self, table: Table, now: datetime) -> None:
+        # The last few confirmed episodes, newest first, one per line — a glance at *what* broke,
+        # whether it is still live, and *why*, without scanning the activity stream (ISSUE_64).
+        # Always emits exactly _MAX_EPISODE_ROWS rows (blank-padded) so the panel height is exact.
+        records = list(reversed(self._stats.recent_breaking()))[:_MAX_EPISODE_ROWS]
+        if not records:
+            table.add_row('', Text('episodes', style='dim'), '', Text('none active', style='dim'))
+            shown = 1
+        else:
+            for record in records:
+                table.add_row('', Text(f'{record.symbol} {record.signal}'),
+                              self._episode_status(now, record), self._episode_reason(record))
+            shown = len(records)
+        for _ in range(_MAX_EPISODE_ROWS - shown):
+            table.add_row('', '', '', '')
+
+    @staticmethod
+    def _episode_status(now: datetime, record: BreakingRecord) -> Text:
+        # Live vs ended, edge-triggered on EPISODE_GAP: a pass within the gap still saw it breaking
+        # (live → a red dot + how long it has been running); otherwise the episode closed by the gap
+        # rule (ended → how long ago it last broke). Matches the store report's grouping.
+        since_seen = (now - record.last_seen).total_seconds()
+        if since_seen <= EPISODE_GAP.total_seconds():
+            running = _format_age((now - record.started).total_seconds())
+            return Text(f'● {running}', style='red')
+        return Text(f'{_format_age(since_seen)} ago', style='dim')
+
+    @staticmethod
+    def _episode_reason(record: BreakingRecord) -> Text:
+        # The why (the LLM's reasoning), truncated by the column's ellipsis; dim so the symbol +
+        # status read first. Phase 2 (ISSUE_64) swaps in a dedicated breaking_reason field.
+        if not record.reason:
+            return Text('—', style='dim')
+        return Text(record.reason, style='dim')
 
     def _budget_status(self) -> dict:
         return self._budget_guard.status() if self._budget_guard is not None else {}
@@ -227,12 +282,13 @@ class LiveDisplay:
         return Text('re-probe —', style='dim')
 
     def _activity(self, now: datetime) -> Table:
-        table = Table.grid(padding=(0, 2))
+        table = Table.grid(padding=(0, 2), expand=True)
         table.add_column('time', style='dim', width=8, no_wrap=True)
         table.add_column('stage', style='bold', width=8, no_wrap=True)
         # One line per event (crop, don't wrap). Newest first; the activity panel crops to its
         # height, so a taller terminal simply shows more history — no manual row cap needed.
-        table.add_column('message', no_wrap=True, overflow='ellipsis')
+        # ratio=1 makes a long message shrink itself, not collapse the time/stage columns.
+        table.add_column('message', no_wrap=True, overflow='ellipsis', ratio=1)
         for event in reversed(self._stats.events()):
             table.add_row(event.ts.strftime('%H:%M:%S'), event.stage, event.message)
         return table

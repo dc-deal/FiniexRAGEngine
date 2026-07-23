@@ -217,10 +217,11 @@ def test_eval_trigger_requires_a_timeframe():
 
 
 def test_breaking_confirmation_log_reports_reaction_time():
-    # ISSUE_11: a confirmed breaking is logged inline with its reaction time, from the envelope.
+    # ISSUE_11: a confirmed breaking episode is logged inline with its reaction time (edge-triggered).
     from datetime import timedelta
 
-    from finiexragengine.core.pipeline.eval_worker import _breaking_confirmations
+    from finiexragengine.core.pipeline.breaking_episode import BreakingEpisodeTracker
+    from finiexragengine.core.pipeline.eval_worker import _breaking_line
     from finiexragengine.types.outcome_types import ArticleRef, SentimentResult
 
     t3 = datetime(2026, 7, 13, 14, 0, 54, tzinfo=timezone.utc)
@@ -237,7 +238,32 @@ def test_breaking_confirmation_log_reports_reaction_time():
             SentimentResult(symbol='ETHUSD', signal='HOLD', sentiment_score=0.0, confidence=0.5,
                             reasoning='calm', urgency=0.1, is_breaking=False),
         ])
-    lines = _breaking_confirmations(envelope)
-    assert len(lines) == 1                                  # only the breaking row
-    assert 'BTCUSD' in lines[0]
-    assert 'engine 42s' in lines[0] and 'e2e 49s' in lines[0]
+    episodes = BreakingEpisodeTracker().new_episodes(envelope)
+    assert len(episodes) == 1                               # only the breaking row = one episode
+    line = _breaking_line('crypto_sentiment', episodes[0])
+    assert 'BTCUSD' in line
+    assert 'engine 42s' in line and 'e2e 49s' in line       # published≠fetched → real e2e
+
+
+def test_overdue_feeds_flags_a_stalled_slow_feed():
+    # ISSUE_26: a slow (politeness) feed that stopped polling reads as overdue; a healthy one not.
+    from datetime import timedelta
+
+    from finiexragengine.core.pipeline.ingest_worker import _overdue_feeds
+
+    now = datetime(2026, 7, 22, 12, 0, tzinfo=timezone.utc)
+    expected = {'fxstreet': 300, 'boe_news': 3600}          # fast 5m + slow 1h (politeness)
+    last_ok = {'fxstreet': now - timedelta(seconds=200),    # within its 5m — fine
+               'boe_news': now - timedelta(hours=3)}        # 3h vs 1h × 2 → overdue
+    assert _overdue_feeds(last_ok, expected, now, skip=set()) == ['boe_news overdue 180m']
+
+
+def test_overdue_skips_already_flagged_and_never_polled():
+    from datetime import timedelta
+
+    from finiexragengine.core.pipeline.ingest_worker import _overdue_feeds
+
+    now = datetime(2026, 7, 22, 12, 0, tzinfo=timezone.utc)
+    expected = {'a': 300, 'b': 300}
+    last_ok = {'a': now - timedelta(hours=1)}               # 'a' overdue but quarantined this pass
+    assert _overdue_feeds(last_ok, expected, now, skip={'a'}) == []   # skipped + 'b' never polled

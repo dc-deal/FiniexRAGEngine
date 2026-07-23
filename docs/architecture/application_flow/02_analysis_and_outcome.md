@@ -143,6 +143,12 @@ wake only makes eval run *sooner*, not differently, so the envelope stays model/
 consistent. Everything is persisted regardless; the gate governs only what would *push* (Stage C).
 Two knobs, two stages (wake vs confirm) — see `../breaking_detection.md`.
 
+A hot story stays `is_breaking` across many passes, so the confirmation is **edge-triggered**: the
+eval worker counts/logs a breaking *episode* once, on the transition into breaking
+(`core/pipeline/breaking_episode.py`), not every pass it lingers — matching the store-based
+`breaking_report`'s grouping (shared `EPISODE_GAP`) and laying the edge-trigger groundwork ISSUE_9's
+SSE push needs.
+
 **Bar-close cadence (ISSUE_timeframe, built).** The eval worker's scheduled tick is aligned to a
 trading **timeframe**, not a relative interval: the pipeline declares `trigger.timeframe`, and the
 `EventTrigger` waits until the next wall-clock bar close (recomputed each cycle from the live clock,

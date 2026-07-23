@@ -17,7 +17,7 @@ only ever reads them, and reading an int reference is atomic.
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Deque, Dict, List, Optional
+from typing import Deque, Dict, List, Optional, Tuple
 
 
 # --- per-stage snapshots -------------------------------------------------------------------
@@ -62,7 +62,7 @@ class LlmSnapshot:
     tokens: int
     cost_usd: float
     duration_ms: float
-    signals: List[str] = field(default_factory=list)      # one per symbol, in symbol order
+    signals: List[Tuple[str, str]] = field(default_factory=list)   # (symbol, signal), in symbol order
 
 
 @dataclass(frozen=True)
@@ -70,8 +70,25 @@ class BreakingSnapshot:
     """BREAKING row — cumulative over the session (detected by ingest, confirmed by eval)."""
     last: Optional[datetime]
     detected: int                                # candidates flagged (ISSUE_11 ingest side)
-    confirmed: int                               # confirmed breaking results (eval side)
+    confirmed: int                               # confirmed breaking EPISODES (eval side, edge-triggered)
     detail: str = ''                             # last reaction time, e.g. 'engine 42s / e2e 3.1m'
+
+
+@dataclass
+class BreakingRecord:
+    """One recent confirmed episode — for the BREAKING section (newest kept, oldest drops).
+
+    `last_seen` advances every pass the symbol re-breaks (`touch_breaking_episode`), so the renderer
+    tells a live episode (`now − last_seen ≤ EPISODE_GAP`) from an ended one and shows a duration.
+    Deliberately **not frozen** (unlike the stage snapshots): `last_seen` is updated in place — a
+    single atomic reference assignment under the GIL, and every writer runs under the shared
+    `pass_lock`, so a reader never sees a torn value.
+    """
+    started: datetime
+    last_seen: datetime
+    symbol: str
+    signal: str
+    reason: str = ''                             # why it broke (the LLM's reasoning; ISSUE_64)
 
 
 @dataclass(frozen=True)
@@ -113,6 +130,8 @@ class EngineStats:
         # Breaking is session-cumulative and engine-wide (detected by any ingest, confirmed by any
         # eval) — one global row, not per worker. Starts at zero, never None.
         self._breaking: BreakingSnapshot = BreakingSnapshot(last=None, detected=0, confirmed=0)
+        # The last few confirmed episodes (edge-triggered, ISSUE_11) for the RECENT summary line.
+        self._recent_breaking: Deque[BreakingRecord] = deque(maxlen=6)
         # Bounded history: O(1) memory regardless of uptime; oldest events fall off the back.
         self._events: Deque[StreamEvent] = deque(maxlen=max_events)
 
@@ -136,11 +155,24 @@ class EngineStats:
         self._breaking = BreakingSnapshot(last=at, detected=current.detected + count,
                                           confirmed=current.confirmed, detail=current.detail)
 
-    def add_breaking_confirmed(self, count: int, detail: str, *, at: datetime) -> None:
-        """Eval confirmed `count` breaking results — bump confirmed, record the reaction line."""
+    def add_breaking_episode(self, symbol: str, signal: str, reason: str, detail: str, *,
+                             at: datetime) -> None:
+        """One confirmed breaking episode (edge-triggered, ISSUE_11): bump the episode count, set
+        the reaction detail, and record it (with its reason) for the BREAKING section (ISSUE_64)."""
         current = self._breaking
         self._breaking = BreakingSnapshot(last=at, detected=current.detected,
-                                          confirmed=current.confirmed + count, detail=detail)
+                                          confirmed=current.confirmed + 1, detail=detail)
+        self._recent_breaking.append(BreakingRecord(started=at, last_seen=at, symbol=symbol,
+                                                    signal=signal, reason=reason))
+
+    def touch_breaking_episode(self, symbol: str, *, at: datetime) -> None:
+        """A symbol still breaking this pass (same ongoing episode, ISSUE_64): advance its record's
+        `last_seen` so the renderer keeps it 'live' and grows its duration. A no-op if the episode's
+        start already dropped off the bounded deque — the count already carries it."""
+        for record in reversed(self._recent_breaking):    # newest match = the currently-open episode
+            if record.symbol == symbol:
+                record.last_seen = at
+                return
 
     def push_event(self, stage: str, message: str) -> None:
         """Append one activity line (thread-safe deque.append); oldest falls off at maxlen."""
@@ -162,6 +194,10 @@ class EngineStats:
 
     def breaking(self) -> BreakingSnapshot:
         return self._breaking
+
+    def recent_breaking(self) -> List[BreakingRecord]:
+        """The last few confirmed episodes (oldest→newest) for the RECENT summary line."""
+        return list(self._recent_breaking)
 
     def events(self) -> List[StreamEvent]:
         """A stable copy for the renderer — iterating the live deque under append is avoided."""

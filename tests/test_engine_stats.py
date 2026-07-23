@@ -45,11 +45,29 @@ def test_breaking_counters_accumulate():
     assert stats.breaking().detected == 0 and stats.breaking().confirmed == 0
     stats.add_breaking_detected(2, at=_NOW)
     stats.add_breaking_detected(1, at=_NOW)
-    stats.add_breaking_confirmed(1, 'engine 42s / e2e 3.1m', at=_NOW)
+    stats.add_breaking_episode('ADAUSD', 'SELL', 'greed spike', 'engine 42s / e2e 3.1m', at=_NOW)
+    stats.add_breaking_episode('ETHUSD', 'BUY', 'ETF inflows', 'engine 12s / e2e 30s', at=_NOW)
     breaking = stats.breaking()
     assert breaking.detected == 3                             # cumulative, engine-wide
-    assert breaking.confirmed == 1
-    assert breaking.detail == 'engine 42s / e2e 3.1m'
+    assert breaking.confirmed == 2                            # one per episode (edge-triggered)
+    assert breaking.detail == 'engine 12s / e2e 30s'         # last episode's reaction
+    # The BREAKING section keeps the episodes (oldest→newest) with their reason (ISSUE_64).
+    recent = stats.recent_breaking()
+    assert [(r.symbol, r.signal, r.reason) for r in recent] == [
+        ('ADAUSD', 'SELL', 'greed spike'), ('ETHUSD', 'BUY', 'ETF inflows')]
+
+
+def test_touch_advances_last_seen_but_freezes_the_start():
+    """An ongoing episode grows its duration (last_seen moves) while its start stays fixed (ISSUE_64)."""
+    from datetime import timedelta
+    stats = EngineStats()
+    stats.add_breaking_episode('ADAUSD', 'SELL', 'greed', 'd', at=_NOW)
+    later = _NOW + timedelta(minutes=10)
+    stats.touch_breaking_episode('ADAUSD', at=later)
+    record = stats.recent_breaking()[-1]
+    assert record.started == _NOW and record.last_seen == later
+    stats.touch_breaking_episode('UNKNOWN', at=later)        # no open record → harmless no-op
+    assert len(stats.recent_breaking()) == 1
 
 
 def test_event_stream_is_capped_at_maxlen():

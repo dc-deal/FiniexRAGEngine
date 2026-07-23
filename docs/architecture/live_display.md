@@ -34,22 +34,43 @@ One row **per worker**: SOURCES/INGEST per source-set, RETRIEVAL/LLM per pipelin
 and M eval workers run concurrently, so a single row per stage would let them clobber each other.
 
 ```
-┌─ FiniexRAGEngine — up 2h14m — 4 workers — $0.031 today ──────────────────┐
-│ SOURCES    crypto_news             last 4s    5/5 ok                     │
-│            forex_news              last 3s    7/7 ok                      │
-│ INGEST     crypto_news             last 4s    128 fetched · 119 new · …   │
-│            forex_news              last 3s    170 fetched · 69 new · …    │
-│ RETRIEVAL  crypto_sentiment        last 5m    14 retrieved · 2 symbols    │
-│            forex_macro_sentiment   last 5m    9 retrieved · 2 symbols     │
-│ LLM        crypto_sentiment        last 5m    6698 tok · $0.0011 → SELL/SELL │
-│            forex_macro_sentiment   last 5m    4102 tok · $0.0007 → HOLD/BUY  │
-│ BUDGET                             ok         re-probe —                  │
-│ BREAKING                           last 42s   2 detected · 1 confirmed · … │
-├─ activity ───────────────────────────────────────────────── (grows) ─────┤
-│ 20:58:33  INGEST   crypto_news 89 fetched · 14 new · $0.000017           │
-│ 20:56:19  SOURCE   cryptoslate flagged + quarantined                     │
-└───────────────────────────────────────────────────────────────────────────┘
+┌─ FiniexRAGEngine — up 2h14m — 4 workers — $0.031 today ────────────────────────┐
+│ SOURCES    crypto_news             last 4s    5/5 ok                           │
+│            forex_news              last 3s    6/7 ok   boe_news overdue 38m     │
+│ INGEST     crypto_news             last 4s    128 fetched · 119 new · …         │
+│            forex_news              last 3s    170 fetched · 69 new · …          │
+│ RETRIEVAL  crypto_sentiment        last 5m    14 retrieved · 2 symbols          │
+│            forex_macro_sentiment   last 5m    9 retrieved · 2 symbols           │
+│ LLM        crypto_sentiment        last 5m    6698 tok · $0.0011 → BTC:SELL · ETH:SELL │
+│            forex_macro_sentiment   last 5m    4102 tok · $0.0007 → EUR:HOLD · GBP:BUY  │
+│ BUDGET                             ok         re-probe —                        │
+│ BREAKING                           last 42s   9 detected · 3 confirmed · engine 1.4m/e2e 6.2m │
+│            ETHUSD SELL             ● 14m      greed rising — Musk confirms ETH mining buy-in   │
+│            SOLUSD BUY              ● 3m       ETF inflows surge, desks flip risk-on            │
+│            ADAUSD SELL             22m ago    regulatory-probe headlines cluster, risk-off     │
+├─ activity ───────────────────────────────────────────────────── (grows) ───────┤
+│ 20:58:33  INGEST   crypto_news 89 fetched · 14 new · $0.000017                 │
+│ 20:56:19  SOURCE   cryptoslate flagged + quarantined                          │
+└─────────────────────────────────────────────────────────────────────────────────┘
 ```
+
+Notes on the rows:
+
+- **LLM `→ SYMBOL:signal`** — one signal per evaluated symbol, so the row says *which* symbol got
+  which signal (a bare slash-list would be anonymous). Truncates with `…` when a pipeline has many
+  symbols; the full set is in the envelope.
+- **SOURCES `… overdue Nm`** — a feed whose last successful poll exceeded twice its expected cadence
+  (its own `poll_interval_seconds` / politeness, else the set's interval) — 'is my slow feed still
+  alive?'. Only named when stuck; a healthy slow feed cycles within its interval and stays folded
+  into `N/N ok`. Already-quarantined/failed feeds keep their own marker. The full per-feed last-poll
+  view lives in the Sources report (`sources_cli`).
+- **BREAKING section** (ISSUE_64) — the summary row (`N detected · M confirmed · reaction`)
+  followed by up to three recent *episodes*, one line each: `SYMBOL SIGNAL` · **live/ended** ·
+  **why it broke**. A live episode shows `● <running>` (a pass within `EPISODE_GAP` still saw it
+  breaking); an ended one shows `<age> ago` (closed by the gap rule). The *why* is the LLM's own
+  `reasoning` (Phase 1; Phase 2 swaps in a dedicated `breaking_reason`). Episodes are edge-triggered
+  (see `breaking_detection.md`), so a lingering story appears once with a growing duration, not every
+  pass. The row count is fixed (blank-padded), so the panel height stays exact.
 
 BUDGET and BREAKING are engine-wide (one budget guard; session-cumulative breaking counts), so
 they carry no per-worker id.

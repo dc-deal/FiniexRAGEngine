@@ -7,18 +7,19 @@ cannot be rebuilt after the fact, so it rides on fields captured at the event: t
 `flagged_at` lives in the corpus and feeds the funnel's numerator.
 """
 import json
+import shutil
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
 import psycopg
 
+from finiexragengine.core.pipeline.breaking_episode import EPISODE_GAP
 from finiexragengine.exceptions.ragengine_errors import VectorStoreError
 
-# Consecutive is_breaking envelopes for one symbol within this gap = one breaking *episode*
-# (a hot story stays breaking across several passes; reaction anchors on the FIRST confirming
-# envelope, not every re-confirmation — report-time grouping, restart-robust).
-_EPISODE_GAP = timedelta(minutes=30)
+# `EPISODE_GAP` (consecutive is_breaking within the gap = one episode; reaction anchors on the
+# FIRST confirming envelope) is shared with the live path (breaking_episode) so the store report
+# and the dashboard never diverge.
 
 
 @dataclass
@@ -31,11 +32,27 @@ class PipelineBreaking:
 
 
 @dataclass
+class BreakingEpisodeRow:
+    """One confirmed episode in the window — for the per-episode listing (ISSUE_64): when it started,
+    how long it lasted, and why (the LLM's `reasoning`, frozen at the episode start like the reaction
+    time). A report-local shape, built and consumed here (CLAUDE.md — self-contained unit)."""
+    pipeline_id: str
+    symbol: str
+    signal: str
+    started: datetime
+    duration_s: float                # last breaking pass − start (0 = single-pass episode)
+    reason: str
+    engine_s: Optional[float]
+    end_to_end_s: Optional[float]
+
+
+@dataclass
 class BreakingReport:
     since_label: str
     rows: List[PipelineBreaking]
     flagged_candidates: int             # corpus breaking_candidate=TRUE in the window (all sets)
     confirmed_episodes: int
+    episodes: List[BreakingEpisodeRow] = field(default_factory=list)   # per-episode listing (ISSUE_64)
 
 
 def _parse_dt(value: str) -> datetime:
@@ -89,7 +106,9 @@ def _aggregate(rows: List[Tuple[str, object]], flagged: int,
                since_label: str) -> BreakingReport:
     """Group breaking occurrences into episodes + reaction samples — the DB-free core (tested)."""
     # Per (pipeline, symbol): the timeline of breaking occurrences, later grouped into episodes.
-    occ: Dict[Tuple[str, str], List[Tuple[datetime, Optional[float], Optional[float]]]] = {}
+    # Each occurrence also carries its signal + reasoning, so the episode listing can show the why.
+    Occurrence = Tuple[datetime, Optional[float], Optional[float], str, str]
+    occ: Dict[Tuple[str, str], List[Occurrence]] = {}
     for pipeline_id, envelope in rows:
         env = envelope if isinstance(envelope, dict) else json.loads(envelope)
         t3 = _parse_dt(env['timestamp'])
@@ -97,31 +116,46 @@ def _aggregate(rows: List[Tuple[str, object]], flagged: int,
             if not result.get('is_breaking'):
                 continue
             sources = result.get('sources', [])
-            published = [_parse_dt(s['published_at']) for s in sources if s.get('published_at')]
+            # Exclude estimated publish dates (a date-less feed falls back published := fetched) so
+            # e2e does not collapse onto engine — the same rule as the live path (breaking_episode).
+            published = [_parse_dt(s['published_at']) for s in sources
+                         if s.get('published_at') and s['published_at'] != s.get('fetched_at')]
             fetched = [_parse_dt(s['fetched_at']) for s in sources if s.get('fetched_at')]
             end_to_end = (t3 - min(published)).total_seconds() if published else None
             engine = (t3 - min(fetched)).total_seconds() if fetched else None
-            occ.setdefault((pipeline_id, result['symbol']), []).append((t3, engine, end_to_end))
+            occ.setdefault((pipeline_id, result['symbol']), []).append(
+                (t3, engine, end_to_end, result.get('signal', ''), result.get('reasoning', '')))
 
     per_pipeline: Dict[str, PipelineBreaking] = {}
-    for (pipeline_id, _symbol), events in occ.items():
+    episodes: List[BreakingEpisodeRow] = []
+    for (pipeline_id, symbol), events in occ.items():
         events.sort(key=lambda event: event[0])
         row = per_pipeline.setdefault(pipeline_id, PipelineBreaking(pipeline_id))
         last_ts: Optional[datetime] = None
-        for t3, engine, end_to_end in events:
-            # A new episode: the first breaking seen, or a re-break after a gap. Reaction time
-            # is sampled only here — later re-confirmations of the same story do not reset it.
-            if last_ts is None or (t3 - last_ts) > _EPISODE_GAP:
+        current: Optional[BreakingEpisodeRow] = None
+        for t3, engine, end_to_end, signal, reason in events:
+            # A new episode: the first breaking seen, or a re-break after a gap. Reaction time and
+            # reason are sampled only here — later re-confirmations of the same story do not reset
+            # them; each continuation only extends the episode's duration.
+            if last_ts is None or (t3 - last_ts) > EPISODE_GAP:
                 row.confirmed += 1
                 if engine is not None:
                     row.engine_reaction_s.append(engine)
                 if end_to_end is not None:
                     row.end_to_end_s.append(end_to_end)
+                current = BreakingEpisodeRow(pipeline_id, symbol, signal, t3, 0.0, reason,
+                                             engine, end_to_end)
+                episodes.append(current)
+            elif current is not None:
+                current.duration_s = (t3 - current.started).total_seconds()   # ongoing → grow it
             last_ts = t3
 
     ordered = sorted(per_pipeline.values(), key=lambda row: row.pipeline_id)
+    # Group the listing by pipeline THEN symbol (then time): a symbol's episodes cluster, so signal
+    # consistency (all BUY vs a BUY→SELL flip) is scannable at a glance (ISSUE_64 feedback).
+    episodes.sort(key=lambda episode: (episode.pipeline_id, episode.symbol, episode.started))
     return BreakingReport(since_label, ordered, flagged,
-                          sum(row.confirmed for row in ordered))
+                          sum(row.confirmed for row in ordered), episodes)
 
 
 def _fmt_seconds(seconds: Optional[float]) -> str:
@@ -137,8 +171,18 @@ def _fmt_pair(values: List[float]) -> str:
     return f'{_fmt_seconds(median)} / {_fmt_seconds(_percentile(values, 0.9))}'
 
 
-def format_breaking_report(report: BreakingReport) -> str:
-    """Render the report as the shared console pattern (no per-run footer — this is an aggregate)."""
+def _truncate(text: str, budget: int) -> str:
+    """Cut `text` to `budget` cells, ellipsis-marked — so a long reason never overruns the console."""
+    return text if len(text) <= budget else text[:budget - 1] + '…'
+
+
+def format_breaking_report(report: BreakingReport, *, width: Optional[int] = None) -> str:
+    """Render the report as the shared console pattern (no per-run footer — this is an aggregate).
+
+    `width` (default: the live terminal via `shutil.get_terminal_size`, cross-shell, 80 when piped)
+    caps the reason column so a long line adapts to the console instead of a fixed cut.
+    """
+    term_width = width if width is not None else shutil.get_terminal_size((80, 24)).columns
     divider = '-' * 72
     lines = [
         'Breaking Detection — reaction & funnel',
@@ -159,4 +203,33 @@ def format_breaking_report(report: BreakingReport) -> str:
                  f'{report.confirmed_episodes} confirmed → push (Stage C, pending)')
     lines.append('engine react = t3−earliest fetched_at (what we control) · '
                  'end-to-end = t3−earliest published_at (what the consumer feels)')
+
+    # Per-episode listing (ISSUE_64): what broke this window, grouped by pipeline — when it started,
+    # how long it lasted, and why (the LLM's reasoning). Edge-triggered, so one line per real episode.
+    lines.append('')
+    lines.append(f'Breaking episodes — last {report.since_label}')
+    lines.append(divider)
+    lines.append(f'  {"symbol":8} {"sig":4} {"started":>11}  {"dur":>6}  why')
+    if not report.episodes:
+        lines.append('  (none)')
+    else:
+        # The fixed prefix is 37 cells (`  {sym:8} {sig:4} {started:>11}  {dur:>6}  `); the reason
+        # fills whatever the console has left, minus a 5-cell safety margin so a slightly-miscounted
+        # width (or a console that reports one column too many) never wraps a line (ISSUE_64 feedback).
+        reason_budget = max(20, term_width - 37 - 5)
+        current_pipeline: Optional[str] = None
+        current_symbol: Optional[str] = None
+        for episode in report.episodes:
+            if episode.pipeline_id != current_pipeline:
+                lines.append(episode.pipeline_id)          # section header per pipeline
+                current_pipeline = episode.pipeline_id
+                current_symbol = None                      # reset the symbol grouping under it
+            # Show the symbol once per group (blank on repeats), so a symbol's rows read as a block
+            # and its signal column (BUY/SELL) is scannable for consistency (ISSUE_64 feedback).
+            symbol_cell = episode.symbol if episode.symbol != current_symbol else ''
+            current_symbol = episode.symbol
+            started = episode.started.strftime('%m-%d %H:%M')
+            duration = _fmt_seconds(episode.duration_s) if episode.duration_s else '—'
+            lines.append(f'  {symbol_cell:8} {episode.signal:4} {started:>11}  '
+                         f'{duration:>6}  {_truncate(episode.reason, reason_budget)}')
     return '\n'.join(lines)
