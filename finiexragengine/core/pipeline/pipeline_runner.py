@@ -2,7 +2,7 @@
 import logging
 from datetime import datetime, timezone
 from time import perf_counter
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from finiexragengine.core.observability.cost_recorder import CostRecorder
 from finiexragengine.core.observability.source_reach import SourceReach
@@ -103,36 +103,47 @@ class PipelineRunner:
         results: List[SentimentResult] = []
         evals: List[SymbolEval] = []
         per_symbol_tokens: Dict[str, int] = {}
-        for spec in self._config.active_symbols():
+        # Group active symbols by their retrieval query (ISSUE_70): symbols sharing a query share
+        # retrieval + prompt, so they are ONE analysis — evaluate once, fan the result out to each
+        # symbol label. A distinct query is a group of one, so this is a no-op for symbols that do
+        # not share (the common case, incl. every forex pair — their queries differ).
+        for query, specs in self._group_by_query(self._config.active_symbols()):
+            canonical = specs[0]
             try:
-                ev = self._evaluator.evaluate(spec.key, spec.retrieval_query())
+                ev = self._evaluator.evaluate(canonical.key, query)
             except FiniexRagError as exc:
-                # Contract: the symbol stays present — degraded to a clean HOLD row,
-                # the cause recorded under its taxonomy type.
+                # The analysis failed — every symbol in the group degrades to a clean HOLD row,
+                # each recorded under its taxonomy type (the symbols stay present, ISSUE_7).
                 error_type = taxonomy_type(exc)
-                errors.append(self._error(error_type, f'{spec.key}: {exc}'))
-                results.append(self._stamp(hold_result(
-                    spec.key, f'Analysis degraded to HOLD ({error_type})'), spec))
+                for spec in specs:
+                    errors.append(self._error(error_type, f'{spec.key}: {exc}'))
+                    results.append(self._stamp(hold_result(
+                        spec.key, f'Analysis degraded to HOLD ({error_type})'), spec))
                 continue
             evals.append(ev)
-            per_symbol_tokens[spec.key] = ev.usage.total_tokens
+            per_symbol_tokens[canonical.key] = ev.usage.total_tokens   # one call, billed to the canonical
             # Output guard (ISSUE_35): schema-valid but internally contradictory rows (a BUY
             # with a negative score, a near-certain HOLD, an empty reasoning) degrade to the
             # contract HOLD under PARTIAL_RESPONSE — the run turns 'partial'. The SymbolEval
             # above stays in `evals` untouched: the call's tokens/cost/timings are real, and
             # the raw model output remains persisted for inspection (ISSUE_36). A degraded
-            # row has urgency 0.0 / is_breaking False — it can never push breaking.
+            # row has urgency 0.0 / is_breaking False — it can never push breaking. Applied once
+            # to the shared analysis; a violation degrades every symbol in the group.
             violations = self._guard.violations(ev.result)
             if violations:
-                errors.append(self._error(
-                    'PARTIAL_RESPONSE',
-                    f"{spec.key}: output guard: {'; '.join(str(v) for v in violations)}"))
-                results.append(self._stamp(hold_result(
-                    spec.key,
-                    f"Output guard degraded to HOLD "
-                    f"({', '.join(v.rule for v in violations)})"), spec))
+                for spec in specs:
+                    errors.append(self._error(
+                        'PARTIAL_RESPONSE',
+                        f"{spec.key}: output guard: {'; '.join(str(v) for v in violations)}"))
+                    results.append(self._stamp(hold_result(
+                        spec.key,
+                        f"Output guard degraded to HOLD "
+                        f"({', '.join(v.rule for v in violations)})"), spec))
                 continue
-            results.append(self._stamp(ev.result, spec))
+            # Fan the one analysis out to each symbol — a relabelled copy with its own pair legs;
+            # identical signal/urgency/is_breaking, so the labels agree by construction (ISSUE_70).
+            for spec in specs:
+                results.append(self._fan(ev.result, spec))
 
         # --- D: assemble metadata + envelope ---
         stage_timings = list(ingest.stage_timings)
@@ -217,6 +228,23 @@ class PipelineRunner:
         result.base_currency = spec.base
         result.quote_currency = spec.quote
         return result
+
+    @staticmethod
+    def _group_by_query(specs: List[SymbolSpec]) -> List[Tuple[str, List[SymbolSpec]]]:
+        """Group symbols by their retrieval query (ISSUE_70) — a shared query is one analysis unit.
+        First-seen order (of queries, and of symbols within a query) is preserved for a stable
+        envelope; the first symbol of each group is its canonical (the one actually evaluated)."""
+        groups: Dict[str, List[SymbolSpec]] = {}
+        for spec in specs:
+            groups.setdefault(spec.retrieval_query(), []).append(spec)
+        return list(groups.items())
+
+    @staticmethod
+    def _fan(result: SentimentResult, spec: SymbolSpec) -> SentimentResult:
+        """A relabelled copy of the shared analysis for one symbol of its query group (ISSUE_70) —
+        same signal/score/urgency/is_breaking/sources, its own `symbol` + pair legs."""
+        return result.model_copy(update={'symbol': spec.key,
+                                         'base_currency': spec.base, 'quote_currency': spec.quote})
 
     def _error(self, error_type: str, message: str) -> RunError:
         # Every RunError is logged with its taxonomy type (CLAUDE.md) — but the durable

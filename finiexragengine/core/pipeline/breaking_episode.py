@@ -66,8 +66,12 @@ class BreakingEpisodeTracker:
         for result in envelope.result:
             if not result.is_breaking:
                 continue
-            last = self._last.get(result.symbol)
-            self._last[result.symbol] = ts       # every occurrence advances the gap anchor
+            # Key the episode on the asset (base_currency), not the ticker: a query group's fanned
+            # symbols (ETHUSD/ETHEUR, both base ETH) are one analysis → one episode, no double-count
+            # (ISSUE_70). Falls back to the symbol for pre-#70 envelopes without a base.
+            group_key = result.base_currency or result.symbol
+            last = self._last.get(group_key)
+            self._last[group_key] = ts           # every occurrence advances the gap anchor
             if last is not None and (ts - last) <= self._gap:
                 continue                          # same ongoing story — not a new episode
             engine, end_to_end = reaction_times(result, ts)

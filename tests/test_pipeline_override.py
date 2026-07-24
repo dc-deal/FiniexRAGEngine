@@ -30,16 +30,16 @@ def _registry(tmp_path, override=None):
     return registry
 
 
-def test_override_replaces_symbols_inherits_the_rest(tmp_path):
-    registry = _registry(tmp_path, {'symbols': [
-        {'key': 'BTCUSD', 'base': 'BTC', 'quote': 'USD'},
-        {'key': 'ETHUSD', 'base': 'ETH', 'quote': 'USD'}]})
-    # Both variants still expand (models inherited from the base), each with the new symbols.
+def test_override_patches_symbols_by_key_inherits_the_rest(tmp_path):
+    # ISSUE_70: symbols merge by `key` (not wholesale) — an override patches a listed symbol
+    # (here BTCUSD's query) and leaves the unlisted ones (SOLUSD) + other config (source_set) intact.
+    registry = _registry(tmp_path, {'symbols': [{'key': 'BTCUSD', 'query': 'Bitcoin BTC news'}]})
     ids = sorted(p.get_config().pipeline_id for p in registry.list_pipelines())
-    assert ids == ['crypto_sentiment', 'crypto_sentiment_4o_enhanced']
+    assert ids == ['crypto_sentiment', 'crypto_sentiment_4o_enhanced']   # fan still expands
     config = registry.get('crypto_sentiment').get_config()
-    assert config.symbol_keys() == ['BTCUSD', 'ETHUSD']  # replaced wholesale
-    assert config.source_set == 'crypto_news'            # inherited, not restated
+    assert config.symbol_keys() == ['BTCUSD', 'ETHUSD', 'SOLUSD']        # none dropped (merge-by-key)
+    assert next(s for s in config.symbols if s.key == 'BTCUSD').query == 'Bitcoin BTC news'  # patched
+    assert config.source_set == 'crypto_news'                            # inherited, not restated
 
 
 def test_override_can_switch_llm_form_to_single_model(tmp_path):
