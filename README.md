@@ -74,7 +74,7 @@ same shell regardless of the signal type:
   "prompt_hash": "1f191112898f",
   "timestamp": "2026-06-28T11:00:00Z",
   "status": "success",
-  "result": [ { "symbol": "BTCUSD", "signal": "HOLD", "sentiment_score": 0.45, "confidence": 0.78, "reasoning": "...", "basis": "llm", "sources": [ ... ] } ],
+  "result": [ { "symbol": "BTCUSD", "signal": "HOLD", "sentiment_score": 0.45, "confidence": 0.78, "reasoning": "...", "basis": "llm", "base_currency": "BTC", "quote_currency": "USD", "sources": [ ... ] } ],
   "metadata": { "model": "gpt-4o-mini", "articles_relevant": 23, "processing_time_ms": 1823, "cost_usd": 0.0029, "stage_timings": [ ... ] },
   "errors": []
 }
@@ -220,6 +220,12 @@ today, most load-bearing first:
   recorded per call — a silent alias retarget is detected, so a signal series stays
   attributable to the exact model *and* prompt that produced it. See
   [prompt_and_llm_stage.md](docs/architecture/prompt_and_llm_stage.md).
+- **Symbol model & query consolidation (#70)**: each symbol declares its `base`/`quote` legs
+  (emitted as `base_currency`/`quote_currency`, validated `key == base + quote`) plus its retrieval
+  query. Symbols sharing a query — e.g. `ETHUSD`/`ETHEUR`, one asset in two quote currencies — are
+  analysed **once** and fanned to each label: the labels agree by construction and the LLM is not
+  paid twice for the same news, while distinct-query pairs (any FX pair) stay independent. See
+  [symbol_model_and_grouping.md](docs/architecture/symbol_model_and_grouping.md).
 - **Output consistency guard (#35)**: schema-valid but internally contradictory LLM rows (a
   `BUY` scored negative, a near-certain `HOLD`, an empty reasoning) are caught by a
   deterministic, zero-cost post-check and degraded to a clean `HOLD` (`partial` run, raw

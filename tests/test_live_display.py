@@ -21,17 +21,17 @@ def _stats() -> EngineStats:
                        pipeline_ids=['crypto_sentiment', 'forex_macro_sentiment'])
 
 
-def _render(display: LiveDisplay) -> str:
-    # Render the pure renderable to text — no rich.Live, no terminal probing. The layout fills the
-    # console, so a fixed height is given for a deterministic activity region.
+def _render(stats: EngineStats, **kwargs) -> str:
+    # Render to text via a fixed-size console — the SAME console the display measures with, so the
+    # measured state-panel height matches what is printed (ISSUE_70 adaptive wrapping).
     console = Console(record=True, width=110, height=40)
-    console.print(display.render())
+    console.print(LiveDisplay(stats, console=console, **kwargs).render())
     return console.export_text()
 
 
 def test_render_smoke_on_empty_stats():
     """A fresh engine renders every stage row + a pre-registered idle row per worker, no crash."""
-    text = _render(LiveDisplay(_stats(), worker_count=4))
+    text = _render(_stats(), worker_count=4)
     for row in ('SOURCES', 'INGEST', 'RETRIEVAL', 'LLM', 'BUDGET', 'BREAKING'):
         assert row in text
     # Pre-registered worker ids show as idle rows before their first pass — never missing.
@@ -48,7 +48,7 @@ def test_breaking_section_lists_live_episodes_with_reason():
     stats = _stats()
     stats.add_breaking_episode('ADAUSD', 'SELL', 'regulatory probe cluster', 'engine 1.4m', at=now)
     stats.add_breaking_episode('ETHUSD', 'BUY', 'Musk confirms ETH buy-in', 'engine 12s', at=now)
-    text = _render(LiveDisplay(stats, worker_count=4))
+    text = _render(stats, worker_count=4)
     assert 'ADAUSD SELL' in text and 'ETHUSD BUY' in text     # per-episode symbol+signal
     assert 'regulatory probe cluster' in text                 # the why (reused reasoning)
     assert 'Musk confirms ETH buy-in' in text
@@ -61,7 +61,7 @@ def test_breaking_section_marks_an_ended_episode():
     stats = _stats()
     stats.add_breaking_episode('BTCUSD', 'SELL', 'old crash story', 'engine 2m',
                                at=now - EPISODE_GAP - timedelta(minutes=5))
-    text = _render(LiveDisplay(stats, worker_count=4))
+    text = _render(stats, worker_count=4)
     assert 'BTCUSD SELL' in text
     assert 'ago' in text                                      # ended → recency, not a live dot
 
@@ -73,15 +73,41 @@ def test_two_workers_render_as_separate_rows():
     stats.set_sources('forex_news', SourcesSnapshot(last=_NOW, ok=7, total=7))
     stats.set_llm('crypto_sentiment', LlmSnapshot(
         last=_NOW, tokens=6698, cost_usd=0.0011, duration_ms=2800,
-        signals=[('BTCUSD', 'SELL'), ('ETHUSD', 'SELL')]))
+        signals=[('BTCUSD', 'SELL', 'BTC', 'Bitcoin BTC'), ('ETHUSD', 'SELL', 'ETH', 'Ethereum ETH')]))
     stats.set_llm('forex_macro_sentiment', LlmSnapshot(
         last=_NOW, tokens=4102, cost_usd=0.0007, duration_ms=2400,
-        signals=[('EURUSD', 'HOLD'), ('GBPUSD', 'BUY')]))
-    text = _render(LiveDisplay(stats, worker_count=4))
+        signals=[('EURUSD', 'HOLD', 'EUR', 'Euro'), ('GBPUSD', 'BUY', 'GBP', 'Pound')]))
+    text = _render(stats, worker_count=4)
     assert '5/5 ok' in text and '7/7 ok' in text              # both source-sets, no clobber
-    assert 'BTCUSD:SELL' in text and 'ETHUSD:SELL' in text    # per-symbol attribution, not a slash-list
+    assert 'BTCUSD:SELL' in text and 'ETHUSD:SELL' in text    # distinct queries → not merged
     assert 'EURUSD:HOLD' in text and 'GBPUSD:BUY' in text     # both pipelines' symbols
     assert 'crypto_sentiment' in text and 'forex_macro_sentiment' in text
+
+
+def test_fanned_same_query_symbols_merge_into_one_chip():
+    # ISSUE_70: ETHUSD + ETHEUR (same query "Ethereum ETH") render as ONE chip, call count shows.
+    stats = _stats()
+    stats.set_llm('crypto_sentiment', LlmSnapshot(
+        last=_NOW, tokens=6698, cost_usd=0.0011, duration_ms=2800, calls=2,
+        signals=[('BTCUSD', 'SELL', 'BTC', 'Bitcoin BTC'),
+                 ('ETHUSD', 'HOLD', 'ETH', 'Ethereum ETH'), ('ETHEUR', 'HOLD', 'ETH', 'Ethereum ETH')]))
+    text = _render(stats, worker_count=4)
+    assert 'ETH·USD/EUR:HOLD' in text                         # fanned pair merged into one chip
+    assert 'BTCUSD:SELL' in text                              # lone symbol unchanged
+    assert '3 sym / 2 calls' in text                          # grouping visible in the count
+
+
+def test_same_base_different_query_symbols_are_not_merged():
+    # ISSUE_70 regression: USDJPY + USDCAD share base USD and (here) signal, but are DIFFERENT
+    # analyses (distinct queries) — they must NOT merge into a false `USD·JPY/CAD` chip.
+    stats = _stats()
+    stats.set_llm('forex_macro_sentiment', LlmSnapshot(
+        last=_NOW, tokens=4102, cost_usd=0.0007, duration_ms=2400,
+        signals=[('USDJPY', 'SELL', 'USD', 'US Dollar Japanese Yen'),
+                 ('USDCAD', 'SELL', 'USD', 'US Dollar Canadian Dollar')]))
+    text = _render(stats, worker_count=4)
+    assert 'USDJPY:SELL' in text and 'USDCAD:SELL' in text    # kept separate — distinct queries
+    assert 'USD·JPY/CAD' not in text                          # the false-merge must not happen
 
 
 def test_render_reflects_a_snapshot_update():
@@ -89,7 +115,7 @@ def test_render_reflects_a_snapshot_update():
     stats.set_ingest('crypto_news', IngestSnapshot(last=_NOW, fetched=128, new=119,
                                                    cost_usd=0.0012, duration_ms=1700))
     stats.set_retrieval('crypto_sentiment', RetrievalSnapshot(last=_NOW, retrieved=14, symbols=2))
-    text = _render(LiveDisplay(stats, worker_count=4))
+    text = _render(stats, worker_count=4)
     assert '128 fetched' in text and '119 new' in text
     assert '14 retrieved' in text
 
@@ -97,11 +123,11 @@ def test_render_reflects_a_snapshot_update():
 def test_healthy_sources_collapse_but_a_deviation_is_named():
     stats = _stats()
     stats.set_sources('crypto_news', SourcesSnapshot(last=_NOW, ok=6, total=6))
-    assert '6/6 ok' in _render(LiveDisplay(stats))            # exception density: no detail when healthy
+    assert '6/6 ok' in _render(stats)            # exception density: no detail when healthy
 
     stats.set_sources('crypto_news', SourcesSnapshot(last=_NOW, ok=5, total=6,
                                                      deviations=['cryptoslate quarantined']))
-    text = _render(LiveDisplay(stats))
+    text = _render(stats)
     assert '5/6 ok' in text
     assert 'cryptoslate quarantined' in text                 # only the deviation spends words
 
@@ -110,7 +136,7 @@ def test_activity_stream_shows_recent_events():
     stats = _stats()
     for i in range(30):
         stats.push_event('INGEST', f'pass {i}')
-    text = _render(LiveDisplay(stats))
+    text = _render(stats)
     assert 'activity' in text
     assert 'pass 29' in text                                  # newest is shown
     assert 'pass 0' not in text                               # old events scrolled past the window

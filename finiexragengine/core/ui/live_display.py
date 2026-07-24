@@ -12,7 +12,7 @@ the file, so nothing else writes to the terminal and frames never tear.
 """
 import asyncio
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from rich.console import Console, RenderableType
 from rich.layout import Layout
@@ -54,6 +54,32 @@ def _last(now: datetime, last: Optional[datetime]) -> Text:
     if last is None:
         return Text('idle', style='dim')
     return Text(f'last {_format_age((now - last).total_seconds())}')
+
+
+def _merge_signal_chips(signals: List[Tuple[str, str, str, str]]) -> str:
+    """`(symbol, signal, base, group)` → chips, merging symbols of the SAME analysis group (same
+    retrieval `query`, ISSUE_70) so a fanned pair reads as one: `ETHUSD:HOLD` + `ETHEUR:HOLD` (both
+    query "Ethereum ETH") → `ETH·USD/EUR:HOLD`. Same-base but different-query symbols (`USDJPY` /
+    `USDCAD`) are NOT merged — the *group* is the key, not the base. A lone symbol stays
+    `SYMBOL:signal`; the quote is the ticker minus its base. First-seen order preserved."""
+    groups: List[List[Any]] = []          # each: [base, signal, [quotes], first_symbol]
+    index: Dict[Tuple[str, str], int] = {}
+    for symbol, signal, base, group in signals:
+        quote = symbol[len(base):] if base and symbol.startswith(base) else symbol
+        key = (group, signal)
+        if group and key in index:
+            groups[index[key]][2].append(quote)
+        else:
+            if group:
+                index[key] = len(groups)
+            groups.append([base, signal, [quote], symbol])
+    chips: List[str] = []
+    for base, signal, quotes, first_symbol in groups:
+        if base and len(quotes) > 1:
+            chips.append(f'{base}·{"/".join(quotes)}:{signal}')   # merged: ETH·USD/EUR:HOLD
+        else:
+            chips.append(f'{first_symbol}:{signal}')              # lone: BTCUSD:SELL
+    return ' · '.join(chips)
 
 
 class LiveDisplay:
@@ -113,22 +139,18 @@ class LiveDisplay:
                       border_style='cyan')
         activity = Panel(self._activity(now), title='activity', title_align='left',
                          border_style='blue')
+        # Measure the state panel at the CURRENT width, so a folded (wrapped) LLM signal row on a
+        # narrow console makes the panel taller instead of clipping — the activity panel below then
+        # takes whatever is left (ISSUE_70). Capped so the activity keeps at least a few lines even
+        # if the state wraps a lot (a very narrow terminal).
+        measured = len(self._console.render_lines(state, self._console.options, pad=False))
+        height = min(measured, max(6, self._console.height - 3))
         layout = Layout()
-        # The state block is fixed to its row count; the activity panel takes all remaining height,
-        # so a taller terminal grows only the log region (ISSUE_26 — enlarge only the log).
         layout.split_column(
-            Layout(state, name='state', size=self._state_height()),
+            Layout(state, name='state', size=height),
             Layout(activity, name='activity', ratio=1),
         )
         return layout
-
-    def _state_height(self) -> int:
-        # One row per worker for SOURCES/INGEST (source-sets) and RETRIEVAL/LLM (pipelines), at least
-        # one idle row each, plus BUDGET + the BREAKING summary + the reserved episode rows, plus the
-        # two borders.
-        sets = max(1, len(self._stats.sources()))
-        pipelines = max(1, len(self._stats.retrieval()))
-        return 2 * sets + 2 * pipelines + 2 + _MAX_EPISODE_ROWS + 2
 
     def _header(self, now: datetime) -> str:
         uptime = _format_age((now - self._started_at).total_seconds())
@@ -138,15 +160,15 @@ class LiveDisplay:
 
     def _stage_rows(self, now: datetime) -> Table:
         # A grid (no borders): stage label + per-worker id + `last` cell + a free detail column.
-        # Every column is no_wrap so each stage row is exactly one line — that is what makes
-        # `_state_height` (rows + border) the real panel height. expand=True + a ratio detail
-        # column make rich shrink ONLY the detail (ellipsis) when a long line (many symbol:signal
-        # pairs) overflows — the fixed stage/id/last columns never collapse.
+        # The fixed stage/id/last columns stay no_wrap (one line, never collapse); the detail column
+        # WORD-WRAPS (no_wrap left off) so a long signal row breaks at ` · ` boundaries onto more
+        # lines on a narrow console instead of truncating — chips stay intact, and the panel height
+        # is measured from the result (ISSUE_70), so the wrapped rows are shown, never clipped.
         table = Table.grid(padding=(0, 2), expand=True)
         table.add_column('stage', style='bold', width=10, no_wrap=True)
         table.add_column('id', width=22, no_wrap=True, overflow='ellipsis')
         table.add_column('last', width=11, no_wrap=True)
-        table.add_column('detail', no_wrap=True, overflow='ellipsis', ratio=1)
+        table.add_column('detail', ratio=1)
 
         # One row per worker (source-set for SOURCES/INGEST, pipeline for RETRIEVAL/LLM), so the
         # concurrent workers never clobber each other's state (ISSUE_26).
@@ -210,13 +232,14 @@ class LiveDisplay:
     def _llm_detail(snapshot: Optional[LlmSnapshot]) -> Text:
         if snapshot is None:
             return Text('—', style='dim')
-        # One `SYMBOL:signal` per evaluated symbol, in symbol order — so the row says *which*
-        # symbol got which signal, not an anonymous slash-list (ISSUE_26).
-        arrow = ''
-        if snapshot.signals:
-            arrow = ' → ' + ' · '.join(f'{symbol}:{signal}' for symbol, signal in snapshot.signals)
-        return Text(f'{snapshot.tokens} tok · ${snapshot.cost_usd:.6f} · '
-                    f'{snapshot.duration_ms:.0f}ms{arrow}')
+        # Spend + the per-symbol signals, with fanned same-base symbols merged into one chip
+        # (ETH·USD/EUR:HOLD, ISSUE_70); when grouping shrank the calls below the symbol count, say so
+        # (`N sym / M calls`) so the consolidation is visible, not hidden behind row-count parity.
+        summary = f'{snapshot.tokens} tok · ${snapshot.cost_usd:.6f} · {snapshot.duration_ms:.0f}ms'
+        if snapshot.calls and snapshot.calls < len(snapshot.signals):
+            summary += f' · {len(snapshot.signals)} sym / {snapshot.calls} calls'
+        chips = _merge_signal_chips(snapshot.signals)
+        return Text(summary + (f' → {chips}' if chips else ''))
 
     @staticmethod
     def _breaking_detail(snapshot: BreakingSnapshot) -> Text:
