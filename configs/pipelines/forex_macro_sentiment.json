@@ -3,13 +3,15 @@
     "outcome_type": "sentiment_fear_greed",
     "market": "forex",
     "symbols": [
-        "EURUSD",
-        "GBPUSD"
+        { "key": "EURUSD", "base": "EUR", "quote": "USD", "query": "Euro US Dollar EUR/USD euro area ECB" },
+        { "key": "GBPUSD", "base": "GBP", "quote": "USD", "query": "British Pound Sterling GBP/USD Bank of England" },
+        { "key": "USDJPY", "base": "USD", "quote": "JPY", "query": "US Dollar Japanese Yen USD/JPY Bank of Japan BOJ" },
+        { "key": "AUDUSD", "base": "AUD", "quote": "USD", "query": "Australian Dollar AUD/USD Reserve Bank of Australia RBA" },
+        { "key": "EURGBP", "base": "EUR", "quote": "GBP", "query": "Euro British Pound EUR/GBP ECB Bank of England" },
+        { "key": "NZDUSD", "base": "NZD", "quote": "USD", "query": "New Zealand Dollar NZD/USD Reserve Bank of New Zealand RBNZ" },
+        { "key": "USDCAD", "base": "USD", "quote": "CAD", "query": "US Dollar Canadian Dollar USD/CAD Bank of Canada BOC" },
+        { "key": "USDCHF", "base": "USD", "quote": "CHF", "query": "US Dollar Swiss Franc USD/CHF Swiss National Bank SNB" }
     ],
-    "symbol_queries": {
-        "EURUSD": "Euro US Dollar EUR/USD euro area ECB",
-        "GBPUSD": "British Pound Sterling GBP/USD Bank of England"
-    },
     "prompt": {
         "name": "forex_sentiment",
         "version": "1"

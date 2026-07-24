@@ -32,7 +32,8 @@ def _assembler(allowed) -> PipelineAssembler:
 
 def _pipeline(model: str) -> PipelineConfig:
     return PipelineConfig(
-        pipeline_id='p', outcome_type='o', market='crypto', symbols=['BTCUSD'],
+        pipeline_id='p', outcome_type='o', market='crypto',
+        symbols=[{'key': 'BTCUSD', 'base': 'BTC', 'quote': 'USD'}],
         llm={'model': model}, source_set='test_news')
 
 

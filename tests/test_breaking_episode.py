@@ -82,3 +82,17 @@ def test_reason_is_carried_from_reasoning():
     # ISSUE_64 Phase 1: the LLM's per-symbol reasoning rides along as the episode's `reason`.
     episode = BreakingEpisodeTracker().new_episodes(_envelope(_T0))[0]
     assert episode.reason == 'x'                                    # _envelope's reasoning
+
+
+def test_fanned_same_base_symbols_are_one_episode():
+    # ISSUE_70 Schicht 2: ETHUSD + ETHEUR (both base ETH, fanned from one analysis) collapse to ONE
+    # episode, not two — keyed on the asset, so the confirmed count is not doubled.
+    def _r(symbol: str) -> SentimentResult:
+        return SentimentResult(symbol=symbol, signal='SELL', sentiment_score=-0.5, confidence=0.8,
+                               reasoning='hack', urgency=0.9, is_breaking=True, base_currency='ETH')
+    env = SentimentEnvelope(
+        pipeline_id='crypto_sentiment', outcome_type='sentiment_fear_greed', prompt_version='2',
+        timestamp=_T0, status='success', metadata=RunMetadata(model='m'),
+        result=[_r('ETHUSD'), _r('ETHEUR')])
+    episodes = BreakingEpisodeTracker().new_episodes(env)
+    assert len(episodes) == 1 and episodes[0].symbol == 'ETHUSD'    # one asset-level episode

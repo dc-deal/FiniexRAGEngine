@@ -54,7 +54,7 @@ class Pipeline:
                 confidence=0.0,
                 reasoning='Scaffold mock — no runner attached.',
             )
-            for symbol in self._config.symbols
+            for symbol in self._config.symbol_keys()
         ]
         return AnalysisEnvelope(
             pipeline_id=self._config.pipeline_id,

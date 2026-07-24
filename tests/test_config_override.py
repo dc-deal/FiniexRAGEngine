@@ -69,20 +69,23 @@ def test_pipeline_factory_applies_user_override(tmp_path, monkeypatch, caplog):
     tracked.mkdir(), user.mkdir()
     _write(tracked / 'p.json', {
         'pipeline_id': 'p', 'outcome_type': 'sentiment_fear_greed', 'market': 'crypto',
-        'symbols': ['BTCUSD', 'ETHUSD'], 'llm': {'model': 'gpt-4o-mini'},
+        'symbols': [{'key': 'BTCUSD', 'base': 'BTC', 'quote': 'USD'},
+                    {'key': 'ETHUSD', 'base': 'ETH', 'quote': 'USD'}],
+        'llm': {'model': 'gpt-4o-mini'},
         'source_set': 's', 'retrieval': {'floor_distance': 0.70}})
-    _write(user / 'p.json', {'symbols': ['BTCUSD'], 'retrieval': {'floor_distance': 0.65}})
+    _write(user / 'p.json', {'symbols': [{'key': 'ETHUSD', 'enabled': False}],
+                             'retrieval': {'floor_distance': 0.65}})
 
     with caplog.at_level(logging.WARNING):
         registry = _manager(tmp_path, monkeypatch, tracked, user).build_pipeline_registry()
     config = registry.get('p').get_config()
-    assert config.symbols == ['BTCUSD']                    # list replaced wholesale
+    assert config.symbol_keys() == ['BTCUSD']              # ETHUSD disabled via merge-by-key
     assert config.retrieval.floor_distance == 0.65         # nested scalar overridden
     assert registry.is_overridden('p')                     # divergence is visible
     # The startup one-liner says WHAT diverges (gated by warn_on_override).
     report = '\n'.join(r.getMessage() for r in caplog.records if '[OVERRIDE]' in r.getMessage())
     assert 'pipelines/p.json' in report
-    assert 'floor_distance 0.7→0.65' in report and 'symbols 2→1' in report
+    assert 'floor_distance 0.7→0.65' in report and 'symbols[ETHUSD].enabled' in report
 
 
 def test_source_set_factory_applies_user_override(tmp_path, monkeypatch):

@@ -95,6 +95,20 @@ def test_episode_listing_shows_started_duration_and_reason():
     assert '5.0m' in out                                            # duration rendered
 
 
+def test_fanned_same_base_symbols_collapse_to_one_episode():
+    # ISSUE_70 Schicht 2: ETHUSD + ETHEUR (base ETH) in one envelope → one asset-level episode in
+    # the store report too (mirrors the live tracker), so the confirmed count is not doubled.
+    t3 = datetime(2026, 7, 13, 14, 0, 0, tzinfo=timezone.utc)
+    env = ('crypto_sentiment', {'timestamp': t3.isoformat(), 'result': [
+        {'symbol': 'ETHUSD', 'is_breaking': True, 'signal': 'SELL', 'reasoning': 'hack',
+         'base_currency': 'ETH', 'sources': []},
+        {'symbol': 'ETHEUR', 'is_breaking': True, 'signal': 'SELL', 'reasoning': 'hack',
+         'base_currency': 'ETH', 'sources': []}]})
+    report = _aggregate([env], 0, '7d')
+    assert report.confirmed_episodes == 1                          # collapsed to one ETH episode
+    assert len(report.episodes) == 1 and report.episodes[0].symbol == 'ETHUSD'
+
+
 def test_episode_listing_groups_by_symbol_and_adapts_width():
     # ISSUE_64 feedback: cluster a pipeline's episodes by symbol (so signal consistency is scannable)
     # and cap the reason to the console width instead of a fixed cut.

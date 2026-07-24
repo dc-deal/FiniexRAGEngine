@@ -3,25 +3,16 @@
     "outcome_type": "sentiment_fear_greed",
     "market": "crypto",
     "symbols": [
-        "BTCUSD",
-        "ETHUSD",
-        "SOLUSD",
-        "ADAUSD",
-        "XRPUSD",
-        "DASHUSD",
-        "LTCUSD",
-        "ETHEUR"
+        { "key": "BTCUSD",  "base": "BTC",  "quote": "USD", "query": "Bitcoin BTC" },
+        { "key": "ETHUSD",  "base": "ETH",  "quote": "USD", "query": "Ethereum ETH" },
+        { "key": "ETHEUR",  "base": "ETH",  "quote": "EUR", "query": "Ethereum ETH" },
+        { "key": "SOLUSD",  "base": "SOL",  "quote": "USD", "query": "Solana SOL" },
+        { "key": "ADAUSD",  "base": "ADA",  "quote": "USD", "query": "Cardano ADA" },
+        { "key": "XRPUSD",  "base": "XRP",  "quote": "USD", "query": "XRP Ripple" },
+        { "key": "DASHUSD", "base": "DASH", "quote": "USD", "query": "Dash cryptocurrency" },
+        { "key": "LTCUSD",  "base": "LTC",  "quote": "USD", "query": "Litecoin LTC" },
+        { "key": "DOTUSD",  "base": "DOT",  "quote": "USD", "query": "Polkadot DOT" }
     ],
-    "symbol_queries": {
-        "BTCUSD": "Bitcoin BTC",
-        "ETHUSD": "Ethereum ETH",
-        "SOLUSD": "Solana SOL",
-        "ADAUSD": "Cardano ADA",
-        "XRPUSD": "XRP Ripple",
-        "DASHUSD": "Dash cryptocurrency",
-        "LTCUSD": "Litecoin LTC",
-        "ETHEUR": "Ethereum ETH"
-    },
     "prompt": {
         "name": "crypto_sentiment",
         "version": "2"

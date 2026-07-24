@@ -105,9 +105,12 @@ def build_breaking_report(database_url: str, since: datetime, *, since_label: st
 def _aggregate(rows: List[Tuple[str, object]], flagged: int,
                since_label: str) -> BreakingReport:
     """Group breaking occurrences into episodes + reaction samples — the DB-free core (tested)."""
-    # Per (pipeline, symbol): the timeline of breaking occurrences, later grouped into episodes.
-    # Each occurrence also carries its signal + reasoning, so the episode listing can show the why.
-    Occurrence = Tuple[datetime, Optional[float], Optional[float], str, str]
+    # Per (pipeline, asset): the timeline of breaking occurrences, later grouped into episodes.
+    # Keyed on the asset (base_currency), not the ticker — a query group's fanned symbols
+    # (ETHUSD/ETHEUR, both base ETH) are one analysis → one episode, mirroring the live tracker
+    # (ISSUE_70); falls back to the symbol for pre-#70 envelopes. Each occurrence carries its
+    # signal + reasoning (for the listing why) and its ticker (the row shows the first seen).
+    Occurrence = Tuple[datetime, Optional[float], Optional[float], str, str, str]
     occ: Dict[Tuple[str, str], List[Occurrence]] = {}
     for pipeline_id, envelope in rows:
         env = envelope if isinstance(envelope, dict) else json.loads(envelope)
@@ -123,17 +126,19 @@ def _aggregate(rows: List[Tuple[str, object]], flagged: int,
             fetched = [_parse_dt(s['fetched_at']) for s in sources if s.get('fetched_at')]
             end_to_end = (t3 - min(published)).total_seconds() if published else None
             engine = (t3 - min(fetched)).total_seconds() if fetched else None
-            occ.setdefault((pipeline_id, result['symbol']), []).append(
-                (t3, engine, end_to_end, result.get('signal', ''), result.get('reasoning', '')))
+            group_key = result.get('base_currency') or result['symbol']   # asset-level (ISSUE_70)
+            occ.setdefault((pipeline_id, group_key), []).append(
+                (t3, engine, end_to_end, result.get('signal', ''), result.get('reasoning', ''),
+                 result['symbol']))
 
     per_pipeline: Dict[str, PipelineBreaking] = {}
     episodes: List[BreakingEpisodeRow] = []
-    for (pipeline_id, symbol), events in occ.items():
+    for (pipeline_id, _group_key), events in occ.items():
         events.sort(key=lambda event: event[0])
         row = per_pipeline.setdefault(pipeline_id, PipelineBreaking(pipeline_id))
         last_ts: Optional[datetime] = None
         current: Optional[BreakingEpisodeRow] = None
-        for t3, engine, end_to_end, signal, reason in events:
+        for t3, engine, end_to_end, signal, reason, symbol in events:
             # A new episode: the first breaking seen, or a re-break after a gap. Reaction time and
             # reason are sampled only here — later re-confirmations of the same story do not reset
             # them; each continuation only extends the episode's duration.

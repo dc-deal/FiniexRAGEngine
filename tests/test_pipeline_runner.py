@@ -47,8 +47,8 @@ _META = PromptMetadata(id='sentiment-crypto', version='1', author='t', created='
 def _config(symbols: List[str]) -> PipelineConfig:
     return PipelineConfig(
         pipeline_id='p', outcome_type='sentiment_fear_greed', market='crypto',
-        symbols=symbols, llm={'model': 'gpt-4o-mini'},
-        source_set='test_news')
+        symbols=[{'key': s, 'base': s[:-3], 'quote': s[-3:]} for s in symbols],
+        llm={'model': 'gpt-4o-mini'}, source_set='test_news')
 
 
 def _article(article_id: str) -> Article:
@@ -92,11 +92,13 @@ class _FakeIngestor:
 
 
 class _FakeEvaluator:
-    """Evaluates from a symbol -> SymbolEval | Exception map."""
+    """Evaluates from a symbol -> SymbolEval | Exception map; counts calls (ISSUE_70 grouping)."""
     def __init__(self, outcomes):
         self._outcomes = outcomes
+        self.calls = 0
 
     def evaluate(self, symbol, query):
+        self.calls += 1
         outcome = self._outcomes[symbol]
         if isinstance(outcome, Exception):
             raise outcome
@@ -172,6 +174,36 @@ def test_clean_pass_assembles_success_envelope():
     stages = [t.stage for t in envelope.metadata.stage_timings]
     assert stages == ['fetch', 'embed', 'retrieve', 'llm', 'retrieve', 'llm']
     assert envelope.metadata.processing_time_ms > 0.0
+
+
+def test_same_query_symbols_share_one_analysis_fanned_out():
+    # ISSUE_70 Schicht 2: ETHUSD + ETHEUR share the query "Ethereum ETH" → ONE evaluate() call,
+    # fanned to two consistent result rows (each its own symbol + base/quote), billed once.
+    config = PipelineConfig(
+        pipeline_id='p', outcome_type='sentiment_fear_greed', market='crypto',
+        symbols=[{'key': 'ETHUSD', 'base': 'ETH', 'quote': 'USD', 'query': 'Ethereum ETH'},
+                 {'key': 'ETHEUR', 'base': 'ETH', 'quote': 'EUR', 'query': 'Ethereum ETH'}],
+        llm={'model': 'gpt-4o-mini'}, source_set='test_news')
+    evaluator = _FakeEvaluator({'ETHUSD': _eval('ETHUSD')})       # only the canonical is evaluated
+    envelope = _runner(config, _FakeIngestor(), evaluator).run()
+    assert evaluator.calls == 1                                   # ONE LLM call for the pair
+    rows = {r.symbol: r for r in envelope.result}
+    assert set(rows) == {'ETHUSD', 'ETHEUR'}                      # both labels still emitted
+    assert rows['ETHUSD'].signal == rows['ETHEUR'].signal        # identical analysis (fanned)
+    assert (rows['ETHEUR'].base_currency, rows['ETHEUR'].quote_currency) == ('ETH', 'EUR')
+    assert envelope.metadata.per_symbol_tokens == {'ETHUSD': 120}  # billed once, to the canonical
+
+
+def test_result_rows_carry_base_and_quote_currency():
+    # ISSUE_70: every emitted row is stamped with its pair legs from the SymbolSpec — an llm row
+    # and a degraded HOLD row alike, so a consumer reads base/quote without its own lookup.
+    config = _config(['BTCUSD', 'ETHEUR'])
+    envelope = _runner(config, _FakeIngestor(),
+                       _FakeEvaluator({'BTCUSD': _eval('BTCUSD'),
+                                       'ETHEUR': LLMTimeoutError('slow')})).run()   # llm + degraded HOLD
+    rows = {r.symbol: r for r in envelope.result}
+    assert (rows['BTCUSD'].base_currency, rows['BTCUSD'].quote_currency) == ('BTC', 'USD')
+    assert (rows['ETHEUR'].base_currency, rows['ETHEUR'].quote_currency) == ('ETH', 'EUR')  # HOLD stamped too
 
 
 def test_failed_symbol_degrades_to_hold_and_partial():

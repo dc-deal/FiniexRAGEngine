@@ -35,7 +35,7 @@ def _error_envelope(pipeline: Pipeline, exc: Exception) -> SentimentEnvelope:
         timestamp=datetime.now(timezone.utc),
         status='error',
         result=[hold_result(symbol, f'Run failed ({error_type})')
-                for symbol in config.symbols],
+                for symbol in config.symbol_keys()],
         # sources_configured stays 0 here: the catch-all layer has no resolved
         # source-set (ISSUE_10) and the crash case knows nothing about feed health.
         metadata=RunMetadata(model='unavailable'),

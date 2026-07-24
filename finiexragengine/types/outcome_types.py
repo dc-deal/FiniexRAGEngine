@@ -77,6 +77,11 @@ class SentimentResult(BaseModel):
     # 'degraded' = a guard/failure degraded the row. Additive with default: old envelopes
     # stay parseable, schema_version is unchanged.
     basis: Literal['llm', 'no_data', 'degraded'] = 'llm'
+    # The instrument's pair legs (ISSUE_70), attached by the engine from the SymbolSpec — never
+    # scored by the LLM. `base_currency` is the asset side (e.g. ETH), `quote_currency` the quote
+    # (e.g. USD). Additive with default: old envelopes stay parseable, schema_version unchanged.
+    base_currency: Optional[str] = None
+    quote_currency: Optional[str] = None
 
 
 class SentimentLlmOutput(BaseModel):

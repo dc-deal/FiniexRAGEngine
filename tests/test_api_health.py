@@ -10,7 +10,7 @@ def _configured_symbols(pipeline_id: str) -> set:
     manager = AppConfigManager()
     registry = PipelineRegistry(manager.get_pipelines_dir(), manager.get_user_pipelines_dir())
     registry.load()
-    return set(registry.get(pipeline_id).get_config().symbols)
+    return set(registry.get(pipeline_id).get_config().symbol_keys())
 
 
 def test_health_ok(client: TestClient) -> None:
