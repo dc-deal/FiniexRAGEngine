@@ -43,7 +43,7 @@ def build_health_router(config_manager: AppConfigManager,
                 pipeline_id=pipeline.get_config().pipeline_id,
                 outcome_type=pipeline.get_config().outcome_type,
                 market=pipeline.get_config().market,
-                symbols=pipeline.get_config().symbols,
+                symbols=pipeline.get_config().symbol_keys(),
                 trigger_type=pipeline.get_config().trigger.type,
             )
             for pipeline in registry.list_pipelines()

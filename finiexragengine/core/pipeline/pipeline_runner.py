@@ -12,7 +12,7 @@ from finiexragengine.core.pipeline.ingestor import Ingestor
 from finiexragengine.core.pipeline.output_guard import OutputGuard
 from finiexragengine.core.pipeline.symbol_evaluator import SymbolEvaluator
 from finiexragengine.exceptions.ragengine_errors import FiniexRagError
-from finiexragengine.types.config_types.pipeline_config_types import PipelineConfig
+from finiexragengine.types.config_types.pipeline_config_types import PipelineConfig, SymbolSpec
 from finiexragengine.types.eval_types import SymbolEval
 from finiexragengine.types.ingest_types import IngestResult, ReachCensus
 from finiexragengine.types.outcome_types import (
@@ -103,20 +103,19 @@ class PipelineRunner:
         results: List[SentimentResult] = []
         evals: List[SymbolEval] = []
         per_symbol_tokens: Dict[str, int] = {}
-        for symbol in self._config.symbols:
-            query = self._config.symbol_queries.get(symbol, symbol)
+        for spec in self._config.active_symbols():
             try:
-                ev = self._evaluator.evaluate(symbol, query)
+                ev = self._evaluator.evaluate(spec.key, spec.retrieval_query())
             except FiniexRagError as exc:
                 # Contract: the symbol stays present — degraded to a clean HOLD row,
                 # the cause recorded under its taxonomy type.
                 error_type = taxonomy_type(exc)
-                errors.append(self._error(error_type, f'{symbol}: {exc}'))
-                results.append(hold_result(
-                    symbol, f'Analysis degraded to HOLD ({error_type})'))
+                errors.append(self._error(error_type, f'{spec.key}: {exc}'))
+                results.append(self._stamp(hold_result(
+                    spec.key, f'Analysis degraded to HOLD ({error_type})'), spec))
                 continue
             evals.append(ev)
-            per_symbol_tokens[symbol] = ev.usage.total_tokens
+            per_symbol_tokens[spec.key] = ev.usage.total_tokens
             # Output guard (ISSUE_35): schema-valid but internally contradictory rows (a BUY
             # with a negative score, a near-certain HOLD, an empty reasoning) degrade to the
             # contract HOLD under PARTIAL_RESPONSE — the run turns 'partial'. The SymbolEval
@@ -127,13 +126,13 @@ class PipelineRunner:
             if violations:
                 errors.append(self._error(
                     'PARTIAL_RESPONSE',
-                    f"{symbol}: output guard: {'; '.join(str(v) for v in violations)}"))
-                results.append(hold_result(
-                    symbol,
+                    f"{spec.key}: output guard: {'; '.join(str(v) for v in violations)}"))
+                results.append(self._stamp(hold_result(
+                    spec.key,
                     f"Output guard degraded to HOLD "
-                    f"({', '.join(v.rule for v in violations)})"))
+                    f"({', '.join(v.rule for v in violations)})"), spec))
                 continue
-            results.append(ev.result)
+            results.append(self._stamp(ev.result, spec))
 
         # --- D: assemble metadata + envelope ---
         stage_timings = list(ingest.stage_timings)
@@ -210,6 +209,14 @@ class PipelineRunner:
         if not evals:
             return 'error'
         return 'partial' if errors else 'success'
+
+    @staticmethod
+    def _stamp(result: SentimentResult, spec: SymbolSpec) -> SentimentResult:
+        """Attach the instrument's pair legs (ISSUE_70) to a result row — llm or degraded HOLD alike,
+        so every emitted symbol carries its `base_currency`/`quote_currency`."""
+        result.base_currency = spec.base
+        result.quote_currency = spec.quote
+        return result
 
     def _error(self, error_type: str, message: str) -> RunError:
         # Every RunError is logged with its taxonomy type (CLAUDE.md) — but the durable

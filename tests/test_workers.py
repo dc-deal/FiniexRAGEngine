@@ -118,7 +118,8 @@ class _FakePipeline:
         from finiexragengine.types.config_types.pipeline_config_types import PipelineConfig
         return PipelineConfig(
             pipeline_id='p', outcome_type='sentiment_fear_greed', market='crypto',
-            symbols=['BTCUSD'], llm={'model': 'gpt-4o-mini'}, source_set='crypto_news',
+            symbols=[{'key': 'BTCUSD', 'base': 'BTC', 'quote': 'USD'}],
+            llm={'model': 'gpt-4o-mini'}, source_set='crypto_news',
             trigger={'type': 'interval', 'timeframe': 'M10'})
 
     def run(self) -> SentimentEnvelope:
@@ -157,7 +158,8 @@ def test_supervisor_builds_one_ingest_per_referenced_set_and_one_eval_per_stream
     (tmp_path / 'pipes').mkdir()
     (tmp_path / 'pipes' / 'crypto.json').write_text(json.dumps({
         'pipeline_id': 'crypto_sentiment', 'outcome_type': 'sentiment_fear_greed',
-        'market': 'crypto', 'symbols': ['BTCUSD'], 'source_set': 'crypto_news',
+        'market': 'crypto', 'symbols': [{'key': 'BTCUSD', 'base': 'BTC', 'quote': 'USD'}],
+        'source_set': 'crypto_news',
         'trigger': {'type': 'interval', 'timeframe': 'M10'},
         'llm': {'models': [
             {'name': 'gpt-4o-mini', 'sub_pipeline_id': 'mini', 'default': True},

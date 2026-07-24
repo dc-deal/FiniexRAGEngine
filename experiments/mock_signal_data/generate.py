@@ -55,7 +55,10 @@ from finiexragengine.types.outcome_types import (
 )
 from finiexragengine.utils.archive_layout import bucket_path
 
-# The eight crypto_sentiment symbols; the IDE has kraken_spot tick data for all of them.
+# The eight *backtestable* crypto_sentiment symbols — the IDE has kraken_spot tick data for all of
+# them. DOTUSD (the config's live-only symbol, ISSUE_70) is intentionally excluded here: no tick
+# data means no backtest, so the mock (a backtest fixture) omits it. Each result row now also
+# carries base_currency/quote_currency (ISSUE_70), split from the ticker (`sym[:-3]`/`sym[-3:]`).
 DEFAULT_SYMBOLS = ['BTCUSD', 'ETHUSD', 'SOLUSD', 'ADAUSD', 'XRPUSD', 'DASHUSD', 'LTCUSD', 'ETHEUR']
 NAME = {
     'BTCUSD': 'Bitcoin', 'ETHUSD': 'Ethereum', 'SOLUSD': 'Solana', 'ADAUSD': 'Cardano',
@@ -214,6 +217,7 @@ def _render_variant(variant: _Variant, facts: dict, symbols, collected_at, force
                 symbol=sym, signal='HOLD', sentiment_score=0.0, confidence=0.0,
                 reasoning='No relevant news found', urgency=0.0, is_breaking=False,
                 sources=[], basis='no_data',
+                base_currency=sym[:-3], quote_currency=sym[-3:],   # pair legs (ISSUE_70)
             ))
             continue
         # Correlated disagreement: shared base walk + per-variant bias/noise = the same
@@ -235,6 +239,7 @@ def _render_variant(variant: _Variant, facts: dict, symbols, collected_at, force
             urgency=urgency,
             is_breaking=urgency >= 0.8,
             sources=_sources(sym, analysis_at, facts['source_k'][sym]),
+            base_currency=sym[:-3], quote_currency=sym[-3:],       # pair legs (ISSUE_70)
         ))
     errors = []
     if facts['partial']:

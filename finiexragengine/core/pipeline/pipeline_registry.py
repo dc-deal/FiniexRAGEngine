@@ -19,9 +19,10 @@ from finiexragengine.types.config_types.pipeline_config_types import (
 logger = logging.getLogger(__name__)
 
 # Lists whose items a user override merges *by id* (patch one item, keep the rest) rather than
-# replacing wholesale — so an override can flip a single variant's `enabled` (or a source's
-# weight) without restating the whole array. Plain lists (symbols, keywords) still replace.
-_OVERRIDE_LIST_KEYS = {'models': 'sub_pipeline_id', 'sources': 'source_id'}
+# replacing wholesale — so an override can flip a single variant's `enabled`, a source's weight,
+# or one symbol's `enabled` (ISSUE_70) without restating the whole array. Plain lists (keywords)
+# still replace.
+_OVERRIDE_LIST_KEYS = {'models': 'sub_pipeline_id', 'sources': 'source_id', 'symbols': 'key'}
 
 
 def expand_variants(config: PipelineConfig) -> List[PipelineConfig]:

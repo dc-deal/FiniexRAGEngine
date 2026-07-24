@@ -22,7 +22,7 @@ from finiexragengine.types.outcome_types import RunMetadata
 def _config(llm: dict) -> PipelineConfig:
     return PipelineConfig(
         pipeline_id='crypto_sentiment', outcome_type='sentiment_fear_greed',
-        market='crypto', symbols=['BTCUSD'], llm=llm,
+        market='crypto', symbols=[{'key': 'BTCUSD', 'base': 'BTC', 'quote': 'USD'}], llm=llm,
         source_set='crypto_news')
 
 

@@ -169,12 +169,43 @@ class OutputGuardConfig(BaseModel):
     hold_confidence_max: float = 0.9
 
 
+class SymbolSpec(BaseModel):
+    """One evaluated instrument (ISSUE_70): its ticker `key`, the pair's `base`/`quote` legs, and
+    the readable retrieval `query`.
+
+    `key` is the ticker (e.g. `BTCUSD`); `base`/`quote` are the split (`BTC`/`USD`), emitted
+    downstream as `base_currency`/`quote_currency` so a consumer sees the pair without its own
+    lookup. `query` is the readable asset name the prompt + retrieval use (falls back to `key`);
+    it is engine-internal, never emitted. `enabled: false` switches the symbol off for the whole
+    pipeline (like a disabled model variant) — a user override can toggle one symbol by `key`
+    (merge-by-id) without restating the list.
+    """
+    key: str
+    base: str
+    quote: str
+    query: Optional[str] = None
+    enabled: bool = True
+
+    @model_validator(mode='after')
+    def _key_is_base_plus_quote(self) -> 'SymbolSpec':
+        # Integrity gate at load (fail-fast, like the timeframe/model validators): the ticker must
+        # be exactly base+quote — a typo (ETH/EURO, wrong quote) is a config error, never silent.
+        if self.key != self.base + self.quote:
+            raise ValueError(
+                f"symbol key '{self.key}' must equal base+quote "
+                f"('{self.base}' + '{self.quote}' = '{self.base + self.quote}')")
+        return self
+
+    def retrieval_query(self) -> str:
+        """The prompt/retrieval subject — the readable query, or the key when unset."""
+        return self.query or self.key
+
+
 class PipelineConfig(BaseModel):
     pipeline_id: str
     outcome_type: str
     market: str
-    symbols: List[str]
-    symbol_queries: Dict[str, str] = Field(default_factory=dict)   # symbol → retrieval query text (ISSUE_5)
+    symbols: List[SymbolSpec]                                      # evaluated instruments (ISSUE_70)
     prompt: PromptRef = Field(default_factory=PromptRef)           # declared prompt template (ISSUE_33)
     llm: PipelineLlmConfig                                         # declared eval model — required
     trigger: TriggerConfig = Field(default_factory=TriggerConfig)   # EVAL cadence (ISSUE_10)
@@ -190,3 +221,15 @@ class PipelineConfig(BaseModel):
     # (`variant_group` = the default stream's id) and which variant it is.
     variant_group: Optional[str] = None
     variant: Optional[str] = None
+
+    def active_symbols(self) -> List['SymbolSpec']:
+        """The enabled symbols in declared order — a disabled one is off for the whole pipeline."""
+        return [spec for spec in self.symbols if spec.enabled]
+
+    def symbol_keys(self) -> List[str]:
+        """The active ticker keys in declared order — for surfaces that list symbols (ISSUE_70)."""
+        return [spec.key for spec in self.active_symbols()]
+
+    def symbol_query_map(self) -> Dict[str, str]:
+        """`{key: retrieval_query}` over the active symbols — for retrieval/coverage callers (ISSUE_70)."""
+        return {spec.key: spec.retrieval_query() for spec in self.active_symbols()}

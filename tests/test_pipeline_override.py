@@ -5,7 +5,10 @@ from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
 
 _BASE = {
     'pipeline_id': 'crypto_sentiment', 'outcome_type': 'sentiment_fear_greed',
-    'market': 'crypto', 'symbols': ['BTCUSD', 'ETHUSD', 'SOLUSD'],
+    'market': 'crypto', 'symbols': [
+        {'key': 'BTCUSD', 'base': 'BTC', 'quote': 'USD'},
+        {'key': 'ETHUSD', 'base': 'ETH', 'quote': 'USD'},
+        {'key': 'SOLUSD', 'base': 'SOL', 'quote': 'USD'}],
     'source_set': 'crypto_news',
     'llm': {'models': [
         {'name': 'gpt-4o-mini', 'sub_pipeline_id': 'mini', 'default': True},
@@ -28,12 +31,14 @@ def _registry(tmp_path, override=None):
 
 
 def test_override_replaces_symbols_inherits_the_rest(tmp_path):
-    registry = _registry(tmp_path, {'symbols': ['BTCUSD', 'ETHUSD']})
+    registry = _registry(tmp_path, {'symbols': [
+        {'key': 'BTCUSD', 'base': 'BTC', 'quote': 'USD'},
+        {'key': 'ETHUSD', 'base': 'ETH', 'quote': 'USD'}]})
     # Both variants still expand (models inherited from the base), each with the new symbols.
     ids = sorted(p.get_config().pipeline_id for p in registry.list_pipelines())
     assert ids == ['crypto_sentiment', 'crypto_sentiment_4o_enhanced']
     config = registry.get('crypto_sentiment').get_config()
-    assert config.symbols == ['BTCUSD', 'ETHUSD']        # replaced wholesale
+    assert config.symbol_keys() == ['BTCUSD', 'ETHUSD']  # replaced wholesale
     assert config.source_set == 'crypto_news'            # inherited, not restated
 
 
@@ -48,7 +53,18 @@ def test_override_can_switch_llm_form_to_single_model(tmp_path):
 
 def test_no_override_file_leaves_the_base_untouched(tmp_path):
     registry = _registry(tmp_path)                       # no override written
-    assert registry.get('crypto_sentiment').get_config().symbols == ['BTCUSD', 'ETHUSD', 'SOLUSD']
+    assert registry.get('crypto_sentiment').get_config().symbol_keys() == ['BTCUSD', 'ETHUSD', 'SOLUSD']
+
+
+def test_override_disables_one_symbol_via_merge_by_key(tmp_path):
+    # ISSUE_70: a one-line override flips SOLUSD's `enabled` — merged by `key`, so the other symbols
+    # (and SOL's base/quote) are inherited, and the disabled symbol drops out of the active run set.
+    registry = _registry(tmp_path, {'symbols': [{'key': 'SOLUSD', 'enabled': False}]})
+    config = registry.get('crypto_sentiment').get_config()
+    assert config.symbol_keys() == ['BTCUSD', 'ETHUSD']  # SOLUSD off; the rest still active
+    # Still defined (base/quote inherited via the patch), just not active.
+    sol = next(s for s in config.symbols if s.key == 'SOLUSD')
+    assert (sol.base, sol.quote, sol.enabled) == ('SOL', 'USD', False)
 
 
 def test_override_toggles_one_variant_enabled_via_merge_by_key(tmp_path):
