@@ -1,5 +1,6 @@
-"""Unit tests for RssSource.fetch — parsing, idempotent ids, provenance, errors."""
+"""Unit tests for RssSource.fetch — parsing, idempotent ids, provenance, errors, timeouts."""
 import time
+import urllib.request
 from datetime import timezone
 
 import feedparser
@@ -48,7 +49,7 @@ def test_fetch_maps_entries_to_articles(monkeypatch):
         'published_parsed': published,
     }]
     monkeypatch.setattr(
-        feedparser, 'parse', lambda url, etag=None, modified=None, agent=None: _FakeParsed(entries, feed={'language': 'en'})
+        feedparser, 'parse', lambda url, etag=None, modified=None, agent=None, handlers=None: _FakeParsed(entries, feed={'language': 'en'})
     )
 
     articles = _source().fetch()
@@ -69,26 +70,26 @@ def test_fetch_maps_entries_to_articles(monkeypatch):
 
 def test_fetch_is_idempotent_on_id(monkeypatch):
     entries = [{'id': 'guid-1', 'link': 'https://example.test/a', 'title': 't', 'summary': 's'}]
-    monkeypatch.setattr(feedparser, 'parse', lambda url, etag=None, modified=None, agent=None: _FakeParsed(entries))
+    monkeypatch.setattr(feedparser, 'parse', lambda url, etag=None, modified=None, agent=None, handlers=None: _FakeParsed(entries))
     assert _source().fetch()[0].article_id == _source().fetch()[0].article_id
 
 
 def test_fetch_skips_entries_without_identity(monkeypatch):
     entries = [{'title': 'no id', 'summary': 'x'}]
-    monkeypatch.setattr(feedparser, 'parse', lambda url, etag=None, modified=None, agent=None: _FakeParsed(entries))
+    monkeypatch.setattr(feedparser, 'parse', lambda url, etag=None, modified=None, agent=None, handlers=None: _FakeParsed(entries))
     assert _source().fetch() == []
 
 
 def test_fetch_falls_back_to_fetched_at_when_no_pubdate(monkeypatch):
     entries = [{'id': 'g', 'link': 'https://example.test/a', 'title': 't', 'summary': 's'}]
-    monkeypatch.setattr(feedparser, 'parse', lambda url, etag=None, modified=None, agent=None: _FakeParsed(entries))
+    monkeypatch.setattr(feedparser, 'parse', lambda url, etag=None, modified=None, agent=None, handlers=None: _FakeParsed(entries))
     article = _source().fetch()[0]
     assert article.published_at == article.fetched_at
 
 
 def test_fetch_raises_on_unreachable_feed(monkeypatch):
     monkeypatch.setattr(
-        feedparser, 'parse', lambda url, etag=None, modified=None, agent=None: _FakeParsed([], bozo=1, bozo_exception='timeout')
+        feedparser, 'parse', lambda url, etag=None, modified=None, agent=None, handlers=None: _FakeParsed([], bozo=1, bozo_exception='timeout')
     )
     with pytest.raises(SourceFetchError):
         _source().fetch()
@@ -99,7 +100,7 @@ def test_conditional_get_sends_etag_and_304_returns_empty(monkeypatch):
     # unchanged feed answers 304 with no body, so fast polling stays cheap + polite.
     seen_etags = []
 
-    def fake_parse(url, etag=None, modified=None, agent=None):
+    def fake_parse(url, etag=None, modified=None, agent=None, handlers=None):
         seen_etags.append(etag)
         if etag is None:
             return _FakeParsed(
@@ -120,7 +121,7 @@ def test_http_429_raises_rate_limited_without_parsing(monkeypatch):
     # ISSUE_11: a 429's body is an HTML error page, NOT the feed — classify it as RATE_LIMITED
     # from the status instead of choking on 'not well-formed' (the real cryptoslate bug).
     monkeypatch.setattr(feedparser, 'parse',
-                        lambda url, etag=None, modified=None, agent=None: _FakeParsed([], bozo=1, status=429))
+                        lambda url, etag=None, modified=None, agent=None, handlers=None: _FakeParsed([], bozo=1, status=429))
     with pytest.raises(SourceFetchError) as exc:
         _source().fetch()
     assert exc.value.error_type == 'RATE_LIMITED' and exc.value.status == 429
@@ -128,7 +129,7 @@ def test_http_429_raises_rate_limited_without_parsing(monkeypatch):
 
 def test_http_5xx_raises_http_error(monkeypatch):
     monkeypatch.setattr(feedparser, 'parse',
-                        lambda url, etag=None, modified=None, agent=None: _FakeParsed([], status=503))
+                        lambda url, etag=None, modified=None, agent=None, handlers=None: _FakeParsed([], status=503))
     with pytest.raises(SourceFetchError) as exc:
         _source().fetch()
     assert exc.value.error_type == 'HTTP_ERROR' and exc.value.status == 503
@@ -140,7 +141,7 @@ def test_transport_error_retries_once_then_succeeds(monkeypatch):
     calls = []
     good = [{'id': 'g', 'link': 'https://example.test/a', 'title': 't', 'summary': 's'}]
 
-    def fake_parse(url, etag=None, modified=None, agent=None):
+    def fake_parse(url, etag=None, modified=None, agent=None, handlers=None):
         calls.append(url)
         if len(calls) == 1:
             return _FakeParsed([], bozo=1, bozo_exception=OSError('SSL: UNEXPECTED_EOF'))
@@ -152,7 +153,7 @@ def test_transport_error_retries_once_then_succeeds(monkeypatch):
 
 
 def test_persistent_transport_error_raises_unreachable(monkeypatch):
-    monkeypatch.setattr(feedparser, 'parse', lambda url, etag=None, modified=None, agent=None:
+    monkeypatch.setattr(feedparser, 'parse', lambda url, etag=None, modified=None, agent=None, handlers=None:
                         _FakeParsed([], bozo=1, bozo_exception=OSError('conn refused')))
     with pytest.raises(SourceFetchError) as exc:
         _source().fetch()
@@ -163,7 +164,7 @@ def test_malformed_body_raises_parse_error_without_retry(monkeypatch):
     # A non-transport bozo (malformed XML) will not fix itself — classify PARSE_ERROR, no retry.
     calls = []
 
-    def fake_parse(url, etag=None, modified=None, agent=None):
+    def fake_parse(url, etag=None, modified=None, agent=None, handlers=None):
         calls.append(url)
         return _FakeParsed([], bozo=1, bozo_exception=ValueError('not well-formed'))
 
@@ -177,7 +178,7 @@ def test_malformed_body_raises_parse_error_without_retry(monkeypatch):
 def test_poll_interval_floor_gates_due_for_fetch(monkeypatch):
     # A slow feed opts out of the fast loop via due_for_fetch (the Ingestor gates on it so a
     # floor skip is a local no-op, never a recorded poll). Within its interval it is not due.
-    monkeypatch.setattr(feedparser, 'parse', lambda url, etag=None, modified=None, agent=None: _FakeParsed(
+    monkeypatch.setattr(feedparser, 'parse', lambda url, etag=None, modified=None, agent=None, handlers=None: _FakeParsed(
         [{'id': 'g', 'link': 'https://example.test/a', 'title': 't', 'summary': 's'}]))
     source = RssSource(SourceConfig(source_id='slow', url='https://example.test/rss',
                                     poll_interval_seconds=3600))
@@ -189,3 +190,54 @@ def test_poll_interval_floor_gates_due_for_fetch(monkeypatch):
 def test_no_floor_is_always_due():
     source = RssSource(SourceConfig(source_id='fast', url='https://example.test/rss'))
     assert source.due_for_fetch() is True      # no poll_interval_seconds -> our fast tempo
+
+
+# --- ISSUE_73: the fetch deadline -----------------------------------------------------------
+
+
+def test_per_source_timeout_overrides_the_set_default():
+    source = RssSource(SourceConfig(source_id='slow_but_alive', url='https://example.test/rss',
+                                    timeout_seconds=25), default_timeout_seconds=10)
+    assert source._timeout_seconds == 25
+
+
+def test_set_default_applies_without_a_per_source_override():
+    source = RssSource(SourceConfig(source_id='normal', url='https://example.test/rss'),
+                       default_timeout_seconds=10)
+    assert source._timeout_seconds == 10
+
+
+def test_the_timeout_reaches_the_request(monkeypatch):
+    # The whole point of ISSUE_73: feedparser takes no `timeout=`, so the deadline can only ride
+    # in on a handler. Assert it is actually handed over AND that it stamps a real Request —
+    # a handler that never runs would look identical from the outside.
+    seen = {}
+
+    def fake_parse(url, etag=None, modified=None, agent=None, handlers=None):
+        seen['handlers'] = handlers
+        return _FakeParsed([{'id': 'g', 'link': 'https://example.test/a',
+                             'title': 't', 'summary': 's'}])
+
+    monkeypatch.setattr(feedparser, 'parse', fake_parse)
+    RssSource(SourceConfig(source_id='x', url='https://example.test/rss'),
+              default_timeout_seconds=7).fetch()
+
+    handler = seen['handlers'][0]
+    request = urllib.request.Request('https://example.test/rss')
+    assert handler.https_request(request).timeout == 7
+    assert handler.http_request(request).timeout == 7
+
+
+def test_a_stalled_host_times_out_instead_of_hanging():
+    # The 2026-08-01 regression, end to end and for real: a non-routable address blackholes the
+    # connect, which without a timeout blocks forever. With one it must raise promptly — and be
+    # classified UNREACHABLE so source-health can quarantine the feed (5 strikes, 24h).
+    source = RssSource(SourceConfig(source_id='blackhole',
+                                    url='http://10.255.255.1/feed.xml',
+                                    timeout_seconds=1))
+    started = time.monotonic()
+    with pytest.raises(SourceFetchError) as exc:
+        source.fetch()
+    elapsed = time.monotonic() - started
+    assert exc.value.error_type == 'UNREACHABLE'
+    assert elapsed < 10          # two attempts x 1s deadline, generous slack for slow CI

@@ -255,6 +255,13 @@ today, most load-bearing first:
   A **Sources report** and a **feed doctor** make a bad feed one command away; a **daily
   rotating file** log means an overnight run survives the scrollback. See
   [source_health_and_logging.md](docs/architecture/source_health_and_logging.md).
+- **Survives a dead feed (#73, #75)**: every fetch carries a **deadline** (10s default,
+  per-source override). Without one, a host that accepts the connection and then goes silent
+  blocks its worker *forever* — `feedparser` passes no timeout, so the socket inherits "wait
+  indefinitely". With one, the hang becomes an ordinary failure and the quarantine above handles
+  it. Because error handling only covers *failing*, never *never returning*, a **stall watchdog**
+  backs it up: no completed pass within `max(3 × cadence, 15 min)` and the worker is named in the
+  log, on `/health`, in Telegram, and in red on the live dashboard.
 - **Foundation — corpus & embeddings (#2, #3, #4, #14, #19)**: RSS ingest into an idempotent,
   shared **pgvector** corpus (store everything, filter at retrieval); OpenAI embeddings
   (`text-embedding-3-small`, 1536 dims) with a query-vector cache; versioned **schema

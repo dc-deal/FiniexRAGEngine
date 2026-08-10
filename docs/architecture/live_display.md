@@ -77,6 +77,17 @@ Notes on the rows:
   (see `breaking_detection.md`), so a lingering story appears once with a growing duration, not every
   pass. The row count is fixed (blank-padded), so the panel height stays exact.
 
+- **A stalled worker's `last` cell turns red** (ISSUE_75). This is the cell that read a perfectly
+  neutral `last 212h…` for nine days in August 2026 while the engine did nothing: an ageing number
+  that looks exactly like `last 4m` and that no eye catches. The verdict is *asked*, never
+  re-derived — `LiveDisplay` holds the `StallWatchdog` the same way it holds the `BudgetGuard` and
+  reads its stalled set, so the threshold (`max(factor × cadence, floor_minutes)`) is defined in
+  exactly one place. The display keys its rows by source-set / pipeline id while the supervisor
+  names workers `ingest:<id>` / `eval:<id>`; that mapping is the `worker_prefix` argument on
+  `_keyed_rows`. Colour carries the whole signal here: the `last` column is width-11 and `no_wrap`,
+  so there is no room for a marker glyph without truncating the age itself. Without a watchdog
+  (CLI and test paths) nothing renders red and nothing breaks.
+
 BUDGET and BREAKING are engine-wide (one budget guard; session-cumulative breaking counts), so
 they carry no per-worker id.
 

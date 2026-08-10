@@ -28,7 +28,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          # Same minor version as the Dockerfile and the production server — CI proving a version
+          # nobody runs is the blind spot ISSUE_73 was verified against by hand.
+          python-version: '3.14'
           cache: pip
       - run: pip install -r requirements.txt
       - run: pytest tests/ -v

@@ -27,6 +27,19 @@ class BudgetInfo(BaseModel):
     soft_daily_usd: float = 0.0
 
 
+class StallInfo(BaseModel):
+    """Worker liveness state (ISSUE_75) — which workers have gone silent, and on what threshold.
+
+    Deliberately part of /health rather than a separate endpoint: "is anything stuck" is the
+    question /health exists to answer, and in August 2026 it was the one question no surface
+    could answer without a stack dump.
+    """
+    enabled: bool = True
+    stalled: List[str] = []
+    factor: int = 3
+    floor_minutes: int = 15
+
+
 class HealthResponse(BaseModel):
     status: str = 'ok'
     service: str = 'FiniexRAGEngine'
@@ -35,6 +48,8 @@ class HealthResponse(BaseModel):
     workers: List[WorkerInfo] = []
     # Present only with real runners attached (the guard lives on the assembler, ISSUE_47).
     budget: Optional[BudgetInfo] = None
+    # Present only with workers running — nothing can stall without them (ISSUE_75).
+    stall: Optional[StallInfo] = None
 
 
 class PipelineInfo(BaseModel):

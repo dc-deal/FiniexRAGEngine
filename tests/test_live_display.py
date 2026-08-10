@@ -132,6 +132,42 @@ def test_healthy_sources_collapse_but_a_deviation_is_named():
     assert 'cryptoslate quarantined' in text                 # only the deviation spends words
 
 
+def test_a_stalled_worker_paints_its_last_cell_red():
+    # ISSUE_75: the cell that read a neutral `last 212h…` for nine days. A stalled worker must be
+    # visually distinct from a healthy one — colour is the signal (the column has no room for a
+    # glyph), so the assertion reads the rendered style, not the text.
+    from finiexragengine.core.observability.stall_watchdog import StallWatchdog
+    from finiexragengine.types.config_types.app_config_types import StallWatchdogConfig
+    from finiexragengine.types.worker_types import WorkerState
+
+    dead = WorkerState(name='ingest:crypto_news', kind='ingest', interval_seconds=15)
+    dead.last_run_at = datetime.now(timezone.utc) - timedelta(days=9)
+    watchdog = StallWatchdog(StallWatchdogConfig(), lambda: [dead])
+    watchdog.check()                                          # opens the stall episode
+
+    stats = _stats()
+    stats.set_sources('crypto_news', SourcesSnapshot(last=_NOW, ok=5, total=5))
+    stats.set_sources('forex_news', SourcesSnapshot(last=_NOW, ok=7, total=7))
+
+    console = Console(record=True, width=110, height=40)
+    console.print(LiveDisplay(stats, stall_watchdog=watchdog,
+                              worker_count=4, console=console).render())
+    # styles=True keeps the ANSI codes, so the assertion is on what the operator's eye actually
+    # gets — `\x1b[1;31m` is rich's rendering of `red bold`.
+    lines = console.export_text(styles=True).splitlines()
+    stalled_line = next(line for line in lines if 'crypto_news' in line)
+    healthy_line = next(line for line in lines if 'forex_news' in line)
+    assert '\x1b[1;31m' in stalled_line, 'the stalled worker row must render red'
+    assert '\x1b[1;31m' not in healthy_line, 'the healthy worker row must stay neutral'
+
+
+def test_a_display_without_a_watchdog_renders_normally():
+    # The CLI/test path passes no watchdog — no stall rendering, and above all no crash.
+    stats = _stats()
+    stats.set_sources('crypto_news', SourcesSnapshot(last=_NOW, ok=5, total=5))
+    assert '5/5 ok' in _render(stats, worker_count=4)
+
+
 def test_activity_stream_shows_recent_events():
     stats = _stats()
     for i in range(30):

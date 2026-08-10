@@ -122,6 +122,24 @@ class SourceHealthConfig(BaseModel):
     recent_events_kept: int = 10                # capped warn/error ring per source (overview)
 
 
+class StallWatchdogConfig(BaseModel):
+    """Worker liveness watchdog (ISSUE_75) — the engine must say when it stops working.
+
+    On 2026-08-01 every worker stood still for nine days and nothing raised its voice: the
+    process was alive, the API answered, the dashboard refreshed, the weekly cron fired. Only the
+    work was gone. Detection latency was up to seven days (the weekly report's `STALE` marker).
+
+    A worker is stalled when no pass has *completed* within `max(factor x cadence, floor_minutes)`.
+    The floor carries the decision: the ingest cadence is 15s, so a bare factor of 3 would fire
+    after 45 seconds and cry at every merely slow pass. With the defaults an ingest worker is
+    called out after 15 minutes and an eval worker (10-minute bar close) after 30.
+    """
+    enabled: bool = True
+    factor: int = 3              # multiples of the worker's own cadence before it counts as stalled
+    floor_minutes: int = 15      # never alert earlier than this, whatever the cadence
+    check_interval_seconds: int = 60      # how often the watchdog looks; cheap, in-memory only
+
+
 class TelegramConfig(BaseModel):
     """Telegram delivery channel (ISSUE_27) — the operator's alert surface.
 
@@ -175,6 +193,12 @@ class AppConfig(BaseModel):
     cost: CostConfig = Field(default_factory=CostConfig)
     log_level: str = 'INFO'
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    # Process-wide fallback socket deadline in seconds (ISSUE_73), applied at server boot. Python's
+    # own default is `None` = block forever; this bounds any socket nobody gave an explicit timeout.
+    # Deliberately looser than the feed timeout — it guards unknown callers, so it errs towards
+    # never interrupting a legitimately slow one. The feed path does not rely on it.
+    socket_default_timeout_seconds: int = 30
     source_health: SourceHealthConfig = Field(default_factory=SourceHealthConfig)
+    stall_watchdog: StallWatchdogConfig = Field(default_factory=StallWatchdogConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     weekly_report: WeeklyReportConfig = Field(default_factory=WeeklyReportConfig)

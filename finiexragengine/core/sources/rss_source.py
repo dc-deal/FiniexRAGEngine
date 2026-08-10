@@ -1,4 +1,5 @@
 """RSS input source (feedparser-backed)."""
+import urllib.request
 from calendar import timegm
 from datetime import datetime, timezone
 from typing import Any, List, Mapping, Optional
@@ -19,6 +20,32 @@ from finiexragengine.types.config_types.source_set_types import SourceConfig
 USER_AGENT = 'Mozilla/5.0 (compatible; FiniexRAGEngine/1.0; +https://github.com/dc-deal/FiniexRAGEngine)'
 
 
+class _TimeoutHandler(urllib.request.BaseHandler):
+    """Stamps a deadline onto every feed request (ISSUE_73).
+
+    `feedparser.parse()` exposes no `timeout` and never passes one to urllib, so its socket
+    inherits `socket.getdefaulttimeout()` — `None`, i.e. block forever. On 2026-08-01 that hung a
+    worker inside `ssl.do_handshake()` for nine days against a host that accepted the TCP
+    connection and then went silent.
+
+    feedparser *does* forward extra handlers into `build_opener`, and `OpenerDirector.open()`
+    assigns `req.timeout` **before** running the request processors — so a `*_request` processor
+    is the one seam that can override it without giving up feedparser's conditional GET
+    (etag/304), gzip and encoding handling. A private 5-line adapter with a single consumer:
+    `feed_doctor` passes `timeout=` to `urlopen` directly and needs nothing from here.
+    """
+
+    def __init__(self, timeout_seconds: float) -> None:
+        self._timeout_seconds = timeout_seconds
+
+    def http_request(self, req: urllib.request.Request) -> urllib.request.Request:
+        req.timeout = self._timeout_seconds
+        return req
+
+    # HTTPS travels the same path; urllib dispatches the processor per scheme.
+    https_request = http_request
+
+
 class RssSource(AbstractSource):
     """Fetches and parses an RSS feed into Articles.
 
@@ -35,13 +62,16 @@ class RssSource(AbstractSource):
     are deliberately NOT slowed — 304 keeps them fast and polite.
     """
 
-    def __init__(self, config: SourceConfig) -> None:
+    def __init__(self, config: SourceConfig, default_timeout_seconds: int = 10) -> None:
         super().__init__(config)
         # Conditional-GET validators, remembered across polls (in-memory — a cold start just
         # re-pulls once). None until the first successful fetch.
         self._etag: Optional[str] = None
         self._modified: Optional[str] = None
         self._last_polled_at: Optional[datetime] = None
+        # Effective fetch deadline (ISSUE_73): the per-source override wins, else the set's
+        # default. Resolved once here so every poll uses the same value without re-deriving it.
+        self._timeout_seconds: int = config.timeout_seconds or default_timeout_seconds
 
     def due_for_fetch(self) -> bool:
         # Per-source poll floor (ISSUE_11): a feed that ignores conditional GET (e.g. cryptoslate,
@@ -110,8 +140,13 @@ class RssSource(AbstractSource):
         for attempt in (1, 2):
             # agent set explicitly: without it feedparser sends its default UA, which some hosts
             # (fxstreet, cryptoslate) reject with 403 before the body is ever produced.
+            # handlers: the fetch deadline (ISSUE_73) — without it a silent host blocks this
+            # thread forever. A timeout surfaces here as `bozo_exception = URLError(timed out)`,
+            # which is an OSError, so the transient branch below already handles it: one retry,
+            # then UNREACHABLE into source-health and its quarantine.
             parsed = feedparser.parse(url, etag=self._etag, modified=self._modified,
-                                      agent=USER_AGENT)
+                                      agent=USER_AGENT,
+                                      handlers=[_TimeoutHandler(self._timeout_seconds)])
             status = getattr(parsed, 'status', None)
             if status == 304:
                 return None

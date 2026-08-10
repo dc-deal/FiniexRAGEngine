@@ -12,7 +12,7 @@ the file, so nothing else writes to the terminal and frames never tear.
 """
 import asyncio
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from rich.console import Console, RenderableType
 from rich.layout import Layout
@@ -21,6 +21,7 @@ from rich.table import Table
 from rich.text import Text
 
 from finiexragengine.core.observability.budget_guard import BudgetGuard
+from finiexragengine.core.observability.stall_watchdog import StallWatchdog
 from finiexragengine.core.pipeline.breaking_episode import EPISODE_GAP
 from finiexragengine.core.ui.engine_stats import (
     BreakingRecord,
@@ -49,11 +50,18 @@ def _format_age(seconds: float) -> str:
     return f'{hours}h{minutes:02d}m'
 
 
-def _last(now: datetime, last: Optional[datetime]) -> Text:
-    """The `last <age>` cell — dim when a stage has never run (the blindness test: it ages)."""
+def _last(now: datetime, last: Optional[datetime], *, stalled: bool = False) -> Text:
+    """The `last <age>` cell — dim when a stage has never run (the blindness test: it ages).
+
+    A stalled worker (ISSUE_75) paints the cell red. This is the cell that read a perfectly
+    neutral `last 212h…` for nine days in August 2026 — an ageing number nobody's eye catches,
+    because it looks exactly like `last 4m`. Colour is the whole signal here: the column is
+    width-11 and no_wrap, so there is no room for a marker glyph without truncating the age.
+    """
     if last is None:
         return Text('idle', style='dim')
-    return Text(f'last {_format_age((now - last).total_seconds())}')
+    text = f'last {_format_age((now - last).total_seconds())}'
+    return Text(text, style='red bold') if stalled else Text(text)
 
 
 def _merge_signal_chips(signals: List[Tuple[str, str, str, str]]) -> str:
@@ -89,11 +97,15 @@ class LiveDisplay:
 
     def __init__(self, stats: EngineStats, *,
                  budget_guard: Optional[BudgetGuard] = None,
+                 stall_watchdog: Optional[StallWatchdog] = None,
                  worker_count: int = 0,
                  refresh_seconds: float = 1.0,
                  console: Optional[Console] = None) -> None:
         self._stats = stats
         self._budget_guard = budget_guard
+        # Optional (ISSUE_75): asked each frame which workers are stalled, so a silent stage turns
+        # red instead of ageing quietly. None = no stall rendering (CLI/test paths).
+        self._stall_watchdog = stall_watchdog
         self._worker_count = worker_count
         self._refresh_seconds = refresh_seconds
         self._console = console if console is not None else Console()
@@ -172,10 +184,13 @@ class LiveDisplay:
 
         # One row per worker (source-set for SOURCES/INGEST, pipeline for RETRIEVAL/LLM), so the
         # concurrent workers never clobber each other's state (ISSUE_26).
-        self._keyed_rows(table, now, 'SOURCES', self._stats.sources(), self._sources_detail)
-        self._keyed_rows(table, now, 'INGEST', self._stats.ingest(), self._ingest_detail)
-        self._keyed_rows(table, now, 'RETRIEVAL', self._stats.retrieval(), self._retrieval_detail)
-        self._keyed_rows(table, now, 'LLM', self._stats.llm(), self._llm_detail)
+        self._keyed_rows(table, now, 'SOURCES', self._stats.sources(),
+                         self._sources_detail, 'ingest')
+        self._keyed_rows(table, now, 'INGEST', self._stats.ingest(),
+                         self._ingest_detail, 'ingest')
+        self._keyed_rows(table, now, 'RETRIEVAL', self._stats.retrieval(),
+                         self._retrieval_detail, 'eval')
+        self._keyed_rows(table, now, 'LLM', self._stats.llm(), self._llm_detail, 'eval')
         # BUDGET + BREAKING are engine-wide (no per-worker id column).
         table.add_row('BUDGET', '', self._budget_last(), self._budget_detail())
         table.add_row('BREAKING', '', _last(now, self._stats.breaking().last),
@@ -186,18 +201,27 @@ class LiveDisplay:
         return table
 
     def _keyed_rows(self, table: Table, now: datetime, label: str,
-                    snapshots: Dict[str, Any], detail: Callable[[Any], Text]) -> None:
+                    snapshots: Dict[str, Any], detail: Callable[[Any], Text],
+                    worker_prefix: str) -> None:
         # One row per worker id; the stage label sits on the first row only, the rest indent under
         # it. An empty stage (no workers registered) still gets one idle line so it never vanishes.
         if not snapshots:
             table.add_row(label, '', Text('idle', style='dim'), Text('—', style='dim'))
             return
+        stalled = self._stalled_workers()
         first = True
         for key, snapshot in snapshots.items():
-            last_cell = (_last(now, snapshot.last) if snapshot is not None
-                         else Text('idle', style='dim'))
+            # The display keys rows by source-set / pipeline id, the supervisor names workers
+            # `ingest:<id>` / `eval:<id>` — `worker_prefix` is that mechanical mapping (ISSUE_75).
+            last_cell = (_last(now, snapshot.last, stalled=f'{worker_prefix}:{key}' in stalled)
+                         if snapshot is not None else Text('idle', style='dim'))
             table.add_row(label if first else '', key, last_cell, detail(snapshot))
             first = False
+
+    def _stalled_workers(self) -> Set[str]:
+        """Worker names the watchdog currently considers stalled — asked, never re-derived, so the
+        threshold lives in exactly one place (ISSUE_75). Empty without a watchdog."""
+        return self._stall_watchdog.stalled_workers() if self._stall_watchdog is not None else set()
 
     @staticmethod
     def _sources_detail(snapshot: Optional[SourcesSnapshot]) -> Text:
