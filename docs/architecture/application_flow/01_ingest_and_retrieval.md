@@ -88,6 +88,42 @@ Top-down, each new article flows through these units in order:
    `WorkerState` the API serves — while the per-skip line stays DEBUG. Entering quarantine still
    WARNs once.
 
+   **The fetch deadline — why a feed must be *able* to fail (ISSUE_73).** Everything above only
+   engages when a fetch **returns**. On 2026-08-01 one did not: `cryptonews.com` accepted the TCP
+   connection and never completed the TLS handshake, and `feedparser.parse()` passes no timeout to
+   `urllib`, so the socket inherited `socket.getdefaulttimeout()` — `None`, meaning *wait forever*.
+   The thread blocked inside `ssl.do_handshake()` while holding the lock shared by all four
+   workers, and the engine produced nothing for nine days without a single error line. The
+   quarantine machinery never fired because **nothing ever failed**. TCP itself offers no rescue:
+   an established connection over which nothing flows is a perfectly normal state, and Python
+   sockets do not enable keepalive.
+
+   So every fetch carries a deadline. `feedparser` exposes no `timeout=`, but it does forward
+   extra urllib handlers, and `OpenerDirector.open()` assigns `req.timeout` *before* running the
+   request processors — so a `*_request` processor (`_TimeoutHandler` in `rss_source.py`) is the
+   one seam that can set it without giving up feedparser's conditional GET, gzip and encoding
+   handling. Configured as an acquisition concern, next to the cadence: `fetch_timeout_seconds`
+   on the source-set (default **10s**), overridable per feed via `SourceConfig.timeout_seconds`.
+
+   From there **no new error handling was needed** — the timeout re-enters the chain above:
+
+   ```
+   ssl.do_handshake() → TimeoutError ⊂ OSError
+     → urllib do_open: except OSError → URLError
+     → feedparser.parse(): except URLError → bozo_exception
+     → _fetch_parsed: transient (URLError ⊂ OSError) → one retry → SourceFetchError(UNREACHABLE)
+     → record_failure → 5 consecutive → quarantine 24h → `5/6 ok · cryptonews quarantined`
+   ```
+
+   Two properties worth keeping in mind. **The value is deliberately generous**: a hang is
+   *infinite*, so 10s catches it exactly as reliably as 3s while never quarantining a merely slow
+   feed (measured healthy profile: 0.5s handshake, 1.8s full parse) — the number trades only
+   against false positives, never against effectiveness. And **a socket timeout bounds each
+   blocking operation, not the whole fetch**: a feed that drips one byte at a time never trips it.
+   That gap is a wall-clock deadline around the stage, which belongs with ISSUE_74. A process-wide
+   `socket.setdefaulttimeout()` at server boot is the backstop under any *other* un-timeouted
+   socket; the feed path does not depend on it.
+
    **Reach — the envelope's two source numbers.** `core/observability/source_reach.py`
    (`SourceReach.census`) is the one place a set's config and its feed health are combined, and
    the only source of `metadata.sources_configured` / `sources_reached`:

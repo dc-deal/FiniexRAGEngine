@@ -67,10 +67,17 @@
         ],
         "warn_on_override": true
     },
+    "socket_default_timeout_seconds": 30,
     "source_health": {
         "flag_after_consecutive_failures": 5,
         "quarantine_hours": 24,
         "recent_events_kept": 10
+    },
+    "stall_watchdog": {
+        "enabled": true,
+        "factor": 3,
+        "floor_minutes": 15,
+        "check_interval_seconds": 60
     },
     "telegram": {
         "enabled": false,

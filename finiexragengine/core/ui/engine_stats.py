@@ -57,12 +57,15 @@ class RetrievalSnapshot:
 
 @dataclass(frozen=True)
 class LlmSnapshot:
-    """LLM row — the last eval pass's spend and per-symbol signals."""
+    """LLM row — the last eval pass's spend, per-symbol signals, and the analysis-unit count."""
     last: datetime
     tokens: int
     cost_usd: float
     duration_ms: float
-    signals: List[Tuple[str, str]] = field(default_factory=list)   # (symbol, signal), in symbol order
+    # (symbol, signal, base_currency, group) — `group` is the retrieval query, the analysis-unit key
+    # the display merges fanned same-query symbols by (ISSUE_70); base is for the merged chip label.
+    signals: List[Tuple[str, str, str, str]] = field(default_factory=list)
+    calls: int = 0                          # LLM analysis units (unique queries); < len(signals) if grouped
 
 
 @dataclass(frozen=True)

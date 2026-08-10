@@ -27,8 +27,10 @@ terminal convenience, not a deployment requirement.
 
 ## Layout
 
-Stage rows on top are **state** (always complete, ~6 lines); the single stage-tagged activity
-stream below is **history** (the only region that grows on resize).
+Stage rows on top are **state**; the single stage-tagged activity stream below is **history**. The
+state panel is sized to its **measured** height (ISSUE_70) — normally ~one line per worker, but a
+long LLM signal row word-wraps on a narrow console and the panel grows to show it; the activity
+stream fills whatever height is left.
 
 One row **per worker**: SOURCES/INGEST per source-set, RETRIEVAL/LLM per pipeline — the N ingest
 and M eval workers run concurrently, so a single row per stage would let them clobber each other.
@@ -41,8 +43,8 @@ and M eval workers run concurrently, so a single row per stage would let them cl
 │            forex_news              last 3s    170 fetched · 69 new · …          │
 │ RETRIEVAL  crypto_sentiment        last 5m    14 retrieved · 2 symbols          │
 │            forex_macro_sentiment   last 5m    9 retrieved · 2 symbols           │
-│ LLM        crypto_sentiment        last 5m    6698 tok · $0.0011 → BTC:SELL · ETH:SELL │
-│            forex_macro_sentiment   last 5m    4102 tok · $0.0007 → EUR:HOLD · GBP:BUY  │
+│ LLM        crypto_sentiment        last 5m    12520 tok · $0.002 · 9 sym / 8 calls → BTCUSD:SELL · ETH·USD/EUR:HOLD · … │
+│            forex_macro_sentiment   last 5m    4102 tok · $0.0007 → EURUSD:HOLD · GBPUSD:BUY · USDJPY:BUY · … │
 │ BUDGET                             ok         re-probe —                        │
 │ BREAKING                           last 42s   9 detected · 3 confirmed · engine 1.4m/e2e 6.2m │
 │            ETHUSD SELL             ● 14m      greed rising — Musk confirms ETH mining buy-in   │
@@ -56,9 +58,12 @@ and M eval workers run concurrently, so a single row per stage would let them cl
 
 Notes on the rows:
 
-- **LLM `→ SYMBOL:signal`** — one signal per evaluated symbol, so the row says *which* symbol got
-  which signal (a bare slash-list would be anonymous). Truncates with `…` when a pipeline has many
-  symbols; the full set is in the envelope.
+- **LLM `→ SYMBOL:signal`, merged by asset** (ISSUE_70) — one signal per symbol, but symbols fanned
+  from *one* analysis (same query → same LLM call) merge into a single chip: `ETH·USD/EUR:HOLD` for
+  ETHUSD+ETHEUR. The summary shows `N sym / M calls` when grouping shrank the call count below the
+  symbol count, so the consolidation is visible (not hidden behind row-count parity). On a narrow
+  console the row **word-wraps** at ` · ` boundaries rather than truncating — the state panel height
+  is measured, so the wrapped rows are shown and the activity panel below takes what is left.
 - **SOURCES `… overdue Nm`** — a feed whose last successful poll exceeded twice its expected cadence
   (its own `poll_interval_seconds` / politeness, else the set's interval) — 'is my slow feed still
   alive?'. Only named when stuck; a healthy slow feed cycles within its interval and stays folded
@@ -71,6 +76,17 @@ Notes on the rows:
   `reasoning` (Phase 1; Phase 2 swaps in a dedicated `breaking_reason`). Episodes are edge-triggered
   (see `breaking_detection.md`), so a lingering story appears once with a growing duration, not every
   pass. The row count is fixed (blank-padded), so the panel height stays exact.
+
+- **A stalled worker's `last` cell turns red** (ISSUE_75). This is the cell that read a perfectly
+  neutral `last 212h…` for nine days in August 2026 while the engine did nothing: an ageing number
+  that looks exactly like `last 4m` and that no eye catches. The verdict is *asked*, never
+  re-derived — `LiveDisplay` holds the `StallWatchdog` the same way it holds the `BudgetGuard` and
+  reads its stalled set, so the threshold (`max(factor × cadence, floor_minutes)`) is defined in
+  exactly one place. The display keys its rows by source-set / pipeline id while the supervisor
+  names workers `ingest:<id>` / `eval:<id>`; that mapping is the `worker_prefix` argument on
+  `_keyed_rows`. Colour carries the whole signal here: the `last` column is width-11 and `no_wrap`,
+  so there is no room for a marker glyph without truncating the age itself. Without a watchdog
+  (CLI and test paths) nothing renders red and nothing breaks.
 
 BUDGET and BREAKING are engine-wide (one budget guard; session-cumulative breaking counts), so
 they carry no per-worker id.

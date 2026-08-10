@@ -42,7 +42,7 @@ never attach one just because `DATABASE_URL`/`OPENAI_API_KEY` are set in the env
 | File | Covers | Needs |
 |---|---|---|
 | `test_api_health.py` | API contract: health, pipeline listing, run envelope (mock mode) | — |
-| `test_rss_source.py` | RSS → Article mapping, idempotent ids, conditional GET (304), poll floor, typed HTTP/transport failures (429/5xx/retry) | — |
+| `test_rss_source.py` | RSS → Article mapping, idempotent ids, conditional GET (304), poll floor, typed HTTP/transport failures (429/5xx/retry); fetch deadline (ISSUE_73): per-source override beats the set default, the handler actually stamps the request, and a blackholed host raises `UNREACHABLE` promptly instead of hanging — the 2026-08-01 incident as a test | — |
 | `test_openai_embedder.py` | batching, order preservation, dimension guard (mocked client) | — |
 | `test_pgvector_store.py` | idempotent upsert, recency/similarity query, importance filter | PostgreSQL |
 | `test_retriever.py` | two-tier policy, top_k cap, near-dup collapse, tie-breaks, funnel counters (mocked) | — |
@@ -78,7 +78,8 @@ never attach one just because `DATABASE_URL`/`OPENAI_API_KEY` are set in the env
 | `test_cost_report.py` / `test_perf_report.py` | section aggregation + pattern tables; fresh/legacy-DB guards | PostgreSQL |
 | `test_migration_runner.py` | ordered apply + record, re-run no-op, column added to a populated table, failed migration rolls back whole, checksum drift refuses, duplicate version, boot guard checks-but-never-applies, `-- finiex:no-transaction` (concurrent index needs it / builds with it / one statement only) | PostgreSQL |
 | `test_stage_timer.py` / `test_run_footer.py` | shared timing capture + run-metrics footer | — |
-| `test_engine_stats.py` / `test_live_display.py` | live dashboard (ISSUE_26): atomic per-stage snapshot swaps, cumulative breaking counters, bounded activity stream, lock-free concurrent writer/reader; rich render on empty/updated stats, healthy sources collapse to `N/N ok` vs a named deviation, activity window | — |
+| `test_engine_stats.py` / `test_live_display.py` | live dashboard (ISSUE_26): atomic per-stage snapshot swaps, cumulative breaking counters, bounded activity stream, lock-free concurrent writer/reader; rich render on empty/updated stats, healthy sources collapse to `N/N ok` vs a named deviation, activity window; a stalled worker's `last` cell renders red while a healthy one stays neutral (ISSUE_75, asserted on the exported ANSI) | — |
+| `test_stall_watchdog.py` | worker liveness (ISSUE_75): the floor beats the factor on a 15s cadence, a slow pass is not a stall, one event per episode (silent for nine days after), exactly one recovery, per-worker independence, a never-run worker is starting not stalled, disabled detects nothing, and a failing alert sink never kills the watchdog | — |
 | `test_embedder_cost.py` / `test_config_override.py` | embed cost wiring · base+user config deep-merge + registry-factory wiring (overrides on every surface) | — |
 | `test_override_report.py` | startup override report: leaf diffs (old → new), id-list paths, `(added)` vs typo flag, once-per-process emit | — |
 | `test_no_data_report.py` | per-symbol no-data aggregation: share, nearest miss vs latest floor snapshot, candidate flag, clean-week render | — |

@@ -12,7 +12,7 @@ the file, so nothing else writes to the terminal and frames never tear.
 """
 import asyncio
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from rich.console import Console, RenderableType
 from rich.layout import Layout
@@ -21,6 +21,7 @@ from rich.table import Table
 from rich.text import Text
 
 from finiexragengine.core.observability.budget_guard import BudgetGuard
+from finiexragengine.core.observability.stall_watchdog import StallWatchdog
 from finiexragengine.core.pipeline.breaking_episode import EPISODE_GAP
 from finiexragengine.core.ui.engine_stats import (
     BreakingRecord,
@@ -49,11 +50,44 @@ def _format_age(seconds: float) -> str:
     return f'{hours}h{minutes:02d}m'
 
 
-def _last(now: datetime, last: Optional[datetime]) -> Text:
-    """The `last <age>` cell — dim when a stage has never run (the blindness test: it ages)."""
+def _last(now: datetime, last: Optional[datetime], *, stalled: bool = False) -> Text:
+    """The `last <age>` cell — dim when a stage has never run (the blindness test: it ages).
+
+    A stalled worker (ISSUE_75) paints the cell red. This is the cell that read a perfectly
+    neutral `last 212h…` for nine days in August 2026 — an ageing number nobody's eye catches,
+    because it looks exactly like `last 4m`. Colour is the whole signal here: the column is
+    width-11 and no_wrap, so there is no room for a marker glyph without truncating the age.
+    """
     if last is None:
         return Text('idle', style='dim')
-    return Text(f'last {_format_age((now - last).total_seconds())}')
+    text = f'last {_format_age((now - last).total_seconds())}'
+    return Text(text, style='red bold') if stalled else Text(text)
+
+
+def _merge_signal_chips(signals: List[Tuple[str, str, str, str]]) -> str:
+    """`(symbol, signal, base, group)` → chips, merging symbols of the SAME analysis group (same
+    retrieval `query`, ISSUE_70) so a fanned pair reads as one: `ETHUSD:HOLD` + `ETHEUR:HOLD` (both
+    query "Ethereum ETH") → `ETH·USD/EUR:HOLD`. Same-base but different-query symbols (`USDJPY` /
+    `USDCAD`) are NOT merged — the *group* is the key, not the base. A lone symbol stays
+    `SYMBOL:signal`; the quote is the ticker minus its base. First-seen order preserved."""
+    groups: List[List[Any]] = []          # each: [base, signal, [quotes], first_symbol]
+    index: Dict[Tuple[str, str], int] = {}
+    for symbol, signal, base, group in signals:
+        quote = symbol[len(base):] if base and symbol.startswith(base) else symbol
+        key = (group, signal)
+        if group and key in index:
+            groups[index[key]][2].append(quote)
+        else:
+            if group:
+                index[key] = len(groups)
+            groups.append([base, signal, [quote], symbol])
+    chips: List[str] = []
+    for base, signal, quotes, first_symbol in groups:
+        if base and len(quotes) > 1:
+            chips.append(f'{base}·{"/".join(quotes)}:{signal}')   # merged: ETH·USD/EUR:HOLD
+        else:
+            chips.append(f'{first_symbol}:{signal}')              # lone: BTCUSD:SELL
+    return ' · '.join(chips)
 
 
 class LiveDisplay:
@@ -63,11 +97,15 @@ class LiveDisplay:
 
     def __init__(self, stats: EngineStats, *,
                  budget_guard: Optional[BudgetGuard] = None,
+                 stall_watchdog: Optional[StallWatchdog] = None,
                  worker_count: int = 0,
                  refresh_seconds: float = 1.0,
                  console: Optional[Console] = None) -> None:
         self._stats = stats
         self._budget_guard = budget_guard
+        # Optional (ISSUE_75): asked each frame which workers are stalled, so a silent stage turns
+        # red instead of ageing quietly. None = no stall rendering (CLI/test paths).
+        self._stall_watchdog = stall_watchdog
         self._worker_count = worker_count
         self._refresh_seconds = refresh_seconds
         self._console = console if console is not None else Console()
@@ -113,22 +151,18 @@ class LiveDisplay:
                       border_style='cyan')
         activity = Panel(self._activity(now), title='activity', title_align='left',
                          border_style='blue')
+        # Measure the state panel at the CURRENT width, so a folded (wrapped) LLM signal row on a
+        # narrow console makes the panel taller instead of clipping — the activity panel below then
+        # takes whatever is left (ISSUE_70). Capped so the activity keeps at least a few lines even
+        # if the state wraps a lot (a very narrow terminal).
+        measured = len(self._console.render_lines(state, self._console.options, pad=False))
+        height = min(measured, max(6, self._console.height - 3))
         layout = Layout()
-        # The state block is fixed to its row count; the activity panel takes all remaining height,
-        # so a taller terminal grows only the log region (ISSUE_26 — enlarge only the log).
         layout.split_column(
-            Layout(state, name='state', size=self._state_height()),
+            Layout(state, name='state', size=height),
             Layout(activity, name='activity', ratio=1),
         )
         return layout
-
-    def _state_height(self) -> int:
-        # One row per worker for SOURCES/INGEST (source-sets) and RETRIEVAL/LLM (pipelines), at least
-        # one idle row each, plus BUDGET + the BREAKING summary + the reserved episode rows, plus the
-        # two borders.
-        sets = max(1, len(self._stats.sources()))
-        pipelines = max(1, len(self._stats.retrieval()))
-        return 2 * sets + 2 * pipelines + 2 + _MAX_EPISODE_ROWS + 2
 
     def _header(self, now: datetime) -> str:
         uptime = _format_age((now - self._started_at).total_seconds())
@@ -138,22 +172,25 @@ class LiveDisplay:
 
     def _stage_rows(self, now: datetime) -> Table:
         # A grid (no borders): stage label + per-worker id + `last` cell + a free detail column.
-        # Every column is no_wrap so each stage row is exactly one line — that is what makes
-        # `_state_height` (rows + border) the real panel height. expand=True + a ratio detail
-        # column make rich shrink ONLY the detail (ellipsis) when a long line (many symbol:signal
-        # pairs) overflows — the fixed stage/id/last columns never collapse.
+        # The fixed stage/id/last columns stay no_wrap (one line, never collapse); the detail column
+        # WORD-WRAPS (no_wrap left off) so a long signal row breaks at ` · ` boundaries onto more
+        # lines on a narrow console instead of truncating — chips stay intact, and the panel height
+        # is measured from the result (ISSUE_70), so the wrapped rows are shown, never clipped.
         table = Table.grid(padding=(0, 2), expand=True)
         table.add_column('stage', style='bold', width=10, no_wrap=True)
         table.add_column('id', width=22, no_wrap=True, overflow='ellipsis')
         table.add_column('last', width=11, no_wrap=True)
-        table.add_column('detail', no_wrap=True, overflow='ellipsis', ratio=1)
+        table.add_column('detail', ratio=1)
 
         # One row per worker (source-set for SOURCES/INGEST, pipeline for RETRIEVAL/LLM), so the
         # concurrent workers never clobber each other's state (ISSUE_26).
-        self._keyed_rows(table, now, 'SOURCES', self._stats.sources(), self._sources_detail)
-        self._keyed_rows(table, now, 'INGEST', self._stats.ingest(), self._ingest_detail)
-        self._keyed_rows(table, now, 'RETRIEVAL', self._stats.retrieval(), self._retrieval_detail)
-        self._keyed_rows(table, now, 'LLM', self._stats.llm(), self._llm_detail)
+        self._keyed_rows(table, now, 'SOURCES', self._stats.sources(),
+                         self._sources_detail, 'ingest')
+        self._keyed_rows(table, now, 'INGEST', self._stats.ingest(),
+                         self._ingest_detail, 'ingest')
+        self._keyed_rows(table, now, 'RETRIEVAL', self._stats.retrieval(),
+                         self._retrieval_detail, 'eval')
+        self._keyed_rows(table, now, 'LLM', self._stats.llm(), self._llm_detail, 'eval')
         # BUDGET + BREAKING are engine-wide (no per-worker id column).
         table.add_row('BUDGET', '', self._budget_last(), self._budget_detail())
         table.add_row('BREAKING', '', _last(now, self._stats.breaking().last),
@@ -164,18 +201,27 @@ class LiveDisplay:
         return table
 
     def _keyed_rows(self, table: Table, now: datetime, label: str,
-                    snapshots: Dict[str, Any], detail: Callable[[Any], Text]) -> None:
+                    snapshots: Dict[str, Any], detail: Callable[[Any], Text],
+                    worker_prefix: str) -> None:
         # One row per worker id; the stage label sits on the first row only, the rest indent under
         # it. An empty stage (no workers registered) still gets one idle line so it never vanishes.
         if not snapshots:
             table.add_row(label, '', Text('idle', style='dim'), Text('—', style='dim'))
             return
+        stalled = self._stalled_workers()
         first = True
         for key, snapshot in snapshots.items():
-            last_cell = (_last(now, snapshot.last) if snapshot is not None
-                         else Text('idle', style='dim'))
+            # The display keys rows by source-set / pipeline id, the supervisor names workers
+            # `ingest:<id>` / `eval:<id>` — `worker_prefix` is that mechanical mapping (ISSUE_75).
+            last_cell = (_last(now, snapshot.last, stalled=f'{worker_prefix}:{key}' in stalled)
+                         if snapshot is not None else Text('idle', style='dim'))
             table.add_row(label if first else '', key, last_cell, detail(snapshot))
             first = False
+
+    def _stalled_workers(self) -> Set[str]:
+        """Worker names the watchdog currently considers stalled — asked, never re-derived, so the
+        threshold lives in exactly one place (ISSUE_75). Empty without a watchdog."""
+        return self._stall_watchdog.stalled_workers() if self._stall_watchdog is not None else set()
 
     @staticmethod
     def _sources_detail(snapshot: Optional[SourcesSnapshot]) -> Text:
@@ -210,13 +256,14 @@ class LiveDisplay:
     def _llm_detail(snapshot: Optional[LlmSnapshot]) -> Text:
         if snapshot is None:
             return Text('—', style='dim')
-        # One `SYMBOL:signal` per evaluated symbol, in symbol order — so the row says *which*
-        # symbol got which signal, not an anonymous slash-list (ISSUE_26).
-        arrow = ''
-        if snapshot.signals:
-            arrow = ' → ' + ' · '.join(f'{symbol}:{signal}' for symbol, signal in snapshot.signals)
-        return Text(f'{snapshot.tokens} tok · ${snapshot.cost_usd:.6f} · '
-                    f'{snapshot.duration_ms:.0f}ms{arrow}')
+        # Spend + the per-symbol signals, with fanned same-base symbols merged into one chip
+        # (ETH·USD/EUR:HOLD, ISSUE_70); when grouping shrank the calls below the symbol count, say so
+        # (`N sym / M calls`) so the consolidation is visible, not hidden behind row-count parity.
+        summary = f'{snapshot.tokens} tok · ${snapshot.cost_usd:.6f} · {snapshot.duration_ms:.0f}ms'
+        if snapshot.calls and snapshot.calls < len(snapshot.signals):
+            summary += f' · {len(snapshot.signals)} sym / {snapshot.calls} calls'
+        chips = _merge_signal_chips(snapshot.signals)
+        return Text(summary + (f' → {chips}' if chips else ''))
 
     @staticmethod
     def _breaking_detail(snapshot: BreakingSnapshot) -> Text:

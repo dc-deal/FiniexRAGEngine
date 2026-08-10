@@ -127,9 +127,15 @@ class EvalWorker:
         stats.set_retrieval(pipeline_id, RetrievalSnapshot(last=now, retrieved=m.articles_relevant,
                                                            symbols=len(envelope.result)))
         # LLM row: spend + one signal per symbol, in symbol order (a single arrow would lie).
+        # signals carry base_currency (chip label) + the retrieval query (the analysis-unit key), so
+        # the display merges ONLY genuinely-fanned same-query symbols — ETHUSD/ETHEUR, never a
+        # same-base different-query pair like USDJPY/USDCAD (ISSUE_70). `calls` = analysis units.
+        qmap = self._pipeline.get_config().symbol_query_map()
         stats.set_llm(pipeline_id, LlmSnapshot(
             last=now, tokens=tokens, cost_usd=m.cost_usd, duration_ms=duration_ms,
-            signals=[(r.symbol, r.signal) for r in envelope.result]))
+            signals=[(r.symbol, r.signal, r.base_currency or '', qmap.get(r.symbol, r.symbol))
+                     for r in envelope.result],
+            calls=len(m.per_symbol_tokens)))
         stats.push_event('LLM', f'{pipeline_id} {self._state.last_detail}')
         # BREAKING (confirmed side): one activity line + one recorded episode per NEW episode —
         # bumps the count, sets the frozen reaction detail, and feeds the BREAKING section with the

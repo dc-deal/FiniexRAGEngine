@@ -155,7 +155,8 @@ class PipelineAssembler:
         health_store = SourceHealthStore(self._database_url, self._cfg.source_health)
         # A disabled source is never built, so it is never polled and produces no health event —
         # the same "defined but toggled off" semantics a disabled model variant has.
-        return Ingestor([build_source(source) for source in source_set.active_sources()],
+        return Ingestor([build_source(source, source_set.fetch_timeout_seconds)
+                         for source in source_set.active_sources()],
                         news_embedder, store, breaking_detector=detector,
                         health_store=health_store, source_set_id=source_set_id)
 

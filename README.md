@@ -74,7 +74,7 @@ same shell regardless of the signal type:
   "prompt_hash": "1f191112898f",
   "timestamp": "2026-06-28T11:00:00Z",
   "status": "success",
-  "result": [ { "symbol": "BTCUSD", "signal": "HOLD", "sentiment_score": 0.45, "confidence": 0.78, "reasoning": "...", "basis": "llm", "sources": [ ... ] } ],
+  "result": [ { "symbol": "BTCUSD", "signal": "HOLD", "sentiment_score": 0.45, "confidence": 0.78, "reasoning": "...", "basis": "llm", "base_currency": "BTC", "quote_currency": "USD", "sources": [ ... ] } ],
   "metadata": { "model": "gpt-4o-mini", "articles_relevant": 23, "processing_time_ms": 1823, "cost_usd": 0.0029, "stage_timings": [ ... ] },
   "errors": []
 }
@@ -220,6 +220,12 @@ today, most load-bearing first:
   recorded per call — a silent alias retarget is detected, so a signal series stays
   attributable to the exact model *and* prompt that produced it. See
   [prompt_and_llm_stage.md](docs/architecture/prompt_and_llm_stage.md).
+- **Symbol model & query consolidation (#70)**: each symbol declares its `base`/`quote` legs
+  (emitted as `base_currency`/`quote_currency`, validated `key == base + quote`) plus its retrieval
+  query. Symbols sharing a query — e.g. `ETHUSD`/`ETHEUR`, one asset in two quote currencies — are
+  analysed **once** and fanned to each label: the labels agree by construction and the LLM is not
+  paid twice for the same news, while distinct-query pairs (any FX pair) stay independent. See
+  [symbol_model_and_grouping.md](docs/architecture/symbol_model_and_grouping.md).
 - **Output consistency guard (#35)**: schema-valid but internally contradictory LLM rows (a
   `BUY` scored negative, a near-certain `HOLD`, an empty reasoning) are caught by a
   deterministic, zero-cost post-check and degraded to a clean `HOLD` (`partial` run, raw
@@ -249,6 +255,13 @@ today, most load-bearing first:
   A **Sources report** and a **feed doctor** make a bad feed one command away; a **daily
   rotating file** log means an overnight run survives the scrollback. See
   [source_health_and_logging.md](docs/architecture/source_health_and_logging.md).
+- **Survives a dead feed (#73, #75)**: every fetch carries a **deadline** (10s default,
+  per-source override). Without one, a host that accepts the connection and then goes silent
+  blocks its worker *forever* — `feedparser` passes no timeout, so the socket inherits "wait
+  indefinitely". With one, the hang becomes an ordinary failure and the quarantine above handles
+  it. Because error handling only covers *failing*, never *never returning*, a **stall watchdog**
+  backs it up: no completed pass within `max(3 × cadence, 15 min)` and the worker is named in the
+  log, on `/health`, in Telegram, and in red on the live dashboard.
 - **Foundation — corpus & embeddings (#2, #3, #4, #14, #19)**: RSS ingest into an idempotent,
   shared **pgvector** corpus (store everything, filter at retrieval); OpenAI embeddings
   (`text-embedding-3-small`, 1536 dims) with a query-vector cache; versioned **schema

@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import os
+import socket
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, List, Optional
 
@@ -17,6 +18,7 @@ from finiexragengine.core.alerts.weekly_scheduler import WeeklyScheduler
 from finiexragengine.core.llm.model_catalog import verify_configured_models
 from finiexragengine.core.observability.logging_setup import configure_logging
 from finiexragengine.core.observability.reports.weekly_report import collect_weekly_report
+from finiexragengine.core.observability.stall_watchdog import StallWatchdog
 from finiexragengine.core.outcome.outcome_exporter import auto_export_weekly
 from finiexragengine.core.pipeline.pipeline_assembler import PipelineAssembler
 from finiexragengine.core.pipeline.worker_supervisor import WorkerSupervisor
@@ -60,6 +62,13 @@ def create_app(attach_runners: Optional[bool] = None,
     # configure_logging adds a console handler (unless live_mode) *and* a daily-rotating file so an
     # overnight worker run survives the scrollback (ISSUE_11), and quiets httpx's per-request noise.
     configure_logging(config_manager.get_config(), live_mode=live_mode)
+    # Process-wide socket deadline (ISSUE_73). The feed path already carries its own explicit
+    # timeout via `_TimeoutHandler`, on every entry point including `ingest_cli` — this is the net
+    # under *any other* un-timeouted socket in a process that runs for weeks. Without it Python's
+    # default is `None` (block forever), which is what cost nine days on 2026-08-01. Blast radius
+    # checked: httpx (OpenAI, Telegram) sets its own timeouts and libpq is C-level, so neither is
+    # affected; only sockets nobody gave a deadline inherit this one.
+    socket.setdefaulttimeout(config_manager.get_config().socket_default_timeout_seconds)
     registry = config_manager.build_pipeline_registry()
 
     # Real staged flow (ISSUE_7) needs the pgvector Postgres; without DATABASE_URL the
@@ -109,13 +118,13 @@ def create_app(attach_runners: Optional[bool] = None,
                                '(scaffold-mock mode cannot ingest or evaluate)')
         logger.warning('runners not attached — pipelines run in scaffold-mock mode')
 
-    # Live terminal dashboard (ISSUE_26): only when live mode won its guards in server_cli AND
-    # workers run — it renders the workers' shared EngineStats plus the live BudgetGuard state on
-    # an interval. The console log handler is already suppressed above, so it owns the terminal.
-    live_display: Optional[LiveDisplay] = None
-    if live_mode and supervisor is not None and engine_stats is not None:
-        live_display = LiveDisplay(engine_stats, budget_guard=budget_guard,
-                                   worker_count=len(supervisor.states()))
+    # Worker liveness watchdog (ISSUE_75): reads the supervisor's own WorkerStates, so it needs no
+    # new capture — only workers can stall, hence the gate. Its alert sink is wired further down,
+    # once the Telegram client exists; detection and logging work regardless of delivery.
+    stall_watchdog: Optional[StallWatchdog] = None
+    if supervisor is not None:
+        stall_watchdog = StallWatchdog(config_manager.get_config().stall_watchdog,
+                                       supervisor.states)
 
     # Operator alert surface (ISSUE_27): /report command loop + the weekly cron. Lives in
     # the API process like the workers (guaranteed event loop); pure store reads + a
@@ -158,14 +167,34 @@ def create_app(attach_runners: Optional[bool] = None,
                                                        _weekly_messages)
             if weekly_cfg.enabled:
                 weekly_scheduler = WeeklyScheduler(weekly_cfg, _send_weekly)
+            # Give the watchdog a voice (ISSUE_75). Without Telegram it still detects and logs —
+            # delivery is the optional half, so a missing credential degrades the alert, never
+            # the detection.
+            if stall_watchdog is not None:
+                stall_watchdog.set_alert(telegram_client.send_message)
+
+    # Live terminal dashboard (ISSUE_26): only when live mode won its guards in server_cli AND
+    # workers run — it renders the workers' shared EngineStats plus the live BudgetGuard state on
+    # an interval. The console log handler is already suppressed above, so it owns the terminal.
+    # Built after the watchdog so it can read its stall set: one threshold definition, not two.
+    live_display: Optional[LiveDisplay] = None
+    if live_mode and supervisor is not None and engine_stats is not None:
+        live_display = LiveDisplay(engine_stats, budget_guard=budget_guard,
+                                   stall_watchdog=stall_watchdog,
+                                   worker_count=len(supervisor.states()))
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # The background heartbeat lives inside the server process: started once the
         # event loop exists, stopped on shutdown after in-flight passes finish.
         live_task: Optional[asyncio.Task] = None
+        watchdog_task: Optional[asyncio.Task] = None
         if supervisor is not None:
             await supervisor.start_all()
+        # Watch the workers from the moment they exist (ISSUE_75) — a stall during the very first
+        # passes is exactly as blinding as one on day nine.
+        if stall_watchdog is not None:
+            watchdog_task = asyncio.create_task(stall_watchdog.run(), name='stall-watchdog')
         # The dashboard renders on its own task once the workers exist (ISSUE_26).
         if live_display is not None:
             live_task = asyncio.create_task(live_display.run(), name='live-display')
@@ -180,6 +209,11 @@ def create_app(attach_runners: Optional[bool] = None,
             await command_poller.stop()
         if telegram_client is not None:
             await telegram_client.close()
+        # Stop watching before the workers drain — an orderly shutdown is not a stall.
+        if stall_watchdog is not None:
+            await stall_watchdog.stop()
+            if watchdog_task is not None:
+                await watchdog_task
         if supervisor is not None:
             await supervisor.stop_all()
         # Stop the display last, so it shows the drained state, then releases the terminal.
@@ -194,6 +228,7 @@ def create_app(attach_runners: Optional[bool] = None,
         lifespan=lifespan,
     )
     app.include_router(build_health_router(config_manager, registry,
-                                           supervisor=supervisor, budget_guard=budget_guard))
+                                           supervisor=supervisor, budget_guard=budget_guard,
+                                           stall_watchdog=stall_watchdog))
     app.include_router(build_sentiment_router(registry, outcome_store=outcome_store))
     return app

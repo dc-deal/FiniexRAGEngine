@@ -37,6 +37,10 @@ class SourceConfig(BaseModel):
     # NOT down-rated here — they are prime flash-crash sources; politeness comes from the
     # conditional GET (304), not from throttling.
     poll_interval_seconds: Optional[int] = None
+    # Optional per-source fetch timeout override (ISSUE_73). None = use the set's
+    # `fetch_timeout_seconds`. Raise it only for a feed with a demonstrated slow-but-alive
+    # profile — #76 will supply the per-source latency evidence to decide that from data.
+    timeout_seconds: Optional[int] = None
 
 
 class DetectionConfig(BaseModel):
@@ -68,6 +72,16 @@ class SourceSetConfig(BaseModel):
     trigger: TriggerConfig = Field(
         default_factory=lambda: TriggerConfig(interval_seconds=300))
     detection: DetectionConfig = Field(default_factory=DetectionConfig)   # ISSUE_11
+    # Set-wide fetch timeout (ISSUE_73) — an acquisition knob, so it lives with acquisition,
+    # next to the cadence it shares a rationale with. A feed host that accepts the TCP
+    # connection and then goes silent (Cloudflare stalling the TLS handshake, 2026-08-01) would
+    # otherwise block its worker forever: `feedparser` passes no timeout, so the socket inherits
+    # `socket.getdefaulttimeout()` = None = wait indefinitely. Generous by design — a hang is
+    # *infinite*, so 10s catches it as reliably as 3s while never quarantining a merely slow feed
+    # (measured healthy profile: 0.5s handshake, 1.8s full parse). NOTE this bounds each blocking
+    # socket operation, not the whole fetch: a slow-dripping feed needs a wall-clock deadline
+    # (ISSUE_74). Per-source override: `SourceConfig.timeout_seconds`.
+    fetch_timeout_seconds: int = 10
     sources: List[SourceConfig]
 
     def active_sources(self) -> List[SourceConfig]:
