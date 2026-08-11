@@ -198,6 +198,13 @@ class AppConfig(BaseModel):
     # Deliberately looser than the feed timeout — it guards unknown callers, so it errs towards
     # never interrupting a legitimately slow one. The feed path does not rely on it.
     socket_default_timeout_seconds: int = 30
+    # Wall-clock deadline for one worker pass (ISSUE_74). A pass that overruns it is abandoned and
+    # the worker resumes on its next tick instead of staying dead until a restart. ~15x the slowest
+    # pass observed in production (eval ~18s), and deliberately BELOW the stall watchdog's floor:
+    # the engine gets a chance to heal itself before it raises its voice. Note the trade — the
+    # abandoned *thread* keeps running (a blocked thread cannot be cancelled), so this bounds the
+    # damage rather than undoing it; ISSUE_73 removed the known cause of such a hang.
+    pass_timeout_seconds: int = 300
     source_health: SourceHealthConfig = Field(default_factory=SourceHealthConfig)
     stall_watchdog: StallWatchdogConfig = Field(default_factory=StallWatchdogConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)

@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from time import perf_counter
 from typing import Dict, List, Optional, Tuple
 
-from finiexragengine.core.observability.cost_recorder import CostRecorder
+from finiexragengine.core.observability.cost_recorder import CostRecorder, PassSpend
 from finiexragengine.core.observability.source_reach import SourceReach
 from finiexragengine.core.outcome.outcome_store import OutcomeStore
 from finiexragengine.core.pipeline.envelope_contract import hold_result, taxonomy_type
@@ -73,8 +73,20 @@ class PipelineRunner:
         self._outcome_store = outcome_store
 
     def run(self) -> AnalysisEnvelope:
+        """Produce one envelope, with this run's spend accounted in its own scope (ISSUE_74).
+
+        The scope replaces a session-delta against the shared `CostRecorder`, which only yielded
+        the right `cost_usd` while every worker pass was serialized by one global lock — the lock
+        that turned a single hung feed into a nine-day outage. A thin wrapper rather than an
+        indented body: the accounting boundary is the whole run, and `_run` stays readable.
+        """
+        if self._cost_recorder is None:
+            return self._run(PassSpend())
+        with self._cost_recorder.pass_scope() as spend:
+            return self._run(spend)
+
+    def _run(self, spend: PassSpend) -> AnalysisEnvelope:
         run_start = perf_counter()
-        usd_before = self._cost_recorder.session_usd if self._cost_recorder else 0.0
         errors: List[RunError] = []
 
         # --- A: ingest (fetch -> embed only new -> idempotent upsert), per source ---
@@ -163,8 +175,7 @@ class PipelineRunner:
             stage_timings=stage_timings,
             prompt_tokens=sum(ev.usage.prompt_tokens for ev in evals),
             completion_tokens=sum(ev.usage.completion_tokens for ev in evals),
-            cost_usd=(self._cost_recorder.session_usd - usd_before
-                      if self._cost_recorder else 0.0),
+            cost_usd=spend.usd,          # only what THIS run recorded (ISSUE_74)
             per_symbol_tokens=per_symbol_tokens,
             # Retrieval funnel per evaluated symbol (ISSUE_24): a thin or empty context
             # is explainable from the persisted envelope, not just asserted.

@@ -4,6 +4,8 @@
 isolated, migration-built test schema (`clean_db`, ISSUE_14) and needs a reachable Postgres
 (skipped otherwise) — no API budget is touched.
 """
+import asyncio
+
 import psycopg
 import pytest
 
@@ -91,3 +93,48 @@ def test_session_accumulators_track_this_process(recorder):
     recorder.record('llm_eval', 'gpt-4o-mini', 1000, 500, duration_ms=100.0)  # 0.00045
     assert recorder.session_tokens == 11_500
     assert recorder.session_usd == pytest.approx(0.00065)
+
+
+# --- ISSUE_74: per-pass attribution without serialization -----------------------------------
+
+
+def test_pass_scope_collects_only_its_own_calls(recorder):
+    recorder.record('ingest_news', 'text-embedding-3-small', 10_000)          # before the scope
+    with recorder.pass_scope() as spend:
+        recorder.record('llm_eval', 'gpt-4o-mini', 1000, 500)                 # 0.00045
+    recorder.record('ingest_news', 'text-embedding-3-small', 10_000)          # after the scope
+    assert spend.usd == pytest.approx(0.00045)
+    assert spend.tokens == 1500
+    # The session totals keep accumulating everything — `ingest_cli`'s footer depends on it.
+    assert recorder.session_usd == pytest.approx(0.00085)
+
+
+def test_record_outside_any_scope_still_works(recorder):
+    # The CLI paths record without a scope; that must stay a plain no-op, not a crash.
+    recorder.record('llm_eval', 'gpt-4o-mini', 1000, 500)
+    assert recorder.session_usd == pytest.approx(0.00045)
+
+
+def test_concurrent_passes_do_not_cross_attribute(recorder):
+    """The guarantee the removed global lock used to provide (ISSUE_74).
+
+    Two passes run at once in worker threads — the exact scenario serialization prevented. Each
+    must see only its own spend. This is the single assertion that makes removing the lock safe,
+    because `metadata.cost_usd` on every persisted envelope is derived from it.
+    """
+    async def _scenario():
+        async def one_pass(prompt_tokens: int) -> float:
+            with recorder.pass_scope() as spend:
+                # Real threads, real overlap: the scope is opened on the loop and must survive
+                # the context copy `asyncio.to_thread` makes.
+                await asyncio.to_thread(recorder.record, 'llm_eval', 'gpt-4o-mini',
+                                        prompt_tokens, 0)
+                await asyncio.sleep(0.01)          # hold the scope open while the other records
+                return spend.usd
+
+        return await asyncio.gather(one_pass(1000), one_pass(4000))
+
+    small, large = asyncio.run(_scenario())
+    assert small == pytest.approx(0.00015)         # 1000/1k * 0.00015
+    assert large == pytest.approx(0.0006)          # 4000/1k * 0.00015
+    assert recorder.session_usd == pytest.approx(0.00075)   # the total still sees both

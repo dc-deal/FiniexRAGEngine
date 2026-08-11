@@ -1,5 +1,7 @@
 """EngineStats — the live dashboard's shared state (ISSUE_26): per-worker keys, bounded stream."""
+import sys
 import threading
+from contextlib import contextmanager
 from datetime import datetime, timezone
 
 from finiexragengine.core.ui.engine_stats import (
@@ -103,3 +105,61 @@ def test_concurrent_writer_and_reader_never_tear():
     finally:
         stop.set()
         thread.join()
+
+
+# --- ISSUE_74: the counters guard themselves now --------------------------------------------
+
+
+@contextmanager
+def _aggressive_thread_switching():
+    """Make the GIL switch far more often than its 5ms default.
+
+    Without this the tests below pass with *or* without the counter lock: a read-modify-write is
+    only a handful of bytecodes, so the interpreter almost never switches inside one and the race
+    stays invisible. Measured here at a 1µs interval, the unlocked version loses roughly two
+    thirds of its updates — which is what gives these tests teeth instead of false comfort.
+    """
+    previous = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)
+    try:
+        yield
+    finally:
+        sys.setswitchinterval(previous)
+
+
+def test_concurrent_counter_writes_do_not_lose_updates():
+    """`add_breaking_detected` is read-modify-write.
+
+    It used to be serialized by the workers' shared `pass_lock` — the lock ISSUE_74 removed
+    because it let one hung feed stop the whole engine. EngineStats now owns a small lock of its
+    own for exactly these writers, so concurrent ingest workers cannot lose a flagged candidate.
+    """
+    stats = EngineStats(source_set_ids=['a'], pipeline_ids=['p'])
+    with _aggressive_thread_switching():
+        threads = [threading.Thread(target=lambda: [stats.add_breaking_detected(1, at=_NOW)
+                                                    for _ in range(2000)])
+                   for _ in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+    assert stats.breaking().detected == 8 * 2000
+
+
+def test_concurrent_episode_writes_keep_count_and_deque_consistent():
+    # Same guarantee for the other two accumulating writers, which also share the bounded deque.
+    stats = EngineStats(source_set_ids=['a'], pipeline_ids=['p'])
+
+    def add(symbol: str) -> None:
+        for _ in range(500):
+            stats.add_breaking_episode(symbol, 'SELL', 'why', 'engine 1m', at=_NOW)
+            stats.touch_breaking_episode(symbol, at=_NOW)
+
+    with _aggressive_thread_switching():
+        threads = [threading.Thread(target=add, args=(f'SYM{i}',)) for i in range(4)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+    assert stats.breaking().confirmed == 4 * 500
+    assert len(stats.recent_breaking()) == 6            # the bounded deque held its cap

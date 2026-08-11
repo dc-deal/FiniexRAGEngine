@@ -76,6 +76,37 @@ activity is a deliberate choice; without the flag the server is a free, passive 
   scrollback; ISSUE_11); worker states (last run, status, run count) surface in
   `GET /v1/health`. A failing pass is logged and the loop continues — the next tick heals.
 
+### The workers are independent — deliberately (ISSUE_74)
+
+Passes are **not** serialized against each other. They used to be, by one `asyncio.Lock` shared
+across every worker: cheap at these cadences, and it kept two invariants safe for free. It also
+meant that a pass which never *returned* held every other worker hostage — and on 2026-08-01 one
+did, when an un-timeouted TLS handshake (ISSUE_73) blocked a thread for nine days and took the
+whole engine with it. `asyncio.to_thread` cannot be cancelled, so the lock was never released.
+
+The two invariants now live where they belong:
+
+- **Cost attribution** — `CostRecorder.pass_scope()` accumulates only the calls made inside it,
+  carried into the worker thread by the context copy `asyncio.to_thread` makes. It replaced a
+  session delta against the shared recorder, which was only correct under serialization. This is
+  what makes `metadata.cost_usd` on every persisted envelope trustworthy without a lock.
+- **The live counters** — `EngineStats` owns a small lock for its read-modify-write writers (see
+  `live_display.md`).
+
+What replaces the lock per worker is a **deadline**, not another lock: `pass_timeout_seconds`
+(default 300). A pass that overruns it is abandoned and the worker resumes on its next tick
+instead of staying dead until a restart. Note what that does and does not do — `asyncio.wait_for`
+abandons the *await*, not the thread, so a blocked thread keeps running and holds an executor
+slot. It bounds the damage rather than undoing it. The value sits deliberately **below** the stall
+watchdog's floor (ISSUE_75): the engine gets a chance to heal itself before it raises its voice.
+
+No per-worker lock was added either, because none is needed: `IntervalTrigger` and `EventTrigger`
+both await the pass before computing the next wait, so a worker cannot overlap itself.
+
+One consequence worth knowing when reading the performance report: passes now genuinely run
+concurrently, so `duration_ms` samples are contention-sensitive in a way they were not before.
+Earlier measurements were taken under artificial exclusivity.
+
 The API then serves two shapes:
 
 - `GET /v1/pipelines/{id}/latest` — the persisted outcome, served instantly (low-latency

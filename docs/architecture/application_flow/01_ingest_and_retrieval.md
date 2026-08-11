@@ -120,9 +120,16 @@ Top-down, each new article flows through these units in order:
    feed (measured healthy profile: 0.5s handshake, 1.8s full parse) — the number trades only
    against false positives, never against effectiveness. And **a socket timeout bounds each
    blocking operation, not the whole fetch**: a feed that drips one byte at a time never trips it.
-   That gap is a wall-clock deadline around the stage, which belongs with ISSUE_74. A process-wide
-   `socket.setdefaulttimeout()` at server boot is the backstop under any *other* un-timeouted
-   socket; the feed path does not depend on it.
+   That gap is closed one level up, by ISSUE_74's **pass deadline** (`pass_timeout_seconds`,
+   default 300): a fetch that drips forever still ends the pass, and the worker resumes next tick.
+   A process-wide `socket.setdefaulttimeout()` at server boot is the backstop under any *other*
+   un-timeouted socket; the feed path does not depend on it.
+
+   **A slow feed also no longer holds up anyone else (ISSUE_74).** Passes were once serialized by
+   a single lock shared across all workers, so a fetch sitting out its full timeout stalled the
+   eval workers too — and a fetch that never returned stalled them forever. They now run
+   independently; `pipeline_engine_architecture.md` covers what that cost, since the two
+   invariants the lock carried had to be rehomed first.
 
    **Reach — the envelope's two source numbers.** `core/observability/source_reach.py`
    (`SourceReach.census`) is the one place a set's config and its feed health are combined, and

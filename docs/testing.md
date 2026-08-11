@@ -60,7 +60,7 @@ never attach one just because `DATABASE_URL`/`OPENAI_API_KEY` are set in the env
 | `test_outcome_store.py` | save→get_latest roundtrip, newest-wins, raw-output column, error rows | PostgreSQL |
 | `test_corpus_guard.py` | corpus stamped with embedding model; mismatch refuses to boot | PostgreSQL |
 | `test_source_set_registry.py` | source-set loading, duplicate ids, unknown reference, tracked configs | — |
-| `test_workers.py` | interval-trigger loop, pass resilience, supervisor build (fan variants) | — |
+| `test_workers.py` | interval-trigger loop, pass resilience, supervisor build (fan variants); worker isolation (ISSUE_74): a worker blocked mid-pass does not stop another — the 2026-08-01 amplifier as a regression test — and a pass over its deadline is abandoned while the worker keeps ticking | — |
 | `test_breaking_detector.py` | cluster-tier boundaries + keyword fast-path (word-boundary), all LLM-free | — |
 | `test_breaking_bus.py` | per-pipeline `min_importance` wake filter, re-arm, cross-set isolation | — |
 | `test_event_trigger.py` | eval clock: immediate + interval + breaking wake before interval, clean stop | — |
@@ -74,11 +74,11 @@ never attach one just because `DATABASE_URL`/`OPENAI_API_KEY` are set in the env
 | `test_model_catalog.py` | staged model check (ingest + llm), endpoint split, soft-boot warnings | — |
 | `test_model_governance.py` | pipeline-declared model (required), allowlist gate at assembly | — |
 | `test_provider_factory.py` | `llm.provider` → implementation resolution; unknown name fails | — |
-| `test_cost_recorder.py` | USD derivation, billing rows, latency column, session accumulators | PostgreSQL |
+| `test_cost_recorder.py` | USD derivation, billing rows, latency column, session accumulators; per-pass scoping (ISSUE_74): a scope collects only its own calls, recording outside one still works, and **two concurrent passes in real threads do not cross-attribute** — the guarantee the removed global lock used to provide, and what makes every envelope's `cost_usd` trustworthy | PostgreSQL |
 | `test_cost_report.py` / `test_perf_report.py` | section aggregation + pattern tables; fresh/legacy-DB guards | PostgreSQL |
 | `test_migration_runner.py` | ordered apply + record, re-run no-op, column added to a populated table, failed migration rolls back whole, checksum drift refuses, duplicate version, boot guard checks-but-never-applies, `-- finiex:no-transaction` (concurrent index needs it / builds with it / one statement only) | PostgreSQL |
 | `test_stage_timer.py` / `test_run_footer.py` | shared timing capture + run-metrics footer | — |
-| `test_engine_stats.py` / `test_live_display.py` | live dashboard (ISSUE_26): atomic per-stage snapshot swaps, cumulative breaking counters, bounded activity stream, lock-free concurrent writer/reader; rich render on empty/updated stats, healthy sources collapse to `N/N ok` vs a named deviation, activity window; a stalled worker's `last` cell renders red while a healthy one stays neutral (ISSUE_75, asserted on the exported ANSI) | — |
+| `test_engine_stats.py` / `test_live_display.py` | live dashboard (ISSUE_26): atomic per-stage snapshot swaps, cumulative breaking counters, bounded activity stream, lock-free concurrent writer/reader; rich render on empty/updated stats, healthy sources collapse to `N/N ok` vs a named deviation, activity window; a stalled worker's `last` cell renders red while a healthy one stays neutral (ISSUE_75, asserted on the exported ANSI); the accumulating counters survive concurrent writers (ISSUE_74 — under a forced 1µs GIL switch interval, without which the test would pass with or without the lock) | — |
 | `test_stall_watchdog.py` | worker liveness (ISSUE_75): the floor beats the factor on a 15s cadence, a slow pass is not a stall, one event per episode (silent for nine days after), exactly one recovery, per-worker independence, a never-run worker is starting not stalled, disabled detects nothing, and a failing alert sink never kills the watchdog | — |
 | `test_embedder_cost.py` / `test_config_override.py` | embed cost wiring · base+user config deep-merge + registry-factory wiring (overrides on every surface) | — |
 | `test_override_report.py` | startup override report: leaf diffs (old → new), id-list paths, `(added)` vs typo flag, once-per-process emit | — |

@@ -6,7 +6,10 @@ so a later price change never rewrites history: the token counts are the ground 
 warning and costs 0.0 — a new, unpriced model is visible, not silently free.
 """
 import logging
-from typing import Optional
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
+from typing import Iterator, Optional
 
 import psycopg
 
@@ -14,6 +17,25 @@ from finiexragengine.exceptions.ragengine_errors import VectorStoreError
 from finiexragengine.types.config_types.app_config_types import PricingConfig
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class PassSpend:
+    """What one pass spent — the accumulator a `pass_scope()` hands out (ISSUE_74)."""
+    tokens: int = 0
+    usd: float = 0.0
+
+    def add(self, tokens: int, usd: float) -> None:
+        self.tokens += tokens
+        self.usd += usd
+
+
+# The active pass's accumulator. A ContextVar, not a thread-local, because the pass body runs via
+# `asyncio.to_thread`, which copies the current context at call time and runs the body under
+# `ctx.run` — so a scope opened on the event loop reaches the worker thread, and two concurrent
+# passes each get their own binding (verified, not assumed). The accumulator is mutable and shared
+# by reference, so the value written inside the thread is readable back on the loop afterwards.
+_CURRENT_PASS: ContextVar[Optional[PassSpend]] = ContextVar('finiex_pass_spend', default=None)
 
 
 def derive_usd(pricing: PricingConfig, model: str, prompt_tokens: int,
@@ -54,6 +76,25 @@ class CostRecorder:
     @property
     def session_usd(self) -> float:
         return self._session_usd
+
+    @contextmanager
+    def pass_scope(self) -> Iterator[PassSpend]:
+        """Account one pass's spend in isolation (ISSUE_74).
+
+        Replaces the session-delta idiom (`usd_before = recorder.session_usd` … subtract after),
+        which only produced the right number while every pass was serialized by the workers'
+        shared lock. That lock is what turned one hung feed into a nine-day engine outage on
+        2026-08-01, so the attribution had to stop depending on it: a scope accumulates only the
+        calls made *within it*, and concurrent passes cannot cross-attribute by construction.
+
+        The session totals keep accumulating alongside — `ingest_cli` reads them for its footer.
+        """
+        spend = PassSpend()
+        token = _CURRENT_PASS.set(spend)
+        try:
+            yield spend
+        finally:
+            _CURRENT_PASS.reset(token)
 
     def _connect(self) -> psycopg.Connection:
         try:
@@ -99,4 +140,9 @@ class CostRecorder:
             raise VectorStoreError(f'cost-log write failed: {exc}') from exc
         self._session_tokens += total
         self._session_usd += usd
+        # Attribute to the enclosing pass, if any (ISSUE_74). None outside a scope — the CLI
+        # paths record without one and read the session totals instead.
+        current = _CURRENT_PASS.get()
+        if current is not None:
+            current.add(total, usd)
         return usd

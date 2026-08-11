@@ -127,16 +127,28 @@ The fix is state, not more logging.
   `stop()` drive the Live context, started and stopped by the API lifespan alongside the workers.
   On exit the alternate screen is restored — the terminal is left clean (the file log is durable).
 
-### Thread-safety without a lock
+### Thread-safety: lock-free where it can be, locked where it must be
 
 The passes run in worker threads (`asyncio.to_thread`, because feeds/OpenAI/psycopg are sync)
-while the render loop reads on the event loop. Each worker only ever **reassigns its own
-pre-registered key** with a fully-built immutable snapshot (atomic under the GIL) — and because
-the keys are fixed at construction, the dict never resizes, so the render loop can iterate it
-without a 'dict changed size during iteration' race. A reader never sees a half-written stage; the
-event `deque.append` is itself thread-safe. No lock is needed. The cumulative breaking counters
-read-modify-write, but every worker pass is serialized by the one shared `pass_lock`
-(`WorkerSupervisor`), so those writes never race.
+while the render loop reads on the event loop. Two different regimes:
+
+**The stage snapshots need no lock.** Each worker only ever **reassigns its own pre-registered
+key** with a fully-built immutable snapshot (atomic under the GIL) — and because the keys are
+fixed at construction, the dict never resizes, so the render loop can iterate it without a 'dict
+changed size during iteration' race. A reader never sees a half-written stage; the event
+`deque.append` is itself thread-safe.
+
+**The cumulative breaking counters do**, because they are read-modify-write. They used to lean on
+the workers' one shared `pass_lock` — the lock ISSUE_74 removed, because holding it across a pass
+meant a single hung feed could stop every worker (and did, for nine days). `EngineStats` now owns
+a small lock of its own, held **only** by the three accumulating writers; the snapshot setters
+stay lock-free, which is the property the render loop depends on.
+
+That is also simply the better home: an invariant should be guarded where it lives, not by a lock
+in another domain that happens to serialize its callers. The regression test forces frequent GIL
+switches (`sys.setswitchinterval(1e-6)`) — without it a read-modify-write is too few bytecodes for
+the interpreter to ever switch inside, and the test would pass with or without the fix. Measured
+under that pressure, the unlocked version loses roughly two thirds of its updates.
 
 ## Logging in live mode — one sink
 

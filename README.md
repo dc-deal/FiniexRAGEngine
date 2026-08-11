@@ -262,6 +262,10 @@ today, most load-bearing first:
   it. Because error handling only covers *failing*, never *never returning*, a **stall watchdog**
   backs it up: no completed pass within `max(3 × cadence, 15 min)` and the worker is named in the
   log, on `/health`, in Telegram, and in red on the live dashboard.
+- **Independent workers (#74)**: a hung pass stops **one** worker, not the engine. The workers no
+  longer share a lock — cost is attributed per pass instead of by a session delta, so
+  `metadata.cost_usd` stays exact without serialization — and each pass carries a wall-clock
+  deadline so a worker recovers on its next tick rather than staying dead until a restart.
 - **Foundation — corpus & embeddings (#2, #3, #4, #14, #19)**: RSS ingest into an idempotent,
   shared **pgvector** corpus (store everything, filter at retrieval); OpenAI embeddings
   (`text-embedding-3-small`, 1536 dims) with a query-vector cache; versioned **schema

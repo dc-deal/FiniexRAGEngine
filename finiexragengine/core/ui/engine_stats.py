@@ -5,15 +5,22 @@ The write side of the live display: the workers push one immutable snapshot per 
 `LiveDisplay` render loop reads it on an interval. Two units, one per file — aggregation here,
 rendering next door.
 
-**Thread-safety without a lock.** Our passes run in worker threads (`asyncio.to_thread` in the
-ingest/eval workers, because feeds/OpenAI/psycopg are sync) while the render loop reads on the
-event loop. Each stage snapshot is a fully-built immutable object swapped into a single attribute
-in one assignment — atomic under the GIL, so a reader never sees a half-written stage. The event
-stream is a `deque(maxlen=N)` whose `append` is itself thread-safe. No lock is needed. The
-breaking counters accumulate (read-modify-write), but every worker pass is serialized by the one
-shared `pass_lock` (see `WorkerSupervisor`), so the writes never race each other; the render loop
-only ever reads them, and reading an int reference is atomic.
+**Thread-safety, and where it comes from.** Our passes run in worker threads (`asyncio.to_thread`
+in the ingest/eval workers, because feeds/OpenAI/psycopg are sync) while the render loop reads on
+the event loop. Two different regimes:
+
+- **The stage snapshots need no lock.** Each is a fully-built immutable object swapped into a
+  pre-registered key in one assignment — atomic under the GIL, so a reader never sees a
+  half-written stage and the render loop can iterate without one. The event stream is a
+  `deque(maxlen=N)` whose `append` is thread-safe in its own right.
+- **The breaking counters do**, because they are read-modify-write. They used to lean on the
+  workers' shared `pass_lock` for that — which is exactly the coupling ISSUE_74 removed (that lock
+  is what turned one hung feed into a nine-day outage, so it had to go). This module now owns a
+  small lock of its own, held only by the three accumulating writers. That is the right home
+  anyway: an invariant should be guarded where it lives, not by a lock in another domain that
+  happens to serialize its callers.
 """
+import threading
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -84,8 +91,8 @@ class BreakingRecord:
     `last_seen` advances every pass the symbol re-breaks (`touch_breaking_episode`), so the renderer
     tells a live episode (`now − last_seen ≤ EPISODE_GAP`) from an ended one and shows a duration.
     Deliberately **not frozen** (unlike the stage snapshots): `last_seen` is updated in place — a
-    single atomic reference assignment under the GIL, and every writer runs under the shared
-    `pass_lock`, so a reader never sees a torn value.
+    single atomic reference assignment under the GIL, and every writer runs under this module's
+    own counter lock (ISSUE_74), so a reader never sees a torn value.
     """
     started: datetime
     last_seen: datetime
@@ -137,8 +144,12 @@ class EngineStats:
         self._recent_breaking: Deque[BreakingRecord] = deque(maxlen=6)
         # Bounded history: O(1) memory regardless of uptime; oldest events fall off the back.
         self._events: Deque[StreamEvent] = deque(maxlen=max_events)
+        # Guards ONLY the read-modify-write counters below (ISSUE_74) — the snapshot setters stay
+        # lock-free on purpose, that is the design the render loop depends on. Contention is nil:
+        # microseconds of work, a handful of writers on minute cadences.
+        self._counter_lock = threading.Lock()
 
-    # --- writers (worker threads; serialized by the shared pass_lock) ----------------------
+    # --- writers (called from worker threads) ------------------------------------------------
 
     def set_sources(self, source_set_id: str, snapshot: SourcesSnapshot) -> None:
         self._sources[source_set_id] = snapshot  # reassign a pre-registered key = no resize
@@ -154,28 +165,32 @@ class EngineStats:
 
     def add_breaking_detected(self, count: int, *, at: datetime) -> None:
         """Ingest flagged `count` candidates — bump the cumulative detected total."""
-        current = self._breaking
-        self._breaking = BreakingSnapshot(last=at, detected=current.detected + count,
-                                          confirmed=current.confirmed, detail=current.detail)
+        with self._counter_lock:                          # read-modify-write (ISSUE_74)
+            current = self._breaking
+            self._breaking = BreakingSnapshot(last=at, detected=current.detected + count,
+                                              confirmed=current.confirmed, detail=current.detail)
 
     def add_breaking_episode(self, symbol: str, signal: str, reason: str, detail: str, *,
                              at: datetime) -> None:
         """One confirmed breaking episode (edge-triggered, ISSUE_11): bump the episode count, set
         the reaction detail, and record it (with its reason) for the BREAKING section (ISSUE_64)."""
-        current = self._breaking
-        self._breaking = BreakingSnapshot(last=at, detected=current.detected,
-                                          confirmed=current.confirmed + 1, detail=detail)
-        self._recent_breaking.append(BreakingRecord(started=at, last_seen=at, symbol=symbol,
-                                                    signal=signal, reason=reason))
+        with self._counter_lock:                          # read-modify-write (ISSUE_74)
+            current = self._breaking
+            self._breaking = BreakingSnapshot(last=at, detected=current.detected,
+                                              confirmed=current.confirmed + 1, detail=detail)
+            self._recent_breaking.append(BreakingRecord(started=at, last_seen=at, symbol=symbol,
+                                                        signal=signal, reason=reason))
 
     def touch_breaking_episode(self, symbol: str, *, at: datetime) -> None:
         """A symbol still breaking this pass (same ongoing episode, ISSUE_64): advance its record's
         `last_seen` so the renderer keeps it 'live' and grows its duration. A no-op if the episode's
         start already dropped off the bounded deque — the count already carries it."""
-        for record in reversed(self._recent_breaking):    # newest match = the currently-open episode
-            if record.symbol == symbol:
-                record.last_seen = at
-                return
+        # Under the counter lock too: it walks the same deque `add_breaking_episode` appends to.
+        with self._counter_lock:
+            for record in reversed(self._recent_breaking):  # newest match = the open episode
+                if record.symbol == symbol:
+                    record.last_seen = at
+                    return
 
     def push_event(self, stage: str, message: str) -> None:
         """Append one activity line (thread-safe deque.append); oldest falls off at maxlen."""

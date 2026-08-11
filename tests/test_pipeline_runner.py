@@ -4,11 +4,13 @@ Fakes sit at the runner's injection seam (Ingestor / SymbolEvaluator), so these 
 exercise orchestration + assembly only: every-symbol-present, partial-over-error, the
 RunError taxonomy, metric capture and the prompt fingerprint (ISSUE_33).
 """
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import List
 
 import pytest
 
+from finiexragengine.core.observability.cost_recorder import PassSpend
 from finiexragengine.core.observability.reports.envelope_report import format_envelope_run
 from finiexragengine.core.pipeline.envelope_contract import taxonomy_type
 from finiexragengine.core.pipeline.pipeline_runner import PipelineRunner
@@ -106,12 +108,27 @@ class _FakeEvaluator:
 
 
 class _FakeRecorder:
-    """Session accumulator stand-in: pretends the run recorded 0.001 USD."""
+    """Recorder stand-in: a paid call bumps the session total AND the open pass scope.
+
+    Mirrors the real seam (ISSUE_74): `CostRecorder.record()` feeds both, and the runner reads
+    only the scope — so a run's `cost_usd` is what *it* spent, never the process total.
+    """
     def __init__(self):
         self.session_usd = 0.0
+        self._spend = None
+
+    @contextmanager
+    def pass_scope(self):
+        self._spend = PassSpend()
+        try:
+            yield self._spend
+        finally:
+            self._spend = None
 
     def tick(self):
         self.session_usd += 0.001
+        if self._spend is not None:
+            self._spend.add(0, 0.001)
 
 
 class _FakeStore:
@@ -386,7 +403,10 @@ def test_all_symbols_failed_is_error_but_rows_remain():
     assert {e.type for e in envelope.errors} == {'LLM_API_ERROR', 'VECTOR_STORE_ERROR'}
 
 
-def test_cost_usd_is_the_recorders_session_delta():
+def test_cost_usd_is_this_runs_spend_not_the_session_total():
+    # ISSUE_74: the number comes from this run's own scope. It used to be a delta against the
+    # shared recorder, which was only correct while a global lock serialized every pass — the
+    # lock that let one hung feed stop the engine for nine days.
     recorder = _FakeRecorder()
     recorder.session_usd = 0.005                      # spend from earlier passes
 

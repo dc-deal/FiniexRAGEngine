@@ -13,6 +13,7 @@ concrete provider classifies its own failure and calls `on_quota_error` (see
 leaves this file untouched.
 """
 import logging
+import threading
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -44,6 +45,11 @@ class BudgetGuard:
         self._day = datetime.now(timezone.utc).date()
         self._day_spend = day_spend_start
         self._soft_warned = False
+        # `_accumulate` is a read-modify-write reached from the embedder and the LLM provider, both
+        # inside worker threads. It used to be serialized incidentally by the workers' shared pass
+        # lock; that lock is gone (ISSUE_74), so the guard owns the invariant itself. A lost update
+        # here would only skew a warn threshold — but an unfixed known race is still a race.
+        self._spend_lock = threading.Lock()
 
     def should_attempt(self) -> bool:
         """False while suspended within the cool-off; True (with an immediate re-arm) for the
@@ -86,14 +92,18 @@ class BudgetGuard:
         self._accumulate(usd)
 
     def _accumulate(self, usd: float) -> None:
-        today = datetime.now(timezone.utc).date()
-        if today != self._day:                      # new UTC day — reset the warn accumulator
-            self._day, self._day_spend, self._soft_warned = today, 0.0, False
-        self._day_spend += usd
-        if self._soft_daily > 0 and not self._soft_warned and self._day_spend >= self._soft_daily:
-            self._soft_warned = True
-            logger.warning('[BUDGET] soft daily $%.2f reached (day spend $%.2f) — provider still '
-                           'allows spend; watching', self._soft_daily, self._day_spend)
+        # Locked: concurrent paid calls now really do land here at the same time (ISSUE_74).
+        # The warning fires inside, so the "once per day" promise survives the concurrency too.
+        with self._spend_lock:
+            today = datetime.now(timezone.utc).date()
+            if today != self._day:                  # new UTC day — reset the warn accumulator
+                self._day, self._day_spend, self._soft_warned = today, 0.0, False
+            self._day_spend += usd
+            if (self._soft_daily > 0 and not self._soft_warned
+                    and self._day_spend >= self._soft_daily):
+                self._soft_warned = True
+                logger.warning('[BUDGET] soft daily $%.2f reached (day spend $%.2f) — provider '
+                               'still allows spend; watching', self._soft_daily, self._day_spend)
 
     @property
     def suspended(self) -> bool:

@@ -1,11 +1,12 @@
 """Ingest worker — clocks one source-set's acquisition (ISSUE_10)."""
 import asyncio
 import logging
+from contextlib import ExitStack
 from datetime import datetime, timezone
 from time import perf_counter
 from typing import Callable, Dict, List, Optional, Set
 
-from finiexragengine.core.observability.cost_recorder import CostRecorder
+from finiexragengine.core.observability.cost_recorder import CostRecorder, PassSpend
 from finiexragengine.core.pipeline.ingestor import Ingestor
 from finiexragengine.core.triggers.abstract_trigger import AbstractTrigger
 from finiexragengine.core.ui.engine_stats import (
@@ -55,16 +56,17 @@ class IngestWorker:
     """
 
     def __init__(self, source_set: SourceSetConfig, ingestor: Ingestor,
-                 trigger: AbstractTrigger, pass_lock: asyncio.Lock,
+                 trigger: AbstractTrigger, pass_timeout_seconds: int = 300,
                  cost_recorder: Optional[CostRecorder] = None,
                  on_candidates: Optional[Callable[[int], None]] = None,
                  engine_stats: Optional[EngineStats] = None) -> None:
         self._ingestor = ingestor
         self._trigger = trigger
-        # One lock across ALL workers: passes are seconds on minute cadences, so
-        # serializing costs nothing — and it keeps the recorder's session-delta cost
-        # attribution (runner envelopes, pass logs) race-free.
-        self._pass_lock = pass_lock
+        # Wall-clock deadline for one pass (ISSUE_74). There is deliberately NO lock here any
+        # more: the workers used to share one, which is what let a single hung feed hold every
+        # worker hostage for nine days on 2026-08-01. Self-overlap is impossible without it —
+        # the trigger awaits the pass before computing its next wait.
+        self._pass_timeout_seconds = pass_timeout_seconds
         self._cost_recorder = cost_recorder
         # Optional (ISSUE_11): called with the highest importance tier flagged this pass, to
         # nudge the eval workers on this set out-of-band (the breaking bus). None = no wake.
@@ -93,21 +95,33 @@ class IngestWorker:
         await self._trigger.stop()
 
     async def _pass(self) -> None:
-        async with self._pass_lock:
+        with ExitStack() as stack:
             started = perf_counter()
-            usd_before = self._cost_recorder.session_usd if self._cost_recorder else 0.0
+            # This pass's own spend accumulator (ISSUE_74) — entered on the event loop, so the
+            # context copy `asyncio.to_thread` makes carries it into the worker thread. Replaces a
+            # session delta against the shared recorder, which was only correct while every pass
+            # was serialized. Without a recorder there is nothing to account.
+            spend = (stack.enter_context(self._cost_recorder.pass_scope())
+                     if self._cost_recorder else PassSpend())
             self._state.last_run_at = datetime.now(timezone.utc)
             try:
                 # The pass body is synchronous (feeds, OpenAI, psycopg) — run it in a
-                # thread so the event loop keeps serving the API while we work.
-                result = await asyncio.to_thread(self._ingestor.run)
+                # thread so the event loop keeps serving the API while we work. The deadline
+                # abandons the *await*, not the thread (a blocked thread cannot be cancelled):
+                # the worker resumes next tick instead of staying dead until a restart.
+                result = await asyncio.wait_for(asyncio.to_thread(self._ingestor.run),
+                                                timeout=self._pass_timeout_seconds)
+            except asyncio.TimeoutError:
+                self._state.last_status = 'error'
+                self._state.last_detail = f'pass exceeded {self._pass_timeout_seconds}s deadline'
+                logger.warning('[%s] pass exceeded %ds deadline — abandoned, next tick continues',
+                               self._state.name, self._pass_timeout_seconds)
             except Exception as exc:   # noqa: BLE001 — a pass must never kill the loop
                 self._state.last_status = 'error'
                 self._state.last_detail = str(exc)
                 logger.exception('[%s] pass failed — next tick continues', self._state.name)
             else:
-                usd = (self._cost_recorder.session_usd - usd_before
-                       if self._cost_recorder else 0.0)
+                usd = spend.usd
                 self._state.last_status = 'ok'
                 # Prefix a suspended pass (provider quota, ISSUE_47) so it is visible, not silent.
                 prefix = 'suspended (quota) · ' if result.suspended else ''
