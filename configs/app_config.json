@@ -68,6 +68,7 @@
         "warn_on_override": true
     },
     "socket_default_timeout_seconds": 30,
+    "pass_timeout_seconds": 300,
     "source_health": {
         "flag_after_consecutive_failures": 5,
         "quarantine_hours": 24,

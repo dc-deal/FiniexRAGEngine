@@ -30,12 +30,19 @@ class WorkerSupervisor:
     """
 
     def __init__(self, assembler: PipelineAssembler, registry: PipelineRegistry,
+                 pass_timeout_seconds: int = 300,
                  engine_stats: Optional[EngineStats] = None) -> None:
         # Optional (ISSUE_26): the live dashboard's shared state, injected into every worker so
         # each pass pushes its snapshot/events. None = no display (the default /health-only path).
         self._engine_stats = engine_stats
-        # One lock across every pass — see IngestWorker for the attribution rationale.
-        pass_lock = asyncio.Lock()
+        # There is deliberately no shared lock here any more (ISSUE_74). One used to serialize
+        # every pass — cheap at these cadences, and it kept the session-delta cost attribution
+        # race-free — but it also meant a single blocked pass held all four workers hostage, which
+        # is precisely how one silent RSS feed stopped the engine for nine days on 2026-08-01. The
+        # two invariants it carried now live where they belong: cost accounting in
+        # `CostRecorder.pass_scope()`, the breaking counters behind `EngineStats`' own lock. What
+        # replaces it per worker is a deadline, not a lock — the triggers already guarantee a
+        # worker cannot overlap itself.
         # The breaking wake bus (ISSUE_11): ingest workers publish flagged candidates, eval
         # workers subscribe per source-set with their own sensitivity — in-process, no infra.
         self._bus = BreakingBus()
@@ -52,7 +59,7 @@ class WorkerSupervisor:
             self._workers.append(IngestWorker(
                 source_set, assembler.build_ingestor(source_set_id),
                 self._interval_trigger(source_set.trigger, f'source-set {source_set_id}'),
-                pass_lock, cost_recorder=assembler.get_cost_recorder(),
+                pass_timeout_seconds, cost_recorder=assembler.get_cost_recorder(),
                 on_candidates=publish, engine_stats=engine_stats))
 
         for pipeline in registry.list_pipelines():
@@ -64,7 +71,7 @@ class WorkerSupervisor:
                 pipeline,
                 self._eval_trigger(config.trigger, subscription,
                                    f'pipeline {config.pipeline_id}'),
-                pass_lock, engine_stats=engine_stats))
+                pass_timeout_seconds, engine_stats=engine_stats))
 
     @staticmethod
     def _interval_trigger(trigger_config: TriggerConfig, owner: str) -> IntervalTrigger:

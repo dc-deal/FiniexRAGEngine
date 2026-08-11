@@ -3,6 +3,7 @@ No DB, no API: fakes sit at the Ingestor/Pipeline seams, intervals are milliseco
 """
 import asyncio
 import json
+import time
 from datetime import datetime, timezone
 from typing import List
 
@@ -73,8 +74,9 @@ class _FakeIngestor:
         return IngestResult(fetched=10, embedded=2, stored=2)
 
 
-def _ingest_worker(ingestor, interval=0.005) -> IngestWorker:
-    return IngestWorker(_SET, ingestor, IntervalTrigger(interval), asyncio.Lock())
+def _ingest_worker(ingestor, interval=0.005, pass_timeout=300) -> IngestWorker:
+    # No lock argument any more (ISSUE_74) — a per-pass deadline took its place.
+    return IngestWorker(_SET, ingestor, IntervalTrigger(interval), pass_timeout)
 
 
 def test_ingest_worker_records_state():
@@ -110,6 +112,65 @@ def test_failing_pass_never_kills_the_loop():
     assert state.last_status == 'error' and 'feed exploded' in state.last_detail
 
 
+# --- ISSUE_74: isolation + the pass deadline ------------------------------------------
+
+
+class _BlockingIngestor:
+    """Its pass never returns promptly — the 2026-08-01 shape (a hung TLS handshake)."""
+    def __init__(self, block_seconds: float):
+        self.runs = 0
+        self._block = block_seconds
+
+    def run(self) -> IngestResult:
+        self.runs += 1
+        time.sleep(self._block)                # blocks a worker THREAD, uncancellable
+        return IngestResult(fetched=1)
+
+
+def test_a_blocked_worker_does_not_stop_another():
+    """The amplifier, as a regression test.
+
+    Until ISSUE_74 all workers shared one `asyncio.Lock` held across `await to_thread(...)`, so a
+    pass that never returned took every other worker down with it — one silent feed stopped the
+    whole engine for nine days. Now a blocked worker is alone in its misery.
+    """
+    blocked, healthy = _BlockingIngestor(0.15), _FakeIngestor()
+
+    async def _scenario():
+        stuck = _ingest_worker(blocked)
+        fine = _ingest_worker(healthy)
+        tasks = [asyncio.create_task(stuck.start()), asyncio.create_task(fine.start())]
+        await asyncio.sleep(0.06)              # the blocked pass is still inside its first run
+        assert healthy.runs >= 2, 'the healthy worker must keep passing while the other hangs'
+        for worker in (stuck, fine):
+            await worker.stop()
+        await asyncio.gather(*tasks)
+
+    _run(_scenario())
+    assert blocked.runs == 1                   # never got past its first pass
+    assert healthy.runs >= 2                   # kept working throughout
+
+
+def test_a_pass_over_the_deadline_is_abandoned_and_the_worker_recovers():
+    # The deadline abandons the await, not the thread — the point is that the NEXT tick runs.
+    # 25x the deadline is plenty to prove the point; longer only makes the abandoned threads
+    # outlive the test and slow the suite down (they cannot be cancelled — that is the trade).
+    ingestor = _BlockingIngestor(0.5)
+
+    async def _scenario():
+        worker = _ingest_worker(ingestor, interval=0.005, pass_timeout=0.02)
+        task = asyncio.create_task(worker.start())
+        await asyncio.sleep(0.12)
+        await worker.stop()
+        await task
+        return worker.get_state()
+
+    state = _run(_scenario())
+    assert state.last_status == 'error'
+    assert 'deadline' in state.last_detail
+    assert ingestor.runs >= 2, 'the worker must keep ticking after abandoning a pass'
+
+
 class _FakePipeline:
     def __init__(self):
         self.runs = 0
@@ -134,7 +195,7 @@ def test_eval_worker_runs_pipeline_and_tracks_state():
     pipeline = _FakePipeline()
 
     async def _scenario():
-        worker = EvalWorker(pipeline, IntervalTrigger(0.005), asyncio.Lock())
+        worker = EvalWorker(pipeline, IntervalTrigger(0.005))
         task = asyncio.create_task(worker.start())
         await asyncio.sleep(0.02)
         await worker.stop()

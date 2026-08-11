@@ -111,7 +111,10 @@ def create_app(attach_runners: Optional[bool] = None,
         # logs (the allowlist stays the hard gate).
         verify_configured_models(config_manager.get_config())
         if start_workers:
-            supervisor = WorkerSupervisor(assembler, registry, engine_stats=engine_stats)
+            supervisor = WorkerSupervisor(
+                assembler, registry,
+                pass_timeout_seconds=config_manager.get_config().pass_timeout_seconds,
+                engine_stats=engine_stats)
     else:
         if start_workers:
             raise RuntimeError('workers need real runners — set DATABASE_URL '

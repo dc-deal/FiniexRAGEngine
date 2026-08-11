@@ -51,13 +51,13 @@ class EvalWorker:
     """
 
     def __init__(self, pipeline: Pipeline, trigger: AbstractTrigger,
-                 pass_lock: asyncio.Lock,
+                 pass_timeout_seconds: int = 300,
                  engine_stats: Optional[EngineStats] = None) -> None:
         self._pipeline = pipeline
         self._trigger = trigger
-        # Shared across all workers — see IngestWorker: keeps session-delta cost
-        # attribution race-free; serialization is free at these cadences.
-        self._pass_lock = pass_lock
+        # Wall-clock deadline for one pass (ISSUE_74) — see IngestWorker for the rationale, and
+        # for why no lock replaced the shared one that used to sit here.
+        self._pass_timeout_seconds = pass_timeout_seconds
         # Optional (ISSUE_26): the live dashboard's shared state. None = no display — every
         # push below is skipped, so the /health-only and CLI paths carry zero overhead.
         self._engine_stats = engine_stats
@@ -81,38 +81,47 @@ class EvalWorker:
         await self._trigger.stop()
 
     async def _pass(self) -> None:
-        async with self._pass_lock:
-            started = perf_counter()
-            self._state.last_run_at = datetime.now(timezone.utc)
-            try:
-                envelope = await asyncio.to_thread(self._pipeline.run)
-            except Exception as exc:   # noqa: BLE001 — a pass must never kill the loop
-                self._state.last_status = 'error'
-                self._state.last_detail = str(exc)
-                logger.exception('[%s] pass failed — next tick continues', self._state.name)
-            else:
-                m = envelope.metadata
-                llm_rows = sum(1 for r in envelope.result if r.basis == 'llm')
-                self._state.last_status = 'ok' if envelope.status != 'error' else 'error'
-                self._state.last_detail = (f'{envelope.status} · {len(envelope.result)} symbols '
-                                           f'({llm_rows} llm · {len(envelope.result) - llm_rows} other)')
-                duration_ms = (perf_counter() - started) * 1000.0
-                tokens = m.prompt_tokens + m.completion_tokens
-                # Spend is never silent: tokens + USD per pass, right where it runs.
-                logger.info('[%s] %s · %d tok · $%.6f · %.0fms → outcomes',
-                            self._state.name, self._state.last_detail,
-                            tokens, m.cost_usd, duration_ms)
-                # Confirmed breaking, edge-triggered (ISSUE_11): a hot story is logged once, on the
-                # transition into breaking — not every pass it lingers (that flooded the log with 59
-                # identical lines/day and inflated the count). Cross-checks the store `breaking`
-                # report, which groups the same episodes.
-                episodes = self._episodes.new_episodes(envelope)
-                for episode in episodes:
-                    logger.info(_breaking_line(envelope.pipeline_id, episode))
-                # Feed the live dashboard from the same envelope (ISSUE_26); no-op without a display.
-                self._push_stats(envelope, tokens, duration_ms, episodes)
-            self._state.runs += 1
-            self._state.last_duration_ms = (perf_counter() - started) * 1000.0
+        started = perf_counter()
+        self._state.last_run_at = datetime.now(timezone.utc)
+        try:
+            # No shared lock any more (ISSUE_74) — this pass runs alongside the others instead of
+            # queueing behind them. The deadline abandons the await, not the thread, so the worker
+            # recovers on its next bar close rather than staying dead until a restart. The run's
+            # own cost scope lives in `PipelineRunner.run`, where the envelope is assembled.
+            envelope = await asyncio.wait_for(asyncio.to_thread(self._pipeline.run),
+                                              timeout=self._pass_timeout_seconds)
+        except asyncio.TimeoutError:
+            self._state.last_status = 'error'
+            self._state.last_detail = f'pass exceeded {self._pass_timeout_seconds}s deadline'
+            logger.warning('[%s] pass exceeded %ds deadline — abandoned, next tick continues',
+                           self._state.name, self._pass_timeout_seconds)
+        except Exception as exc:   # noqa: BLE001 — a pass must never kill the loop
+            self._state.last_status = 'error'
+            self._state.last_detail = str(exc)
+            logger.exception('[%s] pass failed — next tick continues', self._state.name)
+        else:
+            m = envelope.metadata
+            llm_rows = sum(1 for r in envelope.result if r.basis == 'llm')
+            self._state.last_status = 'ok' if envelope.status != 'error' else 'error'
+            self._state.last_detail = (f'{envelope.status} · {len(envelope.result)} symbols '
+                                       f'({llm_rows} llm · {len(envelope.result) - llm_rows} other)')
+            duration_ms = (perf_counter() - started) * 1000.0
+            tokens = m.prompt_tokens + m.completion_tokens
+            # Spend is never silent: tokens + USD per pass, right where it runs.
+            logger.info('[%s] %s · %d tok · $%.6f · %.0fms → outcomes',
+                        self._state.name, self._state.last_detail,
+                        tokens, m.cost_usd, duration_ms)
+            # Confirmed breaking, edge-triggered (ISSUE_11): a hot story is logged once, on the
+            # transition into breaking — not every pass it lingers (that flooded the log with 59
+            # identical lines/day and inflated the count). Cross-checks the store `breaking`
+            # report, which groups the same episodes.
+            episodes = self._episodes.new_episodes(envelope)
+            for episode in episodes:
+                logger.info(_breaking_line(envelope.pipeline_id, episode))
+            # Feed the live dashboard from the same envelope (ISSUE_26); no-op without a display.
+            self._push_stats(envelope, tokens, duration_ms, episodes)
+        self._state.runs += 1
+        self._state.last_duration_ms = (perf_counter() - started) * 1000.0
 
     def _push_stats(self, envelope: AnalysisEnvelope, tokens: int, duration_ms: float,
                     episodes: List[BreakingEpisode]) -> None:
