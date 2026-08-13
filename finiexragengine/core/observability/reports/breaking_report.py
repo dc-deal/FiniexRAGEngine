@@ -5,6 +5,11 @@ Aggregated **from the store**, never from logs: the persisted envelopes are the 
 cannot be rebuilt after the fact, so it rides on fields captured at the event: the envelope's
 `timestamp` (t3), each source's `published_at` (t0) and `fetched_at` (t1). The detector's
 `flagged_at` lives in the corpus and feeds the funnel's numerator.
+
+Both reaction times anchor on the **freshest** source of an episode, not the oldest (ISSUE_81) —
+the oldest is bounded by the retrieval window, so it measured "how far back did we read" rather
+than "how fast did we react". Recomputing from persisted envelopes means the correction applies to
+the whole history, not just to runs after the fix.
 """
 import json
 import shutil
@@ -27,8 +32,8 @@ class PipelineBreaking:
     """One pipeline's breaking episodes + their reaction-time samples, inside the window."""
     pipeline_id: str
     confirmed: int = 0                                    # breaking episodes
-    engine_reaction_s: List[float] = field(default_factory=list)   # t3 − earliest fetched_at
-    end_to_end_s: List[float] = field(default_factory=list)        # t3 − earliest published_at
+    engine_reaction_s: List[float] = field(default_factory=list)   # t3 − freshest fetched_at
+    end_to_end_s: List[float] = field(default_factory=list)        # t3 − freshest published_at
 
 
 @dataclass
@@ -124,8 +129,12 @@ def _aggregate(rows: List[Tuple[str, object]], flagged: int,
             published = [_parse_dt(s['published_at']) for s in sources
                          if s.get('published_at') and s['published_at'] != s.get('fetched_at')]
             fetched = [_parse_dt(s['fetched_at']) for s in sources if s.get('fetched_at')]
-            end_to_end = (t3 - min(published)).total_seconds() if published else None
-            engine = (t3 - min(fetched)).total_seconds() if fetched else None
+            # Anchored on the FRESHEST source, matching the live path exactly (ISSUE_81 — see
+            # `breaking_episode.reaction_times` for why the oldest measured the retrieval window
+            # instead of a reaction). The two must agree by construction; they are recomputed from
+            # the same persisted envelopes, so this also corrects the whole history retroactively.
+            end_to_end = (t3 - max(published)).total_seconds() if published else None
+            engine = (t3 - max(fetched)).total_seconds() if fetched else None
             group_key = result.get('base_currency') or result['symbol']   # asset-level (ISSUE_70)
             occ.setdefault((pipeline_id, group_key), []).append(
                 (t3, engine, end_to_end, result.get('signal', ''), result.get('reasoning', ''),
@@ -206,8 +215,8 @@ def format_breaking_report(report: BreakingReport, *, width: Optional[int] = Non
     # The funnel: flagged (corpus, LLM-free) → confirmed (LLM) → pushed (live channel, Stage C).
     lines.append(f'funnel: {report.flagged_candidates} flagged → '
                  f'{report.confirmed_episodes} confirmed → push (Stage C, pending)')
-    lines.append('engine react = t3−earliest fetched_at (what we control) · '
-                 'end-to-end = t3−earliest published_at (what the consumer feels)')
+    lines.append('engine react = t3−freshest fetched_at (what we control) · '
+                 'end-to-end = t3−freshest published_at (what the consumer feels)')
 
     # Per-episode listing (ISSUE_64): what broke this window, grouped by pipeline — when it started,
     # how long it lasted, and why (the LLM's reasoning). Edge-triggered, so one line per real episode.

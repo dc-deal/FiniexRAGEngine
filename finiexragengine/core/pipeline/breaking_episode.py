@@ -24,8 +24,8 @@ class BreakingEpisode:
     symbol: str
     signal: str
     urgency: float
-    engine_s: Optional[float]        # envelope ts − earliest source fetched_at (what we control)
-    end_to_end_s: Optional[float]    # envelope ts − earliest REAL published_at (estimated excluded)
+    engine_s: Optional[float]        # envelope ts − freshest source fetched_at (what we control)
+    end_to_end_s: Optional[float]    # envelope ts − freshest REAL published_at (estimated excluded)
     n_sources: int
     # Why it broke (ISSUE_64 Phase 1): the LLM's own per-symbol `reasoning`, carried through so the
     # dashboard/report can show the trigger. Phase 2 replaces this with a dedicated `breaking_reason`.
@@ -35,6 +35,24 @@ class BreakingEpisode:
 def reaction_times(result: SentimentResult, ts: datetime) -> Tuple[Optional[float], Optional[float]]:
     """`(engine_s, end_to_end_s)` for one breaking result — e2e ignores estimated publish dates.
 
+    Anchored on the **freshest** source, not the oldest (ISSUE_81). Anchoring on the oldest made
+    this measure the retrieval window rather than any reaction: a pass retrieves context up to
+    `recency_window_minutes` back (1440 = 24h), so `min(fetched_at)` reported ~21h in production
+    for an engine that evaluates every 10 minutes and jumps the queue on a breaking wake in
+    seconds. It was not merely inflated — it answered a different question ("how old is the oldest
+    article we read?").
+
+    `max` answers the intended one: how fresh was the evidence when the engine decided. Episodes
+    are edge-triggered (see the tracker below), so the reaction is sampled only at the *start* of
+    an episode — a later, unrelated article cannot drift the number afterwards, which is what
+    makes the freshest-source anchor sound rather than merely less wrong.
+
+    The precise anchor would be the article that actually triggered the detection
+    (`articles.flagged_at`), but the envelope does not record *which* of its sources was flagged —
+    the store report could join it and the live path could not, and the two must agree by
+    construction. Carrying that flag on the envelope rides ISSUE_64 Phase 2, which extends it
+    anyway.
+
     A date-less feed falls back to `published_at := fetched_at` (so recency filtering still works);
     those estimated dates would collapse e2e onto engine, so they are excluded from the e2e sample.
     None when no usable source timestamp exists (e2e then renders as `—`, honest).
@@ -42,8 +60,8 @@ def reaction_times(result: SentimentResult, ts: datetime) -> Tuple[Optional[floa
     fetched = [s.fetched_at for s in result.sources if s.fetched_at]
     published = [s.published_at for s in result.sources
                  if s.published_at and s.published_at != s.fetched_at]
-    engine = (ts - min(fetched)).total_seconds() if fetched else None
-    end_to_end = (ts - min(published)).total_seconds() if published else None
+    engine = (ts - max(fetched)).total_seconds() if fetched else None
+    end_to_end = (ts - max(published)).total_seconds() if published else None
     return engine, end_to_end
 
 

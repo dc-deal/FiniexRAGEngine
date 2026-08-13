@@ -65,8 +65,8 @@ never attach one just because `DATABASE_URL`/`OPENAI_API_KEY` are set in the env
 | `test_breaking_detector.py` | cluster-tier boundaries + keyword fast-path (word-boundary), all LLM-free | — |
 | `test_breaking_bus.py` | per-pipeline `min_importance` wake filter, re-arm, cross-set isolation | — |
 | `test_event_trigger.py` | eval clock: immediate + interval + breaking wake before interval, clean stop | — |
-| `test_breaking_report.py` | reaction math (engine vs end-to-end), episode grouping, funnel render | — |
-| `test_breaking_episode.py` | edge-triggered breaking episodes (ISSUE_11): first breaking = one episode, re-break within/after the 30-min gap, ongoing story counts once, reaction anchored+frozen at the start, estimated publish (published==fetched) excluded from e2e | — |
+| `test_breaking_report.py` | reaction math (engine vs end-to-end), episode grouping, funnel render; the freshest-source anchor (ISSUE_81) — a stale context article does not drag the number, **and the store path agrees with the live path digit-for-digit on the same envelope** (the ISSUE_64 parity lesson, now asserted rather than assumed) | — |
+| `test_breaking_episode.py` | edge-triggered breaking episodes (ISSUE_11): first breaking = one episode, re-break within/after the 30-min gap, ongoing story counts once, reaction anchored+frozen at the start, estimated publish (published==fetched) excluded from e2e; the freshest-source anchor (ISSUE_81) — a 20h-old context article next to a 30s-old trigger must report 30s, source order does not change the result, and a single source is unaffected | — |
 | `test_source_health.py` | host normalization, warn/error split, report format, orphan notice, feed-doctor classifier | — |
 | `test_source_health_store.py` | poll counters, flag+quarantine threshold, recovery reset, event cap, restart-survives quarantine | PostgreSQL |
 | `test_logging_setup.py` | console + daily-rotating file, idempotent reconfigure, quiet loggers | — |
