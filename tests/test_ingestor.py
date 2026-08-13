@@ -12,6 +12,7 @@ from finiexragengine.core.sources.abstract_source import AbstractSource
 from finiexragengine.exceptions.ragengine_errors import BudgetExceededError, SourceFetchError
 from finiexragengine.types.article_types import Article, ScoredArticle
 from finiexragengine.types.config_types.source_set_types import SourceConfig
+from finiexragengine.types.embedding_types import EmbedResult
 from finiexragengine.types.ingest_types import HealthOutcome
 
 _NOW = datetime.now(timezone.utc)
@@ -49,9 +50,12 @@ class _CountingEmbedder(AbstractEmbedder):
     def __init__(self) -> None:
         self.total = 0
 
-    def embed(self, texts: List[str]) -> List[List[float]]:
+    def embed(self, texts: List[str]) -> EmbedResult:
         self.total += len(texts)
-        return [[float(len(text)), 0.0, 0.0, 0.0] for text in texts]
+        return EmbedResult(
+            vectors=[[float(len(text)), 0.0, 0.0, 0.0] for text in texts],
+            input_tokens=[len(text.split()) for text in texts],
+            truncated_tokens=[None] * len(texts))
 
 
 class _FakeStore(AbstractVectorStore):
@@ -181,7 +185,7 @@ def test_every_source_gets_exactly_one_poll_in_order():
 class _SuspendedEmbedder(AbstractEmbedder):
     """Stands in for the circuit-breaker gate (ISSUE_47): embedding is suspended (provider quota)."""
 
-    def embed(self, texts):
+    def embed(self, texts: List[str]) -> EmbedResult:
         raise BudgetExceededError('embedding suspended — provider quota reached')
 
 
@@ -205,3 +209,72 @@ def test_floor_skipped_source_records_no_health():
     assert result.floor_skips == ['slow']                  # skipped as a no-op
     assert [s for s, _ in health.successes] == ['fast']    # only the polled source recorded
     assert 'slow' not in result.per_source
+
+
+# --- ISSUE_79: a poison article costs itself, not the pass ----------------------------------
+
+
+class _RejectingEmbedder(AbstractEmbedder):
+    """Refuses one text outright, as the provider does for an over-long input."""
+
+    def __init__(self, reject_substring: str) -> None:
+        self._reject = reject_substring
+
+    def embed(self, texts: List[str]) -> EmbedResult:
+        vectors: List[Optional[List[float]]] = []
+        rejected: List[int] = []
+        for index, text in enumerate(texts):
+            if self._reject in text:
+                vectors.append(None)
+                rejected.append(index)
+            else:
+                vectors.append([float(len(text)), 0.0, 0.0, 0.0])
+        return EmbedResult(
+            vectors=vectors, rejected=rejected,
+            input_tokens=[None if i in rejected else 7 for i in range(len(texts))],
+            truncated_tokens=[None] * len(texts))
+
+
+class _TruncatingEmbedder(AbstractEmbedder):
+    """Reports one text as trimmed to the model's limit."""
+
+    def embed(self, texts: List[str]) -> EmbedResult:
+        return EmbedResult(
+            vectors=[[1.0, 0.0, 0.0, 0.0] for _ in texts],
+            input_tokens=[8192 if 'long' in text else 12 for text in texts],
+            truncated_tokens=[4187 if 'long' in text else None for text in texts])
+
+
+def test_a_rejected_article_does_not_cost_the_pass():
+    """The 2026-08-11 regression, at the ingest seam.
+
+    Before ISSUE_79 the provider's 400 propagated out of `run()` and the worker's blanket handler
+    logged 'pass failed' — nothing from that source was stored, and the offender came back next
+    pass because it had never been stored. Now it costs exactly itself.
+    """
+    source = _FakeSource('s1', [_article('good1'), _article('poison'), _article('good2')])
+    result = Ingestor([source], _RejectingEmbedder('poison'), _FakeStore()).run()
+
+    assert result.stored == 2                     # both good articles landed
+    assert result.rejected == 1
+    assert result.fetched == 3
+    assert result.per_source['s1'].stored == 2
+    assert result.polls[0].status == 'ok'         # the pass is a success, not a failure
+
+
+def test_truncation_is_stamped_onto_the_article_and_counted():
+    long_article = _article('long')
+    source = _FakeSource('s1', [_article('short'), long_article])
+    result = Ingestor([source], _TruncatingEmbedder(), _FakeStore()).run()
+
+    assert result.truncated == 1
+    assert result.embed_tokens == 8192 + 12       # what was actually sent, for the pass line
+    assert long_article.embed_truncated_tokens == 4187   # the durable per-article record
+    assert long_article.embed_input_tokens == 8192
+
+
+def test_an_untouched_article_records_no_truncation():
+    article = _article('short')
+    Ingestor([_FakeSource('s1', [article])], _CountingEmbedder(), _FakeStore()).run()
+    assert article.embed_truncated_tokens is None        # NULL in the corpus = nothing was cut
+    assert article.embed_input_tokens is not None        # but the count is still recorded

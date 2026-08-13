@@ -8,6 +8,14 @@ pydantic-settings>=2.0.0      # .env-backed settings loading
 httpx>=0.27.0
 feedparser>=6.0.0
 
+# Exact token counting for the embedding input limit (ISSUE_79). OpenAI's own BPE tokenizer and
+# vocabulary, so a local count equals what the API counts — the alternative (a chars-per-token
+# heuristic) collapses on URLs, number columns and CJK, which are exactly the inputs that blew the
+# 8192-token limit in production. Note: on a cold cache it downloads its vocabulary via `requests`
+# with no timeout, which the process-wide socket default does NOT bound (urllib3 uses its own
+# sentinel) — hence the bounded boot-time pre-warm in `model_catalog`.
+tiktoken>=0.13.0
+
 # Vector store (pgvector on PostgreSQL)
 psycopg[binary]>=3.1.0
 pgvector>=0.2.0

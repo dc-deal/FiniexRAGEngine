@@ -11,6 +11,7 @@ import pytest
 
 from finiexragengine.core.rag.abstract_embedder import AbstractEmbedder
 from finiexragengine.core.rag.query_vector_cache import QueryVectorCache
+from finiexragengine.types.embedding_types import EmbedResult
 
 _DIMS = 1536
 
@@ -21,9 +22,12 @@ class _CountingEmbedder(AbstractEmbedder):
     def __init__(self) -> None:
         self.calls = 0
 
-    def embed(self, texts: List[str]) -> List[List[float]]:
+    def embed(self, texts: List[str]) -> EmbedResult:
         self.calls += 1
-        return [[float(len(text))] + [0.0] * (_DIMS - 1) for text in texts]
+        return EmbedResult(
+            vectors=[[float(len(text))] + [0.0] * (_DIMS - 1) for text in texts],
+            input_tokens=[len(text.split()) for text in texts],
+            truncated_tokens=[None] * len(texts))
 
 
 @pytest.fixture

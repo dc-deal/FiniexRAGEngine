@@ -51,8 +51,8 @@ def test_embed_records_usage_when_recorder_set():
     recorder = _RecRecorder()
     embedder = OpenAIEmbedder(EmbeddingConfig(dimensions=4), client=_Client(),
                               cost_recorder=recorder, section='ingest_news', pipeline_id='p')
-    vectors = embedder.embed(['a', 'bb'])
-    assert len(vectors) == 2
+    result = embedder.embed(['a', 'bb'])
+    assert len(result.vectors) == 2
     assert len(recorder.calls) == 1
     (section, model, prompt_tokens, completion_tokens, pipeline_id,
      duration_ms, model_snapshot) = recorder.calls[0]
@@ -64,4 +64,4 @@ def test_embed_records_usage_when_recorder_set():
 
 def test_embed_without_recorder_is_silent():
     embedder = OpenAIEmbedder(EmbeddingConfig(dimensions=4), client=_Client())
-    assert len(embedder.embed(['x'])) == 1   # no recorder, no error
+    assert len(embedder.embed(['x']).vectors) == 1   # no recorder, no error

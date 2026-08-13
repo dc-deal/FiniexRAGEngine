@@ -1,4 +1,5 @@
 """Ingest half of a pipeline: fetch -> embed only new -> idempotent upsert."""
+import logging
 from typing import List, Optional, Tuple
 
 from finiexragengine.core.observability.source_health_store import SourceHealthStore
@@ -11,6 +12,8 @@ from finiexragengine.exceptions.ragengine_errors import BudgetExceededError, Sou
 from finiexragengine.types.article_types import Article
 from finiexragengine.types.ingest_types import IngestResult, SourceIngest, SourcePoll
 from finiexragengine.utils.url import normalize_host
+
+logger = logging.getLogger(__name__)
 
 
 class Ingestor:
@@ -97,7 +100,7 @@ class Ingestor:
                 #    summary is thin), then 4. idempotent upsert (rowcount = actually new).
                 texts = [f'{article.title}. {article.summary}'.strip() for article in fresh]
                 try:
-                    vectors = timer.time('embed', lambda: self._embedder.embed(texts))
+                    embedded = timer.time('embed', lambda: self._embedder.embed(texts))
                 except BudgetExceededError:
                     # Paid work suspended (provider quota, ISSUE_47): skip embedding this pass.
                     # Fetch + health already ran; the un-embedded articles reappear next pass, so
@@ -112,11 +115,43 @@ class Ingestor:
                         detail='paid work suspended (provider quota) — fetched, not embedded'))
                     result.fetched += entry.fetched
                     break
-                entry.stored = timer.time('upsert', lambda: self._store.upsert(fresh, vectors))
-                detect_batch.extend(zip(fresh, vectors))
+                # Stamp what the embedding actually saw onto each article, then keep only the ones
+                # the provider accepted (ISSUE_79). A rejected item is dropped from this pass
+                # rather than taking the batch — and every other article still lands.
+                storable: List[Article] = []
+                storable_vectors: List[List[float]] = []
+                for position, article in enumerate(fresh):
+                    vector = embedded.vectors[position]
+                    if vector is None:
+                        continue
+                    article.embed_input_tokens = embedded.input_tokens[position]
+                    article.embed_truncated_tokens = embedded.truncated_tokens[position]
+                    storable.append(article)
+                    storable_vectors.append(vector)
+                entry.embedded = len(storable)
+                entry.truncated = embedded.truncated_count
+                entry.rejected = len(embedded.rejected)
+                entry.embed_tokens = embedded.counted_tokens
+                # A rejected article leaves no row to mark, so it is called out here and counted on
+                # the pass line. Deliberately NOT routed through `source_health.record_failure`:
+                # that records a *poll* outcome — it would bump this source's consecutive-failure
+                # streak and quarantine a perfectly reachable feed for shipping one long article,
+                # losing all of its articles. Worse than the defect being fixed. The per-source
+                # view belongs to the article columns (ISSUE_76 aggregates them).
+                if embedded.rejected:
+                    logger.warning(
+                        '[%s] %d article(s) refused by the embedding provider even after fitting '
+                        'to the input limit — stored %d of %d', source_id,
+                        len(embedded.rejected), len(storable), len(fresh))
+                entry.stored = timer.time(
+                    'upsert', lambda: self._store.upsert(storable, storable_vectors))
+                detect_batch.extend(zip(storable, storable_vectors))
             result.polls.append(SourcePoll(source_id, 'ok', ingest=entry))
             result.fetched += entry.fetched
             result.embedded += entry.embedded
+            result.truncated += entry.truncated
+            result.rejected += entry.rejected
+            result.embed_tokens += entry.embed_tokens
             result.stored += entry.stored
         # 5. Breaking detection (ISSUE_11) — LLM-free, over everything just stored, so
         #    cross-feed clusters count. Its highest tier drives the eval wake (Stage B).

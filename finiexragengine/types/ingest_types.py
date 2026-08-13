@@ -20,8 +20,15 @@ PollStatus = Literal['ok', 'failed', 'quarantined', 'floor_skipped', 'suspended'
 class SourceIngest:
     """One source's contribution to an ingest pass."""
     fetched: int = 0                # articles pulled from the feed
-    embedded: int = 0               # articles sent to the embedder (the paid call)
+    embedded: int = 0               # articles the embedder returned a vector for (the paid call)
     stored: int = 0                 # newly stored (upsert rowcount — genuinely new ids)
+    # What the embed stage did with them (ISSUE_79): how many had to be trimmed to the model's
+    # input limit, how many the provider refused outright (dropped from this pass, never stored),
+    # and the token total actually sent — the number that carries signal where the embedding
+    # cost rounds to $0.000000 on every quiet pass.
+    truncated: int = 0
+    rejected: int = 0
+    embed_tokens: int = 0
 
     @property
     def duplicates(self) -> int:
@@ -113,6 +120,9 @@ class IngestResult:
     fetched: int = 0
     embedded: int = 0               # total paid embeddings this pass
     stored: int = 0
+    truncated: int = 0              # inputs trimmed to the model's limit (ISSUE_79)
+    rejected: int = 0               # inputs the provider refused — dropped, never stored
+    embed_tokens: int = 0           # tokens actually sent to the embedder this pass
     candidates: int = 0             # breaking candidates flagged this pass (HIGH tier, ISSUE_11)
     max_tier: int = 0               # highest importance tier written this pass — drives the eval wake (ISSUE_11)
     suspended: bool = False         # paid embedding suspended this pass (provider quota, ISSUE_47)

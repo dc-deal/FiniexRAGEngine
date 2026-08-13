@@ -1,4 +1,6 @@
 """Unit tests for RssSource.fetch — parsing, idempotent ids, provenance, errors, timeouts."""
+import socket
+import threading
 import time
 import urllib.request
 from datetime import timezone
@@ -226,6 +228,46 @@ def test_the_timeout_reaches_the_request(monkeypatch):
     request = urllib.request.Request('https://example.test/rss')
     assert handler.https_request(request).timeout == 7
     assert handler.http_request(request).timeout == 7
+
+
+def test_a_host_that_never_answers_is_classified_not_propagated():
+    """ISSUE_73 follow-up — the gap production found on 2026-08-11 (five times).
+
+    The deadline can fire in two places. A timeout while *connecting* is wrapped into `URLError`
+    by CPython and caught by feedparser. A timeout while *reading the response* is not: it escapes
+    `feedparser.parse()` as a bare `TimeoutError`, sailed past `Ingestor.run`'s per-source
+    `except SourceFetchError`, and killed the entire ingest pass — every other feed in the set
+    with it, and never reaching quarantine.
+
+    This server accepts the connection and reads the request, then answers nothing: the second
+    path exactly. It must come out as a typed `UNREACHABLE`, like any other unreachable feed.
+    """
+    server = socket.socket()
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind(('127.0.0.1', 0))
+    port = server.getsockname()[1]
+    server.listen(2)
+
+    def stall() -> None:
+        while True:
+            try:
+                conn, _ = server.accept()
+            except OSError:
+                return
+            conn.recv(4096)                    # take the request …
+            time.sleep(5)                      # … and never answer it
+
+    threading.Thread(target=stall, daemon=True).start()
+    try:
+        source = RssSource(SourceConfig(source_id='silent',
+                                        url=f'http://127.0.0.1:{port}/feed.xml',
+                                        timeout_seconds=1))
+        with pytest.raises(SourceFetchError) as exc:
+            source.fetch()
+        assert exc.value.error_type == 'UNREACHABLE'
+        assert isinstance(exc.value.__cause__, OSError)   # the timeout is preserved as the cause
+    finally:
+        server.close()
 
 
 def test_a_stalled_host_times_out_instead_of_hanging():

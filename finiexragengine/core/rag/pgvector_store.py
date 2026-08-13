@@ -103,8 +103,10 @@ class PgVectorStore(AbstractVectorStore):
         table = _TABLE
         sql = (
             f'INSERT INTO {table} (article_id, source_id, source_weight, url, title, '
-            'summary, language, published_at, fetched_at, embedding) '
-            'VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) '
+            'summary, language, published_at, fetched_at, embedding, '
+            # What the embedding saw (ISSUE_79) — see migration 003; NULL when nothing was cut.
+            'embed_input_tokens, embed_truncated_tokens) '
+            'VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) '
             'ON CONFLICT (article_id) DO NOTHING'
         )
         written = 0
@@ -115,6 +117,7 @@ class PgVectorStore(AbstractVectorStore):
                         article.article_id, article.source_id, article.source_weight,
                         article.url, article.title, article.summary, article.language,
                         article.published_at, article.fetched_at, vector,
+                        article.embed_input_tokens, article.embed_truncated_tokens,
                     ))
                     written += cur.rowcount
         except psycopg.Error as exc:

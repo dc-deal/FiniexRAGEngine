@@ -266,6 +266,11 @@ today, most load-bearing first:
   longer share a lock — cost is attributed per pass instead of by a session delta, so
   `metadata.cost_usd` stays exact without serialization — and each pass carries a wall-clock
   deadline so a worker recovers on its next tick rather than staying dead until a restart.
+- **Survives a bad article too (#79)**: article text is fitted to the embedding model's token
+  limit before it is sent (exact counting, trimmed on a token boundary, and the trim recorded per
+  article next to the untouched original) — and if the provider rejects an input anyway, the batch
+  is bisected so that item costs only itself instead of the whole ingest pass. Found in production:
+  one over-long article had been failing a pass every five minutes for 30 hours, silently.
 - **Foundation — corpus & embeddings (#2, #3, #4, #14, #19)**: RSS ingest into an idempotent,
   shared **pgvector** corpus (store everything, filter at retrieval); OpenAI embeddings
   (`text-embedding-3-small`, 1536 dims) with a query-vector cache; versioned **schema

@@ -52,6 +52,11 @@ class IngestSnapshot:
     cost_usd: float
     duration_ms: float
     suspended: bool = False                      # paid embedding suspended (provider quota, ISSUE_47)
+    # Tokens actually sent to the embedder this pass (ISSUE_79). Carries the signal the money
+    # cannot: embedding spend rounds to $0.000000 at display precision on every quiet pass, so
+    # the cost field alone left this row saying nothing. The LLM row has shown tokens all along.
+    tokens: int = 0
+    truncated: int = 0                           # inputs trimmed to the model's limit
 
 
 @dataclass(frozen=True)

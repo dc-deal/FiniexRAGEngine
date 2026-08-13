@@ -37,6 +37,20 @@ class EmbeddingConfig(BaseModel):
     provider: str = 'openai'
     model: str = 'text-embedding-3-small'
     dimensions: int = 1536
+    # The model's hard input limit (ISSUE_79). Model-bound like `dimensions` and not discoverable
+    # from the API (`/v1/models` returns only id/created/object/owned_by), so it is declared here
+    # and travels with the model: change the model and both values change together — #16's corpus
+    # guard already refuses a boot when the model shifts underneath the corpus.
+    max_input_tokens: int = 8192
+    # Tokenizer override (ISSUE_79). None = resolve from the model via tiktoken's own table.
+    # The escape hatch for a model shipped before tiktoken knows it — otherwise that is a hard
+    # block on ingest with no config-level remedy.
+    encoding: Optional[str] = None
+    # Per-request deadline for the embeddings call (ISSUE_79). Without it the OpenAI SDK default
+    # applies (600s read x 2 retries ~= 30 min) — this was the last un-timeouted network call in
+    # the ingest path. Deliberately well below the worker's `pass_timeout_seconds` so the *call*
+    # fails with a log line before the *pass* is abandoned without one.
+    timeout_seconds: int = 60
 
 
 class VectorStoreConfig(BaseModel):
