@@ -125,9 +125,19 @@ class IngestWorker:
                 self._state.last_status = 'ok'
                 # Prefix a suspended pass (provider quota, ISSUE_47) so it is visible, not silent.
                 prefix = 'suspended (quota) · ' if result.suspended else ''
+                # Tokens belong in `last_detail`, not only in the log call: this one string is
+                # what the log line, the activity stream AND /health all render (ISSUE_79). Split
+                # across two places it produced three different versions of the same pass.
                 self._state.last_detail = (f'{prefix}fetched {result.fetched} · '
                                            f'embedded {result.embedded} · '
-                                           f'stored {result.stored}')
+                                           f'stored {result.stored} · '
+                                           f'{result.embed_tokens} tok')
+                # Embed-stage deviations ride the line only when non-zero (ISSUE_79) — the same
+                # exception-density idiom the quarantine count uses below.
+                if result.truncated:
+                    self._state.last_detail += f' · {result.truncated} truncated'
+                if result.rejected:
+                    self._state.last_detail += f' · {result.rejected} rejected'
                 # Surface breaking candidates in the pass line when any were flagged (ISSUE_11).
                 if result.candidates:
                     self._state.last_detail += f' · flagged {result.candidates} breaking'
@@ -144,7 +154,8 @@ class IngestWorker:
                 # so spend is still never silent (a paid pass always has stored > 0). The eval
                 # workers' INFO passes remain the regular liveness heartbeat either way.
                 eventful = (result.stored or result.candidates or usd
-                            or result.failed_sources or result.suspended)
+                            or result.failed_sources or result.suspended
+                            or result.truncated or result.rejected)
                 duration_ms = (perf_counter() - started) * 1000.0
                 logger.log(logging.INFO if eventful else logging.DEBUG,
                            '[%s] %s · $%.6f · %.0fms', self._state.name,
@@ -188,7 +199,9 @@ class IngestWorker:
         stats.set_ingest(source_set_id, IngestSnapshot(last=now, fetched=result.fetched,
                                                        new=result.stored, cost_usd=usd,
                                                        duration_ms=duration_ms,
-                                                       suspended=result.suspended))
+                                                       suspended=result.suspended,
+                                                       tokens=result.embed_tokens,
+                                                       truncated=result.truncated))
         if eventful:
             stats.push_event('INGEST', f'{source_set_id} {self._state.last_detail}')
         if result.suspended:

@@ -43,12 +43,13 @@ never attach one just because `DATABASE_URL`/`OPENAI_API_KEY` are set in the env
 |---|---|---|
 | `test_api_health.py` | API contract: health, pipeline listing, run envelope (mock mode) | — |
 | `test_rss_source.py` | RSS → Article mapping, idempotent ids, conditional GET (304), poll floor, typed HTTP/transport failures (429/5xx/retry); fetch deadline (ISSUE_73): per-source override beats the set default, the handler actually stamps the request, and a blackholed host raises `UNREACHABLE` promptly instead of hanging — the 2026-08-01 incident as a test | — |
-| `test_openai_embedder.py` | batching, order preservation, dimension guard (mocked client) | — |
+| `test_openai_embedder.py` | batching, order preservation, dimension guard (mocked client); input fitting + rejection isolation (ISSUE_79): an over-long input is trimmed **before** it is sent, a provider-rejected item is isolated by bisection while every other item still embeds (the 2026-08-11 poison-article shape), two poison items are both isolated, a quota error is *not* bisected, and a token-count mismatch against the provider's own usage warns without failing the pass | — |
+| `test_token_budget.py` | exact token counting + truncation (ISSUE_79): a short text is untouched but still counted, an over-long one is cut to exactly the limit, the cut lands on a token boundary (re-fitting is a no-op), an unknown model raises at construction rather than mid-pass, the `encoding` override wins, and two equal-length texts of different density prove why a chars-per-token heuristic would not do | — |
 | `test_pgvector_store.py` | idempotent upsert, recency/similarity query, importance filter | PostgreSQL |
 | `test_retriever.py` | two-tier policy, top_k cap, near-dup collapse, tie-breaks, funnel counters (mocked) | — |
 | `test_symbol_query_map.py` | constellation alias + base-currency fallback | — |
 | `test_query_vector_cache.py` | cached query vectors, cache busting on config/model change | PostgreSQL |
-| `test_ingestor.py` | fetch → skip known ids → embed only new → upsert; per-source counts; health record + quarantine skip; budget suspend | — |
+| `test_ingestor.py` | fetch → skip known ids → embed only new → upsert; per-source counts; health record + quarantine skip; budget suspend; embed-stage isolation (ISSUE_79): a provider-rejected article costs only itself — the pass still stores every other article and reports `ok` — plus truncation stamped onto the article row and counted on the pass | — |
 | `test_coverage_report.py` | corpus coverage aggregation + console rendering | PostgreSQL |
 | `test_prompt_builder.py` | Jinja2 `.md` fill + versioning; front-matter metadata + body hash | — |
 | `test_pipeline_prompt_config.py` | pipeline-declared `prompt` block (name + version) | — |

@@ -5,7 +5,7 @@ import psycopg
 from pgvector.psycopg import register_vector
 
 from finiexragengine.core.rag.abstract_embedder import AbstractEmbedder
-from finiexragengine.exceptions.ragengine_errors import VectorStoreError
+from finiexragengine.exceptions.ragengine_errors import EmbeddingError, VectorStoreError
 
 
 def _to_float_list(value: Any) -> List[float]:
@@ -80,7 +80,15 @@ class QueryVectorCache:
             return _to_float_list(row[0])          # cache hit — no API call
 
         # miss: embed once (outside any open transaction), then persist for later reuse
-        vector = self._embedder.embed([query_text])[0]
+        vector = self._embedder.embed([query_text]).vectors[0]
+        if vector is None:
+            # The provider refused the query itself (ISSUE_79). For an article that is a
+            # degradation the pass survives; for a symbol query it is a hard failure — without
+            # this vector the whole retrieval for that symbol is impossible, so say so loudly
+            # rather than caching or returning something empty.
+            raise EmbeddingError(
+                f'the embedding provider rejected the symbol query {query_text!r} — '
+                'retrieval cannot run without its vector')
         insert = (f'INSERT INTO {self._table} '
                   '(query_text, embedding_model, dimensions, embedding) '
                   'VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING')

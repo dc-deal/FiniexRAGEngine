@@ -20,6 +20,7 @@ from finiexragengine.core.rag.pgvector_store import PgVectorStore  # noqa: E402
 from finiexragengine.core.rag.query_vector_cache import QueryVectorCache  # noqa: E402
 from finiexragengine.types.article_types import Article  # noqa: E402
 from finiexragengine.types.config_types.app_config_types import VectorStoreConfig  # noqa: E402
+from finiexragengine.types.embedding_types import EmbedResult  # noqa: E402
 
 _DIMS = 1536
 
@@ -65,9 +66,12 @@ def test_format_marks_generic_and_nan():
 class _FixedEmbedder(AbstractEmbedder):
     """Maps known query texts to hand-crafted unit vectors — no API, deterministic."""
 
-    def embed(self, texts: List[str]) -> List[List[float]]:
+    def embed(self, texts: List[str]) -> EmbedResult:
         mapping = {'q_close': _vec(1.0), 'q_far': _vec(0.0, 0.0, 0.0, 1.0)}
-        return [mapping[text] for text in texts]
+        vectors = [mapping[text] for text in texts]
+        return EmbedResult(vectors=list(vectors),
+                           input_tokens=[len(text.split()) for text in texts],
+                           truncated_tokens=[None] * len(texts))
 
 
 @pytest.fixture

@@ -69,6 +69,35 @@ def check_configured_models(config: AppConfig) -> List[CheckSection]:
     ]
 
 
+def verify_embedding_tokenizer(config: AppConfig) -> bool:
+    """Boot-time check that the embedding model's tokenizer resolves AND loads (ISSUE_79).
+
+    Two failures this moves from mid-pass to startup:
+
+    - **An unknown model.** tiktoken maps model → encoding from a table it maintains (the OpenAI
+      API cannot answer this — `/v1/models` carries no encoding field), and raises for a model it
+      has not seen. Discovering that inside a worker thread means every ingest pass dies.
+    - **A cold vocabulary cache.** On first use tiktoken downloads its BPE table with
+      `requests.get()` and **no timeout**. Measured: the process-wide `socket.setdefaulttimeout()`
+      from ISSUE_73 does *not* bound it — urllib3 uses its own sentinel rather than falling back to
+      the socket default, so a stalled response is waited out in full. Forcing the download here
+      means a hang happens at startup, in front of the operator, once — instead of inside a pass.
+
+    Soft like its sibling above: it warns and returns False rather than blocking the boot. A run
+    without a tokenizer still fails per pass, but loudly and with this line already in the log.
+    """
+    from finiexragengine.core.rag.token_budget import TokenBudget   # local: avoids a rag↔llm cycle
+    try:
+        budget = TokenBudget(config.embedding)
+        budget.fit('warm the vocabulary')     # forces the cache load, not just the mapping
+    except Exception as exc:   # noqa: BLE001 — a boot check never blocks the boot
+        logger.warning('embedding tokenizer unavailable for %s: %s — inputs cannot be fitted to '
+                       'the model limit, so every ingest pass will fail on an over-long article',
+                       config.embedding.model, exc)
+        return False
+    return True
+
+
 def verify_configured_models(config: AppConfig) -> bool:
     """Boot-time soft check: warn per unavailable configured model; never raise/block.
 
@@ -76,6 +105,9 @@ def verify_configured_models(config: AppConfig) -> bool:
     it costs a failed run — but the check itself failing (network, missing key) only
     logs and moves on. Returns False when the check could not run (rich/yellow: #25).
     """
+    # The tokenizer is checked alongside (ISSUE_79) — same question, one boot: can this engine
+    # actually use the embedding model it was configured with?
+    verify_embedding_tokenizer(config)
     try:
         sections = check_configured_models(config)
     except LLMApiError as exc:

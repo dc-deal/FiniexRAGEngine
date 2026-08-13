@@ -131,6 +131,48 @@ Top-down, each new article flows through these units in order:
    independently; `pipeline_engine_architecture.md` covers what that cost, since the two
    invariants the lock carried had to be rehomed first.
 
+   **The embed stage got the same treatment (ISSUE_79) — one stage later, one lesson identical.**
+   The fetch was hardened first because it was the stage that hung. The stage after it could still
+   take the pass down, and did: an article exceeding the embedding model's 8192-token input limit
+   made the whole batch return HTTP 400, which propagated out of `Ingestor.run` (its `try` caught
+   only `BudgetExceededError`) and failed the entire pass. Because nothing was stored, the
+   offender stayed "new" and returned every pass — 376 failures over 30 hours, ending only when
+   the feed dropped it. And it was **silent**: `source_health` records the *poll*, which had
+   succeeded, so the feed read healthy the whole time while every article batched with the poison
+   item was never ingested.
+
+   Two layers now, and the second is the load-bearing one:
+
+   - **Fit before sending.** `core/rag/token_budget.py` counts exactly with tiktoken — OpenAI's own
+     tokenizer and vocabulary, so a local count equals what the API counts — and trims in *token*
+     space, decoding back afterwards so a cut can never land inside a token. The limit lives in
+     `embedding.max_input_tokens` next to `dimensions`: model-bound, and not discoverable from the
+     API (`/v1/models` returns only id/created/object/owned_by).
+   - **Survive a rejection anyway.** There will always be a limit we failed to predict, so a
+     `BadRequestError` on a batch is *bisected* — halve, retry, recurse — until the offending
+     input is alone and can be recorded as rejected while every other article still embeds. The
+     trigger is deliberately narrow: quota errors keep raising `BudgetExceededError`, transient
+     failures stay with the SDK's retry. Bisecting those would multiply an outage instead of
+     isolating a defect.
+
+   What the trim leaves behind is deliberately reversible. The embedded string is `title. summary`,
+   built per pass and **never stored** — so `articles.title`/`summary` remain the untouched
+   original, and two nullable columns describe only the embedding input:
+   `embed_input_tokens` (what was sent) and `embed_truncated_tokens` (what was cut; NULL = nothing).
+   Their sum is the original length, and the full text is still in the row, so the question "how
+   far did the trim move the signal?" stays answerable later from stored data alone.
+
+   **The tokenizer is resolved and warmed at boot** (`verify_embedding_tokenizer`), for two
+   reasons. tiktoken raises for a model it cannot map, and finding that out inside a worker thread
+   means every pass dies. And on a cold cache it downloads its vocabulary with `requests.get()` and
+   **no timeout** — measured: the process-wide `socket.setdefaulttimeout()` from ISSUE_73 does *not*
+   bound it, because urllib3 uses its own sentinel rather than falling back to the socket default.
+   Forcing that download at startup puts the one hang it can cause in front of the operator, once.
+
+   Finally, the embedder itself got the deadline the LLM provider always had
+   (`embedding.timeout_seconds`, default 60). Without it the SDK default applied — 600s read × 2
+   retries ≈ 30 minutes — which made it the last un-timeouted network call in the ingest path.
+
    **Reach — the envelope's two source numbers.** `core/observability/source_reach.py`
    (`SourceReach.census`) is the one place a set's config and its feed health are combined, and
    the only source of `metadata.sources_configured` / `sources_reached`:

@@ -2,6 +2,7 @@
 import hashlib
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Optional
 
 from finiexragengine.types.outcome_types import RetrievalFunnel
 
@@ -30,6 +31,14 @@ class Article:
     language: str
     published_at: datetime
     fetched_at: datetime
+    # What the embedding actually saw (ISSUE_79). The embedded string is `title. summary`, built
+    # per pass and never stored — so `title`/`summary` above remain the untouched original and
+    # these two only describe the *embedding input*: how many tokens were sent, and how many were
+    # cut to fit the model's limit (None = nothing was cut). Their sum is the original length.
+    # Stored rather than recomputed so per-source analysis is a SQL aggregate, and so the row
+    # records what happened rather than what today's tokenizer would say.
+    embed_input_tokens: Optional[int] = None
+    embed_truncated_tokens: Optional[int] = None
 
     @staticmethod
     def make_id(url: str, guid: str | None = None) -> str:

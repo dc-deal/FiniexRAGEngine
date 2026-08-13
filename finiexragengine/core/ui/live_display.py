@@ -240,8 +240,13 @@ class LiveDisplay:
     def _ingest_detail(snapshot: Optional[IngestSnapshot]) -> Text:
         if snapshot is None:
             return Text('—', style='dim')
+        # Tokens sit next to the cost (ISSUE_79): the dollar figure rounds to zero on a quiet
+        # pass, so it alone told the operator nothing about the work done.
         text = Text(f'{snapshot.fetched} fetched · {snapshot.new} new · '
+                    f'{snapshot.tokens} tok · '
                     f'${snapshot.cost_usd:.6f} · {snapshot.duration_ms:.0f}ms')
+        if snapshot.truncated:
+            text.append(f'    {snapshot.truncated} truncated', style='yellow')
         if snapshot.suspended:
             text = Text('suspended (quota) · ', style='yellow') + text
         return text
