@@ -141,12 +141,30 @@ class RssSource(AbstractSource):
             # agent set explicitly: without it feedparser sends its default UA, which some hosts
             # (fxstreet, cryptoslate) reject with 403 before the body is ever produced.
             # handlers: the fetch deadline (ISSUE_73) — without it a silent host blocks this
-            # thread forever. A timeout surfaces here as `bozo_exception = URLError(timed out)`,
-            # which is an OSError, so the transient branch below already handles it: one retry,
-            # then UNREACHABLE into source-health and its quarantine.
-            parsed = feedparser.parse(url, etag=self._etag, modified=self._modified,
-                                      agent=USER_AGENT,
-                                      handlers=[_TimeoutHandler(self._timeout_seconds)])
+            # thread forever.
+            #
+            # The deadline can fire in two places, and feedparser only shields one of them
+            # (observed in production 2026-08-11, five times):
+            #   - while CONNECTING or sending — inside `h.request()`, which CPython's
+            #     `AbstractHTTPHandler.do_open` wraps into `URLError`. feedparser catches that and
+            #     reports it as `bozo_exception`, handled by the transient branch below.
+            #   - while READING THE RESPONSE — `h.getresponse()` sits *outside* that `except
+            #     OSError`, and the enclosing `except: raise` re-raises bare. So a raw
+            #     `TimeoutError` escapes `feedparser.parse()` entirely.
+            # Unhandled, the second case propagated past `Ingestor.run`'s per-source
+            # `except SourceFetchError` and killed the whole pass — one slow feed taking every
+            # other feed in the set down with it, and never reaching quarantine. Catching OSError
+            # here routes both paths into the same typed, retried, quarantine-able failure.
+            try:
+                parsed = feedparser.parse(url, etag=self._etag, modified=self._modified,
+                                          agent=USER_AGENT,
+                                          handlers=[_TimeoutHandler(self._timeout_seconds)])
+            except OSError as exc:            # TimeoutError/socket errors ⊂ OSError
+                if attempt == 1:
+                    continue                  # same one retry a transient bozo failure gets
+                raise SourceFetchError(
+                    f'{self.get_source_id()}: cannot fetch feed {url} ({exc})',
+                    error_type='UNREACHABLE') from exc
             status = getattr(parsed, 'status', None)
             if status == 304:
                 return None
