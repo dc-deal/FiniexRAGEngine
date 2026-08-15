@@ -33,10 +33,25 @@ One JSONL line per ~10-min snapshot (the §3 handoff form):
 
 - the full `AnalysisEnvelope` (typed by `finiexragengine.types.outcome_types`), one
   `SentimentResult` per symbol, plus
-- a top-level **`collected_msc`** = **epoch milliseconds (UTC int)** = the collector's receive
-  time = the IDE merge key (nearest snapshot with `collected_msc <= tick.collected_msc`; no
-  look-ahead). The RAG engine does not set this — the mock stamps it; the live collector stamps
-  the real sub-second receive time.
+- a top-level **`collected_msc`** = **epoch milliseconds (UTC int)** = the IDE merge key (nearest
+  snapshot with `collected_msc <= tick.collected_msc`; no look-ahead).
+
+### Where the timestamps sit relative to the bar
+
+The eval trigger fires at the **bar close**; the envelope is stamped when the pass *finishes*, so
+its `timestamp` sits **after** its bar by the pass duration. Measured in the real archive:
+median **+13.5s** (forex) / **+18.9s** (crypto), min ~1s, and up to ~9 min for a breaking wake that
+jumps the queue. The mock reproduces that band (`PASS_BASE_MS`, per model so the variant streams
+keep their latency difference).
+
+**`collected_msc == timestamp`, exactly.** There is no collector yet, so the real exporter sets one
+from the other (`outcome_exporter.py`), and the mock mirrors it — including the sub-millisecond
+truncation of `int(ts.timestamp() * 1000)`.
+
+> Until 2026-08-15 the mock placed `collected_msc` on the **exact** bar close with `timestamp` 2s
+> **before** it, modelling a collector that does not exist yet (#9). That was the dangerous
+> direction: a signal dated ahead of its own bar reads as look-ahead in a backtest. When #9 lands
+> and a genuine receive time appears, both sides change together.
 
 ## Date window (hard constraint)
 

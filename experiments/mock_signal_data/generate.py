@@ -3,8 +3,12 @@
 Emits JSONL that mimics the FiniexDataCollector archive of FiniexRAGEngine sentiment
 envelopes. NOT for correctness — plausible, schema-valid mock data only; the format may still
 change. Each JSONL line = one AnalysisEnvelope per ~10-min snapshot, plus a top-level
-`collected_msc` (epoch milliseconds, UTC) = the collector's receive time = the IDE merge key
-(nearest snapshot with `collected_msc <= tick.collected_msc`; no look-ahead).
+`collected_msc` (epoch milliseconds, UTC) = the IDE merge key (nearest snapshot with
+`collected_msc <= tick.collected_msc`; no look-ahead).
+
+Timestamps sit AFTER their bar close by the pass duration (median +14s, matching the real
+archive's +13.5/+18.9s), and `collected_msc == timestamp` exactly — there is no collector yet, so
+the real exporter derives one from the other and the mock mirrors that.
 
 The default window sits inside the IDE's kraken_spot tick coverage so a backtest binds. Use
 `--pipeline-id` to stamp a non-crypto batch (e.g. a forex mock) with its own data-source id, and
@@ -104,6 +108,10 @@ DEFAULT_OUT = 'tests/fixtures/signals/crypto_sentiment_sample.jsonl'
 SNAPSHOT = {'gpt-4o-mini': 'gpt-4o-mini-2024-07-18', 'gpt-4o': 'gpt-4o-2024-11-20'}
 PRICE_PER_1M = {'gpt-4o-mini': (0.15, 0.60), 'gpt-4o': (2.50, 10.00)}
 LLM_BASE_MS = {'gpt-4o-mini': 900.0, 'gpt-4o': 1400.0}
+# Whole-pass duration = how far past its bar close an envelope is stamped. Calibrated against the
+# real archive (median +13.5s forex / +18.9s crypto, min ~1s); a bigger model takes longer, so the
+# variant streams keep their latency difference (ISSUE_42).
+PASS_BASE_MS = {'gpt-4o-mini': 13_000.0, 'gpt-4o': 19_000.0}
 
 
 @dataclass
@@ -209,15 +217,22 @@ def _cycle_facts(rng, scores, symbols, i, short, no_news_by_cycle, partial_cycle
     }
 
 
-def _render_variant(variant: _Variant, facts: dict, symbols, collected_at, force_error, prompt):
-    """One variant's envelope for one cycle — the model-side reading of the shared facts."""
+def _render_variant(variant: _Variant, facts: dict, symbols, bar_close, force_error, prompt):
+    """One variant's envelope for one cycle — the model-side reading of the shared facts.
+
+    `bar_close` is when the eval trigger fires. The envelope is stamped when the pass *finishes*,
+    so its `timestamp` sits AFTER its bar by the pass duration — measured 13-19s median in
+    production. The mock used to place it 2s *before* the bar, which is the dangerous direction:
+    a signal dated ahead of its own bar reads as look-ahead in a backtest.
+    """
     rng = variant.rng
-    analysis_at = collected_at - timedelta(seconds=2)
     model = variant.model
 
     if force_error:
         # Contract: status 'error' -> empty result, populated errors (nothing produced).
-        # No response served -> no snapshot captured, no tokens spent.
+        # No response served -> no snapshot captured, no tokens spent. The pass still burned its
+        # 30s timeout, so the envelope lands that far past the bar.
+        analysis_at = bar_close + timedelta(milliseconds=30010.0)
         metadata = RunMetadata(
             model=model, sources_configured=3, sources_reached=3,
             articles_found=facts['articles_found'], articles_relevant=facts['articles_relevant'],
@@ -228,7 +243,12 @@ def _render_variant(variant: _Variant, facts: dict, symbols, collected_at, force
         return _make_envelope(variant.stream_id, 'error', analysis_at, [], metadata, errors,
                               prompt)
 
-    timings, total_ms = _timings(analysis_at, LLM_BASE_MS.get(model, 900.0) * rng.uniform(0.85, 1.25))
+    # The pass duration IS the offset from the bar close — one number, so the envelope explains
+    # its own timestamp. Scaled per model, keeping the variant comparison's latency difference.
+    pass_ms = PASS_BASE_MS.get(model, PASS_BASE_MS['gpt-4o-mini']) * rng.uniform(0.75, 1.35)
+    analysis_at = bar_close + timedelta(milliseconds=pass_ms)
+    # Stage timings run from the trigger, not from the finish line.
+    timings, _ = _timings(bar_close, LLM_BASE_MS.get(model, 900.0) * rng.uniform(0.85, 1.25))
     price_in, price_out = PRICE_PER_1M.get(model, PRICE_PER_1M['gpt-4o-mini'])
     results = []
     per_symbol_tokens: Dict[str, int] = {}
@@ -277,7 +297,7 @@ def _render_variant(variant: _Variant, facts: dict, symbols, collected_at, force
         model=model, model_snapshot=SNAPSHOT.get(model, model),
         sources_configured=3, sources_reached=2 if facts['partial'] else 3,
         articles_found=facts['articles_found'], articles_relevant=facts['articles_relevant'],
-        processing_time_ms=total_ms, stage_timings=timings,
+        processing_time_ms=round(pass_ms, 1), stage_timings=timings,
         prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
         cost_usd=round((prompt_tokens * price_in + completion_tokens * price_out) / 1e6, 6),
         per_symbol_tokens=per_symbol_tokens,
@@ -401,13 +421,17 @@ def main() -> None:
         return handles[key]
 
     for i in range(args.cycles):
-        collected_at = start + i * INTERVAL
+        bar_close = start + i * INTERVAL
         facts = _cycle_facts(rng, scores, symbols, i, short, no_news_by_cycle,
                              partial_cycles, breaking_by_cycle, no_news_p)
         for variant in variants:
             force_error = i in variant.error_cycles or (not short and variant.rng.random() < 0.008)
-            envelope = _render_variant(variant, facts, symbols, collected_at, force_error,
+            envelope = _render_variant(variant, facts, symbols, bar_close, force_error,
                                        prompt)
+            # No collector exists yet, so the archive sets `collected_msc = timestamp` — mirror
+            # that exactly (`outcome_exporter.py`). Bucketing follows the same key, so a pass that
+            # finishes past midnight lands in the next day's file, as the real exporter does.
+            collected_at = envelope.timestamp
             line = {'collected_msc': int(collected_at.timestamp() * 1000),
                     **json.loads(envelope.model_dump_json())}
             _sink(variant.stream_id, collected_at).write(json.dumps(line) + '\n')
