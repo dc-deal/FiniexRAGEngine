@@ -176,3 +176,19 @@ def test_activity_stream_shows_recent_events():
     assert 'activity' in text
     assert 'pass 29' in text                                  # newest is shown
     assert 'pass 0' not in text                               # old events scrolled past the window
+
+
+def test_the_header_names_the_running_version():
+    """A live console that does not say which build it shows makes "did the deploy land?" a guess.
+
+    This session had to answer exactly that from commit timestamps and a report footer's wording.
+    """
+    display = LiveDisplay(EngineStats(), worker_count=4, version='0.3.2')
+    assert 'FiniexRAGEngine v0.3.2 — up ' in display._header(datetime.now(timezone.utc))
+
+
+def test_the_version_segment_is_omitted_when_unknown():
+    """CLI and test paths build a display without config — no empty `v` in the header."""
+    display = LiveDisplay(EngineStats(), worker_count=1)
+    header = display._header(datetime.now(timezone.utc))
+    assert header.startswith('FiniexRAGEngine — up ') and ' v' not in header

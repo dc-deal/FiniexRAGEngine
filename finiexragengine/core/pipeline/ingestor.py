@@ -1,8 +1,11 @@
 """Ingest half of a pipeline: fetch -> embed only new -> idempotent upsert."""
 import logging
+from datetime import datetime, timezone
+from time import perf_counter
 from typing import List, Optional, Tuple
 
 from finiexragengine.core.observability.source_health_store import SourceHealthStore
+from finiexragengine.core.observability.source_poll_log import SourcePollLog
 from finiexragengine.core.observability.stage_timer import StageTimer
 from finiexragengine.core.pipeline.breaking_detector import BreakingDetector
 from finiexragengine.core.rag.abstract_embedder import AbstractEmbedder
@@ -10,7 +13,12 @@ from finiexragengine.core.rag.abstract_vector_store import AbstractVectorStore
 from finiexragengine.core.sources.abstract_source import AbstractSource
 from finiexragengine.exceptions.ragengine_errors import BudgetExceededError, SourceFetchError
 from finiexragengine.types.article_types import Article
-from finiexragengine.types.ingest_types import IngestResult, SourceIngest, SourcePoll
+from finiexragengine.types.ingest_types import (
+    IngestResult,
+    PollSample,
+    SourceIngest,
+    SourcePoll,
+)
 from finiexragengine.utils.url import normalize_host
 
 logger = logging.getLogger(__name__)
@@ -34,7 +42,8 @@ class Ingestor:
                  store: AbstractVectorStore,
                  breaking_detector: Optional[BreakingDetector] = None,
                  health_store: Optional[SourceHealthStore] = None,
-                 source_set_id: str = '') -> None:
+                 source_set_id: str = '',
+                 poll_log: Optional[SourcePollLog] = None) -> None:
         self._sources = sources
         self._embedder = embedder
         self._store = store
@@ -45,6 +54,15 @@ class Ingestor:
         # None = health tracking off (manual CLI ingest, tests); the pass is otherwise unchanged.
         self._health_store = health_store
         self._source_set_id = source_set_id
+        # Optional (ISSUE_76): the diagnostic journal — one row per poll attempt, with the duration
+        # measured on the failure path too. None = journaling off (manual CLI ingest, tests, or the
+        # config kill switch); the pass is otherwise unchanged.
+        self._poll_log = poll_log
+
+    def _journal(self, sample: PollSample) -> None:
+        """Record one poll attempt in the diagnostic journal, when one is attached."""
+        if self._poll_log is not None:
+            self._poll_log.record(sample)
 
     def run(self) -> IngestResult:
         """Fetch, embed only the new articles and upsert; return per-source + totals."""
@@ -76,15 +94,28 @@ class Ingestor:
                 continue
             host = normalize_host(source.get_url())
             # 1. Pull the source. A failing source is recorded (typed, into health), the rest proceed.
+            #    Timed by hand rather than through `timer.time` (ISSUE_76): a stage that raises
+            #    leaves no StageTimer record, and a fetch that *times out* is precisely the one
+            #    worth measuring. Taking the clock around the try keeps the duration on both paths.
+            fetch_started = datetime.now(timezone.utc)
+            fetch_start = perf_counter()
             try:
-                fetched = timer.time('fetch', source.fetch)
+                fetched = source.fetch()
             except SourceFetchError as exc:
+                fetch_ms = (perf_counter() - fetch_start) * 1000.0
+                timer.record('fetch', fetch_started, fetch_ms)
+                self._journal(PollSample(source_id, self._source_set_id, 'failed', fetch_ms,
+                                         error_type=exc.error_type, status=exc.status))
                 result.polls.append(SourcePoll(source_id, 'failed', detail=str(exc)))
                 if self._health_store is not None:
                     result.health_notes[source_id] = self._health_store.record_failure(
                         source_id, host, self._source_set_id,
                         error_type=exc.error_type, status=exc.status, message=str(exc))
                 continue
+            fetch_ms = (perf_counter() - fetch_start) * 1000.0
+            timer.record('fetch', fetch_started, fetch_ms)
+            self._journal(PollSample(source_id, self._source_set_id, 'ok', fetch_ms,
+                                     articles=len(fetched)))
             if self._health_store is not None:
                 # A returned fetch (even empty / 304) means the source was reachable → success.
                 if self._health_store.record_success(source_id, host, self._source_set_id):

@@ -140,8 +140,26 @@ t3 envelope ts    ─┘
    engine reaction (t3 − t1) = what WE control      end-to-end (t3 − t0) = what the consumer feels
 ```
 
-- **Anchor rule:** `t1` = the *earliest* `fetched_at` across the confirming cluster (from-first-
-  sighting — the honest number: a smarter detector could have flagged the first copy).
+- **Anchor rule:** `t1` = the *freshest* `fetched_at` across the confirming cluster — how fresh the
+  evidence was when the engine decided.
+
+  It was the **earliest** until ISSUE_81, on the reasoning that from-first-sighting is the honest
+  number because a smarter detector could have flagged the first copy. That argument does not
+  survive contact with retrieval: a pass retrieves context up to its `recency_window_minutes`
+  back (1440 for crypto, 2880 for forex), and the oldest of those has nothing to do with the story
+  that broke. The metric therefore tracked the *window*, reporting a ~22h median in production for
+  a pipeline that evaluates every 10 minutes and jumps the queue on a breaking wake in seconds.
+
+  The corrected anchor restores the metric's variance, which is where its information lives: real
+  daily medians now range from under an hour to many hours, and the fastest confirmations come in
+  at **0.2 minutes** — the breaking-wake path proving itself, which the old anchor could never
+  show because it was pinned near the window. A high value now means something real (the engine
+  confirmed on aged context) and is a *retrieval* question, not a measurement artefact.
+
+  The precise anchor would be the article that actually triggered detection (`articles.flagged_at`),
+  but the envelope does not record which of its sources was flagged — the store report could join
+  it and the live path could not, and the two must agree by construction. Carrying that flag on the
+  envelope rides ISSUE_64 Phase 2, which extends the envelope anyway.
 - **What's captured:** `ArticleRef.fetched_at` (t1, on the envelope, additive/back-compat) +
   `published_at` (t0, already there) + envelope `timestamp` (t3). `articles.flagged_at` (t2) lives
   in the corpus; the report joins it by `article_id` for detection latency.

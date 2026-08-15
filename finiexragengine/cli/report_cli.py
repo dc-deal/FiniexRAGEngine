@@ -51,8 +51,20 @@ def main() -> None:
             parser.error('telegram is not configured — enable it and set bot_token/chat_id '
                          'in the gitignored user_configs/app_config.json')
         messages = render_weekly_messages(report)
+
+        async def _send() -> None:
+            # The client owns an httpx.AsyncClient, so it owns a connection pool — close it
+            # rather than leaving it to the interpreter (ISSUE_76 side finding: the engine was
+            # found holding sockets in CLOSE_WAIT after Telegram traffic). `finally`, so a
+            # failed send closes it too.
+            client = TelegramClient(telegram)
+            try:
+                await client.send_messages(messages)
+            finally:
+                await client.close()
+
         try:
-            asyncio.run(TelegramClient(telegram).send_messages(messages))
+            asyncio.run(_send())
         except TelegramError as exc:
             # The report already printed in full above — delivery is a separate, best-effort
             # step. Fail on one line (no stack trace) with a non-zero exit, not a crash.

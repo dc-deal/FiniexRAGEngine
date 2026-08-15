@@ -96,3 +96,42 @@ def test_fanned_same_base_symbols_are_one_episode():
         result=[_r('ETHUSD'), _r('ETHEUR')])
     episodes = BreakingEpisodeTracker().new_episodes(env)
     assert len(episodes) == 1 and episodes[0].symbol == 'ETHUSD'    # one asset-level episode
+
+
+# --- ISSUE_81: the anchor is the freshest source, not the oldest ----------------------------
+
+
+def test_reaction_is_not_measured_from_the_oldest_context_article():
+    """The production defect, as a regression.
+
+    A pass retrieves context up to `recency_window_minutes` back (1440 = 24h). Anchoring on the
+    OLDEST of those made the reported reaction time track the retrieval window, not the engine:
+    production showed ~21h for a pipeline that evaluates every 10 minutes and jumps the queue on
+    a breaking wake in seconds. Here the triggering article is 30s old and a stale context article
+    is 20h old — the number must follow the fresh one.
+    """
+    triggering = _src(published=_T0 - timedelta(seconds=45), fetched=_T0 - timedelta(seconds=30))
+    stale_context = _src(published=_T0 - timedelta(hours=20), fetched=_T0 - timedelta(hours=20))
+
+    episode = BreakingEpisodeTracker().new_episodes(
+        _envelope(_T0, sources=[stale_context, triggering]))[0]
+
+    assert round(episode.engine_s) == 30            # the freshest evidence, not the oldest
+    assert round(episode.end_to_end_s) == 45
+    assert episode.engine_s < 60, 'anchoring on the oldest source reports ~20h here'
+
+
+def test_source_order_does_not_change_the_anchor():
+    # Retrieval order is by similarity, not by time — the metric must not depend on it.
+    old = _src(published=_T0 - timedelta(hours=6), fetched=_T0 - timedelta(hours=6))
+    fresh = _src(published=_T0 - timedelta(minutes=2), fetched=_T0 - timedelta(minutes=1))
+    forwards = BreakingEpisodeTracker().new_episodes(_envelope(_T0, sources=[old, fresh]))[0]
+    backwards = BreakingEpisodeTracker().new_episodes(_envelope(_T0, sources=[fresh, old]))[0]
+    assert forwards.engine_s == backwards.engine_s == 60
+
+
+def test_a_single_source_is_unaffected_by_the_change():
+    # The one case where min and max agree — kept so the fix cannot silently break the simple path.
+    only = _src(published=_T0 - timedelta(minutes=5), fetched=_T0 - timedelta(minutes=3))
+    episode = BreakingEpisodeTracker().new_episodes(_envelope(_T0, sources=[only]))[0]
+    assert round(episode.engine_s) == 180 and round(episode.end_to_end_s) == 300

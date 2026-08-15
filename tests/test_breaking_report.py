@@ -33,8 +33,8 @@ def test_reaction_math_engine_vs_end_to_end():
                         flagged=3, since_label='7d')
     assert report.confirmed_episodes == 1 and report.flagged_candidates == 3
     row = report.rows[0]
-    assert row.engine_reaction_s == [42.0]      # t3 − earliest fetched_at (54 − 12)
-    assert row.end_to_end_s == [49.0]           # t3 − earliest published_at (54 − 5)
+    assert row.engine_reaction_s == [42.0]      # t3 − freshest fetched_at (54 − 12)
+    assert row.end_to_end_s == [49.0]           # t3 − freshest published_at (54 − 5)
 
 
 def test_consecutive_breakings_are_one_episode():
@@ -122,3 +122,64 @@ def test_episode_listing_groups_by_symbol_and_adapts_width():
     assert [e.symbol for e in report.episodes] == ['ADAUSD', 'ETHUSD', 'ETHUSD']   # grouped by symbol
     out = format_breaking_report(report, width=100)
     assert 'x' * 57 in out and 'x' * 58 not in out                  # cut to width budget (100−37−5=58 → 57 + …)
+
+
+# --- ISSUE_81: the store path anchors like the live path ------------------------------------
+
+
+def _multi_source_row(pipeline, t3, sources):
+    """A row with several retrieved sources — the realistic shape (`(published, fetched)` pairs)."""
+    return (pipeline, {
+        'timestamp': t3.isoformat(),
+        'result': [{'symbol': 'BTCUSD', 'is_breaking': True, 'signal': 'SELL', 'reasoning': '',
+                    'sources': [{'published_at': p.isoformat(), 'fetched_at': f.isoformat()}
+                                for p, f in sources]}],
+    })
+
+
+def test_reaction_ignores_stale_context_and_follows_the_freshest_source():
+    """The store half of the ISSUE_81 fix — and the reason it matters retroactively.
+
+    This report recomputes from persisted envelopes, so anchoring on the oldest source made every
+    historical weekly report show the retrieval window (~21h in production) instead of a reaction.
+    Fixing the anchor corrects the whole archive, not just runs after the fix.
+    """
+    t3 = datetime(2026, 7, 13, 14, 0, 0, tzinfo=timezone.utc)
+    report = _aggregate([_multi_source_row('p', t3, [
+        (t3 - timedelta(hours=20), t3 - timedelta(hours=20)),   # stale context article
+        (t3 - timedelta(seconds=45), t3 - timedelta(seconds=30)),   # the triggering one
+    ])], flagged=1, since_label='7d')
+
+    row = report.rows[0]
+    assert row.engine_reaction_s == [30.0]
+    assert row.end_to_end_s == [45.0]
+
+
+def test_live_and_store_agree_on_the_same_envelope():
+    """Live and store must produce the same number for the same data — the ISSUE_64 lesson.
+
+    They are two independent implementations over one envelope; when they drifted before (the
+    episode gap), the two surfaces quietly disagreed for weeks.
+    """
+    from finiexragengine.core.pipeline.breaking_episode import BreakingEpisodeTracker
+    from finiexragengine.types.outcome_types import (
+        ArticleRef, RunMetadata, SentimentEnvelope, SentimentResult)
+
+    t3 = datetime(2026, 7, 13, 14, 0, 0, tzinfo=timezone.utc)
+    pairs = [(t3 - timedelta(hours=9), t3 - timedelta(hours=9)),
+             (t3 - timedelta(minutes=4), t3 - timedelta(minutes=2)),
+             (t3 - timedelta(hours=1), t3 - timedelta(minutes=55))]
+
+    store_row = _aggregate([_multi_source_row('p', t3, pairs)], flagged=1, since_label='7d').rows[0]
+
+    live = BreakingEpisodeTracker().new_episodes(SentimentEnvelope(
+        pipeline_id='p', outcome_type='sentiment_fear_greed', prompt_version='2', timestamp=t3,
+        status='success', metadata=RunMetadata(model='m'),
+        result=[SentimentResult(
+            symbol='BTCUSD', signal='SELL', sentiment_score=-0.5, confidence=0.8, reasoning='',
+            urgency=0.9, is_breaking=True,
+            sources=[ArticleRef(article_id='a', url='u', title='t', published_at=p, fetched_at=f)
+                     for p, f in pairs])]))[0]
+
+    assert store_row.engine_reaction_s[0] == live.engine_s == 120.0
+    assert store_row.end_to_end_s[0] == live.end_to_end_s == 240.0

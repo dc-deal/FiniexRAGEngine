@@ -1,5 +1,5 @@
 {
-    "version": "0.3.1",
+    "version": "0.3.2",
     "schema_version": "1.0",
     "api": {
         "host": "0.0.0.0",
@@ -76,6 +76,11 @@
         "flag_after_consecutive_failures": 5,
         "quarantine_hours": 24,
         "recent_events_kept": 10
+    },
+    "diagnostics": {
+        "poll_log_enabled": true,
+        "poll_log_retention_days": 30,
+        "timeout_warn_ratio": 0.7
     },
     "stall_watchdog": {
         "enabled": true,

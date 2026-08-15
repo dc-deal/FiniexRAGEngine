@@ -184,7 +184,8 @@ def create_app(attach_runners: Optional[bool] = None,
     if live_mode and supervisor is not None and engine_stats is not None:
         live_display = LiveDisplay(engine_stats, budget_guard=budget_guard,
                                    stall_watchdog=stall_watchdog,
-                                   worker_count=len(supervisor.states()))
+                                   worker_count=len(supervisor.states()),
+                                   version=config_manager.get_config().version)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:

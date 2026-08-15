@@ -36,7 +36,7 @@ One row **per worker**: SOURCES/INGEST per source-set, RETRIEVAL/LLM per pipelin
 and M eval workers run concurrently, so a single row per stage would let them clobber each other.
 
 ```
-┌─ FiniexRAGEngine — up 2h14m — 4 workers — $0.031 today ────────────────────────┐
+┌─ FiniexRAGEngine v0.3.2 — up 2h14m — 4 workers — $0.031 today ─────────────────┐
 │ SOURCES    crypto_news             last 4s    5/5 ok                           │
 │            forex_news              last 3s    6/7 ok   boe_news overdue 38m     │
 │ INGEST     crypto_news             last 4s    128 fetched · 119 new · …         │
@@ -58,6 +58,10 @@ and M eval workers run concurrently, so a single row per stage would let them cl
 
 Notes on the rows:
 
+- **The header names the running build** (`v0.3.2`, from `app_config.version`). Without it "did the
+  deploy actually land?" is answered by inference — commit timestamps against process uptime, or
+  spotting a changed word in a report footer, which is how it had to be answered on 2026-08-15.
+  Omitted when no config is wired (CLI and test paths render `FiniexRAGEngine — up …`).
 - **LLM `→ SYMBOL:signal`, merged by asset** (ISSUE_70) — one signal per symbol, but symbols fanned
   from *one* analysis (same query → same LLM call) merge into a single chip: `ETH·USD/EUR:HOLD` for
   ETHUSD+ETHEUR. The summary shows `N sym / M calls` when grouping shrank the call count below the

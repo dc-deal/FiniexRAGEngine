@@ -1,0 +1,185 @@
+# Diagnostics — answering questions about the running engine
+
+Indexed by **question**, not by subsystem. When something looks wrong, the entry here names the
+instrument that answers it and how to read the answer — so an investigation reads a measurement
+instead of reasoning from indirect evidence.
+
+The other docs describe how the engine is *built*; this one describes how to *interrogate* it.
+For raw SQL access and the corpus-side queries, see [database inspection](database_inspection.md).
+
+Every instrument below is free (no API spend) and reads the store. None of them needs the engine
+to be stopped.
+
+---
+
+## Is a feed slow, or is it dead?
+
+```bash
+python -m finiexragengine.cli.sources_cli --since 7d
+```
+
+The **latency** section keeps successful and failed polls apart on purpose — averaging them
+together would drag `p99` to the timeout value and make a fast feed look like it is failing.
+
+```
+latency (last 7d) — successful polls; failures kept separate
+----------------------------------------------------------------------------------------
+source               polls     p50     p95     p99     max  fails   fail p50  why
+----------------------------------------------------------------------------------------
+cryptonews           14021    0.4s    1.1s    2.3s    9.8s      0          —
+ecb_press            11455    0.5s    1.2s    1.8s    2.1s     16      10.0s  timeout
+cryptoslate              5       —       —       —       —      5       0.1s  refused
+----------------------------------------------------------------------------------------
+```
+
+Read the **`why`** column first — it is the answer:
+
+- **`timeout`** — the failures burned the full deadline. The feed accepted the connection and then
+  went quiet. A longer `timeout_seconds` might have worked; this is the feed to consider raising.
+- **`refused`** — the failures returned in milliseconds. The feed said no (403, DNS, connection
+  refused). A longer timeout would change nothing; the problem is the feed or the credential.
+- **`⚠`** — `p99` sits within `diagnostics.timeout_warn_ratio` of the configured deadline. Nothing
+  has failed yet, but there is no headroom left for a slow day.
+
+Note what the two columns say together: `ecb_press` above has a **fast p99 (1.8s)** and failures
+that sat at **10.0s**. Those are not the same feed being slow — that is a feed that is normally
+quick and occasionally stops answering entirely. A raised timeout would only make the outage
+longer, not fix it.
+
+The deadline each feed is judged against is its own `timeout_seconds` if set, otherwise its set's
+`fetch_timeout_seconds` (`configs/source_sets/*.json`).
+
+## What did an outage actually cost?
+
+The **poll gaps** section of the same command. A gap in a feed's poll series *is* an outage, and
+it is measured against that feed's **own** cadence — so a feed polled every 40s and one polled
+every 10 minutes are both judged by their own normal.
+
+```
+poll gaps (last 7d) — outages measured against each feed's own cadence
+----------------------------------------------------------------------------------------
+source             cadence   gaps    longest   polls missed
+----------------------------------------------------------------------------------------
+ecb_press              40s      1     23h58m           2014
+----------------------------------------------------------------------------------------
+```
+
+`polls missed` is the price in the unit that matters. It is what turns *"quarantined for 24h after
+3m42s of failure"* into a number you can weigh against `source_health.quarantine_hours`.
+
+Because it reads gaps rather than quarantine records, it also catches a feed that stopped being
+polled for reasons that have nothing to do with quarantine — a dead worker, a config change, a
+raised poll floor.
+
+## Why is a pipeline `partial` instead of `success`?
+
+`partial` means the analysis ran but not every configured source was reachable — the engine
+preferred a degraded answer over no answer (the envelope contract). The count is in the envelope:
+
+```sql
+SELECT pipeline_id, status,
+       (envelope->'metadata'->>'sources_configured')::int AS configured,
+       (envelope->'metadata'->>'sources_reached')::int    AS reached,
+       count(*)
+FROM outcomes WHERE ts > now() - interval '2 days'
+GROUP BY 1,2,3,4 ORDER BY 1,2;
+```
+
+`reached < configured` names the degradation; `sources_cli` then names *which* feed and why.
+
+Worth knowing for consumers: a quarantined feed marks every envelope of its pipeline `partial` for
+as long as the quarantine lasts. A downstream filter on `status = 'success'` would silently drop
+those signals even though the analysis itself was sound.
+
+## Where did the time go in a pass?
+
+```bash
+python -m finiexragengine.cli.perf_cli --since 7d
+```
+
+Per-section API latency (avg / p95 / max / summed) from the billing log — the *paid* calls. Its
+unpaid twin is the latency section above: `perf_cli` covers OpenAI, `sources_cli` covers the feeds.
+
+## Did we lose articles?
+
+Three separate questions, three instruments:
+
+- **Never fetched** — a gap in `sources_cli`'s poll-gap section: nobody asked the feed.
+- **Fetched but not stored** — the ingest pass line (`fetched N · embedded N · stored N`); a
+  `rejected` count means the embedding provider refused an article outright.
+- **Stored but trimmed** — the per-article token columns (ISSUE_79):
+
+```sql
+SELECT source_id, count(*) AS articles,
+       round(avg(embed_input_tokens))                               AS avg_tok,
+       max(embed_input_tokens + coalesce(embed_truncated_tokens,0)) AS longest_original,
+       count(embed_truncated_tokens)                                AS truncated
+FROM articles WHERE embed_input_tokens IS NOT NULL
+GROUP BY source_id ORDER BY longest_original DESC;
+```
+
+## Is the engine still working at all?
+
+The stall watchdog (ISSUE_75) answers this without being asked: no completed pass within
+`max(factor × cadence, floor_minutes)` and it logs, alerts on Telegram and turns the worker's
+dashboard row red. On 2026-08-01 the engine stood still for nine days and nothing said so; that
+is the gap it closes.
+
+To check by hand, the newest poll in the journal is the engine's pulse:
+
+```sql
+SELECT source_id, max(ts) AS last_poll FROM source_poll_log GROUP BY source_id ORDER BY 2;
+```
+
+## How fast did the engine really react to breaking news?
+
+```bash
+python -m finiexragengine.cli.breaking_cli --since 7d
+```
+
+**Read this number with care.** `engine react` is `envelope timestamp − the freshest *retrieved*
+source`, which is a proxy for the trigger, not the trigger itself: the envelope does not record
+which of its sources carried the breaking flag. Since ISSUE_81 it anchors on the freshest source
+rather than the oldest (the old anchor measured the 24h retrieval window instead of any reaction),
+but the proxy remains.
+
+The ingest half of the chain is exact and can be read directly:
+
+```sql
+SELECT source_id, count(*) AS flagged,
+       round(avg(EXTRACT(EPOCH FROM (flagged_at - fetched_at))))      AS flag_lag_s,
+       round(avg(EXTRACT(EPOCH FROM (fetched_at - published_at)))/60) AS fetch_lag_min
+FROM articles WHERE breaking_candidate AND flagged_at > now() - interval '3 days'
+GROUP BY source_id ORDER BY flagged DESC;
+```
+
+Measured 2026-08-15: `fetch_lag` 1–6 min, `flag_lag` 2–7 **seconds** — so publication to flag takes
+minutes, while the report showed a 107-minute median. That gap is the proxy, not the engine.
+
+## Reference — the diagnostic stores
+
+| Store | Holds | Lifetime |
+|---|---|---|
+| `source_health` | one rolling row per feed: counters, flag/quarantine, last errors | forever |
+| `source_poll_log` | one row per poll attempt: duration, outcome, error type | `diagnostics.poll_log_retention_days` (30) |
+| `cost_log` | one row per paid API call: tokens, USD, duration | forever (billing) |
+| `outcomes` | every produced envelope | forever |
+| `articles` | the corpus + embed token counts + breaking flags | forever |
+
+`source_health` and `source_poll_log` are deliberately separate: health answers **"may we poll this
+feed"** on the hot path and must be correct, so it raises on failure; the journal answers **"how has
+it been behaving"** and is allowed to lose a row rather than fail a pass.
+
+## Config
+
+```json
+"diagnostics": {
+    "poll_log_enabled": true,
+    "poll_log_retention_days": 30,
+    "timeout_warn_ratio": 0.7
+}
+```
+
+At the current cadence the journal writes ~26k rows/day (~60–70 MB at 30 days) and prunes itself
+once per UTC day. `poll_log_enabled: false` switches it off entirely; the reports then say so
+rather than showing an empty table.

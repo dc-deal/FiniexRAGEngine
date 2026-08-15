@@ -1,21 +1,12 @@
 """CLI entry point: breaking-detection report (ISSUE_11) — reaction time + the flagged→confirmed funnel."""
 import argparse
 import os
-from datetime import datetime, timedelta, timezone
-from typing import Tuple
 
 from finiexragengine.core.observability.reports.breaking_report import (
     build_breaking_report,
     format_breaking_report,
 )
-
-
-def _parse_since(value: str) -> Tuple[datetime, str]:
-    """'7d' / '30d' / '14' -> (since_datetime, label); 'all' -> from the epoch."""
-    if value == 'all':
-        return datetime(1970, 1, 1, tzinfo=timezone.utc), 'all-time'
-    days = int(value[:-1] if value.endswith('d') else value)
-    return datetime.now(timezone.utc) - timedelta(days=days), f'{days}d'
+from finiexragengine.utils.report_window import parse_since
 
 
 def main() -> None:
@@ -28,7 +19,7 @@ def main() -> None:
     if not database_url:
         parser.error('DATABASE_URL is not set (point it at the pgvector Postgres)')
 
-    since, label = _parse_since(args.since)
+    since, label = parse_since(args.since)
     report = build_breaking_report(database_url, since, since_label=label)
     print(format_breaking_report(report))
 
