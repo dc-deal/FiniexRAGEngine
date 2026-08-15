@@ -99,10 +99,15 @@ class LiveDisplay:
                  budget_guard: Optional[BudgetGuard] = None,
                  stall_watchdog: Optional[StallWatchdog] = None,
                  worker_count: int = 0,
+                 version: str = '',
                  refresh_seconds: float = 1.0,
                  console: Optional[Console] = None) -> None:
         self._stats = stats
         self._budget_guard = budget_guard
+        # The running build, shown in the header. A live console that does not say which version it
+        # is showing makes "did the deploy land?" a guess — and this session had to answer exactly
+        # that question from commit timestamps. Empty = omit the segment (CLI/test paths).
+        self._version = version
         # Optional (ISSUE_75): asked each frame which workers are stalled, so a silent stage turns
         # red instead of ageing quietly. None = no stall rendering (CLI/test paths).
         self._stall_watchdog = stall_watchdog
@@ -167,7 +172,8 @@ class LiveDisplay:
     def _header(self, now: datetime) -> str:
         uptime = _format_age((now - self._started_at).total_seconds())
         spend = self._budget_status().get('day_spend_usd', 0.0) if self._budget_guard else 0.0
-        return (f'FiniexRAGEngine — up {uptime} — {self._worker_count} workers '
+        version = f' v{self._version}' if self._version else ''
+        return (f'FiniexRAGEngine{version} — up {uptime} — {self._worker_count} workers '
                 f'— ${spend:.3f} today')
 
     def _stage_rows(self, now: datetime) -> Table:

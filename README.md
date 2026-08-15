@@ -4,7 +4,7 @@
 
 **A configurable RAG engine that turns unstructured sources into typed trading signals.**
 
-> **Status:** Alpha · `v0.3.1-alpha` · a **live-capable, cost-safe signal producer** —
+> **Status:** Alpha · `v0.3.2-alpha` · a **live-capable, cost-safe signal producer** —
 > background ingest/eval workers on independent cadences over one shared corpus
 > (`--workers`), a hard budget circuit-breaker, an output-consistency guard, and a weekly
 > Telegram report make an *unattended* run safe. `GET /latest` serves the persisted outcome
