@@ -3,6 +3,7 @@
 Pure logic: fake source/store/embedder, so no DB and no API budget are touched.
 """
 from datetime import datetime, timezone
+from time import sleep
 from typing import List, Optional
 
 from finiexragengine.core.pipeline.ingestor import Ingestor
@@ -13,7 +14,7 @@ from finiexragengine.exceptions.ragengine_errors import BudgetExceededError, Sou
 from finiexragengine.types.article_types import Article, ScoredArticle
 from finiexragengine.types.config_types.source_set_types import SourceConfig
 from finiexragengine.types.embedding_types import EmbedResult
-from finiexragengine.types.ingest_types import HealthOutcome
+from finiexragengine.types.ingest_types import HealthOutcome, PollSample
 
 _NOW = datetime.now(timezone.utc)
 
@@ -278,3 +279,87 @@ def test_an_untouched_article_records_no_truncation():
     Ingestor([_FakeSource('s1', [article])], _CountingEmbedder(), _FakeStore()).run()
     assert article.embed_truncated_tokens is None        # NULL in the corpus = nothing was cut
     assert article.embed_input_tokens is not None        # but the count is still recorded
+
+
+# --- ISSUE_76: the poll journal, and the failure path that used to leave no trace ------------
+
+
+class _RecordingJournal:
+    """Stands in for SourcePollLog — captures the samples the pass produced."""
+
+    def __init__(self) -> None:
+        self.samples: List[PollSample] = []
+
+    def record(self, sample: PollSample) -> None:
+        self.samples.append(sample)
+
+
+class _SlowFailingSource(_FakeSource):
+    """Fails only after burning wall-clock — the shape of a fetch that ran out of time."""
+
+    def __init__(self, source_id: str, stall_seconds: float, *, error_type: str = 'UNREACHABLE',
+                 status: Optional[int] = None) -> None:
+        super().__init__(source_id, fail=True)
+        self._stall = stall_seconds
+        self._error_type = error_type
+        self._status = status
+
+    def fetch(self) -> List[Article]:
+        sleep(self._stall)
+        raise SourceFetchError(f'{self.get_source_id()}: cannot fetch feed',
+                               error_type=self._error_type, status=self._status)
+
+
+def test_a_failed_fetch_is_journaled_with_the_time_it_burned():
+    """The regression ISSUE_76 exists for.
+
+    `StageTimer.time()` keeps nothing for a stage that raises, so a fetch that ran out of time —
+    the single most informative poll a feed can produce — left no record at all. On 2026-08-15
+    that is precisely why "was ecb_press slow or dead?" was unanswerable. The duration must
+    survive the exception, or the whole latency report has nothing to read.
+    """
+    journal = _RecordingJournal()
+    source = _SlowFailingSource('ecb_press', 0.05, error_type='UNREACHABLE')
+    result = Ingestor([source], _CountingEmbedder(), _FakeStore(),
+                      source_set_id='forex_news', poll_log=journal).run()
+
+    assert result.polls[0].status == 'failed'
+    sample = journal.samples[0]
+    assert sample.source_id == 'ecb_press' and sample.source_set == 'forex_news'
+    assert sample.outcome == 'failed' and sample.error_type == 'UNREACHABLE'
+    assert sample.duration_ms >= 50.0             # it burned real time and we kept the number
+    assert sample.articles == 0
+
+    # ...and the pass's own stage timings keep it too, which `timer.time` could not do.
+    fetch_timings = [t for t in result.stage_timings if t.stage == 'fetch']
+    assert len(fetch_timings) == 1 and fetch_timings[0].duration_ms >= 50.0
+
+
+def test_a_successful_fetch_is_journaled_with_its_article_count():
+    journal = _RecordingJournal()
+    source = _FakeSource('coindesk', [_article('a1'), _article('a2')])
+    Ingestor([source], _CountingEmbedder(), _FakeStore(),
+             source_set_id='crypto_news', poll_log=journal).run()
+
+    sample = journal.samples[0]
+    assert sample.outcome == 'ok' and sample.articles == 2
+    assert sample.error_type is None and sample.duration_ms >= 0.0
+
+
+def test_skips_are_never_journaled():
+    """A floor-skip or a quarantine skip never reached the feed — there is nothing to time.
+
+    Their signal lives in the *gaps* between journal rows instead, which also catches worker
+    death and config changes. Logging them at the worker's 15s tick would add ~70k rows a day.
+    """
+    journal = _RecordingJournal()
+    Ingestor([_FakeSource('coindesk', [_article('a1')], due=False)],
+             _CountingEmbedder(), _FakeStore(), poll_log=journal).run()
+    assert journal.samples == []
+
+
+def test_the_pass_runs_unchanged_without_a_journal():
+    """Journaling is optional wiring (CLI ingest, tests, the config kill switch)."""
+    source = _FakeSource('coindesk', [_article('a1')])
+    result = Ingestor([source], _CountingEmbedder(), _FakeStore()).run()
+    assert result.stored == 1 and result.polls[0].status == 'ok'

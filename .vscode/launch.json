@@ -211,10 +211,13 @@
             }
         },
         {
-            "name": "📊 RAGEngine: Source Health Report (feeds + problems)",
+            // Health (lifetime counters, flags/quarantine, problems) + the poll journal's
+            // latency and outage sections. --since scopes only the journal window.
+            "name": "📊 RAGEngine: Source Report (health + latency + outages)",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/finiexragengine/cli/sources_cli.py",
+            "args": ["--since", "7d"],
             "console": "integratedTerminal",
             "justMyCode": false,
             "presentation": {

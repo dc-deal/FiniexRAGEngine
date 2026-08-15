@@ -266,6 +266,14 @@ today, most load-bearing first:
   longer share a lock — cost is attributed per pass instead of by a session delta, so
   `metadata.cost_usd` stays exact without serialization — and each pass carries a wall-clock
   deadline so a worker recovers on its next tick rather than staying dead until a restart.
+- **Measures its own feeds (#76)**: every poll attempt is journaled with the time it took —
+  **including the ones that failed**, which is the half that used to be missing: a stage that
+  raises leaves no timing behind, so timed-out fetches were invisible. Keeping success and failure
+  latency apart answers the question that mattered when a central-bank feed went quiet mid-run —
+  a failure that burned the full deadline is a **slow** feed (raise it), one that returns in
+  milliseconds is a **dead** one (do not bother). Outages are read as gaps in a feed's poll series
+  against its own cadence, so the price of a 24-hour quarantine is stated in polls not made. See
+  [diagnostics.md](docs/development/diagnostics.md) — a runbook indexed by question, not subsystem.
 - **Survives a bad article too (#79)**: article text is fitted to the embedding model's token
   limit before it is sent (exact counting, trimmed on a token boundary, and the trim recorded per
   article next to the untouched original) — and if the provider rejects an input anyway, the batch

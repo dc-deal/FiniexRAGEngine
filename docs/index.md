@@ -39,6 +39,8 @@ you need.**
   config truth, the load-path factories, and the startup override report.
 - [Database inspection](development/database_inspection.md) — pgAdmin access and the
   diagnostic CLIs.
+- [Diagnostics](development/diagnostics.md) — indexed by *question*, not subsystem: is a feed
+  slow or dead, what did an outage cost, why is a pipeline `partial`, did we lose articles.
 - [Testing](testing.md) — the suite layout, the `paid` marker, and what each test file covers.
 
 ## Elsewhere

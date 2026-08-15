@@ -125,6 +125,29 @@ Top-down, each new article flows through these units in order:
    A process-wide `socket.setdefaulttimeout()` at server boot is the backstop under any *other*
    un-timeouted socket; the feed path does not depend on it.
 
+   **Measuring the deadline instead of guessing it (ISSUE_76).** The 10s above was hand-picked, and
+   for nine months there was nothing to judge it by — because a fetch that *fails* left no timing
+   behind. `StageTimer.time()` records only when the stage returns, so exactly the polls worth
+   studying vanished. When `ecb_press` timed out on 2026-08-15 the engine could not say whether the
+   feed had been slow (a longer deadline would have worked) or dead (it would not have).
+
+   The fetch is therefore timed by hand — `perf_counter()` **around** the `try`, so the duration
+   survives the exception — and every attempt is appended to the **poll journal**
+   (`source_poll_log`), the unpaid twin of `cost_log`:
+
+   ```
+   fetch attempt ─┬─ returns → PollSample(ok,     duration_ms, articles=N)
+                  └─ raises  → PollSample(failed, duration_ms, error_type)   ← the new half
+                        both → StageTimer.record('fetch', started, duration_ms)
+   ```
+
+   Skips (`quarantined`, `floor_skipped`) are deliberately **not** journaled — they never reached
+   the feed, and at the 15s tick they would add ~70k rows/day. An outage is read instead as a *gap*
+   in a feed's poll series against its own median cadence, which additionally catches a dead worker
+   or a config change. `sources_cli` renders both halves: latency percentiles with a
+   `timeout`-vs-`refused` verdict on the failures, and the gaps with the polls they cost. A journal
+   write never fails a pass — see [diagnostics.md](../../development/diagnostics.md).
+
    **A slow feed also no longer holds up anyone else (ISSUE_74).** Passes were once serialized by
    a single lock shared across all workers, so a fetch sitting out its full timeout stalled the
    eval workers too — and a fetch that never returned stalled them forever. They now run

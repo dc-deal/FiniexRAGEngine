@@ -10,10 +10,14 @@ from typing import Dict, List, Literal, Optional
 
 from finiexragengine.types.outcome_types import StageTiming
 
+# What the *poll itself* did — the only outcomes the journal records (ISSUE_76), because they are
+# the only ones with a duration to measure. `suspended` is deliberately absent: the fetch of a
+# suspended pass succeeded, and the quota stopped the embed stage one step later.
+PollOutcome = Literal['ok', 'failed']
 # What became of one source in one pass. `ok` and `suspended` were polled (they carry counters);
 # the rest never reached the feed — `failed` tried and could not, `quarantined` and `floor_skipped`
 # were deliberately not tried.
-PollStatus = Literal['ok', 'failed', 'quarantined', 'floor_skipped', 'suspended']
+PollStatus = Literal[PollOutcome, 'quarantined', 'floor_skipped', 'suspended']
 
 
 @dataclass
@@ -44,6 +48,27 @@ class SourcePoll:
     ingest: Optional[SourceIngest] = None   # the counters — only a source that was polled has them
     detail: str = ''                        # error message / skip reason, ready to display
     until: Optional[datetime] = None        # when a deferred source becomes pollable again
+
+
+@dataclass
+class PollSample:
+    """One attempted poll, as the diagnostic journal records it (ISSUE_76).
+
+    The sibling of a `cost_log` row for the *unpaid* calls: captured at the call, reported from
+    the store. `duration_ms` is the reason it exists — it is measured on the failure path too,
+    where `StageTimer` records nothing, so the polls most worth studying stop being invisible.
+
+    Distinct from `SourcePoll`, which is what a *surface* renders for one pass (counters, a
+    ready-to-display detail string). This is what a *time series* needs: narrow, comparable
+    fields with no rendering in them.
+    """
+    source_id: str
+    source_set: str
+    outcome: PollOutcome
+    duration_ms: float
+    error_type: Optional[str] = None    # RunError taxonomy on failure, None on success
+    status: Optional[int] = None        # HTTP status where the source knows one
+    articles: int = 0                   # articles the fetch returned (0 on a 304)
 
 
 @dataclass

@@ -8,6 +8,7 @@ from finiexragengine.core.llm.provider_factory import build_provider
 from finiexragengine.core.observability.budget_guard import BudgetGuard
 from finiexragengine.core.observability.cost_recorder import CostRecorder
 from finiexragengine.core.observability.source_health_store import SourceHealthStore
+from finiexragengine.core.observability.source_poll_log import SourcePollLog
 from finiexragengine.core.observability.source_reach import SourceReach
 from finiexragengine.core.outcome.outcome_store import OutcomeStore
 from finiexragengine.core.pipeline.breaking_detector import BreakingDetector
@@ -153,12 +154,20 @@ class PipelineAssembler:
         # Source health (ISSUE_11): every poll is recorded; a persistently failing feed is flagged
         # and quarantined. One store per ingestor (long-lived on the worker → in-memory quarantine).
         health_store = SourceHealthStore(self._database_url, self._cfg.source_health)
+        # Poll journal (ISSUE_76): the diagnostic twin of the health row — health answers "may we
+        # poll this feed", the journal answers "how did the last N thousand polls actually behave".
+        # Off by config leaves the ingestor journal-less rather than half-wired.
+        diagnostics = self._cfg.diagnostics
+        poll_log = (SourcePollLog(self._database_url,
+                                  retention_days=diagnostics.poll_log_retention_days)
+                    if diagnostics.poll_log_enabled else None)
         # A disabled source is never built, so it is never polled and produces no health event —
         # the same "defined but toggled off" semantics a disabled model variant has.
         return Ingestor([build_source(source, source_set.fetch_timeout_seconds)
                          for source in source_set.active_sources()],
                         news_embedder, store, breaking_detector=detector,
-                        health_store=health_store, source_set_id=source_set_id)
+                        health_store=health_store, source_set_id=source_set_id,
+                        poll_log=poll_log)
 
     def build_runner(self, config: PipelineConfig,
                      include_ingest: bool = True) -> PipelineRunner:

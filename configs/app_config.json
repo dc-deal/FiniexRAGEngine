@@ -77,6 +77,11 @@
         "quarantine_hours": 24,
         "recent_events_kept": 10
     },
+    "diagnostics": {
+        "poll_log_enabled": true,
+        "poll_log_retention_days": 30,
+        "timeout_warn_ratio": 0.7
+    },
     "stall_watchdog": {
         "enabled": true,
         "factor": 3,

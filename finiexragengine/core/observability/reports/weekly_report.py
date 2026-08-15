@@ -44,6 +44,11 @@ from finiexragengine.core.observability.reports.source_health_report import (
     build_source_health_report,
     format_source_health_report,
 )
+from finiexragengine.core.observability.reports.source_latency_report import (
+    SourceLatencyReport,
+    build_source_latency_report,
+    format_source_latency_report,
+)
 from finiexragengine.exceptions.ragengine_errors import VectorStoreError
 
 _WINDOW = timedelta(days=7)
@@ -87,6 +92,9 @@ class WeeklyReport:
     cost: CostReport
     perf: PerfReport
     sources: SourceHealthReport
+    # How the feeds behaved, not just whether they delivered (ISSUE_76): latency percentiles, the
+    # slow-vs-dead verdict on failures, and outages read as gaps in the poll series.
+    source_latency: SourceLatencyReport
     no_data: NoDataReport
     breaking: BreakingReport
     pipelines: List[PipelineStatusRow]
@@ -121,6 +129,10 @@ def collect_weekly_report(config_manager: AppConfigManager, database_url: str, *
                       for source in source_set.sources}
     disabled_ids = {source.source_id for source_set in source_sets.list_sets()
                     for source in source_set.sources if not source.enabled}
+    # The deadline each feed is judged against — its own override, else its set's default. The
+    # poll journal records what happened, never what was allowed, so the report is told (ISSUE_76).
+    timeouts = {source.source_id: source.timeout_seconds or source_set.fetch_timeout_seconds
+                for source_set in source_sets.list_sets() for source in source_set.sources}
 
     cadences = {pid: info.interval_seconds for pid, info in eval_pipelines.items()}
     pipelines, errors, storage, last_ingest = _collect_status(
@@ -133,6 +145,9 @@ def collect_weekly_report(config_manager: AppConfigManager, database_url: str, *
         perf=build_perf_report(database_url, since),
         sources=build_source_health_report(database_url, configured_ids,
                                            disabled_ids=disabled_ids),
+        source_latency=build_source_latency_report(
+            database_url, since, since_label='7d', timeouts=timeouts,
+            warn_ratio=cfg.diagnostics.timeout_warn_ratio),
         no_data=build_no_data_report(database_url, since),
         breaking=build_breaking_report(database_url, since),
         pipelines=pipelines, errors=errors, storage=storage, last_ingest_at=last_ingest)
@@ -251,6 +266,7 @@ def format_weekly_report(report: WeeklyReport) -> str:
         format_cost_report(report.cost),
         format_perf_report(report.perf),
         format_source_health_report(report.sources),
+        format_source_latency_report(report.source_latency),
         format_no_data_report(report.no_data),
         format_breaking_report(report.breaking),
         _format_storage(report, divider),

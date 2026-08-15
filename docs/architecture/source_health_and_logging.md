@@ -65,12 +65,44 @@ the first failure of a streak, **DEBUG** the repeats, **WARN once** on flag+quar
 recovery. `httpx`/`httpcore` are pinned to WARNING (they log every OpenAI call at INFO). The full
 detail always persists in `source_health` regardless of console level — the report reads it there.
 
+## The poll journal (`source_poll_log`, ISSUE_76)
+
+Health answers **"may we poll this feed"**. It cannot answer **"how has this feed been behaving"** —
+its row holds counters, not measurements. On 2026-08-15 `ecb_press` (58,227 polls, 99.97% success)
+hit TLS handshake timeouts and was quarantined for 24 h after 3 m 42 s of consecutive failure, and
+neither *"was it slow or dead?"* nor *"was that proportionate?"* could be answered from anything
+stored. `StageTimer` keeps nothing for a stage that raises, so the timed-out polls — the ones worth
+studying — left no trace at all.
+
+The journal is `cost_log`'s shape applied to the **unpaid** calls: one row per poll attempt with
+`ts · source_id · source_set · outcome · duration_ms · error_type · status · articles`, read back as
+a windowed aggregate with native `percentile_cont`. A raw journal rather than pre-aggregated
+buckets, because at ~26k rows/day it also answers the questions nobody has asked yet.
+
+Two design points carry the unit:
+
+- **The duration survives the exception.** `Ingestor` takes `perf_counter()` *around* the try, so a
+  failed fetch is measured like a successful one, and `StageTimer.record()` (the manual counterpart
+  to `time()`) keeps it in the pass's stage timings too.
+- **Skips are not journaled — absence is the signal.** A floor-skip or quarantine skip never reached
+  the feed and has nothing to time; at the worker's 15 s tick they would add ~70k rows/day of noise.
+  An outage is instead read as a **gap** in a feed's poll series, measured against that feed's own
+  median cadence — which also catches a dead worker, a config change or a raised poll floor.
+
+Unlike `source_health`, a journal write **never fails a pass**: every DB error is logged and
+swallowed. Diagnostics must not become a new cause of the outages they exist to explain. Retention
+is `diagnostics.poll_log_retention_days` (30), pruned by the writer once per UTC day.
+
 ## Reports & CLIs
 
 - **`sources_cli`** → the Sources report (shared pattern table): per-feed polls / success-rate /
   consecutive / last-ok / status, a capped **recent-problems** list, and an **orphan notice** for a
   `source_id` still in the store but no longer in any config (*may be deleted* — migration leaves old
-  heads in place, flagged). Read-only, free.
+  heads in place, flagged). Read-only, free. Since ISSUE_76 it also renders the journal's two
+  sections: **latency** (p50/p95/p99/max over successful polls, failures kept separate with a
+  `timeout` vs `refused` verdict and a ⚠ when p99 nears the configured deadline) and **poll gaps**
+  (outages per feed with the polls they cost). `--since` scopes the journal window; the health rows
+  stay lifetime. See [diagnostics.md](../development/diagnostics.md) for how to read them.
 - **`feed_doctor_cli`** → raw output + parse diagnosis per feed (HTTP status, bytes, entries, verdict,
   and on `PARSE_ERROR` a byte scan for the offending token). Touches the feeds' network (that is the
   diagnosis) but never the LLM/embeddings — no spend.
@@ -87,5 +119,5 @@ survives the scrollback and stays grep-able the morning after. Re-configuration 
 idempotent — our handlers are tagged and replaced, never stacked. Size-based rotation is available via
 `logging.rotation = "size"` + `max_bytes`. Level is the shared `log_level`.
 
-Config lives in `app_config.json` (`logging`, `source_health` blocks) and mirrors the Pydantic
-defaults exactly.
+Config lives in `app_config.json` (`logging`, `source_health`, `diagnostics` blocks) and mirrors the
+Pydantic defaults exactly.

@@ -154,6 +154,27 @@ class StallWatchdogConfig(BaseModel):
     check_interval_seconds: int = 60      # how often the watchdog looks; cheap, in-memory only
 
 
+class DiagnosticsConfig(BaseModel):
+    """Self-observation the engine keeps for its own sake (ISSUE_76).
+
+    Not metrics for a report someone reads weekly — the record that makes a *later* investigation
+    read an instrument instead of guessing. ISSUE_73 shipped a hand-picked 10s fetch timeout with
+    nothing to judge it by; when ecb_press timed out on 2026-08-15 the engine could not say whether
+    the feed had been slow or dead, because a failed fetch left no trace of how long it took.
+
+    The poll journal (`source_poll_log`) is the answer, and it is cheap: ~26k rows/day at the
+    current cadence, ~60-70 MB at the default retention, one INSERT next to the `source_health`
+    UPSERT already made per poll. `poll_log_enabled` is the kill switch all the same — diagnostics
+    are worth paying for, not worth being unable to switch off.
+    """
+    poll_log_enabled: bool = True
+    poll_log_retention_days: int = 30    # pruned once per UTC day by the writer
+    # A feed whose p99 sits within this fraction of its timeout is flagged for review: it is not
+    # failing yet, but it is close enough that a slow day would make it fail. 0.7 = warn from 7s
+    # against the 10s default, which leaves room to react before the quarantine does it for us.
+    timeout_warn_ratio: float = 0.7
+
+
 class TelegramConfig(BaseModel):
     """Telegram delivery channel (ISSUE_27) — the operator's alert surface.
 
@@ -220,6 +241,7 @@ class AppConfig(BaseModel):
     # damage rather than undoing it; ISSUE_73 removed the known cause of such a hang.
     pass_timeout_seconds: int = 300
     source_health: SourceHealthConfig = Field(default_factory=SourceHealthConfig)
+    diagnostics: DiagnosticsConfig = Field(default_factory=DiagnosticsConfig)
     stall_watchdog: StallWatchdogConfig = Field(default_factory=StallWatchdogConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     weekly_report: WeeklyReportConfig = Field(default_factory=WeeklyReportConfig)

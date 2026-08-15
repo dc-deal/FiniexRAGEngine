@@ -12,6 +12,7 @@ from finiexragengine.core.observability.reports.cost_report import CostReport
 from finiexragengine.core.observability.reports.no_data_report import NoDataReport
 from finiexragengine.core.observability.reports.perf_report import PerfReport
 from finiexragengine.core.observability.reports.source_health_report import SourceHealthReport
+from finiexragengine.core.observability.reports.source_latency_report import SourceLatencyReport
 from finiexragengine.core.observability.reports.weekly_report import (
     ErrorTypeCount,
     PipelineStatusRow,
@@ -39,6 +40,7 @@ def _model(pipelines=(), errors=(), last_ingest=None) -> WeeklyReport:
         cost=CostReport(real=[], prediction=None, spent_all_usd=0.0),
         perf=PerfReport('7d', [], 0),
         sources=SourceHealthReport([], []),
+        source_latency=SourceLatencyReport('7d', [], []),
         no_data=NoDataReport('7d', [], 0),
         breaking=BreakingReport('7d', [], 0, 0),
         pipelines=list(pipelines), errors=list(errors),
@@ -51,8 +53,8 @@ def test_format_stitches_all_sections_under_one_header():
     assert 'FiniexRAGEngine — Weekly Report' in text
     assert 'window: 2026-07-13 → 2026-07-20 (UTC)' in text
     # Every section surfaces exactly once — reused formatters + the weekly-specific two.
-    for title in ('Cost', 'Performance', 'Source', 'Retrieval Coverage',
-                  'Breaking Detection', 'Storage', 'Status'):
+    for title in ('Cost', 'Performance', 'Source', 'latency (last', 'poll gaps (last',
+                  'Retrieval Coverage', 'Breaking Detection', 'Storage', 'Status'):
         assert title in text, title
 
 
