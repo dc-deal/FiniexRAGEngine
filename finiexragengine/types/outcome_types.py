@@ -161,6 +161,14 @@ class AnalysisEnvelope(BaseModel, Generic[T]):
     schema_version: str = '1.0'
     pipeline_id: str
     outcome_type: str
+    # Where the data came from. The engine always produces 'live'; the mock generator stamps
+    # 'synthetic'. A naming convention alone could not carry this: the Testing IDE found a
+    # generated week and a real week with byte-identical provenance, because the generator mirrors
+    # `prompt_hash` on purpose (the prompt really is the same one) and only the date told them
+    # apart — an unwritten rule no tool checks. The origin is a property of the data, so it travels
+    # with the data. Default 'live' keeps pre-change archived envelopes parseable; a consumer reads
+    # an absent field as "unknown, produced before this existed".
+    data_origin: Literal['live', 'synthetic'] = 'live'
     # Prompt provenance (ISSUE_33): `prompt_id` + `prompt_version` name the prompt series;
     # `prompt_hash` fingerprints the template body so a silent edit is visible downstream.
     # Populated from PromptMetadata when the envelope is assembled (ISSUE_7); default '' keeps

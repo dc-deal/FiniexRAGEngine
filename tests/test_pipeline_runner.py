@@ -4,6 +4,7 @@ Fakes sit at the runner's injection seam (Ingestor / SymbolEvaluator), so these 
 exercise orchestration + assembly only: every-symbol-present, partial-over-error, the
 RunError taxonomy, metric capture and the prompt fingerprint (ISSUE_33).
 """
+import json
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import List
@@ -36,6 +37,8 @@ from finiexragengine.types.llm_types import LlmUsage
 from finiexragengine.types.outcome_types import (
     ArticleRef,
     RetrievalFunnel,
+    RunMetadata,
+    SentimentEnvelope,
     SentimentResult,
     StageTiming,
 )
@@ -524,3 +527,28 @@ def test_format_envelope_run_renders_table_and_footer():
     assert 'sentiment-crypto@v1 #cafe12345678' in text
     assert 'BTCUSD' in text
     assert '--- run metrics ---' in text              # the shared pattern footer
+
+
+def test_every_engine_envelope_declares_itself_live():
+    """Provenance the Testing IDE could not read off the data before (mock/real handoff).
+
+    A generated week and a real week carried byte-identical provenance — the generator mirrors
+    `prompt_hash` on purpose, so only the date told them apart. `data_origin` makes the fact a
+    property of the data instead of a naming convention a later import can bypass. The engine
+    never sets it explicitly; the default is what guarantees no envelope can escape unstamped.
+    """
+    envelope = SentimentEnvelope(
+        pipeline_id='crypto_sentiment', outcome_type='sentiment_fear_greed',
+        prompt_version='2', timestamp=datetime.now(timezone.utc), status='success',
+        metadata=RunMetadata(model='gpt-4o-mini'))
+    assert envelope.data_origin == 'live'
+    assert json.loads(envelope.model_dump_json())['data_origin'] == 'live'
+
+
+def test_a_pre_change_envelope_still_parses_as_live():
+    """Archived envelopes from before the field existed must stay readable, not become errors."""
+    old = {'schema_version': '1.0', 'pipeline_id': 'crypto_sentiment',
+           'outcome_type': 'sentiment_fear_greed', 'prompt_version': '2',
+           'timestamp': '2026-08-14T00:00:15.440452Z', 'status': 'success',
+           'result': [], 'metadata': {'model': 'gpt-4o-mini'}}
+    assert SentimentEnvelope(**old).data_origin == 'live'

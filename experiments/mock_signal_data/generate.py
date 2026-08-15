@@ -7,7 +7,12 @@ change. Each JSONL line = one AnalysisEnvelope per ~10-min snapshot, plus a top-
 (nearest snapshot with `collected_msc <= tick.collected_msc`; no look-ahead).
 
 The default window sits inside the IDE's kraken_spot tick coverage so a backtest binds. Use
-`--pipeline-id` to stamp a non-crypto batch (e.g. a forex mock) with its own data-source id.
+`--pipeline-id` to stamp a non-crypto batch (e.g. a forex mock) with its own data-source id, and
+`--prompt` to declare which real prompt it mocks.
+
+Every envelope carries `data_origin: 'synthetic'` and the pipeline id defaults to
+`crypto_sentiment_mock`: the IDE found a generated week and a real week with byte-identical
+provenance, distinguishable only by date. The origin is now a property of the data.
 
 Variant fan-out (ISSUE_42): `--variants` renders one constellation through N mock models as
 separate streams — format A, as confirmed by the IDE: the first (default) variant keeps the
@@ -31,6 +36,9 @@ Run from the repo root:
         --variants "mini=gpt-4o-mini,4o_enhanced=gpt-4o" --out data/mock_signals/variant_week
     python experiments/mock_signal_data/generate.py --cycles 1008 --rotate daily \
         --out data/mock_signals/rotated_week
+    python experiments/mock_signal_data/generate.py --cycles 1008 --rotate daily \
+        --prompt forex --pipeline-id forex_macro_sentiment_mock --symbols EURUSD,GBPUSD \
+        --out data/mock_signals/forex_mock_week
 """
 import argparse
 import json
@@ -65,14 +73,27 @@ NAME = {
     'XRPUSD': 'XRP', 'DASHUSD': 'Dash', 'LTCUSD': 'Litecoin', 'ETHEUR': 'Ethereum (EUR)',
     'EURUSD': 'Euro', 'GBPUSD': 'British Pound', 'USDJPY': 'Japanese Yen',
 }
-DEFAULT_PIPELINE_ID = 'crypto_sentiment'
+# The `_mock` suffix is load-bearing, not cosmetic: generated output must never land in the same
+# stream directory as the engine's. The Testing IDE imported a generated week and a real week and
+# found byte-identical provenance — only the date told them apart. `--pipeline-id` still overrides.
+DEFAULT_PIPELINE_ID = 'crypto_sentiment_mock'
 OUTCOME_TYPE = 'sentiment_fear_greed'
 SCHEMA_VERSION = '1.0'
+# Everything this generator emits is synthetic — stamped on every envelope so the fact travels
+# with the data instead of living in a naming convention a later import can bypass.
+DATA_ORIGIN = 'synthetic'
 # Prompt provenance (ISSUE_33) — identical across variants by design: the anchor that
-# attributes any score difference to the model. Mirrors prompts/sentiment_v2.md.
-PROMPT_ID = 'sentiment-crypto'
-PROMPT_VERSION = '2'
-PROMPT_HASH = '1c86eac137d8'
+# attributes any score difference to the model. The hashes deliberately MIRROR the real prompts:
+# a mock of the crypto pipeline really is mocking that prompt, so claiming a different hash would
+# make the fixture less faithful for no gain. `data_origin` carries the "this is synthetic" fact
+# instead — one field per fact.
+# Keyed so a forex mock declares the forex prompt: a `--pipeline-id forex_…` batch stamped with
+# `sentiment-crypto` was claiming provenance it does not have.
+PROMPTS = {
+    'crypto': ('sentiment-crypto', '2', '1c86eac137d8'),
+    'forex': ('sentiment-forex', '1', 'f6e09cf6a1b4'),
+}
+DEFAULT_PROMPT = 'crypto'
 INTERVAL = timedelta(minutes=10)
 # Default start: inside the IDE's tick coverage; 1008 cycles = 7 days, 4032 = 28 days.
 DEFAULT_START = '2026-04-27T00:00:00Z'
@@ -142,14 +163,16 @@ def _timings(start: datetime, llm_ms: float):
     return timings, sum(durations.values())
 
 
-def _make_envelope(pipeline_id, status, timestamp, results, metadata, errors):
+def _make_envelope(pipeline_id, status, timestamp, results, metadata, errors, prompt):
+    prompt_id, prompt_version, prompt_hash = prompt
     return AnalysisEnvelope[SentimentResult](
         schema_version=SCHEMA_VERSION,
         pipeline_id=pipeline_id,
         outcome_type=OUTCOME_TYPE,
-        prompt_version=PROMPT_VERSION,
-        prompt_id=PROMPT_ID,
-        prompt_hash=PROMPT_HASH,
+        data_origin=DATA_ORIGIN,
+        prompt_version=prompt_version,
+        prompt_id=prompt_id,
+        prompt_hash=prompt_hash,
         timestamp=timestamp,
         status=status,
         result=results,
@@ -186,7 +209,7 @@ def _cycle_facts(rng, scores, symbols, i, short, no_news_by_cycle, partial_cycle
     }
 
 
-def _render_variant(variant: _Variant, facts: dict, symbols, collected_at, force_error):
+def _render_variant(variant: _Variant, facts: dict, symbols, collected_at, force_error, prompt):
     """One variant's envelope for one cycle — the model-side reading of the shared facts."""
     rng = variant.rng
     analysis_at = collected_at - timedelta(seconds=2)
@@ -202,7 +225,8 @@ def _render_variant(variant: _Variant, facts: dict, symbols, collected_at, force
         )
         errors = [RunError(type='LLM_TIMEOUT', message='LLM did not respond within 30s',
                            timestamp=analysis_at)]
-        return _make_envelope(variant.stream_id, 'error', analysis_at, [], metadata, errors)
+        return _make_envelope(variant.stream_id, 'error', analysis_at, [], metadata, errors,
+                              prompt)
 
     timings, total_ms = _timings(analysis_at, LLM_BASE_MS.get(model, 900.0) * rng.uniform(0.85, 1.25))
     price_in, price_out = PRICE_PER_1M.get(model, PRICE_PER_1M['gpt-4o-mini'])
@@ -262,7 +286,7 @@ def _render_variant(variant: _Variant, facts: dict, symbols, collected_at, force
         variant_group=variant.group or None, variant=variant.sub_id or None,
     )
     return _make_envelope(variant.stream_id, 'partial' if facts['partial'] else 'success',
-                          analysis_at, results, metadata, errors)
+                          analysis_at, results, metadata, errors, prompt)
 
 
 def _parse_variants(spec: str):
@@ -281,6 +305,9 @@ def main() -> None:
     parser.add_argument('--cycles', type=int, default=5)
     parser.add_argument('--start', default=DEFAULT_START, help='ISO8601 UTC start')
     parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument('--prompt', choices=sorted(PROMPTS), default=DEFAULT_PROMPT,
+                        help='which real prompt this batch mocks — a forex mock stamped with the '
+                             'crypto prompt claims provenance it does not have')
     parser.add_argument('--symbols', default=','.join(DEFAULT_SYMBOLS))
     parser.add_argument('--pipeline-id', default=DEFAULT_PIPELINE_ID,
                         help='stamps envelope.pipeline_id (IDE data-source id, #429)')
@@ -314,6 +341,11 @@ def main() -> None:
         partial_cycles = {12}
         breaking_by_cycle = {18: 'BTCUSD' if 'BTCUSD' in symbols else symbols[0]}
         no_news_p = 0.05
+
+    # Which real prompt this batch mocks — stamped on every envelope. Chosen explicitly rather
+    # than inferred from the pipeline id: a `--pipeline-id` is free text, and guessing the prompt
+    # from a substring would be a silent wrong answer for any id that does not match the guess.
+    prompt = PROMPTS[args.prompt]
 
     # Build the variant list. Without --variants: one anonymous default = today's
     # single-stream behavior (no hints). With it: format A — default keeps the bare id.
@@ -374,7 +406,8 @@ def main() -> None:
                              partial_cycles, breaking_by_cycle, no_news_p)
         for variant in variants:
             force_error = i in variant.error_cycles or (not short and variant.rng.random() < 0.008)
-            envelope = _render_variant(variant, facts, symbols, collected_at, force_error)
+            envelope = _render_variant(variant, facts, symbols, collected_at, force_error,
+                                       prompt)
             line = {'collected_msc': int(collected_at.timestamp() * 1000),
                     **json.loads(envelope.model_dump_json())}
             _sink(variant.stream_id, collected_at).write(json.dumps(line) + '\n')

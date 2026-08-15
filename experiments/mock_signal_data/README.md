@@ -6,6 +6,27 @@ The sample was validated by the IDE as contract-conformant.
 
 **Not for correctness** — plausible, schema-valid mock data only. The format may still change.
 
+## Telling it apart from real data
+
+The IDE imported a generated week and a real week and found **byte-identical provenance**: same
+`pipeline_id`, same `prompt_id`/`prompt_version`/`prompt_hash`. Only the date distinguished them —
+an unwritten rule no tool checks. Two things fix that, and both are on by default:
+
+- **`data_origin: "synthetic"`** on every envelope. The engine stamps `"live"`. This is the
+  discriminator to filter on: it is a property of the data, not a naming convention a later
+  import can bypass.
+- **`pipeline_id` defaults to `crypto_sentiment_mock`** (was `crypto_sentiment`), so generated
+  output cannot land in an engine stream's directory. `--pipeline-id` still overrides — keep the
+  `_mock` suffix when you do.
+
+The **`prompt_hash` deliberately still mirrors the real prompt.** A mock of the crypto pipeline
+really is mocking that prompt, so a fabricated hash would make the fixture less faithful for no
+extra information — `data_origin` carries the "synthetic" fact instead. One field per fact.
+
+`--prompt crypto|forex` picks *which* real prompt the batch mocks. It is explicit rather than
+guessed from `--pipeline-id`, because that id is free text and a substring guess would be a
+silent wrong answer for any id that does not match it.
+
 ## Line format (validated against the IDE contract)
 
 One JSONL line per ~10-min snapshot (the §3 handoff form):
@@ -39,11 +60,18 @@ python experiments/mock_signal_data/generate.py --cycles 1008 \
 # rotated archive week (#13): the collector's bucketed layout, 7 day-files per stream
 python experiments/mock_signal_data/generate.py --cycles 1008 --rotate daily \
     --out data/mock_signals/rotated_week
+
+# a forex week, declaring the forex prompt it mocks (7 days, one file per UTC day)
+python experiments/mock_signal_data/generate.py --cycles 1008 --rotate daily \
+    --prompt forex --pipeline-id forex_macro_sentiment_mock --symbols EURUSD,GBPUSD \
+    --out data/mock_signals/forex_mock_week
 ```
 
-Flags: `--cycles --start --seed --symbols --out --variants --rotate`. Default symbols = all 8
-crypto pairs. The short sample is `tests/fixtures/signals/` (tracked); the weeks → `data/`
-(gitignored).
+Flags: `--cycles --start --seed --symbols --out --variants --rotate --pipeline-id --prompt`.
+Default symbols = all 8 crypto pairs. The short sample is `tests/fixtures/signals/` (tracked);
+the weeks → `data/` (gitignored). The forex week above is also a `launch.json` entry
+(**🧪 Mock Data: Forex week**, in the `06_output` group next to the real exporter — deliberately
+adjacent, so the synthetic/real distinction is made where someone looks for it).
 
 ## Rotated archive layout (#13)
 
@@ -61,8 +89,8 @@ concatenate in order. Full contract: `docs/architecture/output_archive_layout.md
 streams** — the naming the IDE confirmed on 2026-07-11:
 
 - The **first** entry is the default variant and **keeps the bare `pipeline_id`**
-  (`crypto_sentiment`); the others get `<pipeline_id>_<sub_id>` (`crypto_sentiment_4o_enhanced`).
-  `sub_id` charset: `[a-z0-9_]`.
+  (`crypto_sentiment_mock`); the others get `<pipeline_id>_<sub_id>`
+  (`crypto_sentiment_mock_4o_enhanced`). `sub_id` charset: `[a-z0-9_]`.
 - **Every** stream carries the grouping hints `metadata.variant_group` (= the default stream's
   id) and `metadata.variant` (its sub id). These fields land in `RunMetadata` when #42 ships —
   the mock **previews** them here for the IDE's format validation. `pipeline_id ==
