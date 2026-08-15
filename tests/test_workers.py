@@ -26,6 +26,21 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+async def _until(predicate, timeout: float = 2.0) -> None:
+    """Wait until `predicate()` holds, or the timeout expires.
+
+    These tests assert that a loop *kept ticking*, not that it ticked within some number of
+    milliseconds — but a fixed `sleep()` silently asserts the second. On a loaded machine two
+    millisecond-interval passes can need more than 20 ms of wall clock, and the assertion fails for
+    a reason that has nothing to do with the behaviour under test (observed twice while the full
+    suite ran under load). Waiting on the condition keeps the fast path fast and the slow path
+    correct; the generous timeout only bounds a genuine hang.
+    """
+    deadline = time.monotonic() + timeout
+    while not predicate() and time.monotonic() < deadline:
+        await asyncio.sleep(0.001)
+
+
 # --- interval trigger -----------------------------------------------------------------
 
 def test_trigger_fires_immediately_then_on_interval():
@@ -85,7 +100,7 @@ def test_ingest_worker_records_state():
     async def _scenario():
         worker = _ingest_worker(ingestor)
         task = asyncio.create_task(worker.start())
-        await asyncio.sleep(0.02)
+        await _until(lambda: worker.get_state().runs >= 2)
         await worker.stop()
         await task
         return worker.get_state()
@@ -102,7 +117,7 @@ def test_failing_pass_never_kills_the_loop():
     async def _scenario():
         worker = _ingest_worker(ingestor)
         task = asyncio.create_task(worker.start())
-        await asyncio.sleep(0.02)
+        await _until(lambda: ingestor.runs >= 2)
         await worker.stop()
         await task
         return worker.get_state()
@@ -140,7 +155,9 @@ def test_a_blocked_worker_does_not_stop_another():
         stuck = _ingest_worker(blocked)
         fine = _ingest_worker(healthy)
         tasks = [asyncio.create_task(stuck.start()), asyncio.create_task(fine.start())]
-        await asyncio.sleep(0.06)              # the blocked pass is still inside its first run
+        # Wait for the healthy worker to prove it kept going — the blocked one is still inside its
+        # first pass either way (it blocks for 0.15s, far longer than this takes).
+        await _until(lambda: healthy.runs >= 2)
         assert healthy.runs >= 2, 'the healthy worker must keep passing while the other hangs'
         for worker in (stuck, fine):
             await worker.stop()

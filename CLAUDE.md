@@ -63,7 +63,9 @@ Before committing to a design for a non-trivial feature or change:
 
 - **Scheme:** semver `MAJOR.MINOR.PATCH`; pre-1.0 tags carry an `-alpha` suffix
   (`v0.3.0-alpha`). The `version` string lives in `configs/app_config.json` and is mirrored
-  by the `AppConfig` Pydantic default — the defaults-mirror test enforces they agree.
+  by the `AppConfig` Pydantic default — the defaults-mirror test enforces they agree. A third
+  copy sits in the README status line (`> **Status:** Alpha · v0.3.2-alpha …`) and **no test
+  guards it** — bump all three in the same change.
 - **A version ships when its roadmap batch merges.** The operator tags the release (like
   closing issues — the assistant never tags, never runs `gh release`). Bump the `version`
   string in the same change that finishes the batch.
