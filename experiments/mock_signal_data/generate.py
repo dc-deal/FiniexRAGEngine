@@ -111,6 +111,14 @@ PROMPTS = {
     'forex': ('sentiment-forex', '1', 'mock-' + REAL_PROMPT_HASH['forex'][:8]),
 }
 DEFAULT_PROMPT = 'crypto'
+# The mock has no engine configuration to hash, so `config_fingerprint` is DERIVED from the
+# generator's own inputs — never mirrored from a real one. Mirroring is honest for `prompt_hash`
+# (the mock really does mock that prompt); here there is nothing to mirror, so a copied value
+# would be a plain lie. Leaving it empty is not an option either: '' is the contract's "produced
+# before this field existed", which a freshly generated fixture must not claim.
+# Same `mock-` prefix and total width as the prompt hash, so both read alike when truncated.
+CONFIG_FINGERPRINT_PREFIX = 'mock-'
+CONFIG_FINGERPRINT_LENGTH = 8
 INTERVAL = timedelta(minutes=10)
 # Default start: inside the IDE's tick coverage; 1008 cycles = 7 days, 4032 = 28 days.
 DEFAULT_START = '2026-04-27T00:00:00Z'
@@ -153,6 +161,21 @@ class _Variant:
     bias: float            # fixed reading offset — one model leans a touch more bullish
     rng: random.Random     # per-variant noise: scores, confidence, latency, tokens
     error_cycles: Set[int]  # LLM timeouts are model-side → per-variant cycles
+
+
+def _mock_config_fingerprint(pipeline_id, symbols, prompt_key, variants_spec, seed) -> str:
+    """A stable fingerprint over what actually shaped this batch.
+
+    Derived, not mirrored: two mock runs with different symbols get different fingerprints, so a
+    consumer's comparability rule (`prompt_hash` AND `config_fingerprint` must agree) can really be
+    exercised instead of always matching. Mirrors the engine's own inputs in spirit — the symbol
+    set and the prompt are exactly what moves a real fingerprint.
+    """
+    payload = json.dumps({'pipeline_id': pipeline_id, 'symbols': sorted(symbols),
+                          'prompt': prompt_key, 'variants': variants_spec or '', 'seed': seed},
+                         sort_keys=True, separators=(',', ':'))
+    digest = sha256(payload.encode('utf-8')).hexdigest()[:CONFIG_FINGERPRINT_LENGTH]
+    return CONFIG_FINGERPRINT_PREFIX + digest
 
 
 def _pass_seconds(u: float, median_s: float) -> float:
@@ -232,13 +255,15 @@ def _timings(start: datetime, llm_ms: float):
     return timings, sum(durations.values())
 
 
-def _make_envelope(pipeline_id, status, timestamp, results, metadata, errors, prompt):
+def _make_envelope(pipeline_id, status, timestamp, results, metadata, errors, prompt,
+                   fingerprint):
     prompt_id, prompt_version, prompt_hash = prompt
     return AnalysisEnvelope[SentimentResult](
         schema_version=SCHEMA_VERSION,
         pipeline_id=pipeline_id,
         outcome_type=OUTCOME_TYPE,
         data_origin=DATA_ORIGIN,
+        config_fingerprint=fingerprint,
         prompt_version=prompt_version,
         prompt_id=prompt_id,
         prompt_hash=prompt_hash,
@@ -287,13 +312,19 @@ def _cycle_facts(rng, scores, symbols, i, short, no_news_by_cycle, partial_cycle
 
 
 def _render_variant(variant: _Variant, facts: dict, symbols, bar_close, force_error, prompt,
-                    fixed_offset_s=None):
+                    fixed_offset_s=None, trigger_reason='scheduled', fingerprint=''):
     """One variant's envelope for one cycle — the model-side reading of the shared facts.
 
     `bar_close` is when the eval trigger fires. The envelope is stamped when the pass *finishes*,
     so its `timestamp` sits AFTER its bar by the pass duration — measured 13-19s median in
     production. The mock used to place it 2s *before* the bar, which is the dangerous direction:
     a signal dated ahead of its own bar reads as look-ahead in a backtest.
+
+    `trigger_reason` (ISSUE_87) names why the pass ran, and is *declared* rather than derived from
+    the timestamp — exactly as the engine does it. Scheduled grid passes say `scheduled`; the
+    unscheduled envelopes placed between bars say `breaking`, because that is the mechanism they
+    model. Never `''`: an empty value means "produced before this field existed", and a freshly
+    generated fixture claiming that would be a lie. `data_origin` already carries "synthetic".
     """
     rng = variant.rng
     model = variant.model
@@ -307,11 +338,13 @@ def _render_variant(variant: _Variant, facts: dict, symbols, bar_close, force_er
             model=model, sources_configured=3, sources_reached=3,
             articles_found=facts['articles_found'], articles_relevant=facts['articles_relevant'],
             processing_time_ms=30010.0, stage_timings=[],
+            # A failed pass still names why it ran — it is a data point about a specific cause.
+            trigger_reason=trigger_reason,
         )
         errors = [RunError(type='LLM_TIMEOUT', message='LLM did not respond within 30s',
                            timestamp=analysis_at)]
         return _make_envelope(variant.stream_id, 'error', analysis_at, [], metadata, errors,
-                              prompt)
+                              prompt, fingerprint)
 
     # The pass duration IS the offset from the bar close — one number, so the envelope explains
     # its own timestamp. One uniform draw, mapped through the mixture (see _pass_seconds).
@@ -369,6 +402,7 @@ def _render_variant(variant: _Variant, facts: dict, symbols, bar_close, force_er
         ))
     metadata = RunMetadata(
         model=model, model_snapshot=SNAPSHOT.get(model, model),
+        trigger_reason=trigger_reason,
         sources_configured=3, sources_reached=2 if facts['partial'] else 3,
         articles_found=facts['articles_found'], articles_relevant=facts['articles_relevant'],
         processing_time_ms=round(pass_ms, 1), stage_timings=timings,
@@ -380,7 +414,7 @@ def _render_variant(variant: _Variant, facts: dict, symbols, bar_close, force_er
         variant_group=variant.group or None, variant=variant.sub_id or None,
     )
     return _make_envelope(variant.stream_id, 'partial' if facts['partial'] else 'success',
-                          analysis_at, results, metadata, errors, prompt)
+                          analysis_at, results, metadata, errors, prompt, fingerprint)
 
 
 def _parse_variants(spec: str):
@@ -440,6 +474,8 @@ def main() -> None:
     # than inferred from the pipeline id: a `--pipeline-id` is free text, and guessing the prompt
     # from a substring would be a silent wrong answer for any id that does not match the guess.
     prompt = PROMPTS[args.prompt]
+    fingerprint = _mock_config_fingerprint(pipeline_id, symbols, args.prompt,
+                                           args.variants, args.seed)
 
     # Build the variant list. Without --variants: one anonymous default = today's
     # single-stream behavior (no hints). With it: format A — default keeps the bare id.
@@ -508,7 +544,7 @@ def main() -> None:
         for variant in variants:
             force_error = i in variant.error_cycles or (not short and variant.rng.random() < 0.008)
             envelope = _render_variant(variant, facts, symbols, bar_close, force_error,
-                                       prompt)
+                                       prompt, fingerprint=fingerprint)
             # No collector exists yet, so the archive sets `collected_msc = timestamp` — mirror
             # that exactly (`outcome_exporter.py`). Bucketing follows the same key, so a pass that
             # finishes past midnight lands in the next day's file, as the real exporter does.
@@ -521,7 +557,8 @@ def main() -> None:
             # in 43% of cases, well above the scheduled ones.
             for offset_s in offsets[1:]:
                 extra = _render_variant(variant, facts, symbols, bar_close, False, prompt,
-                                        fixed_offset_s=offset_s)
+                                        fixed_offset_s=offset_s, trigger_reason='breaking',
+                                        fingerprint=fingerprint)
                 extra_at = extra.timestamp
                 extra_line = {'collected_msc': int(extra_at.timestamp() * 1000),
                               **json.loads(extra.model_dump_json())}

@@ -185,19 +185,30 @@ hand, and the ones that have been added over time:
 | Mirrored since | Fields |
 |---|---|
 | v0.2 (#7/#23/#24/#33/#40) | prompt provenance (`prompt_id` / `prompt_version` / `prompt_hash`), `metadata.model_snapshot` (the served dated model), run-level `prompt_tokens` / `completion_tokens` / `cost_usd` / `per_symbol_tokens`, `result[].basis` (`llm` \| `no_data` \| `degraded`; no-news rows carry `no_data` and zero tokens) |
-| v0.3.2 (#85, this session) | `data_origin` |
+| v0.3.2 (#85/#87) | `data_origin`; `config_fingerprint` (derived, `mock-` prefixed — see below); `metadata.trigger_reason` — `scheduled` on grid passes, `breaking` on the unscheduled ones, **never `''`** (that means "predates the field") |
 | **pending** | the article `importance` tag (#3) — add here once it lands on the model |
-| **pending** | `config_fingerprint` (#85) — see below |
 
-## Known gap — `config_fingerprint`
+## `config_fingerprint` — derived, never mirrored
 
-The envelope gained `config_fingerprint` with #85 (the engine hashes the merged pipeline config
-plus its resolved source set). **The generator does not stamp it yet**, so mock envelopes carry no
-such field.
+The mock has no engine configuration to hash, so its fingerprint is computed from the generator's
+own inputs (`pipeline_id`, symbols, prompt, variants, seed) and carries the same `mock-` prefix as
+the prompt hash:
 
-When it is added, it must **not** mirror a real fingerprint. Unlike `prompt_hash` — where mirroring
-is honest, because the mock really does mock that prompt — the generator has no engine
-configuration at all, so a copied value would be a plain lie and would repeat exactly the confusion
-the `mock-` prefix was introduced to end. Derive it from the generator's own inputs
-(`pipeline_id`, symbols, variants, seed) so two mock runs with different symbols get different
-fingerprints, and a consumer's comparability logic can actually be exercised.
+```
+crypto_sentiment_mock       mock-1e9e9fc4
+forex_macro_sentiment_mock  mock-84f6e202
+```
+
+Two rules, both learned the hard way:
+
+- **Never mirror a real fingerprint.** Mirroring is honest for `prompt_hash` — the mock really does
+  mock that prompt. Here there is nothing to mirror, so a borrowed value would be a plain lie and
+  would recreate exactly the confusion the `mock-` prefix exists to end.
+- **Never leave it empty.** `''` is the contract's *"produced before this field existed"*. A
+  freshly generated fixture claiming that is a false statement, not a neutral one — the same trap
+  `trigger_reason` had, and the reason both are stamped explicitly rather than left to their
+  defaults.
+
+Deriving it also makes the field *useful* rather than decorative: two mock runs with different
+symbols get different fingerprints, so a consumer's comparability rule (`prompt_hash` **and**
+`config_fingerprint` must agree) can actually be exercised instead of always matching.

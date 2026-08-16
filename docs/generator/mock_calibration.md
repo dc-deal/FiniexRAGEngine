@@ -100,9 +100,12 @@ others — so the cap concerns A alone.
 
 `EXTRA_ENVELOPE_RATE = 13.2 / 144` (~9 % of cycles) produces one extra envelope, placed uniformly
 in `EXTRA_MIN_S … EXTRA_MAX_S` (60–540s) after the bar close. It carries the same news state (it is
-the same ten minutes) with its own timestamp and its own breaking reading.
+the same ten minutes) with its own timestamp, its own breaking reading, and
+`metadata.trigger_reason = 'breaking'` (#87) — declared, never derived from the timestamp.
 
-Measured result: 13.1/day (crypto), 15.7/day (forex) against ~13.2 real.
+Measured result: 83/week = 11.9/day (crypto), 91/week = 13.0/day (forex) against ~13.2 real. These
+are now exact counts rather than the gap heuristic's estimate; the earlier 13.1 / 15.7 figures were
+inflated by scheduled passes that happened to follow a slow one.
 
 ---
 
@@ -162,18 +165,32 @@ forex fixture targets staleness rather than breaking. If faithfulness is wanted 
 story rate by symbol count so the *result* rate lands at ~6.7 % — the envelope rate for a 2-symbol
 stream then falls to ~13 %.
 
-### Gap-based detection of B cannot be exact
+### ~~Gap-based detection of B cannot be exact~~ — resolved by `trigger_reason` (#87)
 
-A consumer that identifies B envelopes as *"gap to predecessor < 300s"* will misclassify: when a
+*Kept as a record of why the field exists.*
+
+A consumer that identified B envelopes as *"gap to predecessor < 300s"* would misclassify: when a
 **scheduled** pass takes 580s, the next scheduled envelope is only ~36s behind it and looks exactly
-like a B envelope.
+like a B envelope. The two requirements — *A may reach 580s* and *B is detected via gaps* — could
+not both hold. Measured at the time: crypto 13.1/day (right), forex 15.7/day (inflated by false
+positives), and the real-archive measurement that produced the 13.2/day figure carried the same
+error.
 
-The two requirements — *A may reach 580s* and *B is detected via gaps* — cannot both hold. Visible
-in the output: crypto measures 13.1/day (right), forex 15.7/day (inflated by false positives). The
-same limitation applies to the measurement of the real archive that produced the 13.2/day figure.
+**#87 removed the guesswork.** Every envelope now declares `metadata.trigger_reason`, resolved by
+the trigger and never derived from a timestamp. The mock stamps `scheduled` on grid passes and
+`breaking` on the unscheduled ones, so both sides are countable exactly:
 
-Resolving it needs an explicit marker on the envelope (a `trigger: scheduled | wake` field), which
-is an engine change, not a generator one.
+```
+crypto_sentiment_mock   1091 envelopes   scheduled 1008 (92.4%)   breaking  83 (7.6%)
+forex_macro_sentiment…  1099 envelopes   scheduled 1008 (91.7%)   breaking  91 (8.3%)
+```
+
+The offset distributions separate cleanly, which is the point: `scheduled` p50 **16.8s**,
+`breaking` p50 **303.4s** — the latter is a *position inside the bar*, not a delay.
+
+**Never write `''`.** An empty value means "produced before this field existed"; a freshly
+generated fixture claiming that would be a lie, and `data_origin: 'synthetic'` already carries the
+synthetic fact. Old mock files simply have no key, exactly like the historical archive.
 
 ### Cadence median is 597s, not exactly 600s
 
@@ -195,7 +212,9 @@ After regenerating, measure these five against the table above:
 1. **Envelopes per day** — target ~157 (grid 144 + B).
 2. **A distribution** — p50 / p95 / max / floor. Measure `_pass_seconds()` directly over ≥ 10k
    draws rather than from the file: a file-level split of A and B is approximate (see above).
-3. **B rate** — envelopes whose gap to the predecessor is < 300s, ~13/day.
+3. **B rate** — count `metadata.trigger_reason == 'breaking'`, ~13/day. Exact since #87; do **not**
+   fall back to the old "gap to predecessor < 300s" heuristic, which counts scheduled passes that
+   happened to follow a slow one.
 4. **`is_breaking`** — share of envelopes (~35 %) *and* share of results (~6.7 %). Both, always:
    the two can only be read together, since one is a function of the symbol count.
 5. **No gaps** — no distance between consecutive envelopes above 2× the measured median.
