@@ -169,6 +169,14 @@ class AnalysisEnvelope(BaseModel, Generic[T]):
     # with the data. Default 'live' keeps pre-change archived envelopes parseable; a consumer reads
     # an absent field as "unknown, produced before this existed".
     data_origin: Literal['live', 'synthetic'] = 'live'
+    # Input provenance (ISSUE_85) — the configuration twin of `prompt_hash` below. Fingerprints
+    # the *merged* pipeline config plus its *resolved* source set plus the score-defining slice
+    # of the app config, so a feed added, disabled or re-weighted is visible downstream instead
+    # of hiding behind byte-identical provenance (the archive's 2026-07-24 symbol expansion is
+    # the live example). Two archive days are comparable when `prompt_hash` AND this agree.
+    # Default '' keeps pre-change archived envelopes parseable; a consumer reads an absent field
+    # as "unknown, produced before this existed" — never as "same as the neighbouring day".
+    config_fingerprint: str = ''
     # Prompt provenance (ISSUE_33): `prompt_id` + `prompt_version` name the prompt series;
     # `prompt_hash` fingerprints the template body so a silent edit is visible downstream.
     # Populated from PromptMetadata when the envelope is assembled (ISSUE_7); default '' keeps

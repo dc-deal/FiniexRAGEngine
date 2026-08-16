@@ -34,12 +34,104 @@ Every pipeline returns the same shell, parameterised by its payload type:
 
 ```
 AnalysisEnvelope[T]:
-  schema_version, pipeline_id, outcome_type, prompt_version,
+  schema_version, pipeline_id, outcome_type, data_origin,
+  config_fingerprint, prompt_version, prompt_id, prompt_hash,
   timestamp, status, result: List[T], metadata, errors
 ```
 
 `SentimentEnvelope = AnalysisEnvelope[SentimentResult]` is the first concrete type. A new
 signal type adds its own `result` model (e.g. `TrendResult`) and reuses the envelope.
+
+### Provenance: the two fingerprints (ISSUE_33 / ISSUE_85)
+
+An envelope names both halves of what produced it, because both are series-defining and both
+can change silently:
+
+- **`prompt_hash`** fingerprints the prompt template body (front-matter excluded), so an edit
+  is visible even when the version was not bumped.
+- **`config_fingerprint`** fingerprints the *inputs*: the **merged** pipeline config, the
+  **resolved** source set (feeds, weights, `enabled`, detection thresholds) and the
+  score-defining slice of the app config (`llm.provider/temperature/base_url`,
+  `embedding.model/dimensions`). Operational knobs stay out — poll intervals, timeouts, the
+  ingest cadence, budgets, logging, diagnostics — so retuning a timeout never forks a series.
+  `configuration/config_fingerprint.py` holds the include/exclude decisions with their reasons.
+
+**Two archive days are comparable when both agree.** A consumer groups by
+`(pipeline_id, prompt_hash, config_fingerprint)` and never aggregates across groups silently.
+Both are resolved **once at assembly** and stamped by the runner, so they are valid even for a
+pass where every evaluation failed. An empty value means "unknown, produced before this
+existed" — never "unchanged".
+
+A fingerprint is **not a build identifier**: two machines with different `user_configs/`
+overlays legitimately produce different values for the same tracked config, because they run
+different configurations (see `docs/development/user_configs_overrides.md`).
+
+#### What it does *not* answer — and why that is the design
+
+`config_fingerprint` covers **deliberate configuration change only**. Everything that varies at
+runtime stays out of it, on purpose, and is reported per envelope instead:
+
+| Question | Where the answer is |
+|---|---|
+| Did the setup change between two days? | `config_fingerprint` |
+| Did the prompt change? | `prompt_hash` |
+| Was a pass degraded (outage, LLM failure)? | `status`, `RunError[]` |
+| Was a row scored, mechanical, or degraded? | `result[].basis` (`llm` / `no_data` / `degraded`) |
+| Were feeds missing (quarantine, unreachable)? | `metadata.sources_reached` / `sources_configured` |
+| Did the budget brake bite? | `status: 'partial'` + a `BUDGET_EXCEEDED` error |
+
+The Testing IDE verified this split against the real 24-day archive: every visible anomaly there
+was runtime state — 21 % degraded rows on 2026-07-29 (the infrastructure outage), 4.3 % on 07-22
+(budget), 499 `no_data` rows on 07-26 (feed quarantine). **The fingerprint would have explained
+none of them, and should not**: mixing runtime state into it would make it move constantly and
+render it useless for the one thing it is for. The two halves are complementary — runtime
+metadata explains a *day*, the fingerprint decides whether two days belong in the same *series*.
+
+Over those 24 days the fingerprint would have moved exactly once (the 07-24 symbol expansion).
+That is the expected rate: it is a forward-looking marker, and its value grows with archive
+length and with #68's weekly calibration writes.
+
+#### What it buys a downstream consumer
+
+Beyond traceability, it is a **validity condition for multi-window experiments**. A
+tuning/validation split (in-sample vs out-of-sample, parameter search) rests on the assumption
+that two windows differ *only* in market conditions. Without this field, a collapsing result has
+two indistinguishable explanations — the strategy was overfitted, or the signal source changed —
+and the second produces a false-negative verdict: a working strategy is discarded and nobody
+ever finds out. With it, that is a one-field check made *before* the result is interpreted.
+
+It also bounds honest experiment length. Once #68 calibrates weekly, the fingerprint moves
+roughly weekly, which states the maximum span of a single-regime backtest: a four-week window is
+then four configuration regimes thrown together — not wrong, but no longer one experiment. And
+in a consumer's own run register, a data fingerprint next to their strategy fingerprint makes
+the register self-delimiting: same strategy, different data identity, mechanically separated
+instead of remembered.
+
+**Its limit, stated plainly:** to a consumer the value is opaque — it says *that* something
+changed, never *what*. The "what" lives in `config_fingerprints` on the engine side (below), so
+an unexplained series break is one question to the engine, not a research project.
+
+### `config_fingerprints` — what a fingerprint stood for
+
+The scalar says *that* a setup changed; the registry says *what* it was. `build_runner` upserts
+one row per distinct configuration — `fingerprint` (primary key), `pipeline_id`,
+`source_set_id`, the canonical `config` payload as JSONB, `first_seen`, `last_seen` (boot-scoped,
+not per pass). No retention: the table must outlive the archive it explains. A failed write is
+logged and swallowed — the envelope's fingerprint does not depend on it.
+
+```sql
+SELECT fingerprint, pipeline_id, first_seen, last_seen FROM config_fingerprints ORDER BY first_seen;
+SELECT jsonb_pretty(config) FROM config_fingerprints WHERE fingerprint = '904c2e16bbfb';
+```
+
+At boot each assembled pipeline reports its fingerprint, right behind the `[OVERRIDE]` lines —
+first what diverges, then what follows from it. `(new)` means this start breaks the comparable
+series:
+
+```
+[CONFIG] crypto_sentiment · source_set crypto_news · config_fingerprint 904c2e16bbfb
+[CONFIG] forex_macro_sentiment · source_set forex_news · config_fingerprint 1e63b9aa21fc (new)
+```
 
 ## Interfaces (swappable backends)
 

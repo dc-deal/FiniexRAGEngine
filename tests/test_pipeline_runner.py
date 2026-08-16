@@ -552,3 +552,32 @@ def test_a_pre_change_envelope_still_parses_as_live():
            'timestamp': '2026-08-14T00:00:15.440452Z', 'status': 'success',
            'result': [], 'metadata': {'model': 'gpt-4o-mini'}}
     assert SentimentEnvelope(**old).data_origin == 'live'
+
+
+def test_the_config_fingerprint_is_stamped_even_when_every_eval_fails():
+    """ISSUE_85: the input fingerprint has the same guarantee as the prompt one (ISSUE_33).
+
+    Both are resolved once at assembly, so an envelope names the configuration that produced it
+    even on a pass where nothing could be produced — a total failure is still a data point about
+    a *specific* setup, and a consumer must be able to attribute it.
+    """
+    config = _config(['BTCUSD'])
+    runner = PipelineRunner(config, None,
+                            _FakeEvaluator({'BTCUSD': LLMTimeoutError('too slow')}), _META,
+                            llm_model='gpt-4o-mini', source_reach=_FakeReach(),
+                            config_fingerprint='904c2e16bbfb')
+    envelope = runner.run()
+    assert envelope.status == 'error'                      # nothing evaluated
+    assert envelope.config_fingerprint == '904c2e16bbfb'   # still attributable
+    # The runner stamps what it was given and derives nothing itself — the assembler owns the
+    # computation, exactly like the prompt fingerprint next to it.
+    assert format_envelope_run(envelope).splitlines()[0].endswith(
+        'prompt sentiment-crypto@v1 #cafe12345678 · config #904c2e16bbfb) ===')
+
+
+def test_a_runner_without_a_resolved_fingerprint_stamps_nothing():
+    """'' = unknown, and the report stays silent rather than printing an empty marker."""
+    envelope = _runner(_config(['BTCUSD']), _FakeIngestor(),
+                       _FakeEvaluator({'BTCUSD': _eval('BTCUSD')})).run()
+    assert envelope.config_fingerprint == ''
+    assert 'config #' not in format_envelope_run(envelope)

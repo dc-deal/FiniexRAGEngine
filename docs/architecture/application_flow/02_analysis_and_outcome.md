@@ -92,7 +92,10 @@ Runs once per pipeline pass, over all requested symbols:
    evaluated); the envelope is always parseable, even on internal failure (the API catches and
    answers `200` + `status: 'error'`). All stage timings, summed tokens, the run's USD (session
    delta off the shared `CostRecorder`) and per-symbol tokens fold into `RunMetadata`; the prompt
-   fingerprint (`prompt_id@version` + `prompt_hash`, ISSUE_33) is stamped on the envelope.
+   fingerprint (`prompt_id@version` + `prompt_hash`, ISSUE_33) and the input fingerprint
+   (`config_fingerprint`, ISSUE_85 — the merged config + resolved source set + the score-defining
+   app slice) are stamped on the envelope. Both are resolved once in `build_runner` and only
+   carried here, so they hold even for a pass where every evaluation failed.
    **Wiring:** `core/pipeline/pipeline_assembler.py` builds the per-pipeline object graph
    (sources → … → evaluator → ingestor) and attaches runners at API boot; `Pipeline` without a
    runner falls back to the scaffold mock (bootable without DB, and the free-suite path —

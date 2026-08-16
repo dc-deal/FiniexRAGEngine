@@ -69,6 +69,8 @@ same shell regardless of the signal type:
   "schema_version": "1.0",
   "pipeline_id": "crypto_sentiment",
   "outcome_type": "sentiment_fear_greed",
+  "data_origin": "live",
+  "config_fingerprint": "904c2e16bbfb",
   "prompt_version": "1",
   "prompt_id": "sentiment-crypto",
   "prompt_hash": "1f191112898f",

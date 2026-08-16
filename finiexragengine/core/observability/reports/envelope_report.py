@@ -14,6 +14,11 @@ def format_envelope_run(envelope: AnalysisEnvelope) -> str:
     m = envelope.metadata
     fingerprint = (f'prompt {envelope.prompt_id}@v{envelope.prompt_version} '
                    f'#{envelope.prompt_hash}' if envelope.prompt_id else 'prompt (mock)')
+    # The input fingerprint next to the prompt one (ISSUE_85) — the pair that decides whether
+    # this run is comparable with yesterday's. Omitted when unresolved, so a scaffold-mock run
+    # says nothing rather than something empty.
+    if envelope.config_fingerprint:
+        fingerprint += f' · config #{envelope.config_fingerprint}'
     lines = [
         f'=== Run: {envelope.pipeline_id}   ({envelope.outcome_type} · {fingerprint}) ===',
         f'  status      {envelope.status}     sources {m.sources_reached}/{m.sources_configured}'

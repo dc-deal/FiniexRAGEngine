@@ -47,7 +47,8 @@ class PipelineRunner:
                  evaluator: SymbolEvaluator, prompt_metadata: PromptMetadata,
                  llm_model: str, cost_recorder: Optional[CostRecorder] = None,
                  outcome_store: Optional[OutcomeStore] = None,
-                 source_reach: Optional[SourceReach] = None) -> None:
+                 source_reach: Optional[SourceReach] = None,
+                 config_fingerprint: str = '') -> None:
         self._config = config
         # Output consistency guard (ISSUE_35): deterministic coherence check over each
         # scored row, built from the constellation's tolerances, applied in phase B+C below.
@@ -64,6 +65,10 @@ class PipelineRunner:
         # Resolved once at assembly (ISSUE_33): stamped on every envelope this runner
         # produces, so the outcome names the exact prompt even when every eval fails.
         self._prompt_metadata = prompt_metadata
+        # The same for the inputs (ISSUE_85): the merged config + resolved source set, hashed
+        # once by the assembler. '' means nobody resolved one (a hand-built runner, the scaffold
+        # mock) — a consumer reads that as "unknown", never as "unchanged".
+        self._config_fingerprint = config_fingerprint
         self._llm_model = llm_model
         # Optional: the run's own USD is read as a session delta off the shared recorder
         # (single pass at a time), covering embeddings *and* LLM in one number.
@@ -191,6 +196,7 @@ class PipelineRunner:
             prompt_version=self._prompt_metadata.version,
             prompt_id=self._prompt_metadata.id,
             prompt_hash=self._prompt_metadata.content_hash,
+            config_fingerprint=self._config_fingerprint,   # input provenance (ISSUE_85)
             timestamp=datetime.now(timezone.utc),   # real-time wall clock (live service)
             status=self._derive_status(errors, evals),
             result=results,

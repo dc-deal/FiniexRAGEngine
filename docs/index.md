@@ -31,6 +31,15 @@ you need.**
 - [Output archive layout](architecture/output_archive_layout.md) — the rotated JSONL
   bucket naming shared with the collector (#9) and the Testing IDE (#141).
 
+## Test-data generation
+
+- [Mock signal generator](generator/mock_signal_generator.md) — the synthetic archive the
+  Testing IDE builds against before the real collector exists: what it produces, how to run
+  it, and the provenance markers that keep generated data distinguishable from engine output.
+- [Mock calibration](generator/mock_calibration.md) — the measured production numbers behind
+  every timing and rate constant, and the divergences that remain open on purpose. Read this
+  before changing a distribution.
+
 ## Development & operations
 
 - [Migrations](development/migrations.md) — versioned schema migrations; evolving a

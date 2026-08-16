@@ -9,7 +9,8 @@ re-bucketed cheaply.
 Reference implementation: `finiexragengine/utils/archive_layout.py`
 (`bucket_name` / `bucket_path` / `buckets_for_range` — pure functions, pinned by
 `tests/test_archive_layout.py`). The mock generator emits exactly this layout
-(`--rotate`, see `experiments/mock_signal_data/`); the collector mirrors the functions.
+(`--rotate`, see [the mock signal generator](../generator/mock_signal_generator.md)); the
+collector mirrors the functions.
 
 ## Layout
 

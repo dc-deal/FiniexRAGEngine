@@ -1,5 +1,9 @@
 """Mock signal-data generator for early FiniexTestingIDE (#141 / #429) testing.
 
+Documentation lives in `docs/generator/`: mock_signal_generator.md (what it produces, flags,
+output layout, the contracts that must not break) and mock_calibration.md (the measured
+production numbers behind every constant — read it before changing a distribution).
+
 Emits JSONL that mimics the FiniexDataCollector archive of FiniexRAGEngine sentiment
 envelopes. NOT for correctness — plausible, schema-valid mock data only; the format may still
 change. Each JSONL line = one AnalysisEnvelope per ~10-min snapshot, plus a top-level
@@ -46,6 +50,7 @@ Run from the repo root:
 """
 import argparse
 import json
+import math
 import random
 import re
 import sys
@@ -53,6 +58,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from pathlib import Path
+from statistics import NormalDist
 from typing import Dict, Set
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -86,16 +92,23 @@ SCHEMA_VERSION = '1.0'
 # Everything this generator emits is synthetic — stamped on every envelope so the fact travels
 # with the data instead of living in a naming convention a later import can bypass.
 DATA_ORIGIN = 'synthetic'
-# Prompt provenance (ISSUE_33) — identical across variants by design: the anchor that
-# attributes any score difference to the model. The hashes deliberately MIRROR the real prompts:
-# a mock of the crypto pipeline really is mocking that prompt, so claiming a different hash would
-# make the fixture less faithful for no gain. `data_origin` carries the "this is synthetic" fact
-# instead — one field per fact.
-# Keyed so a forex mock declares the forex prompt: a `--pipeline-id forex_…` batch stamped with
-# `sentiment-crypto` was claiming provenance it does not have.
+# Prompt provenance (ISSUE_33) — identical across variants by design: the anchor that attributes
+# any score difference to the model. Keyed so a forex mock declares the forex prompt; a
+# `--pipeline-id forex_…` batch stamped with `sentiment-crypto` claims provenance it does not have.
+#
+# The REAL hashes, read from the production archive. The mock never ships them verbatim: a
+# 12-char hash is displayed truncated to 8 almost everywhere, and `f6e09cf6` alone read identical
+# for the real forex series and its mock — two sources, one real and one invented, indistinguishable
+# in every visible field. The `mock-` prefix survives truncation (`mock-1c8`) and makes the origin
+# visible at a second place, independent of `data_origin`, which could itself be dropped.
+# `prompt_id` / `prompt_version` stay untouched: the prompt really IS the same one.
+REAL_PROMPT_HASH = {
+    'crypto': '1c86eac137d8',
+    'forex': 'f6e09cf6c039',
+}
 PROMPTS = {
-    'crypto': ('sentiment-crypto', '2', '1c86eac137d8'),
-    'forex': ('sentiment-forex', '1', 'f6e09cf6a1b4'),
+    'crypto': ('sentiment-crypto', '2', 'mock-' + REAL_PROMPT_HASH['crypto'][:8]),
+    'forex': ('sentiment-forex', '1', 'mock-' + REAL_PROMPT_HASH['forex'][:8]),
 }
 DEFAULT_PROMPT = 'crypto'
 INTERVAL = timedelta(minutes=10)
@@ -108,10 +121,26 @@ DEFAULT_OUT = 'tests/fixtures/signals/crypto_sentiment_sample.jsonl'
 SNAPSHOT = {'gpt-4o-mini': 'gpt-4o-mini-2024-07-18', 'gpt-4o': 'gpt-4o-2024-11-20'}
 PRICE_PER_1M = {'gpt-4o-mini': (0.15, 0.60), 'gpt-4o': (2.50, 10.00)}
 LLM_BASE_MS = {'gpt-4o-mini': 900.0, 'gpt-4o': 1400.0}
-# Whole-pass duration = how far past its bar close an envelope is stamped. Calibrated against the
-# real archive (median +13.5s forex / +18.9s crypto, min ~1s); a bigger model takes longer, so the
-# variant streams keep their latency difference (ISSUE_42).
-PASS_BASE_MS = {'gpt-4o-mini': 13_000.0, 'gpt-4o': 19_000.0}
+# How far past its bar close a SCHEDULED envelope is stamped = the pass duration. Calibrated
+# against four clean days of the real archive: p50 16s, p95 50s, max 583s, floor ~3s. The shape is
+# strongly skewed, so it is drawn as a mixture — a tight body plus a thin heavy tail — rather than
+# a symmetric band. `PASS_MEDIAN_S` is scaled per model, keeping the variant streams' latency
+# difference (ISSUE_42).
+PASS_MEDIAN_S = {'gpt-4o-mini': 16.0, 'gpt-4o': 22.0}
+PASS_BODY_SHARE = 0.95      # 95% of passes are "normal"...
+PASS_BODY_SIGMA = 0.629     # ...log-normal around the median, p95 of the body ~2.8x the median
+PASS_FLOOR_S = 5.0          # nothing completes faster than this
+PASS_TAIL_MAX_S = 580.0     # ...and nothing slower. See _pass_seconds() for why exactly 580.
+PASS_TAIL_CURVE = 1.5       # tail shape; >1 keeps slow passes near the body edge
+# Share of cycles in which a story breaks. Calibrated so ~35% of envelopes carry at least one
+# breaking symbol, matching four clean days of the real crypto archive (35.5%).
+BREAKING_CYCLE_RATE = 0.35
+# Unscheduled envelopes (mechanism B): the engine also evaluates BETWEEN bars, so the real archive
+# holds ~157 envelopes/day where the M10 grid alone would give 144. Such an envelope's distance to
+# the preceding bar close is NOT a delay — it belongs to no bar. Measured: ~13.2/day (+9%), and 43%
+# of them carry breaking.
+EXTRA_ENVELOPE_RATE = 13.2 / 144.0
+EXTRA_MIN_S, EXTRA_MAX_S = 60.0, 540.0     # placed inside the bar, never on top of the next one
 
 
 @dataclass
@@ -124,6 +153,38 @@ class _Variant:
     bias: float            # fixed reading offset — one model leans a touch more bullish
     rng: random.Random     # per-variant noise: scores, confidence, latency, tokens
     error_cycles: Set[int]  # LLM timeouts are model-side → per-variant cycles
+
+
+def _pass_seconds(u: float, median_s: float) -> float:
+    """A scheduled pass's duration = how far past its bar close the envelope is stamped.
+
+    Drawn from ONE uniform `u` so the caller's random stream keeps its position — a second draw
+    here would shift every later draw and silently rewrite the whole news walk.
+
+    A mixture, because the measured shape is not a band: 95% of passes cluster log-normally around
+    the median (16s), and a thin 5% tail reaches up to ~580s. A single log-normal wide enough to
+    produce a 580s outlier would drag its own median far past 16s; a band narrow enough to hold the
+    median would never produce the tail at all — which is what the first version did, capping at
+    30s and modelling a producer that is *always* fast.
+
+    **Why the tail stops at 580s and not 600s.** The consumer flags a gap when two envelopes are
+    more than 2x the measured cadence apart (>1200s). The worst case is a floor-value envelope
+    followed by a tail-value one: 600 + 580 - 5 = 1175s, leaving 25s of margin. At 600s it would be
+    1195s — and the last envelope of a 23:50 bar would land at 00:00 the next day, spilling into an
+    eighth bucket file and breaking a downstream fixture that depends on coverage ending 23:50.
+    """
+    # `u` is used directly as the log-normal's own quantile, so the body covers exactly the lower
+    # 95% of that distribution and ends at its p95. Rescaling u onto [0,1) instead would let the
+    # body run out to its own extreme quantiles (~315s) and the mixture would overshoot p95 twice.
+    body_edge = median_s * math.exp(PASS_BODY_SIGMA * NormalDist().inv_cdf(PASS_BODY_SHARE))
+    if u < PASS_BODY_SHARE:
+        seconds = median_s * math.exp(PASS_BODY_SIGMA * NormalDist().inv_cdf(max(u, 1e-6)))
+        return max(seconds, PASS_FLOOR_S)
+    # Tail: the slow passes. Curved rather than linear — a linear rise puts too much mass just
+    # above the body edge and drags the overall p95 from 50s to 68s. The exponent keeps most slow
+    # passes near the edge and reserves the far end for the genuine rarities.
+    v = (u - PASS_BODY_SHARE) / (1.0 - PASS_BODY_SHARE)
+    return body_edge + (v ** PASS_TAIL_CURVE) * (PASS_TAIL_MAX_S - body_edge)
 
 
 def _signal(score: float) -> str:
@@ -194,18 +255,26 @@ def _cycle_facts(rng, scores, symbols, i, short, no_news_by_cycle, partial_cycle
     """Shared per-cycle script — everything the corpus/ingest side decides.
 
     Every variant evaluates the SAME news state: base sentiment walk, no-news symbols
-    (retrieval is shared), source outages (partial), the breaking symbol, and which
+    (retrieval is shared), source outages (partial), the breaking symbols, and which
     articles are cited. Only the LLM reading differs per variant.
     """
     for sym in symbols:
         scores[sym] = max(-1.0, min(1.0, scores[sym] + rng.uniform(-0.15, 0.15)))
     partial = i in partial_cycles or (not short and rng.random() < 0.025)
-    breaking = breaking_by_cycle.get(i) or (
-        rng.choice(symbols) if (not short and rng.random() < 0.015) else None)
+    # Breaking is a STORY, not a symbol: a hot crypto headline moves several tickers at once, so
+    # a cycle either breaks or does not, and then hits 1-3 symbols. Measured in the real archive:
+    # 35.5% of envelopes carry at least one breaking symbol, 1.69 symbols per breaking envelope.
+    # The old model (1.5% chance of one symbol) produced 1.3% — a factor of 27 too few, which made
+    # the dataset useless for exercising anything that reacts to breaking news.
+    forced = breaking_by_cycle.get(i)
+    breaking: Set[str] = {forced} if forced else set()
+    if not breaking and rng.random() < BREAKING_CYCLE_RATE:
+        count = min(len(symbols), 1 + (rng.random() < 0.5) + (rng.random() < 0.19))
+        breaking = set(rng.sample(symbols, count))
     no_news = set(no_news_by_cycle.get(i, set()))
     if not short:
-        no_news |= {sym for sym in symbols if sym != breaking and rng.random() < no_news_p}
-    no_news -= {breaking}
+        no_news |= {sym for sym in symbols if sym not in breaking and rng.random() < no_news_p}
+    no_news -= breaking
     return {
         'partial': partial,
         'breaking': breaking,
@@ -217,7 +286,8 @@ def _cycle_facts(rng, scores, symbols, i, short, no_news_by_cycle, partial_cycle
     }
 
 
-def _render_variant(variant: _Variant, facts: dict, symbols, bar_close, force_error, prompt):
+def _render_variant(variant: _Variant, facts: dict, symbols, bar_close, force_error, prompt,
+                    fixed_offset_s=None):
     """One variant's envelope for one cycle — the model-side reading of the shared facts.
 
     `bar_close` is when the eval trigger fires. The envelope is stamped when the pass *finishes*,
@@ -244,8 +314,12 @@ def _render_variant(variant: _Variant, facts: dict, symbols, bar_close, force_er
                               prompt)
 
     # The pass duration IS the offset from the bar close — one number, so the envelope explains
-    # its own timestamp. Scaled per model, keeping the variant comparison's latency difference.
-    pass_ms = PASS_BASE_MS.get(model, PASS_BASE_MS['gpt-4o-mini']) * rng.uniform(0.75, 1.35)
+    # its own timestamp. One uniform draw, mapped through the mixture (see _pass_seconds).
+    # A scheduled pass draws its duration; an unscheduled (B) envelope is handed its position in
+    # the bar instead — there is no "duration past the bar close" to speak of for one of those.
+    pass_ms = (fixed_offset_s * 1000.0 if fixed_offset_s is not None
+               else _pass_seconds(rng.random(),
+                                  PASS_MEDIAN_S.get(model, PASS_MEDIAN_S['gpt-4o-mini'])) * 1000.0)
     analysis_at = bar_close + timedelta(milliseconds=pass_ms)
     # Stage timings run from the trigger, not from the finish line.
     timings, _ = _timings(bar_close, LLM_BASE_MS.get(model, 900.0) * rng.uniform(0.85, 1.25))
@@ -268,7 +342,7 @@ def _render_variant(variant: _Variant, facts: dict, symbols, bar_close, force_er
         # news read by a different model. Signals mostly agree, diverge near thresholds.
         score = round(max(-1.0, min(1.0,
             facts['base_scores'][sym] + variant.bias + rng.uniform(-0.08, 0.08))), 3)
-        breaking = sym == facts['breaking']
+        breaking = sym in facts['breaking']
         urgency = round(rng.uniform(0.8, 0.95) if breaking else rng.uniform(0.0, 0.4), 3)
         p, c = rng.randint(550, 950), rng.randint(90, 140)
         prompt_tokens += p
@@ -424,6 +498,13 @@ def main() -> None:
         bar_close = start + i * INTERVAL
         facts = _cycle_facts(rng, scores, symbols, i, short, no_news_by_cycle,
                              partial_cycles, breaking_by_cycle, no_news_p)
+        # Mechanism B: an unscheduled evaluation between this bar and the next. It is a SEPARATE
+        # envelope with its own timestamp, not a late scheduled one — the distinction matters,
+        # because for a B envelope the distance to the preceding bar close is not a delay at all.
+        # Shifted to `offsets` below so both kinds flow through one emit path.
+        offsets = [None]
+        if not short and rng.random() < EXTRA_ENVELOPE_RATE:
+            offsets.append(EXTRA_MIN_S + rng.random() * (EXTRA_MAX_S - EXTRA_MIN_S))
         for variant in variants:
             force_error = i in variant.error_cycles or (not short and variant.rng.random() < 0.008)
             envelope = _render_variant(variant, facts, symbols, bar_close, force_error,
@@ -435,6 +516,16 @@ def main() -> None:
             line = {'collected_msc': int(collected_at.timestamp() * 1000),
                     **json.loads(envelope.model_dump_json())}
             _sink(variant.stream_id, collected_at).write(json.dumps(line) + '\n')
+            # ...and the unscheduled twin, if this cycle drew one. Same news state (it is the same
+            # ten minutes), own timestamp, own breaking reading — real B envelopes carry breaking
+            # in 43% of cases, well above the scheduled ones.
+            for offset_s in offsets[1:]:
+                extra = _render_variant(variant, facts, symbols, bar_close, False, prompt,
+                                        fixed_offset_s=offset_s)
+                extra_at = extra.timestamp
+                extra_line = {'collected_msc': int(extra_at.timestamp() * 1000),
+                              **json.loads(extra.model_dump_json())}
+                _sink(variant.stream_id, extra_at).write(json.dumps(extra_line) + '\n')
     for handle in handles.values():
         handle.close()
     for key in sorted(paths):
