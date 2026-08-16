@@ -15,6 +15,7 @@ import logging.handlers
 import os
 from pathlib import Path
 
+from finiexragengine.configuration.override_report import replay_pending_reports
 from finiexragengine.types.config_types.app_config_types import AppConfig
 
 # Marks a handler this module installed, so a re-configure (uvicorn reload calls create_app
@@ -78,3 +79,9 @@ def configure_logging(config: AppConfig, *, live_mode: bool = False) -> None:
     # dominate an overnight run).
     for name in log_conf.quiet_loggers:
         logging.getLogger(name).setLevel(logging.WARNING)
+
+    # Anything reported before this point had no handler to reach — in the API boot order that is
+    # the `app_config.json` override line, because the config manager is constructed (and reports)
+    # before logging exists. Replaying here rather than at each entry point means a future one
+    # cannot forget it. No-op when nothing was buffered, i.e. for every CLI.
+    replay_pending_reports()

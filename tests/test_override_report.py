@@ -125,6 +125,42 @@ def test_many_leaves_collapse_to_more():
     assert 'k5' not in line
 
 
+def test_a_report_made_before_logging_exists_is_replayed_into_it(monkeypatch, caplog):
+    """The boot-order gap, as found in a live server log on 2026-08-16.
+
+    `AppConfigManager()` is constructed — and reports — *before* `configure_logging` runs, so the
+    `app_config.json` line reached only Python's `lastResort` handler: bare on stderr, missing from
+    the rotating file, and invisible in live mode where rich owns the console. The registry lines,
+    emitted after logging is wired, were unaffected — which is why exactly one line went missing
+    and the gap looked like a formatting quirk rather than a hole in the durable record.
+    """
+    override_report._REPORTED.clear()
+    override_report._PENDING.clear()
+    monkeypatch.setattr(logging.getLogger(), 'handlers', [])      # the pre-logging boot state
+    emit_override_report('user_configs/app_config.json', [OverrideEntry('llm.temperature', 0.3, 0.1)])
+    assert len(override_report._PENDING) == 1                     # kept, because nobody could hear it
+
+    monkeypatch.undo()                                            # …and now logging is configured
+    with caplog.at_level(logging.WARNING,
+                         logger='finiexragengine.configuration.override_report'):
+        override_report.replay_pending_reports()
+        override_report.replay_pending_reports()                  # a re-configure must not double it
+    lines = [r.getMessage() for r in caplog.records if '[OVERRIDE]' in r.getMessage()]
+    assert len(lines) == 1
+    assert 'temperature 0.1→0.3' in lines[0]
+    assert override_report._PENDING == []
+
+
+def test_a_report_made_with_logging_up_is_not_buffered(caplog):
+    """The normal case (every CLI, and the registries at boot): heard once, no replay owed."""
+    override_report._REPORTED.clear()
+    override_report._PENDING.clear()
+    with caplog.at_level(logging.WARNING,
+                         logger='finiexragengine.configuration.override_report'):
+        emit_override_report('user_configs/pipelines/p.json', [OverrideEntry('a.b', 2, 1)])
+    assert override_report._PENDING == []
+
+
 def test_emit_logs_once_per_process(caplog):
     override_report._REPORTED.clear()
     entries = [OverrideEntry('a.b', 2, 1)]

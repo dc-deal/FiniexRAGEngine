@@ -83,6 +83,10 @@ Every applied override is logged once per process, one line per override file, l
   override key would otherwise do nothing without a trace. The report checks each leaf
   against the *validated* merged config and flags misses as `⚠ floor_distanze?`.
 - **Gate:** `logging.warn_on_override` in `app_config.json` (default `true`).
+- **Boot order:** the app-config report happens before `configure_logging` (the manager is
+  constructed first), so it is buffered and replayed into the log once handlers exist. Without
+  that it reached only Python's `lastResort` handler — bare on stderr, absent from the rotating
+  file, invisible in live mode. Found in a live server log on 2026-08-16.
 - `coverage_cli` additionally marks its header with `(+ user override)` when the
   effective pipeline config diverges from the tracked one.
 
