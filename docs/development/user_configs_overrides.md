@@ -48,6 +48,27 @@ what it changes** — everything else is inherited from the base.
   registry themselves — four CLIs once did and silently dropped the override merge. The
   raw registry constructors remain for tests only.
 
+## The override layer is part of the signal's provenance (ISSUE_85)
+
+Every envelope carries a `config_fingerprint` computed from the **merged** configuration with
+the source set **resolved** — so what this layer changes travels with the data instead of
+living only in the operator's head. Two of the overrides this project actually runs disable
+feeds, which is precisely the kind of change that shifts scores while every other provenance
+field stays byte-identical.
+
+Three consequences worth knowing before someone "fixes" one of them:
+
+- **A fingerprint is machine-specific, and that is correct.** The server and a dev container
+  carry different overlays, so they produce different fingerprints for the same tracked config.
+  It is not a build identifier and must never be turned into one.
+- **Operational overrides do not move it.** Timeouts, poll intervals, budgets, logging and
+  diagnostics are excluded on purpose — otherwise tuning a timeout would fork a comparable
+  series and the marker would be ignored within a week. What is in and what is out (with the
+  reason for each) lives in `configuration/config_fingerprint.py`.
+- **A config edit only takes effect at the next boot** — for the engine and for the
+  fingerprint alike. The fingerprint describes the configuration the process *loaded*, so a
+  running engine keeps stamping the truth until it is restarted.
+
 ## The startup override report
 
 Every applied override is logged once per process, one line per override file, leaf by leaf:
@@ -62,6 +83,10 @@ Every applied override is logged once per process, one line per override file, l
   override key would otherwise do nothing without a trace. The report checks each leaf
   against the *validated* merged config and flags misses as `⚠ floor_distanze?`.
 - **Gate:** `logging.warn_on_override` in `app_config.json` (default `true`).
+- **Boot order:** the app-config report happens before `configure_logging` (the manager is
+  constructed first), so it is buffered and replayed into the log once handlers exist. Without
+  that it reached only Python's `lastResort` handler — bare on stderr, absent from the rotating
+  file, invisible in live mode. Found in a live server log on 2026-08-16.
 - `coverage_cli` additionally marks its header with `(+ user override)` when the
   effective pipeline config diverges from the tracked one.
 

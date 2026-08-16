@@ -114,6 +114,16 @@ class RunMetadata(BaseModel):
     # configured `model` is an alias the provider can silently retarget; this field
     # makes such a switch visible in the series (the model-side prompt_hash, ISSUE_33).
     model_snapshot: str = ''
+    # Why this pass ran (ISSUE_87) — resolved by the trigger, never guessed from the timestamp:
+    #   'scheduled' the planned tick (bar close) · 'boot' the first pass after a process start ·
+    #   'breaking'  an out-of-band wake (ISSUE_11) · 'manual' run_cli · 'external' POST /run.
+    # A scheduled bar-close pass, a restart and a breaking wake were byte-indistinguishable
+    # downstream before this (`is_breaking` is the LLM's confirmation, not the pass's cause).
+    # Always serialized: '' means "unknown, produced before this field existed" — a trigger reason
+    # applies to every pass, so an absent value can only be old data, never "not applicable".
+    # Plain `str`, not the `TriggerReason` Literal, so an archived envelope carrying a value a
+    # later version introduced still parses (the envelope contract outranks type strictness).
+    trigger_reason: str = ''
     sources_configured: int = 0
     sources_reached: int = 0
     articles_found: int = 0
@@ -161,6 +171,22 @@ class AnalysisEnvelope(BaseModel, Generic[T]):
     schema_version: str = '1.0'
     pipeline_id: str
     outcome_type: str
+    # Where the data came from. The engine always produces 'live'; the mock generator stamps
+    # 'synthetic'. A naming convention alone could not carry this: the Testing IDE found a
+    # generated week and a real week with byte-identical provenance, because the generator mirrors
+    # `prompt_hash` on purpose (the prompt really is the same one) and only the date told them
+    # apart — an unwritten rule no tool checks. The origin is a property of the data, so it travels
+    # with the data. Default 'live' keeps pre-change archived envelopes parseable; a consumer reads
+    # an absent field as "unknown, produced before this existed".
+    data_origin: Literal['live', 'synthetic'] = 'live'
+    # Input provenance (ISSUE_85) — the configuration twin of `prompt_hash` below. Fingerprints
+    # the *merged* pipeline config plus its *resolved* source set plus the score-defining slice
+    # of the app config, so a feed added, disabled or re-weighted is visible downstream instead
+    # of hiding behind byte-identical provenance (the archive's 2026-07-24 symbol expansion is
+    # the live example). Two archive days are comparable when `prompt_hash` AND this agree.
+    # Default '' keeps pre-change archived envelopes parseable; a consumer reads an absent field
+    # as "unknown, produced before this existed" — never as "same as the neighbouring day".
+    config_fingerprint: str = ''
     # Prompt provenance (ISSUE_33): `prompt_id` + `prompt_version` name the prompt series;
     # `prompt_hash` fingerprints the template body so a silent edit is visible downstream.
     # Populated from PromptMetadata when the envelope is assembled (ISSUE_7); default '' keeps

@@ -352,6 +352,41 @@
                 "order": 3
             }
         },
+        {
+            // 🧪 SYNTHETIC — this writes MOCK envelopes, not engine output. It sits in this group
+            // because it produces the same archive shape for the same consumer (the Testing IDE),
+            // which is exactly why the distinction has to be loud: never point --out at
+            // `data/signal_export`, and keep the `_mock` suffix on --pipeline-id so a generated
+            // stream can never land in a real stream's directory.
+            // One forex week: 1008 cycles x 10min = 7 days, rotated into one file per UTC day.
+            // No database, no API — pure local file writing, so it costs nothing and needs nothing.
+            "name": "🧪 Mock Data: Forex week (synthetic — NOT engine output)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/experiments/mock_signal_data/generate.py",
+            "args": [
+                "--cycles",
+                "1008",
+                "--start",
+                "2026-04-27T00:00:00Z",
+                "--rotate",
+                "daily",
+                "--prompt",
+                "forex",
+                "--pipeline-id",
+                "forex_macro_sentiment_mock",
+                "--symbols",
+                "EURUSD,GBPUSD",
+                "--out",
+                "data/mock_signals/forex_mock_week"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "06_output",
+                "order": 4
+            }
+        },
         // ====================================================
         // 🗄 DATABASE MANAGEMENT (the schema itself — ISSUE_14)
         // ====================================================

@@ -26,6 +26,21 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+async def _until(predicate, timeout: float = 2.0) -> None:
+    """Wait until `predicate()` holds, or the timeout expires.
+
+    These tests assert that a loop *kept ticking*, not that it ticked within some number of
+    milliseconds — but a fixed `sleep()` silently asserts the second. On a loaded machine two
+    millisecond-interval passes can need more than 20 ms of wall clock, and the assertion fails for
+    a reason that has nothing to do with the behaviour under test (observed twice while the full
+    suite ran under load). Waiting on the condition keeps the fast path fast and the slow path
+    correct; the generous timeout only bounds a genuine hang.
+    """
+    deadline = time.monotonic() + timeout
+    while not predicate() and time.monotonic() < deadline:
+        await asyncio.sleep(0.001)
+
+
 # --- interval trigger -----------------------------------------------------------------
 
 def test_trigger_fires_immediately_then_on_interval():
@@ -34,7 +49,7 @@ def test_trigger_fires_immediately_then_on_interval():
     async def _scenario():
         trigger = IntervalTrigger(interval_seconds=0.01)
 
-        async def tick():
+        async def tick(reason):
             calls.append(asyncio.get_event_loop().time())
             if len(calls) >= 3:
                 await trigger.stop()
@@ -49,7 +64,7 @@ def test_trigger_stop_interrupts_the_wait():
     async def _scenario():
         trigger = IntervalTrigger(interval_seconds=60)   # would block a minute
 
-        async def tick():
+        async def tick(reason):
             pass
 
         task = asyncio.create_task(trigger.start(tick))
@@ -85,7 +100,7 @@ def test_ingest_worker_records_state():
     async def _scenario():
         worker = _ingest_worker(ingestor)
         task = asyncio.create_task(worker.start())
-        await asyncio.sleep(0.02)
+        await _until(lambda: worker.get_state().runs >= 2)
         await worker.stop()
         await task
         return worker.get_state()
@@ -102,7 +117,7 @@ def test_failing_pass_never_kills_the_loop():
     async def _scenario():
         worker = _ingest_worker(ingestor)
         task = asyncio.create_task(worker.start())
-        await asyncio.sleep(0.02)
+        await _until(lambda: ingestor.runs >= 2)
         await worker.stop()
         await task
         return worker.get_state()
@@ -140,7 +155,9 @@ def test_a_blocked_worker_does_not_stop_another():
         stuck = _ingest_worker(blocked)
         fine = _ingest_worker(healthy)
         tasks = [asyncio.create_task(stuck.start()), asyncio.create_task(fine.start())]
-        await asyncio.sleep(0.06)              # the blocked pass is still inside its first run
+        # Wait for the healthy worker to prove it kept going — the blocked one is still inside its
+        # first pass either way (it blocks for 0.15s, far longer than this takes).
+        await _until(lambda: healthy.runs >= 2)
         assert healthy.runs >= 2, 'the healthy worker must keep passing while the other hangs'
         for worker in (stuck, fine):
             await worker.stop()
@@ -174,6 +191,7 @@ def test_a_pass_over_the_deadline_is_abandoned_and_the_worker_recovers():
 class _FakePipeline:
     def __init__(self):
         self.runs = 0
+        self.reasons = []          # why each pass ran, as the worker passed it down (ISSUE_87)
 
     def get_config(self):
         from finiexragengine.types.config_types.pipeline_config_types import PipelineConfig
@@ -183,12 +201,13 @@ class _FakePipeline:
             llm={'model': 'gpt-4o-mini'}, source_set='crypto_news',
             trigger={'type': 'interval', 'timeframe': 'M10'})
 
-    def run(self) -> SentimentEnvelope:
+    def run(self, reason) -> SentimentEnvelope:
         self.runs += 1
+        self.reasons.append(reason)
         return SentimentEnvelope(
             pipeline_id='p', outcome_type='sentiment_fear_greed', prompt_version='2',
-            timestamp=datetime.now(timezone.utc),
-            status='success', result=[], metadata=RunMetadata(model='gpt-4o-mini'))
+            timestamp=datetime.now(timezone.utc), status='success', result=[],
+            metadata=RunMetadata(model='gpt-4o-mini', trigger_reason=reason))
 
 
 def test_eval_worker_runs_pipeline_and_tracks_state():
@@ -205,6 +224,11 @@ def test_eval_worker_runs_pipeline_and_tracks_state():
     state = _run(_scenario())
     assert state.name == 'eval:p' and pipeline.runs >= 2
     assert state.last_status == 'ok' and 'success' in state.last_detail
+    # The reason reaches the pipeline (ISSUE_87): the worker's first pass is a boot pass, the
+    # ones after it are scheduled — and it opens `last_detail`, the one string the log line, the
+    # live activity stream and /health all render, so it lands in the visible history too.
+    assert pipeline.reasons[0] == 'boot' and pipeline.reasons[1] == 'scheduled'
+    assert state.last_detail.startswith('scheduled · ')
 
 
 # --- supervisor build (uses the real registries over tmp configs) ---------------------

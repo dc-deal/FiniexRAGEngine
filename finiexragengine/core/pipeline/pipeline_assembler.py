@@ -2,10 +2,12 @@
 import logging
 
 from finiexragengine.configuration.app_config_manager import AppConfigManager
+from finiexragengine.configuration.config_fingerprint import compute_config_fingerprint
 from finiexragengine.configuration.source_set_registry import SourceSetRegistry
 from finiexragengine.core.llm.prompt_builder import PromptBuilder
 from finiexragengine.core.llm.provider_factory import build_provider
 from finiexragengine.core.observability.budget_guard import BudgetGuard
+from finiexragengine.core.observability.config_fingerprint_store import ConfigFingerprintStore
 from finiexragengine.core.observability.cost_recorder import CostRecorder
 from finiexragengine.core.observability.source_health_store import SourceHealthStore
 from finiexragengine.core.observability.source_poll_log import SourcePollLog
@@ -63,6 +65,9 @@ class PipelineAssembler:
         # Shared feed groups (ISSUE_10): constellations reference a source-set by id;
         # an unresolved reference fails here at assembly — before any spend.
         self._source_sets = app.build_source_set_registry()
+        # Provenance registry (ISSUE_85): what each stamped config_fingerprint stood for.
+        # One row per distinct setup, written when a runner is built — never on the pass path.
+        self._fingerprint_store = ConfigFingerprintStore(database_url)
 
     def get_source_sets(self) -> SourceSetRegistry:
         return self._source_sets
@@ -191,10 +196,23 @@ class PipelineAssembler:
         # on every envelope, valid even for a pass where all evals fail.
         prompt_builder = PromptBuilder(self._app.get_prompts_dir())
         prompt_metadata = prompt_builder.metadata(config.prompt.name, config.prompt.version)
+        # The configuration fingerprint takes the identical path (ISSUE_85): resolved once from
+        # the MERGED config plus the RESOLVED source set, registered with its canonical payload,
+        # then carried. It describes the configuration this process loaded — a later edit to a
+        # config file cannot change a running engine, so the stamp stays true until the next boot.
+        fingerprint = compute_config_fingerprint(config, source_set, self._cfg)
+        first_seen = self._fingerprint_store.register(fingerprint)
+        # Deliberately right behind the startup [OVERRIDE] lines: first what diverges, then what
+        # follows from it. `(new)` says this start breaks the comparable series — the marker that
+        # was missing when the symbol set grew on 2026-07-24.
+        logger.info('[CONFIG] %s · source_set %s · config_fingerprint %s%s',
+                    config.pipeline_id, source_set.source_set_id, fingerprint.value,
+                    ' (new)' if first_seen else '')
         return PipelineRunner(config, ingestor, evaluator, prompt_metadata,
                               llm_model=config.llm.model, cost_recorder=self._recorder,
                               outcome_store=self._outcome_store,
-                              source_reach=source_reach)
+                              source_reach=source_reach,
+                              config_fingerprint=fingerprint.value)
 
     def attach_all(self, registry: PipelineRegistry, include_ingest: bool = True) -> None:
         """Give every registered pipeline its real runner (replaces the scaffold mock)."""

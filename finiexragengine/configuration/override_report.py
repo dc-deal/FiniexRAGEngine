@@ -39,6 +39,16 @@ logger = logging.getLogger(__name__)
 # File labels already reported in this process — the once-per-startup spam guard.
 _REPORTED: set = set()
 
+# Reports emitted before the root logger had any handler, kept for one replay. The API boot
+# order makes this the normal case for `app_config.json`: `AppConfigManager()` is constructed
+# (and reports) *before* `configure_logging`, so its line reached only Python's `lastResort`
+# handler — bare on stderr, absent from the rotating file, and invisible in live mode where
+# rich owns the console. The registries load after logging and were unaffected, which is why
+# only the app-config line went missing. That is the one override layer carrying secrets and
+# score-defining leaves (`llm.temperature`, `embedding.model` — both in the config fingerprint,
+# ISSUE_85), so losing it from the durable record is exactly what this report exists to prevent.
+_PENDING: List[str] = []
+
 # Sentinel: the tracked base file has no such key (the '(added)' case) — distinct from
 # an explicit JSON null.
 _ABSENT: Any = object()
@@ -157,7 +167,24 @@ def emit_override_report(file_label: str, entries: List[OverrideEntry]) -> None:
     if not entries or file_label in _REPORTED:
         return
     _REPORTED.add(file_label)
-    logger.warning('%s', format_override_report(file_label, entries))
+    report = format_override_report(file_label, entries)
+    # Say it immediately either way: a process that never configures logging (every CLI) must
+    # still get the line, even if only via `lastResort`. Buffering *instead* would silence them.
+    logger.warning('%s', report)
+    if not logging.getLogger().handlers:
+        _PENDING.append(report)
+
+
+def replay_pending_reports() -> None:
+    """Re-log what was reported before logging was configured; clears the buffer.
+
+    Called by `configure_logging` rather than by each entry point, so a new one cannot forget it —
+    the same reason the registry factories are the only load path (a forgotten override must never
+    steer a run silently). Idempotent: a re-configure finds the buffer empty and does nothing.
+    """
+    for report in _PENDING:
+        logger.warning('%s', report)
+    _PENDING.clear()
 
 
 def _short_path(path: str) -> str:

@@ -138,3 +138,52 @@ def test_concurrent_passes_do_not_cross_attribute(recorder):
     assert small == pytest.approx(0.00015)         # 1000/1k * 0.00015
     assert large == pytest.approx(0.0006)          # 4000/1k * 0.00015
     assert recorder.session_usd == pytest.approx(0.00075)   # the total still sees both
+
+
+# --- ISSUE_87: why the pass ran, stamped on every row it produces ---------------------------
+
+
+def test_the_pass_reason_lands_on_every_row_of_the_pass(recorder, clean_db):
+    """One binding covers the whole pass — including calls no call site could annotate itself.
+
+    An eval pass pays for its query embeddings as well as the completion; an ingest pass pays for
+    embeddings and has no envelope at all. Reading the reason off the scope is what lets both
+    answer "what do out-of-band wakes cost us" without threading a value through every caller.
+    """
+    with recorder.pass_scope('breaking'):
+        recorder.record('ingest_query', 'text-embedding-3-small', 100)
+        recorder.record('llm_eval', 'gpt-4o-mini', 1000, 500)
+    recorder.record('ingest_news', 'text-embedding-3-small', 100)   # outside any scope
+
+    with psycopg.connect(clean_db) as conn, conn.cursor() as cur:
+        cur.execute('SELECT section, trigger_reason FROM cost_log ORDER BY id')
+        assert cur.fetchall() == [('ingest_query', 'breaking'),
+                                  ('llm_eval', 'breaking'),
+                                  # NULL, not a guessed default: nobody said why this one ran.
+                                  ('ingest_news', None)]
+
+
+def test_concurrent_passes_do_not_cross_attribute_their_reason(recorder, clean_db):
+    """The ISSUE_74 isolation guarantee, extended to the new column.
+
+    A breaking wake and a scheduled tick genuinely overlap in production — two eval workers on
+    their own clocks. If the binding leaked between them, the cost rows would claim the wrong
+    cause, which is worse than having no column: a wrong answer reads as a confident one.
+    """
+    async def _scenario() -> None:
+        async def one_pass(reason: str, prompt_tokens: int) -> None:
+            with recorder.pass_scope(reason):
+                await asyncio.to_thread(recorder.record, 'llm_eval', 'gpt-4o-mini',
+                                        prompt_tokens, 0)
+                await asyncio.sleep(0.01)      # hold the scope open while the other records
+                await asyncio.to_thread(recorder.record, 'llm_eval', 'gpt-4o-mini',
+                                        prompt_tokens, 0)
+
+        await asyncio.gather(one_pass('breaking', 1000), one_pass('scheduled', 4000))
+
+    asyncio.run(_scenario())
+    with psycopg.connect(clean_db) as conn, conn.cursor() as cur:
+        cur.execute('SELECT trigger_reason, prompt_tokens FROM cost_log')
+        rows = cur.fetchall()
+    assert sorted(rows) == [('breaking', 1000), ('breaking', 1000),
+                            ('scheduled', 4000), ('scheduled', 4000)]

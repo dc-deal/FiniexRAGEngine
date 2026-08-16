@@ -77,7 +77,9 @@ def build_sentiment_router(registry: PipelineRegistry,
             # An unknown pipeline is a caller error, not a run failure — plain 404.
             raise HTTPException(status_code=404, detail=str(exc))
         try:
-            return pipeline.run()
+            # A caller outside the engine asked for this pass (ISSUE_87) — not the engine's own
+            # clock. The envelope says so, so a consumer can tell it from the bar-close series.
+            return pipeline.run('external')
         except Exception as exc:   # noqa: BLE001 — the contract demands a parseable envelope
             logger.exception('pipeline %s run failed', pipeline_id)
             envelope = _error_envelope(pipeline, exc)
@@ -104,7 +106,9 @@ def build_sentiment_router(registry: PipelineRegistry,
             except Exception:   # noqa: BLE001 — degrade to a fresh run, never a 500
                 logger.exception('outcome store read failed for %s', pipeline_id)
         try:
-            return pipeline.run()
+            # A caller outside the engine asked for this pass (ISSUE_87) — not the engine's own
+            # clock. The envelope says so, so a consumer can tell it from the bar-close series.
+            return pipeline.run('external')
         except Exception as exc:   # noqa: BLE001
             logger.exception('pipeline %s latest failed', pipeline_id)
             envelope = _error_envelope(pipeline, exc)

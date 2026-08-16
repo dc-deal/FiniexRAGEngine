@@ -16,6 +16,7 @@ from finiexragengine.core.ui.engine_stats import (
 )
 from finiexragengine.types.config_types.source_set_types import SourceSetConfig
 from finiexragengine.types.ingest_types import IngestResult
+from finiexragengine.types.trigger_types import TriggerReason
 from finiexragengine.types.worker_types import WorkerState
 
 logger = logging.getLogger(__name__)
@@ -94,14 +95,16 @@ class IngestWorker:
     async def stop(self) -> None:
         await self._trigger.stop()
 
-    async def _pass(self) -> None:
+    async def _pass(self, reason: TriggerReason) -> None:
         with ExitStack() as stack:
             started = perf_counter()
             # This pass's own spend accumulator (ISSUE_74) — entered on the event loop, so the
             # context copy `asyncio.to_thread` makes carries it into the worker thread. Replaces a
             # session delta against the shared recorder, which was only correct while every pass
-            # was serialized. Without a recorder there is nothing to account.
-            spend = (stack.enter_context(self._cost_recorder.pass_scope())
+            # was serialized. Without a recorder there is nothing to account. The scope also binds
+            # WHY the pass runs (ISSUE_87), so every embed row it writes carries it — the ingest
+            # path has no envelope to carry the fact.
+            spend = (stack.enter_context(self._cost_recorder.pass_scope(reason))
                      if self._cost_recorder else PassSpend())
             self._state.last_run_at = datetime.now(timezone.utc)
             try:
@@ -111,20 +114,24 @@ class IngestWorker:
                 # the worker resumes next tick instead of staying dead until a restart.
                 result = await asyncio.wait_for(asyncio.to_thread(self._ingestor.run),
                                                 timeout=self._pass_timeout_seconds)
+            # Every branch opens its detail with the pass's reason (ISSUE_87) — the ingest twin of
+            # the eval worker's line, and the only place an ingest pass can show it at all.
             except asyncio.TimeoutError:
                 self._state.last_status = 'error'
-                self._state.last_detail = f'pass exceeded {self._pass_timeout_seconds}s deadline'
-                logger.warning('[%s] pass exceeded %ds deadline — abandoned, next tick continues',
-                               self._state.name, self._pass_timeout_seconds)
+                self._state.last_detail = (f'{reason} · pass exceeded '
+                                           f'{self._pass_timeout_seconds}s deadline')
+                logger.warning('[%s] %s pass exceeded %ds deadline — abandoned, next tick continues',
+                               self._state.name, reason, self._pass_timeout_seconds)
             except Exception as exc:   # noqa: BLE001 — a pass must never kill the loop
                 self._state.last_status = 'error'
-                self._state.last_detail = str(exc)
-                logger.exception('[%s] pass failed — next tick continues', self._state.name)
+                self._state.last_detail = f'{reason} · {exc}'
+                logger.exception('[%s] %s pass failed — next tick continues',
+                                 self._state.name, reason)
             else:
                 usd = spend.usd
                 self._state.last_status = 'ok'
                 # Prefix a suspended pass (provider quota, ISSUE_47) so it is visible, not silent.
-                prefix = 'suspended (quota) · ' if result.suspended else ''
+                prefix = f'{reason} · ' + ('suspended (quota) · ' if result.suspended else '')
                 # Tokens belong in `last_detail`, not only in the log call: this one string is
                 # what the log line, the activity stream AND /health all render (ISSUE_79). Split
                 # across two places it produced three different versions of the same pass.

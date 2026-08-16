@@ -69,13 +69,15 @@ same shell regardless of the signal type:
   "schema_version": "1.0",
   "pipeline_id": "crypto_sentiment",
   "outcome_type": "sentiment_fear_greed",
+  "data_origin": "live",
+  "config_fingerprint": "904c2e16bbfb",
   "prompt_version": "1",
   "prompt_id": "sentiment-crypto",
   "prompt_hash": "1f191112898f",
   "timestamp": "2026-06-28T11:00:00Z",
   "status": "success",
   "result": [ { "symbol": "BTCUSD", "signal": "HOLD", "sentiment_score": 0.45, "confidence": 0.78, "reasoning": "...", "basis": "llm", "base_currency": "BTC", "quote_currency": "USD", "sources": [ ... ] } ],
-  "metadata": { "model": "gpt-4o-mini", "articles_relevant": 23, "processing_time_ms": 1823, "cost_usd": 0.0029, "stage_timings": [ ... ] },
+  "metadata": { "model": "gpt-4o-mini", "trigger_reason": "scheduled", "articles_relevant": 23, "processing_time_ms": 1823, "cost_usd": 0.0029, "stage_timings": [ ... ] },
   "errors": []
 }
 ```

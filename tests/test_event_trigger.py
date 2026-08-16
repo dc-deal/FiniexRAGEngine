@@ -11,8 +11,8 @@ def test_fires_immediately_then_on_interval_without_a_subscription():
     async def _scenario():
         trigger = EventTrigger(lambda: 0.01)          # tiny wait stands in for a bar close
 
-        async def tick():
-            calls.append(1)
+        async def tick(reason):
+            calls.append(reason)
             if len(calls) >= 3:
                 await trigger.stop()
 
@@ -20,6 +20,9 @@ def test_fires_immediately_then_on_interval_without_a_subscription():
 
     asyncio.run(_scenario())
     assert len(calls) == 3          # immediate first run, then per interval
+    # …and each pass says why it ran (ISSUE_87): the immediate one because the process started,
+    # the rest because the boundary came round. Nothing here is inferred from a timestamp.
+    assert calls == ['boot', 'scheduled', 'scheduled']
 
 
 def test_wait_provider_is_re_read_every_cycle():
@@ -36,7 +39,7 @@ def test_wait_provider_is_re_read_every_cycle():
 
         trigger = EventTrigger(_provider)
 
-        async def tick():
+        async def tick(reason):
             waits.append(1)
             if len(waits) >= 3:
                 await trigger.stop()
@@ -56,8 +59,8 @@ def test_breaking_wake_fires_before_the_interval_elapses():
         subscription = bus.subscribe('s', min_importance=2)
         trigger = EventTrigger(lambda: 60, subscription=subscription)  # would block a minute
 
-        async def tick():
-            calls.append(1)
+        async def tick(reason):
+            calls.append(reason)
             if len(calls) == 1:
                 bus.publish('s', 3)          # HIGH candidate -> should wake at once
             else:
@@ -68,6 +71,10 @@ def test_breaking_wake_fires_before_the_interval_elapses():
 
     asyncio.run(_scenario())
     assert len(calls) == 2          # immediate run + woke on breaking, not after 60s
+    # The wake is named at its source (ISSUE_87). This is the distinction nothing carried before:
+    # `is_breaking` on the result is the LLM's later verdict, not the reason the pass happened —
+    # a wake the model does not confirm would otherwise look exactly like a scheduled tick.
+    assert calls == ['boot', 'breaking']
 
 
 def test_stop_interrupts_the_wait_promptly():
@@ -76,7 +83,7 @@ def test_stop_interrupts_the_wait_promptly():
         subscription = bus.subscribe('s', min_importance=2)
         trigger = EventTrigger(lambda: 60, subscription=subscription)
 
-        async def tick():
+        async def tick(reason):
             pass
 
         task = asyncio.create_task(trigger.start(tick))

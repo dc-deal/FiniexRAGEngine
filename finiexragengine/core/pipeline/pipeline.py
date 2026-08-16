@@ -9,6 +9,7 @@ from finiexragengine.types.outcome_types import (
     RunMetadata,
     SentimentResult,
 )
+from finiexragengine.types.trigger_types import TriggerReason
 
 
 class Pipeline:
@@ -32,13 +33,18 @@ class Pipeline:
         """Attach the real staged runner (built by the PipelineAssembler, ISSUE_7)."""
         self._runner = runner
 
-    def run(self) -> AnalysisEnvelope:
-        """Execute the pipeline once and return its outcome envelope."""
-        if self._runner is not None:
-            return self._runner.run()
-        return self._mock_envelope()
+    def run(self, reason: TriggerReason) -> AnalysisEnvelope:
+        """Execute the pipeline once and return its outcome envelope.
 
-    def _mock_envelope(self) -> AnalysisEnvelope:
+        `reason` says why this pass runs (ISSUE_87) and is stamped on the envelope. Required, not
+        defaulted: every caller knows its own reason, and a default would quietly reintroduce the
+        blind spot — a scheduled tick, a restart and a breaking wake looking identical downstream.
+        """
+        if self._runner is not None:
+            return self._runner.run(reason)
+        return self._mock_envelope(reason)
+
+    def _mock_envelope(self, reason: TriggerReason) -> AnalysisEnvelope:
         """Scaffold fallback: a valid, deterministic envelope without any wiring.
 
         Envelope invariant: every requested symbol is always present in the result —
@@ -63,5 +69,6 @@ class Pipeline:
             timestamp=now,
             status='success',
             result=results,
-            metadata=RunMetadata(model='mock'),
+            # The reason is known even here (ISSUE_87) — the scaffold really did run for it.
+            metadata=RunMetadata(model='mock', trigger_reason=reason),
         )

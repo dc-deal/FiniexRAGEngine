@@ -2,6 +2,7 @@
 import asyncio
 
 from finiexragengine.core.triggers.abstract_trigger import AbstractTrigger, RunCallback
+from finiexragengine.types.trigger_types import TriggerReason
 
 
 class IntervalTrigger(AbstractTrigger):
@@ -19,8 +20,13 @@ class IntervalTrigger(AbstractTrigger):
 
     async def start(self, run: RunCallback) -> None:
         self._stopped.clear()
+        # The immediate first run is a *boot* pass, not a scheduled one (ISSUE_87): it happens
+        # because the process started, not because a tick was due. It wins even when the start
+        # coincides with a boundary — the reason names why the pass ran *now*.
+        reason: TriggerReason = 'boot'
         while not self._stopped.is_set():
-            await run()
+            await run(reason)
+            reason = 'scheduled'
             # Sleep OR stop, whichever comes first — a stop during the wait exits
             # promptly instead of blocking shutdown for up to a full interval.
             try:

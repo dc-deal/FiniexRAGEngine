@@ -4,6 +4,7 @@ Fakes sit at the runner's injection seam (Ingestor / SymbolEvaluator), so these 
 exercise orchestration + assembly only: every-symbol-present, partial-over-error, the
 RunError taxonomy, metric capture and the prompt fingerprint (ISSUE_33).
 """
+import json
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import List
@@ -36,6 +37,8 @@ from finiexragengine.types.llm_types import LlmUsage
 from finiexragengine.types.outcome_types import (
     ArticleRef,
     RetrievalFunnel,
+    RunMetadata,
+    SentimentEnvelope,
     SentimentResult,
     StageTiming,
 )
@@ -118,7 +121,8 @@ class _FakeRecorder:
         self._spend = None
 
     @contextmanager
-    def pass_scope(self):
+    def pass_scope(self, reason=''):
+        self.reason = reason              # the pass's trigger reason (ISSUE_87), as the real one binds it
         self._spend = PassSpend()
         try:
             yield self._spend
@@ -172,7 +176,7 @@ def test_clean_pass_assembles_success_envelope():
     config = _config(['BTCUSD', 'ETHUSD'])
     envelope = _runner(config, _FakeIngestor(),
                        _FakeEvaluator({'BTCUSD': _eval('BTCUSD'),
-                                       'ETHUSD': _eval('ETHUSD')})).run()
+                                       'ETHUSD': _eval('ETHUSD')})).run('scheduled')
     assert envelope.status == 'success'
     assert [r.symbol for r in envelope.result] == ['BTCUSD', 'ETHUSD']
     # Prompt fingerprint stamped from the resolved metadata (ISSUE_33).
@@ -202,7 +206,7 @@ def test_same_query_symbols_share_one_analysis_fanned_out():
                  {'key': 'ETHEUR', 'base': 'ETH', 'quote': 'EUR', 'query': 'Ethereum ETH'}],
         llm={'model': 'gpt-4o-mini'}, source_set='test_news')
     evaluator = _FakeEvaluator({'ETHUSD': _eval('ETHUSD')})       # only the canonical is evaluated
-    envelope = _runner(config, _FakeIngestor(), evaluator).run()
+    envelope = _runner(config, _FakeIngestor(), evaluator).run('scheduled')
     assert evaluator.calls == 1                                   # ONE LLM call for the pair
     rows = {r.symbol: r for r in envelope.result}
     assert set(rows) == {'ETHUSD', 'ETHEUR'}                      # both labels still emitted
@@ -217,7 +221,7 @@ def test_result_rows_carry_base_and_quote_currency():
     config = _config(['BTCUSD', 'ETHEUR'])
     envelope = _runner(config, _FakeIngestor(),
                        _FakeEvaluator({'BTCUSD': _eval('BTCUSD'),
-                                       'ETHEUR': LLMTimeoutError('slow')})).run()   # llm + degraded HOLD
+                                       'ETHEUR': LLMTimeoutError('slow')})).run('scheduled')   # llm + degraded HOLD
     rows = {r.symbol: r for r in envelope.result}
     assert (rows['BTCUSD'].base_currency, rows['BTCUSD'].quote_currency) == ('BTC', 'USD')
     assert (rows['ETHEUR'].base_currency, rows['ETHEUR'].quote_currency) == ('ETH', 'EUR')  # HOLD stamped too
@@ -227,7 +231,7 @@ def test_failed_symbol_degrades_to_hold_and_partial():
     config = _config(['BTCUSD', 'ETHUSD'])
     envelope = _runner(config, _FakeIngestor(),
                        _FakeEvaluator({'BTCUSD': _eval('BTCUSD'),
-                                       'ETHUSD': LLMTimeoutError('too slow')})).run()
+                                       'ETHUSD': LLMTimeoutError('too slow')})).run('scheduled')
     assert envelope.status == 'partial'
     # Contract: the failed symbol is still present — degraded, never missing.
     eth = {r.symbol: r for r in envelope.result}['ETHUSD']
@@ -245,7 +249,7 @@ def test_incoherent_row_degrades_via_guard_to_hold_and_partial():
     bad = _eval('ETHUSD')
     bad.result = bad.result.model_copy(update={'sentiment_score': -0.7})
     envelope = _runner(config, _FakeIngestor(),
-                       _FakeEvaluator({'BTCUSD': _eval('BTCUSD'), 'ETHUSD': bad})).run()
+                       _FakeEvaluator({'BTCUSD': _eval('BTCUSD'), 'ETHUSD': bad})).run('scheduled')
     assert envelope.status == 'partial'
     eth = {r.symbol: r for r in envelope.result}['ETHUSD']
     assert eth.signal == 'HOLD' and eth.confidence == 0.0 and eth.basis == 'degraded'
@@ -263,7 +267,7 @@ def test_guard_degraded_row_keeps_tokens_and_raw_output():
     bad = _eval('BTCUSD')
     bad.result = bad.result.model_copy(update={'sentiment_score': -0.9})
     envelope = _runner(_config(['BTCUSD']), _FakeIngestor(),
-                       _FakeEvaluator({'BTCUSD': bad}), store=store).run()
+                       _FakeEvaluator({'BTCUSD': bad}), store=store).run('scheduled')
     assert envelope.metadata.per_symbol_tokens == {'BTCUSD': 120}
     assert store.saved[0][1] == {'BTCUSD': {'signal': 'BUY'}}
     assert envelope.result[0].signal == 'HOLD'
@@ -276,7 +280,7 @@ def test_guard_tolerances_come_from_the_constellation():
         update={'output_guard': OutputGuardConfig(score_signal_tolerance=0.8)})
     bad = _eval('BTCUSD')
     bad.result = bad.result.model_copy(update={'sentiment_score': -0.7})
-    envelope = _runner(config, _FakeIngestor(), _FakeEvaluator({'BTCUSD': bad})).run()
+    envelope = _runner(config, _FakeIngestor(), _FakeEvaluator({'BTCUSD': bad})).run('scheduled')
     assert envelope.status == 'success'
     assert envelope.result[0].signal == 'BUY'
 
@@ -287,7 +291,7 @@ def test_budget_exceeded_degrades_to_hold_and_partial():
     config = _config(['BTCUSD', 'ETHUSD'])
     envelope = _runner(config, _FakeIngestor(),
                        _FakeEvaluator({'BTCUSD': _eval('BTCUSD'),
-                                       'ETHUSD': BudgetExceededError('provider quota reached')})).run()
+                                       'ETHUSD': BudgetExceededError('provider quota reached')})).run('scheduled')
     assert envelope.status == 'partial'
     eth = {r.symbol: r for r in envelope.result}['ETHUSD']
     assert eth.signal == 'HOLD' and eth.basis == 'degraded'
@@ -300,7 +304,7 @@ def test_all_symbols_budget_suspended_is_partial_not_error():
     config = _config(['BTCUSD', 'ETHUSD'])
     envelope = _runner(config, _FakeIngestor(),
                        _FakeEvaluator({'BTCUSD': BudgetExceededError('quota'),
-                                       'ETHUSD': BudgetExceededError('quota')})).run()
+                                       'ETHUSD': BudgetExceededError('quota')})).run('scheduled')
     assert envelope.status == 'partial'                # not 'error' — a deliberate pause, rows present
     assert {r.symbol for r in envelope.result} == {'BTCUSD', 'ETHUSD'}
     assert all(r.signal == 'HOLD' for r in envelope.result)
@@ -311,7 +315,7 @@ def test_failed_source_records_taxonomy_and_partial():
     config = _config(['BTCUSD'])
     envelope = _runner(config, _FakeIngestor(failed={'s2': 'connection refused'}),
                        _FakeEvaluator({'BTCUSD': _eval('BTCUSD')}),
-                       reach=_FakeReach(configured=2, reached=1, unreached=['s2'])).run()
+                       reach=_FakeReach(configured=2, reached=1, unreached=['s2'])).run('scheduled')
     assert envelope.status == 'partial'
     assert envelope.errors[0].type == 'SOURCE_UNREACHABLE'
     assert 's2' in envelope.errors[0].message
@@ -325,7 +329,7 @@ def test_envelope_reports_the_census_it_is_given_never_a_derivation():
     config = _config(['BTCUSD'])
     envelope = _runner(config, _FakeIngestor(),          # no failure this pass ...
                        _FakeEvaluator({'BTCUSD': _eval('BTCUSD')}),
-                       reach=_FakeReach(configured=7, reached=6, unreached=['boe_news'])).run()
+                       reach=_FakeReach(configured=7, reached=6, unreached=['boe_news'])).run('scheduled')
 
     assert envelope.metadata.sources_configured == 7
     assert envelope.metadata.sources_reached == 6        # ... yet the gap is still reported
@@ -339,7 +343,7 @@ def test_a_gap_in_reach_degrades_the_run_even_with_no_failed_fetch():
     envelope = _runner(config, _FakeIngestor(),
                        _FakeEvaluator({'BTCUSD': _eval('BTCUSD')}),
                        reach=_FakeReach(configured=7, reached=6, unreached=[
-                           UnreachedSource('boe_news', 'quarantined until 07-18 14:39 UTC')])).run()
+                           UnreachedSource('boe_news', 'quarantined until 07-18 14:39 UTC')])).run('scheduled')
 
     assert envelope.status == 'partial'
     assert envelope.errors[0].type == 'SOURCE_UNREACHABLE'
@@ -355,7 +359,7 @@ def test_a_failed_fetch_is_reported_once_not_twice():
     envelope = _runner(config, _FakeIngestor(failed={'s2': 'connection refused'}),
                        _FakeEvaluator({'BTCUSD': _eval('BTCUSD')}),
                        reach=_FakeReach(configured=2, reached=1, unreached=[
-                           UnreachedSource('s2', 'last poll failed (UNREACHABLE, 1 consecutive)')])).run()
+                           UnreachedSource('s2', 'last poll failed (UNREACHABLE, 1 consecutive)')])).run('scheduled')
 
     source_errors = [e for e in envelope.errors if e.type == 'SOURCE_UNREACHABLE']
     assert len(source_errors) == 1
@@ -373,7 +377,7 @@ def test_the_same_gap_degrades_both_modes(inline):
                               _FakeEvaluator({'BTCUSD': _eval('BTCUSD')}), _META,
                               llm_model='gpt-4o-mini',
                               source_reach=_FakeReach(configured=7, reached=6,
-                                                      unreached=['boe_news'])).run()
+                                                      unreached=['boe_news'])).run('scheduled')
     assert envelope.status == 'partial'
     assert envelope.metadata.sources_reached == 6
     assert envelope.errors[0].type == 'SOURCE_UNREACHABLE'
@@ -385,7 +389,7 @@ def test_a_disabled_source_never_degrades_the_run():
     config = _config(['BTCUSD'])
     envelope = _runner(config, _FakeIngestor(),
                        _FakeEvaluator({'BTCUSD': _eval('BTCUSD')}),
-                       reach=_FakeReach(configured=7, reached=7, unreached=[])).run()
+                       reach=_FakeReach(configured=7, reached=7, unreached=[])).run('scheduled')
 
     assert envelope.status == 'success'
     assert envelope.errors == []
@@ -395,7 +399,7 @@ def test_all_symbols_failed_is_error_but_rows_remain():
     config = _config(['BTCUSD', 'ETHUSD'])
     envelope = _runner(config, _FakeIngestor(),
                        _FakeEvaluator({'BTCUSD': LLMApiError('down'),
-                                       'ETHUSD': VectorStoreError('db gone')})).run()
+                                       'ETHUSD': VectorStoreError('db gone')})).run('scheduled')
     # Nothing evaluated -> 'error'; the symbol invariant still holds (parseable superset).
     assert envelope.status == 'error'
     assert [r.symbol for r in envelope.result] == ['BTCUSD', 'ETHUSD']
@@ -417,7 +421,7 @@ def test_cost_usd_is_this_runs_spend_not_the_session_total():
 
     config = _config(['BTCUSD'])
     envelope = _runner(config, _FakeIngestor(),
-                       _SpendingEvaluator({'BTCUSD': _eval('BTCUSD')}), recorder).run()
+                       _SpendingEvaluator({'BTCUSD': _eval('BTCUSD')}), recorder).run('scheduled')
     assert envelope.metadata.cost_usd == pytest.approx(0.001)   # delta, not the total
 
 
@@ -426,7 +430,7 @@ def test_run_persists_envelope_with_raw_output():
     store = _FakeStore()
     config = _config(['BTCUSD'])
     envelope = _runner(config, _FakeIngestor(),
-                       _FakeEvaluator({'BTCUSD': _eval('BTCUSD')}), store=store).run()
+                       _FakeEvaluator({'BTCUSD': _eval('BTCUSD')}), store=store).run('scheduled')
     assert len(store.saved) == 1
     saved_envelope, raw_output = store.saved[0]
     assert saved_envelope is envelope
@@ -440,7 +444,7 @@ def test_no_data_rows_leave_no_raw_output():
     no_data.raw_output = {}
     store = _FakeStore()
     _runner(_config(['LTCUSD']), _FakeIngestor(),
-            _FakeEvaluator({'LTCUSD': no_data}), store=store).run()
+            _FakeEvaluator({'LTCUSD': no_data}), store=store).run('scheduled')
     assert store.saved[0][1] is None
 
 
@@ -449,7 +453,7 @@ def test_store_failure_degrades_pass_never_kills_it():
     store = _FakeStore(exc=VectorStoreError('db gone'))
     config = _config(['BTCUSD'])
     envelope = _runner(config, _FakeIngestor(),
-                       _FakeEvaluator({'BTCUSD': _eval('BTCUSD')}), store=store).run()
+                       _FakeEvaluator({'BTCUSD': _eval('BTCUSD')}), store=store).run('scheduled')
     assert envelope.status == 'partial'
     assert envelope.errors[-1].type == 'VECTOR_STORE_ERROR'
     assert 'not persisted' in envelope.errors[-1].message
@@ -465,7 +469,7 @@ def test_worker_mode_runner_skips_ingest_cleanly():
                               _FakeEvaluator({'BTCUSD': _eval('BTCUSD')}), _META,
                               llm_model='gpt-4o-mini',
                               source_reach=_FakeReach(configured=2, reached=1,
-                                                      unreached=['s2'])).run()
+                                                      unreached=['s2'])).run('scheduled')
     stages = [t.stage for t in envelope.metadata.stage_timings]
     assert 'fetch' not in stages and 'embed' not in stages   # no Phase A ran
     assert envelope.metadata.sources_configured == 2
@@ -482,7 +486,7 @@ def test_runner_without_a_reach_reports_zero_not_full():
     # and 0/0 says that. Defaulting to full reach would be the old lie with a new default.
     config = _config(['BTCUSD'])
     envelope = PipelineRunner(config, None, _FakeEvaluator({'BTCUSD': _eval('BTCUSD')}),
-                             _META, llm_model='gpt-4o-mini').run()
+                             _META, llm_model='gpt-4o-mini').run('scheduled')
     assert envelope.metadata.sources_configured == 0
     assert envelope.metadata.sources_reached == 0
 
@@ -494,7 +498,7 @@ def test_retrieval_funnel_lands_in_metadata():
     good.retrieval = RetrievalFunnel(in_window=20, floor_dropped=17, near_duplicates=1,
                                      kept=2, best_distance=0.61)
     envelope = _runner(_config(['BTCUSD']), _FakeIngestor(),
-                       _FakeEvaluator({'BTCUSD': good})).run()
+                       _FakeEvaluator({'BTCUSD': good})).run('scheduled')
     funnel = envelope.metadata.per_symbol_retrieval['BTCUSD']
     assert (funnel.in_window, funnel.floor_dropped, funnel.kept) == (20, 17, 2)
 
@@ -505,7 +509,7 @@ def test_fanned_config_stamps_variant_hints():
     config = _config(['BTCUSD']).model_copy(
         update={'pipeline_id': 'p_4o', 'variant_group': 'p', 'variant': '4o'})
     envelope = _runner(config, _FakeIngestor(),
-                       _FakeEvaluator({'BTCUSD': _eval('BTCUSD')})).run()
+                       _FakeEvaluator({'BTCUSD': _eval('BTCUSD')})).run('scheduled')
     assert (envelope.metadata.variant_group, envelope.metadata.variant) == ('p', '4o')
 
 
@@ -518,9 +522,89 @@ def test_taxonomy_fallback_is_partial_response():
 def test_format_envelope_run_renders_table_and_footer():
     config = _config(['BTCUSD'])
     envelope = _runner(config, _FakeIngestor(),
-                       _FakeEvaluator({'BTCUSD': _eval('BTCUSD')})).run()
+                       _FakeEvaluator({'BTCUSD': _eval('BTCUSD')})).run('scheduled')
     text = format_envelope_run(envelope)
     assert '=== Run: p' in text
     assert 'sentiment-crypto@v1 #cafe12345678' in text
     assert 'BTCUSD' in text
     assert '--- run metrics ---' in text              # the shared pattern footer
+
+
+def test_every_engine_envelope_declares_itself_live():
+    """Provenance the Testing IDE could not read off the data before (mock/real handoff).
+
+    A generated week and a real week carried byte-identical provenance — the generator mirrors
+    `prompt_hash` on purpose, so only the date told them apart. `data_origin` makes the fact a
+    property of the data instead of a naming convention a later import can bypass. The engine
+    never sets it explicitly; the default is what guarantees no envelope can escape unstamped.
+    """
+    envelope = SentimentEnvelope(
+        pipeline_id='crypto_sentiment', outcome_type='sentiment_fear_greed',
+        prompt_version='2', timestamp=datetime.now(timezone.utc), status='success',
+        metadata=RunMetadata(model='gpt-4o-mini'))
+    assert envelope.data_origin == 'live'
+    assert json.loads(envelope.model_dump_json())['data_origin'] == 'live'
+
+
+def test_a_pre_change_envelope_still_parses_as_live():
+    """Archived envelopes from before the field existed must stay readable, not become errors."""
+    old = {'schema_version': '1.0', 'pipeline_id': 'crypto_sentiment',
+           'outcome_type': 'sentiment_fear_greed', 'prompt_version': '2',
+           'timestamp': '2026-08-14T00:00:15.440452Z', 'status': 'success',
+           'result': [], 'metadata': {'model': 'gpt-4o-mini'}}
+    assert SentimentEnvelope(**old).data_origin == 'live'
+
+
+def test_the_config_fingerprint_is_stamped_even_when_every_eval_fails():
+    """ISSUE_85: the input fingerprint has the same guarantee as the prompt one (ISSUE_33).
+
+    Both are resolved once at assembly, so an envelope names the configuration that produced it
+    even on a pass where nothing could be produced — a total failure is still a data point about
+    a *specific* setup, and a consumer must be able to attribute it.
+    """
+    config = _config(['BTCUSD'])
+    runner = PipelineRunner(config, None,
+                            _FakeEvaluator({'BTCUSD': LLMTimeoutError('too slow')}), _META,
+                            llm_model='gpt-4o-mini', source_reach=_FakeReach(),
+                            config_fingerprint='904c2e16bbfb')
+    envelope = runner.run('breaking')
+    assert envelope.status == 'error'                      # nothing evaluated
+    assert envelope.config_fingerprint == '904c2e16bbfb'   # still attributable
+    assert envelope.metadata.trigger_reason == 'breaking'  # and so is the reason (ISSUE_87)
+    # The runner stamps what it was given and derives nothing itself — the assembler owns the
+    # computation, exactly like the prompt fingerprint next to it.
+    assert format_envelope_run(envelope).splitlines()[0].endswith(
+        'prompt sentiment-crypto@v1 #cafe12345678 · config #904c2e16bbfb) ===')
+
+
+def test_every_pass_says_why_it_ran():
+    """ISSUE_87: the reason is carried, never derived — the runner is not allowed to guess.
+
+    Before this, a scheduled bar-close pass, the first pass after a restart and an out-of-band
+    breaking wake produced byte-identical envelopes. `is_breaking` did not fill the gap: measured
+    over the real archive, 96 % of envelopes carrying it are ordinary scheduled passes that
+    re-confirmed a lingering story — it is the model's verdict, not the pass's cause.
+    """
+    for reason in ('scheduled', 'boot', 'breaking', 'manual', 'external'):
+        envelope = _runner(_config(['BTCUSD']), _FakeIngestor(),
+                           _FakeEvaluator({'BTCUSD': _eval('BTCUSD')})).run(reason)
+        assert envelope.metadata.trigger_reason == reason
+        # Serialized on every envelope, so a consumer never has to probe for the key.
+        assert json.loads(envelope.model_dump_json())['metadata']['trigger_reason'] == reason
+
+
+def test_a_pre_change_envelope_reads_as_unknown_not_as_scheduled():
+    """An archived envelope has no reason, and '' must not be mistaken for a category (ISSUE_87)."""
+    old = {'schema_version': '1.0', 'pipeline_id': 'crypto_sentiment',
+           'outcome_type': 'sentiment_fear_greed', 'prompt_version': '2',
+           'timestamp': '2026-08-14T00:00:15.440452Z', 'status': 'success',
+           'result': [], 'metadata': {'model': 'gpt-4o-mini'}}
+    assert SentimentEnvelope(**old).metadata.trigger_reason == ''
+
+
+def test_a_runner_without_a_resolved_fingerprint_stamps_nothing():
+    """'' = unknown, and the report stays silent rather than printing an empty marker."""
+    envelope = _runner(_config(['BTCUSD']), _FakeIngestor(),
+                       _FakeEvaluator({'BTCUSD': _eval('BTCUSD')})).run('scheduled')
+    assert envelope.config_fingerprint == ''
+    assert 'config #' not in format_envelope_run(envelope)
