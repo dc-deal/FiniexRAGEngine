@@ -66,7 +66,43 @@ A fingerprint is **not a build identifier**: two machines with different `user_c
 overlays legitimately produce different values for the same tracked config, because they run
 different configurations (see `docs/development/user_configs_overrides.md`).
 
-#### What it does *not* answer — and why that is the design
+### Why a pass ran: `metadata.trigger_reason` (ISSUE_87)
+
+The fingerprints say *what setup* produced an envelope; this says *what set the pass in motion*.
+The trigger is the only unit that knows, so it passes the reason into the run — it is never
+derived from the timestamp afterwards.
+
+| Value | Produced by |
+|---|---|
+| `scheduled` | the planned tick — bar close (eval) or interval (ingest) |
+| `boot` | the first pass after a process start, before the first wait |
+| `breaking` | an out-of-band wake over the breaking bus (ISSUE_11) |
+| `manual` | `run_cli` / `ingest_cli` — the operator at the console |
+| `external` | `POST /v1/pipelines/{id}/run` — a foreign caller |
+| `''` | unknown: produced before this field existed. **Never read as `scheduled`** |
+
+`boot` wins over `scheduled` when a process starts on a boundary: the field names why the pass ran
+*now*. The vocabulary is fixed in `types/trigger_types.py` (`TriggerReason`), but the envelope
+field is a plain `str` — an archived envelope carrying a value a later version introduced must
+still parse.
+
+**`is_breaking` is not a substitute.** It is the LLM's confirmation (`urgency >= threshold`), not
+the cause: measured over the real archive, 1,059 of 1,102 envelopes carrying it (96 %) are
+ordinary scheduled passes that re-confirmed a lingering story. Conversely 72 of 115 off-grid
+envelopes carry no breaking row at all — boot passes, manual runs, or wakes the model did not
+confirm.
+
+The reason is bound once per pass on the cost scope too, so **every `cost_log` row** the pass
+produces carries it (`trigger_reason`, migration 006) — including the ingest embeddings, which
+have no envelope. "What do out-of-band wakes cost us" is a `GROUP BY`. And it opens the worker's
+`last_detail`, the one string the per-pass log line, the live activity stream (ISSUE_26) and
+`/health` all render:
+
+```
+[eval:crypto_sentiment] breaking · success · 9 symbols (9 llm · 0 other) · 4211 tok · $0.001834 · 18213ms → outcomes
+```
+
+#### What the fingerprint does *not* answer — and why that is the design
 
 `config_fingerprint` covers **deliberate configuration change only**. Everything that varies at
 runtime stays out of it, on purpose, and is reported per envelope instead:
@@ -75,6 +111,7 @@ runtime stays out of it, on purpose, and is reported per envelope instead:
 |---|---|
 | Did the setup change between two days? | `config_fingerprint` |
 | Did the prompt change? | `prompt_hash` |
+| Why did this pass run at all? | `metadata.trigger_reason` (above) |
 | Was a pass degraded (outage, LLM failure)? | `status`, `RunError[]` |
 | Was a row scored, mechanical, or degraded? | `result[].basis` (`llm` / `no_data` / `degraded`) |
 | Were feeds missing (quarantine, unreachable)? | `metadata.sources_reached` / `sources_configured` |

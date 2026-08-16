@@ -17,6 +17,7 @@ from finiexragengine.core.ui.engine_stats import (
     RetrievalSnapshot,
 )
 from finiexragengine.types.outcome_types import AnalysisEnvelope
+from finiexragengine.types.trigger_types import TriggerReason
 from finiexragengine.types.worker_types import WorkerState
 
 logger = logging.getLogger(__name__)
@@ -80,7 +81,7 @@ class EvalWorker:
     async def stop(self) -> None:
         await self._trigger.stop()
 
-    async def _pass(self) -> None:
+    async def _pass(self, reason: TriggerReason) -> None:
         started = perf_counter()
         self._state.last_run_at = datetime.now(timezone.utc)
         try:
@@ -88,22 +89,28 @@ class EvalWorker:
             # queueing behind them. The deadline abandons the await, not the thread, so the worker
             # recovers on its next bar close rather than staying dead until a restart. The run's
             # own cost scope lives in `PipelineRunner.run`, where the envelope is assembled.
-            envelope = await asyncio.wait_for(asyncio.to_thread(self._pipeline.run),
+            envelope = await asyncio.wait_for(asyncio.to_thread(self._pipeline.run, reason),
                                               timeout=self._pass_timeout_seconds)
+        # Every branch opens its detail with the pass's reason (ISSUE_87) — `last_detail` is the one
+        # string the log line, the live activity stream and /health all render, so writing it here
+        # (rather than only into the envelope) puts the reason into the visible history too.
         except asyncio.TimeoutError:
             self._state.last_status = 'error'
-            self._state.last_detail = f'pass exceeded {self._pass_timeout_seconds}s deadline'
-            logger.warning('[%s] pass exceeded %ds deadline — abandoned, next tick continues',
-                           self._state.name, self._pass_timeout_seconds)
+            self._state.last_detail = (f'{reason} · pass exceeded '
+                                       f'{self._pass_timeout_seconds}s deadline')
+            logger.warning('[%s] %s pass exceeded %ds deadline — abandoned, next tick continues',
+                           self._state.name, reason, self._pass_timeout_seconds)
         except Exception as exc:   # noqa: BLE001 — a pass must never kill the loop
             self._state.last_status = 'error'
-            self._state.last_detail = str(exc)
-            logger.exception('[%s] pass failed — next tick continues', self._state.name)
+            self._state.last_detail = f'{reason} · {exc}'
+            logger.exception('[%s] %s pass failed — next tick continues',
+                             self._state.name, reason)
         else:
             m = envelope.metadata
             llm_rows = sum(1 for r in envelope.result if r.basis == 'llm')
             self._state.last_status = 'ok' if envelope.status != 'error' else 'error'
-            self._state.last_detail = (f'{envelope.status} · {len(envelope.result)} symbols '
+            self._state.last_detail = (f'{reason} · {envelope.status} · '
+                                       f'{len(envelope.result)} symbols '
                                        f'({llm_rows} llm · {len(envelope.result) - llm_rows} other)')
             duration_ms = (perf_counter() - started) * 1000.0
             tokens = m.prompt_tokens + m.completion_tokens

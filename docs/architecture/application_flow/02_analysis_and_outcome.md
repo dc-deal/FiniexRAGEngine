@@ -95,7 +95,10 @@ Runs once per pipeline pass, over all requested symbols:
    fingerprint (`prompt_id@version` + `prompt_hash`, ISSUE_33) and the input fingerprint
    (`config_fingerprint`, ISSUE_85 — the merged config + resolved source set + the score-defining
    app slice) are stamped on the envelope. Both are resolved once in `build_runner` and only
-   carried here, so they hold even for a pass where every evaluation failed.
+   carried here, so they hold even for a pass where every evaluation failed. The pass's
+   `trigger_reason` (ISSUE_87) rides along per run — handed down by the trigger through
+   `Pipeline.run(reason)`, written into `RunMetadata` *and* bound on the cost scope so every
+   `cost_log` row of the pass carries it.
    **Wiring:** `core/pipeline/pipeline_assembler.py` builds the per-pipeline object graph
    (sources → … → evaluator → ingestor) and attaches runners at API boot; `Pipeline` without a
    runner falls back to the scaffold mock (bootable without DB, and the free-suite path —

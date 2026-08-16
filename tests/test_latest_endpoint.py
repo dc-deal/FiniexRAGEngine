@@ -37,6 +37,7 @@ class _FakePipeline:
     """run() serves a fresh envelope — or blows up like a broken stage."""
     def __init__(self, exc=None):
         self.runs = 0
+        self.reasons = []          # why the endpoint asked for a pass (ISSUE_87)
         self._exc = exc
 
     def get_config(self) -> PipelineConfig:
@@ -45,8 +46,9 @@ class _FakePipeline:
             symbols=[{'key': 'BTCUSD', 'base': 'BTC', 'quote': 'USD'}], llm={'model': 'gpt-4o-mini'},
             source_set='test_news')
 
-    def run(self) -> SentimentEnvelope:
+    def run(self, reason) -> SentimentEnvelope:
         self.runs += 1
+        self.reasons.append(reason)
         if self._exc is not None:
             raise self._exc
         return _envelope('fresh run')
@@ -99,6 +101,9 @@ def test_latest_cold_miss_runs_once():
     assert response.status_code == 200
     assert response.json()['result'][0]['reasoning'] == 'fresh run'
     assert pipeline.runs == 1
+    # A pass the API asked for is `external`, not `scheduled` (ISSUE_87): it happened because a
+    # caller wanted an answer, and it is persisted like any other — so it must be filterable.
+    assert pipeline.reasons == ['external']
 
 
 def test_latest_without_store_stays_a_fresh_run():

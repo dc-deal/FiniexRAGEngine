@@ -2,8 +2,13 @@
 from abc import ABC, abstractmethod
 from typing import Awaitable, Callable
 
-# A trigger invokes this callback whenever the pipeline should run.
-RunCallback = Callable[[], Awaitable[None]]
+from finiexragengine.types.trigger_types import TriggerReason
+
+# A trigger invokes this callback whenever the pipeline should run, passing **why** (ISSUE_87).
+# The trigger is the only unit that knows: the same `run()` used to be called for the boot pass,
+# the scheduled tick and a breaking wake, and the reason was dropped on the floor. No default —
+# a caller that says nothing would silently produce the empty value this exists to eliminate.
+RunCallback = Callable[[TriggerReason], Awaitable[None]]
 
 
 class AbstractTrigger(ABC):

@@ -37,6 +37,13 @@ class PassSpend:
 # by reference, so the value written inside the thread is readable back on the loop afterwards.
 _CURRENT_PASS: ContextVar[Optional[PassSpend]] = ContextVar('finiex_pass_spend', default=None)
 
+# Why the active pass runs (ISSUE_87). A second ContextVar rather than a field on `PassSpend`,
+# because the two answer different questions and have different lifetimes: the accumulator is
+# written back by every call, the reason is read-only for the whole pass. Ambient by design —
+# threading it through the embedder and the provider would mean touching every paid call site to
+# carry a value none of them uses. '' outside a scope (a CLI recording without one).
+_CURRENT_REASON: ContextVar[str] = ContextVar('finiex_trigger_reason', default='')
+
 
 def derive_usd(pricing: PricingConfig, model: str, prompt_tokens: int,
                completion_tokens: int = 0) -> float:
@@ -78,8 +85,8 @@ class CostRecorder:
         return self._session_usd
 
     @contextmanager
-    def pass_scope(self) -> Iterator[PassSpend]:
-        """Account one pass's spend in isolation (ISSUE_74).
+    def pass_scope(self, reason: str = '') -> Iterator[PassSpend]:
+        """Account one pass's spend in isolation (ISSUE_74), under why it runs (ISSUE_87).
 
         Replaces the session-delta idiom (`usd_before = recorder.session_usd` … subtract after),
         which only produced the right number while every pass was serialized by the workers'
@@ -88,13 +95,19 @@ class CostRecorder:
         calls made *within it*, and concurrent passes cannot cross-attribute by construction.
 
         The session totals keep accumulating alongside — `ingest_cli` reads them for its footer.
+
+        `reason` (ISSUE_87) is stamped onto every cost row the pass produces, so "what do
+        out-of-band wakes cost us" is a GROUP BY instead of a reconstruction. Default '' keeps a
+        scope opened for accounting alone (tests, a CLI) honest about not knowing.
         """
         spend = PassSpend()
         token = _CURRENT_PASS.set(spend)
+        reason_token = _CURRENT_REASON.set(reason)
         try:
             yield spend
         finally:
             _CURRENT_PASS.reset(token)
+            _CURRENT_REASON.reset(reason_token)
 
     def _connect(self) -> psycopg.Connection:
         try:
@@ -133,9 +146,13 @@ class CostRecorder:
                 cur.execute(
                     f'INSERT INTO {self._table} (section, model, prompt_tokens, '
                     'completion_tokens, total_tokens, usd_cost, pipeline_id, duration_ms, '
-                    'model_snapshot) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)',
+                    'model_snapshot, trigger_reason) '
+                    'VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)',
                     (section, model, prompt_tokens, completion_tokens, total, usd,
-                     pipeline_id, duration_ms, model_snapshot or None))
+                     pipeline_id, duration_ms, model_snapshot or None,
+                     # Why the enclosing pass runs (ISSUE_87) — read off the scope, so no paid
+                     # call site has to carry a value it never uses. NULL outside a scope.
+                     _CURRENT_REASON.get() or None))
         except psycopg.Error as exc:
             raise VectorStoreError(f'cost-log write failed: {exc}') from exc
         self._session_tokens += total

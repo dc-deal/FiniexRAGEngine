@@ -77,7 +77,7 @@ same shell regardless of the signal type:
   "timestamp": "2026-06-28T11:00:00Z",
   "status": "success",
   "result": [ { "symbol": "BTCUSD", "signal": "HOLD", "sentiment_score": 0.45, "confidence": 0.78, "reasoning": "...", "basis": "llm", "base_currency": "BTC", "quote_currency": "USD", "sources": [ ... ] } ],
-  "metadata": { "model": "gpt-4o-mini", "articles_relevant": 23, "processing_time_ms": 1823, "cost_usd": 0.0029, "stage_timings": [ ... ] },
+  "metadata": { "model": "gpt-4o-mini", "trigger_reason": "scheduled", "articles_relevant": 23, "processing_time_ms": 1823, "cost_usd": 0.0029, "stage_timings": [ ... ] },
   "errors": []
 }
 ```

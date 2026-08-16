@@ -41,7 +41,10 @@ def main() -> None:
         source_set = assembler.get_source_sets().get(args.source_set)
     except ConfigurationError as exc:
         parser.error(str(exc))
-    result = ingestor.run()
+    # A hand-started pass (ISSUE_87). The scope has no accounting job here — the footer below
+    # reads the session totals — but it binds the reason onto every cost row this pass writes.
+    with assembler.get_cost_recorder().pass_scope('manual'):
+        result = ingestor.run()
 
     # Cost line first (inside the report's headline): `embedded` is what this pass paid for.
     print(format_ingest_report(build_ingest_report(args.source_set, result, source_set)))

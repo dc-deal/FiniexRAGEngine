@@ -114,6 +114,16 @@ class RunMetadata(BaseModel):
     # configured `model` is an alias the provider can silently retarget; this field
     # makes such a switch visible in the series (the model-side prompt_hash, ISSUE_33).
     model_snapshot: str = ''
+    # Why this pass ran (ISSUE_87) — resolved by the trigger, never guessed from the timestamp:
+    #   'scheduled' the planned tick (bar close) · 'boot' the first pass after a process start ·
+    #   'breaking'  an out-of-band wake (ISSUE_11) · 'manual' run_cli · 'external' POST /run.
+    # A scheduled bar-close pass, a restart and a breaking wake were byte-indistinguishable
+    # downstream before this (`is_breaking` is the LLM's confirmation, not the pass's cause).
+    # Always serialized: '' means "unknown, produced before this field existed" — a trigger reason
+    # applies to every pass, so an absent value can only be old data, never "not applicable".
+    # Plain `str`, not the `TriggerReason` Literal, so an archived envelope carrying a value a
+    # later version introduced still parses (the envelope contract outranks type strictness).
+    trigger_reason: str = ''
     sources_configured: int = 0
     sources_reached: int = 0
     articles_found: int = 0

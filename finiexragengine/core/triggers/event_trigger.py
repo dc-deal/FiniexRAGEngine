@@ -4,6 +4,7 @@ from typing import Callable, List, Optional
 
 from finiexragengine.core.pipeline.breaking_bus import BreakingSubscription
 from finiexragengine.core.triggers.abstract_trigger import AbstractTrigger, RunCallback
+from finiexragengine.types.trigger_types import TriggerReason
 
 # How long to wait before the next *scheduled* tick — recomputed on every iteration, so a
 # bar-close-aligned wait (ISSUE_timeframe) never drifts over a long uptime. A relative cadence
@@ -33,21 +34,26 @@ class EventTrigger(AbstractTrigger):
 
     async def start(self, run: RunCallback) -> None:
         self._stopped.clear()
+        # The immediate first pass is a boot pass (ISSUE_87); afterwards the wait itself reports
+        # what ended it — a wake or the scheduled boundary. Nothing is inferred from the clock.
+        reason: TriggerReason = 'boot'
         while not self._stopped.is_set():
-            await run()
+            await run(reason)
             if self._stopped.is_set():
                 break
-            await self._wait_next()
+            reason = await self._wait_next()
 
-    async def _wait_next(self) -> None:
+    async def _wait_next(self) -> TriggerReason:
         # Race the wait against a breaking wake and the stop signal, whichever comes first.
         # The timeout is recomputed here (not cached) so the aligned grid stays exact.
         timeout = self._next_wait_seconds()
         waiters: List[asyncio.Task] = [asyncio.ensure_future(self._stopped.wait())]
+        wake: Optional[asyncio.Task] = None
         if self._subscription is not None:
-            waiters.append(asyncio.ensure_future(self._subscription.wait()))
+            wake = asyncio.ensure_future(self._subscription.wait())
+            waiters.append(wake)
         try:
-            _done, pending = await asyncio.wait(
+            done, pending = await asyncio.wait(
                 waiters, timeout=timeout,
                 return_when=asyncio.FIRST_COMPLETED)
         finally:
@@ -60,6 +66,10 @@ class EventTrigger(AbstractTrigger):
                 await task
             except asyncio.CancelledError:
                 pass
+        # Which of the two ended the wait is exactly the pass's reason (ISSUE_87) — known here for
+        # free, and unrecoverable afterwards: an off-grid timestamp cannot tell a wake from a
+        # restart, and `is_breaking` is the LLM's later verdict, not this cause.
+        return 'breaking' if wake is not None and wake in done else 'scheduled'
 
     async def stop(self) -> None:
         self._stopped.set()

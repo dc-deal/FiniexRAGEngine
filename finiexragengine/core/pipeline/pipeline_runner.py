@@ -22,6 +22,7 @@ from finiexragengine.types.outcome_types import (
     SentimentResult,
 )
 from finiexragengine.types.prompt_metadata import PromptMetadata
+from finiexragengine.types.trigger_types import TriggerReason
 
 logger = logging.getLogger(__name__)
 
@@ -77,8 +78,12 @@ class PipelineRunner:
         # the store is the source of truth; /latest reads it instead of re-running.
         self._outcome_store = outcome_store
 
-    def run(self) -> AnalysisEnvelope:
+    def run(self, reason: TriggerReason) -> AnalysisEnvelope:
         """Produce one envelope, with this run's spend accounted in its own scope (ISSUE_74).
+
+        `reason` (ISSUE_87) travels two ways from here: onto the envelope, and into the cost scope
+        so every paid call of this pass records it too. A per-pass argument rather than a
+        constructor value — unlike the prompt and config fingerprints, it changes from run to run.
 
         The scope replaces a session-delta against the shared `CostRecorder`, which only yielded
         the right `cost_usd` while every worker pass was serialized by one global lock — the lock
@@ -86,11 +91,11 @@ class PipelineRunner:
         indented body: the accounting boundary is the whole run, and `_run` stays readable.
         """
         if self._cost_recorder is None:
-            return self._run(PassSpend())
-        with self._cost_recorder.pass_scope() as spend:
-            return self._run(spend)
+            return self._run(PassSpend(), reason)
+        with self._cost_recorder.pass_scope(reason) as spend:
+            return self._run(spend, reason)
 
-    def _run(self, spend: PassSpend) -> AnalysisEnvelope:
+    def _run(self, spend: PassSpend, reason: TriggerReason) -> AnalysisEnvelope:
         run_start = perf_counter()
         errors: List[RunError] = []
 
@@ -172,6 +177,7 @@ class PipelineRunner:
         metadata = RunMetadata(
             model=self._llm_model,
             model_snapshot=', '.join(snapshots),
+            trigger_reason=reason,       # why this pass ran at all (ISSUE_87)
             sources_configured=census.configured,
             sources_reached=census.reached,
             articles_found=ingest.fetched,
