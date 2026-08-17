@@ -9,6 +9,7 @@ import psycopg
 import pytest
 
 from finiexragengine.core.observability.reports.source_latency_report import (
+    _edge_gaps,
     build_source_latency_report,
     format_source_latency_report,
 )
@@ -115,10 +116,13 @@ def test_a_gap_beyond_the_feeds_own_cadence_is_an_outage_with_a_cost(clean_db, s
     *own* cadence is what turns that into a comparable number without a global threshold.
     """
     now = datetime.now(timezone.utc)
-    # 40s cadence for 30 polls, then a two-hour hole, then the cadence resumes.
-    rows = [(now - timedelta(hours=6) + timedelta(seconds=40 * i), 'ecb_press', 'ok', 500.0, None)
+    # 40s cadence for 30 polls, a two-hour hole, then the cadence resumes for 30 more — and the
+    # series has to END at `now`. A fixture that simply stops hours ago is, by the trailing-edge
+    # rule, a feed that is still down: it would report a second gap, correctly.
+    start = now - timedelta(seconds=40 * 29 + 7200 + 40 * 29)
+    rows = [(start + timedelta(seconds=40 * i), 'ecb_press', 'ok', 500.0, None)
             for i in range(30)]
-    resume = now - timedelta(hours=6) + timedelta(seconds=40 * 29) + timedelta(hours=2)
+    resume = start + timedelta(seconds=40 * 29) + timedelta(hours=2)
     rows += [(resume + timedelta(seconds=40 * i), 'ecb_press', 'ok', 500.0, None)
              for i in range(30)]
     _insert(clean_db, rows)
@@ -135,11 +139,58 @@ def test_a_gap_beyond_the_feeds_own_cadence_is_an_outage_with_a_cost(clean_db, s
 def test_a_steady_feed_reports_no_outage(clean_db, since):
     """Scheduling jitter is not an incident — the factor and the 5-minute floor keep it quiet."""
     now = datetime.now(timezone.utc)
-    rows = [(now - timedelta(hours=2) + timedelta(seconds=40 * i), 'coindesk', 'ok', 500.0, None)
+    # Ends at `now` on purpose — a series stopping an hour ago is a *currently down* feed, not a
+    # steady one, and would (rightly) report a trailing outage.
+    start = now - timedelta(seconds=40 * 99)
+    rows = [(start + timedelta(seconds=40 * i), 'coindesk', 'ok', 500.0, None)
             for i in range(100)]
     rows[50] = (rows[50][0] + timedelta(seconds=90), 'coindesk', 'ok', 500.0, None)   # one hiccup
     _insert(clean_db, rows)
     assert build_source_latency_report(clean_db, since).gaps == []
+
+
+def test_a_feed_that_stopped_shows_up_as_still_down(clean_db, since):
+    """The trailing edge through the real query, not just the arithmetic.
+
+    `_edge_gaps` is unit-tested without a database, but the integration was not — and that is
+    exactly where this broke: CI caught two fixtures whose series ended hours before `now`, which
+    the new rule correctly reads as "this feed is down right now". This test asserts the intended
+    case end to end, so the DB path is covered rather than inferred.
+    """
+    now = datetime.now(timezone.utc)
+    # A healthy 40s cadence that simply stops two hours ago.
+    start = now - timedelta(hours=4)
+    _insert(clean_db, [(start + timedelta(seconds=40 * i), 'boe_news', 'ok', 500.0, None)
+                       for i in range(180)])          # last sample: start + 7160s = now - 2h
+
+    gap = build_source_latency_report(clean_db, since).gaps[0]
+    assert gap.source_id == 'boe_news'
+    assert gap.ongoing_s == pytest.approx(2 * 3600, abs=120)
+    assert gap.gaps == 1                              # the trailing edge is the only outage
+    assert 'STILL DOWN' in format_source_latency_report(
+        build_source_latency_report(clean_db, since))
+
+
+def test_a_feed_absent_at_the_window_start_shows_up_too(clean_db, since):
+    """The leading edge, end to end — the ecb_press shape of 2026-08-17.
+
+    One feed polls the whole window; another only starts three hours in, because it was
+    quarantined until then. `lag()` gives the late starter no predecessor, so before the fix its
+    missing hours were invisible while its poll count plainly disagreed with its peers'.
+    """
+    now = datetime.now(timezone.utc)
+    start = now - timedelta(hours=6)
+    rows = [(start + timedelta(seconds=40 * i), 'coindesk', 'ok', 500.0, None)
+            for i in range(540)]                      # covers the whole window
+    late = start + timedelta(hours=3)
+    rows += [(late + timedelta(seconds=40 * i), 'ecb_press', 'ok', 500.0, None)
+             for i in range(270)]                     # only the second half
+    _insert(clean_db, rows)
+
+    gaps = {g.source_id: g for g in build_source_latency_report(clean_db, since).gaps}
+    assert 'coindesk' not in gaps                     # polled throughout
+    assert gaps['ecb_press'].longest_gap_s == pytest.approx(3 * 3600, abs=120)
+    assert gaps['ecb_press'].ongoing_s is None        # it is polling again, just started late
 
 
 def test_a_database_without_the_journal_answers_empty_instead_of_crashing(clean_db, since):
@@ -191,3 +242,89 @@ def test_a_mature_journal_drops_the_still_filling_caveat(clean_db, since):
 def test_an_empty_journal_says_empty(clean_db, since):
     out = format_source_latency_report(build_source_latency_report(clean_db, since))
     assert 'journal: empty' in out
+
+
+def test_the_report_prints_on_a_legacy_codepage(clean_db, since, capsys):
+    """A piped run on Windows must not die on a character the report chose to use.
+
+    Python takes stdout's encoding from the console when it has one, but falls back to the
+    locale's — cp1252 on a Western Windows — with `errors='strict'` as soon as output is piped or
+    redirected. The report renders `⚠`, `→` and `—`, none of which cp1252 can encode, so
+    `sources_cli --since 2d | Select-Object -Last 30` died where the same command in the window
+    worked (observed 2026-08-17). Twenty-seven such characters exist across the package; `→` alone
+    is in 34 files, so the fix belongs at the output boundary, not in the strings.
+    """
+    now = datetime.now(timezone.utc)
+    rows = [(now - timedelta(seconds=i), 'actionforex', 'ok', 7_500.0, None) for i in range(20)]
+    rows += [(now - timedelta(minutes=5 + i), 'actionforex', 'failed', 20_880.0, 'UNREACHABLE')
+             for i in range(3)]
+    _insert(clean_db, rows)
+    text = format_source_latency_report(
+        build_source_latency_report(clean_db, since, timeouts={'actionforex': 10}))
+
+    assert '⚠' in text, 'the warning marker is what made this fail — keep it in the fixture'
+    # The bytes a cp1252 stdout would be asked to write, under the boundary policy the CLIs apply.
+    assert text.encode('utf-8', errors='replace')
+    with pytest.raises(UnicodeEncodeError):
+        text.encode('cp1252')          # the trap itself, asserted rather than assumed
+
+
+# --- the window edges a lag()-based gap measure cannot see -----------------------------------
+
+_THRESHOLD = 300.0
+
+
+def _edges(first_offset_s, last_offset_s, window_h=48.0):
+    """Place a source's first/last sample relative to a window, return the two edge gaps."""
+    now = datetime(2026, 8, 17, 12, 0, tzinfo=timezone.utc)
+    window_start = now - timedelta(hours=window_h)
+    return _edge_gaps(window_start + timedelta(seconds=first_offset_s),
+                      now - timedelta(seconds=last_offset_s),
+                      window_start, now, _THRESHOLD)
+
+
+def test_a_feed_already_down_when_the_window_opened_is_seen():
+    """The ecb_press case, 2026-08-17.
+
+    Its 24h quarantine ran into the window, so its first journal row is the moment the quarantine
+    lifted — ~19h after the window opened. `lag()` returns NULL for a first row, so that outage had
+    no predecessor to be measured from and the gap section reported nothing at all, while the poll
+    counter plainly showed 5,129 against its peers' 8,727.
+    """
+    leading, trailing = _edges(first_offset_s=19 * 3600, last_offset_s=20)
+    assert leading == pytest.approx(19 * 3600)
+    assert leading > _THRESHOLD          # -> counted as an outage
+    assert trailing < _THRESHOLD         # it is polling again, so nothing ongoing
+
+
+def test_a_feed_that_stopped_and_never_came_back_is_seen():
+    """The more urgent half: not history, a feed that is down **now**.
+
+    It has no *later* row, so a between-rows measure is blind to it — exactly the case an operator
+    most wants surfaced.
+    """
+    leading, trailing = _edges(first_offset_s=15, last_offset_s=2 * 3600)
+    assert trailing == pytest.approx(2 * 3600)
+    assert trailing > _THRESHOLD
+    assert leading < _THRESHOLD
+
+
+def test_a_healthy_feed_reports_neither_edge():
+    leading, trailing = _edges(first_offset_s=12, last_offset_s=18)
+    assert leading < _THRESHOLD and trailing < _THRESHOLD
+
+
+def test_the_window_start_is_the_journals_own_start_not_the_requested_one():
+    """Otherwise every feed reports a leading outage for the time before the journal existed.
+
+    The caller passes `max(since, oldest_sample)`; this asserts the arithmetic that relies on it —
+    a sample sitting exactly at the window start yields no leading gap.
+    """
+    leading, _ = _edges(first_offset_s=0, last_offset_s=10)
+    assert leading == 0.0
+
+
+def test_a_sample_marginally_outside_the_window_does_not_go_negative():
+    """`now` and the window edge are computed a moment apart; a small overshoot must clamp to 0."""
+    leading, trailing = _edges(first_offset_s=-0.5, last_offset_s=-0.5)
+    assert leading == 0.0 and trailing == 0.0

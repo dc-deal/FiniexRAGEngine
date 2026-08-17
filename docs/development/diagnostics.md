@@ -161,7 +161,7 @@ minutes, while the report showed a 107-minute median. That gap is the proxy, not
 | Store | Holds | Lifetime |
 |---|---|---|
 | `source_health` | one rolling row per feed: counters, flag/quarantine, last errors | forever |
-| `source_poll_log` | one row per poll attempt: duration, outcome, error type | `diagnostics.poll_log_retention_days` (30) |
+| `source_poll_log` | one row per poll attempt: duration, outcome, error type | `diagnostics.poll_log_retention_days` (14) |
 | `cost_log` | one row per paid API call: tokens, USD, duration | forever (billing) |
 | `outcomes` | every produced envelope | forever |
 | `articles` | the corpus + embed token counts + breaking flags | forever |
@@ -175,11 +175,17 @@ it been behaving"** and is allowed to lose a row rather than fail a pass.
 ```json
 "diagnostics": {
     "poll_log_enabled": true,
-    "poll_log_retention_days": 30,
+    "poll_log_retention_days": 14,
     "timeout_warn_ratio": 0.7
 }
 ```
 
-At the current cadence the journal writes ~26k rows/day (~60–70 MB at 30 days) and prunes itself
-once per UTC day. `poll_log_enabled: false` switches it off entirely; the reports then say so
+**Measured on the server** (2026-08-17, over 44 hours): the journal writes **~56k rows/day**, and
+`pg_total_relation_size` — table plus indexes — comes to **~11 MB/day**. At the 14-day default that
+is ~780k rows and **~155 MB**, which is why the default is 14 and not 30: the first estimate
+(~26k/day) was derived from a poll average that included the nine-day freeze, so it was low by
+half, and it assumed ~60 bytes per row against an actual ~204 with indexes. Fourteen days is also
+the window the rotating file log keeps, so an incident and its poll history age out together.
+
+The journal prunes itself once per UTC day, on the first record after the date turns. `poll_log_enabled: false` switches it off entirely; the reports then say so
 rather than showing an empty table.

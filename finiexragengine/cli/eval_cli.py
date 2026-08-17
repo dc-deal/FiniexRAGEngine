@@ -15,9 +15,12 @@ from finiexragengine.exceptions.ragengine_errors import (
     BudgetExceededError,
     PipelineNotFoundError,
 )
+from finiexragengine.utils.console_encoding import use_utf8_output
 
 
 def main() -> None:
+    # Reports carry `→`, `⚠`, `—`; a piped run would die on a cp1252 stdout.
+    use_utf8_output()
     parser = argparse.ArgumentParser(
         description='Evaluate one symbol (retrieve -> prompt -> LLM) and print the signal')
     parser.add_argument('--pipeline', default='crypto_sentiment')

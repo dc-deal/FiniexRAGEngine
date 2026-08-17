@@ -168,7 +168,7 @@ class DiagnosticsConfig(BaseModel):
     are worth paying for, not worth being unable to switch off.
     """
     poll_log_enabled: bool = True
-    poll_log_retention_days: int = 30    # pruned once per UTC day by the writer
+    poll_log_retention_days: int = 14    # pruned once per UTC day by the writer
     # A feed whose p99 sits within this fraction of its timeout is flagged for review: it is not
     # failing yet, but it is close enough that a slow day would make it fail. 0.7 = warn from 7s
     # against the 10s default, which leaves room to react before the quarantine does it for us.

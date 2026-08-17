@@ -79,7 +79,7 @@
     },
     "diagnostics": {
         "poll_log_enabled": true,
-        "poll_log_retention_days": 30,
+        "poll_log_retention_days": 14,
         "timeout_warn_ratio": 0.7
     },
     "stall_watchdog": {

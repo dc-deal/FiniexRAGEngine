@@ -12,9 +12,12 @@ from finiexragengine.core.observability.reports.migration_report import (
     format_migration_status,
 )
 from finiexragengine.core.schema.migration_runner import MigrationRunner
+from finiexragengine.utils.console_encoding import use_utf8_output
 
 
 def main() -> None:
+    # Reports carry `→`, `⚠`, `—`; a piped run would die on a cp1252 stdout.
+    use_utf8_output()
     parser = argparse.ArgumentParser(
         description='Apply pending schema migrations (or show the status with --status)')
     parser.add_argument('--status', action='store_true',

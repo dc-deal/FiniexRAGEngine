@@ -10,9 +10,12 @@ import argparse
 from finiexragengine.configuration.app_config_manager import AppConfigManager
 from finiexragengine.core.llm.model_catalog import check_configured_models, format_model_check
 from finiexragengine.exceptions.ragengine_errors import LLMApiError
+from finiexragengine.utils.console_encoding import use_utf8_output
 
 
 def main() -> None:
+    # Reports carry `→`, `⚠`, `—`; a piped run would die on a cp1252 stdout.
+    use_utf8_output()
     parser = argparse.ArgumentParser(
         description='Check configured models against the provider (free, no tokens)')
     parser.parse_args()

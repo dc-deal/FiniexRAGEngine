@@ -19,7 +19,7 @@ paid ones) and rendered next to `source_health_report.py` by `sources_cli`.
 """
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import psycopg
 
@@ -80,6 +80,34 @@ class SourceGapRow:
     gaps: int                           # gaps beyond the outage threshold
     longest_gap_s: float
     polls_missed: int                   # gap time / cadence — the cost, in polls not made
+    # Set when the feed's LAST sample is already older than the outage threshold: it is not polling
+    # right now. Separated from the historical gaps because it is the one that needs acting on.
+    ongoing_s: Optional[float] = None
+
+
+def _edge_gaps(first_ts: datetime, last_ts: datetime, window_start: datetime,
+               now: datetime, threshold_s: float) -> Tuple[float, float]:
+    """The two outages a gap-between-rows measure cannot see: `(leading, trailing)` seconds.
+
+    Poll gaps are computed with `lag()` over the journal rows, which by construction only sees the
+    distance *between* two samples. Two outages therefore stayed invisible, and both were found by
+    the poll counter disagreeing with the gap section rather than by the section itself:
+
+    - **Leading** — a feed already down when the window opened has no earlier row to be measured
+      from. On 2026-08-17 `ecb_press` showed 5,129 polls against its peers' 8,727 (≈19h missing,
+      the tail of its 24h quarantine) while the gap section reported nothing at all.
+    - **Trailing** — a feed that stopped and never came back has no *later* row. This is the more
+      urgent of the two: it is not history, it is a feed that is down **now**.
+
+    `window_start` must be the later of the requested window and the journal's own first sample —
+    otherwise every feed reports a leading outage for the time before the journal existed.
+
+    Returns raw distances; the caller compares them against `threshold_s`. Zero-clamped, because a
+    sample can sit marginally outside a window boundary computed a moment earlier.
+    """
+    leading = max(0.0, (first_ts - window_start).total_seconds())
+    trailing = max(0.0, (now - last_ts).total_seconds())
+    return leading, trailing
 
 
 @dataclass
@@ -152,38 +180,54 @@ def build_source_latency_report(database_url: str, since: datetime, *, since_lab
                 for source_id, polls, p50, p95, p99, mx, failures, fail_p50 in cur.fetchall()]
 
             # Gaps: lag() gives each poll's distance from the previous one; the source's own median
-            # of those distances is its cadence, and anything far beyond it is an outage.
+            # of those distances is its cadence, and anything far beyond it is an outage. The first
+            # and last sample per source come along, because lag() cannot see an outage that spans
+            # a window edge — see `_edge_gaps`.
             cur.execute(
                 'WITH gaps AS ('
-                '  SELECT source_id, '
+                '  SELECT source_id, ts, '
                 '         EXTRACT(EPOCH FROM (ts - lag(ts) OVER '
                 '           (PARTITION BY source_id ORDER BY ts))) AS gap_s '
                 f'  FROM {table} WHERE ts >= %s), '
                 'cadence AS ('
-                '  SELECT source_id, percentile_cont(0.5) WITHIN GROUP (ORDER BY gap_s) AS median_s'
-                '  FROM gaps WHERE gap_s IS NOT NULL GROUP BY source_id) '
-                'SELECT g.source_id, c.median_s, '
+                '  SELECT source_id, percentile_cont(0.5) WITHIN GROUP (ORDER BY gap_s) AS median_s,'
+                '         min(ts) AS first_ts, max(ts) AS last_ts '
+                '  FROM gaps GROUP BY source_id) '
+                'SELECT g.source_id, c.median_s, c.first_ts, c.last_ts, '
                 '       count(*) FILTER (WHERE g.gap_s > greatest(c.median_s * %s, %s)), '
                 '       coalesce(max(g.gap_s) FILTER '
                 '         (WHERE g.gap_s > greatest(c.median_s * %s, %s)), 0), '
                 '       coalesce(sum(g.gap_s) FILTER '
                 '         (WHERE g.gap_s > greatest(c.median_s * %s, %s)), 0) '
                 'FROM gaps g JOIN cadence c USING (source_id) '
-                'WHERE g.gap_s IS NOT NULL AND c.median_s > 0 '
-                'GROUP BY g.source_id, c.median_s '
-                'ORDER BY 3 DESC, 4 DESC',
+                'WHERE c.median_s > 0 '
+                'GROUP BY g.source_id, c.median_s, c.first_ts, c.last_ts '
+                'ORDER BY 5 DESC, 6 DESC',
                 (since, _GAP_FACTOR, _GAP_FLOOR_S, _GAP_FACTOR, _GAP_FLOOR_S,
                  _GAP_FACTOR, _GAP_FLOOR_S))
+            # A leading edge is only an outage relative to when the JOURNAL starts, not to the
+            # requested window: before `oldest` there is nothing to have missed.
+            now = datetime.now(timezone.utc)
+            window_start = max(since, oldest) if oldest is not None else since
             gaps = []
-            for source_id, median_s, count, longest, lost_s in cur.fetchall():
+            for source_id, median_s, first_ts, last_ts, count, longest, lost_s in cur.fetchall():
+                cadence = float(median_s)
+                threshold = max(cadence * _GAP_FACTOR, _GAP_FLOOR_S)
+                count, longest, lost_s = int(count), float(longest), float(lost_s)
+                leading, trailing = _edge_gaps(first_ts, last_ts, window_start, now, threshold)
+                ongoing = trailing if trailing > threshold else None
+                for edge in (leading, trailing):
+                    if edge > threshold:
+                        count += 1
+                        longest = max(longest, edge)
+                        lost_s += edge
                 if not count:
                     continue                    # a feed with no outage needs no row
-                cadence = float(median_s)
                 # Each gap still contains one legitimate interval, so subtract one poll per gap —
                 # otherwise a perfectly normal cadence would read as a missed poll.
-                missed = max(0, round(float(lost_s) / cadence) - int(count))
-                gaps.append(SourceGapRow(source_id, cadence, int(count),
-                                         float(longest), missed))
+                missed = max(0, round(lost_s / cadence) - count)
+                gaps.append(SourceGapRow(source_id, cadence, count, longest, missed,
+                                         ongoing_s=ongoing))
     except psycopg.Error as exc:
         raise VectorStoreError(f'source latency report failed: {exc}') from exc
     return SourceLatencyReport(since_label, latency, gaps, warn_ratio, oldest_sample=oldest)
@@ -269,11 +313,16 @@ def format_source_latency_report(report: SourceLatencyReport) -> str:
     lines.append(f'poll gaps (last {report.since_label}) — outages measured against each feed\'s '
                  f'own cadence')
     lines.append(divider)
-    lines.append(f'{"source":18} {"cadence":>9} {"gaps":>6} {"longest":>10} {"polls missed":>13}')
+    lines.append(f'{"source":18} {"cadence":>9} {"gaps":>6} {"longest":>10} {"polls missed":>13}'
+                 f'  status')
     lines.append(divider)
     for gap in report.gaps:
+        # A feed still not polling is the one row worth acting on — say so rather than leaving it
+        # to be inferred from a large `longest`.
+        status = f'STILL DOWN {_duration(gap.ongoing_s)}' if gap.ongoing_s else ''
         lines.append(f'{gap.source_id:18.18} {_duration(gap.cadence_s):>9} {gap.gaps:>6} '
-                     f'{_duration(gap.longest_gap_s):>10} {gap.polls_missed:>13}')
+                     f'{_duration(gap.longest_gap_s):>10} {gap.polls_missed:>13}  '
+                     f'{status}'.rstrip())
     if not report.gaps:
         lines.append('(no feed stopped being polled for longer than 5x its own cadence)')
     lines.append(divider)

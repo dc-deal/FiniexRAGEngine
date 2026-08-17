@@ -18,10 +18,13 @@ from finiexragengine.core.observability.reports.source_latency_report import (
     build_source_latency_report,
     format_source_latency_report,
 )
+from finiexragengine.utils.console_encoding import use_utf8_output
 from finiexragengine.utils.report_window import parse_since
 
 
 def main() -> None:
+    # Reports carry `→`, `⚠`, `—`; a piped run would die on a cp1252 stdout.
+    use_utf8_output()
     parser = argparse.ArgumentParser(
         description='Source report: feed reliability, flags/quarantine, problems, and the '
                     'poll journal (latency, slow-vs-dead verdict, outages)')
