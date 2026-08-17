@@ -16,9 +16,12 @@ from finiexragengine.core.observability.reports.ingest_report import (
 from finiexragengine.core.observability.run_footer import RunFooter
 from finiexragengine.core.pipeline.pipeline_assembler import PipelineAssembler
 from finiexragengine.exceptions.ragengine_errors import ConfigurationError
+from finiexragengine.utils.console_encoding import use_utf8_output
 
 
 def main() -> None:
+    # Reports carry `→`, `⚠`, `—`; a piped run would die on a cp1252 stdout.
+    use_utf8_output()
     parser = argparse.ArgumentParser(
         description='Run one ingest pass (fetch -> embed -> upsert) for a source-set')
     parser.add_argument('--source-set', default='crypto_news',

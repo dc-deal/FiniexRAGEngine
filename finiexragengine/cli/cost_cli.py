@@ -12,9 +12,12 @@ from finiexragengine.core.observability.reports.cost_report import (
     build_cost_report,
     format_cost_report,
 )
+from finiexragengine.utils.console_encoding import use_utf8_output
 
 
 def main() -> None:
+    # Reports carry `→`, `⚠`, `—`; a piped run would die on a cp1252 stdout.
+    use_utf8_output()
     parser = argparse.ArgumentParser(
         description='Cost report: real spend (billing log) + a config-driven projection')
     parser.add_argument('--recent-passes', type=int, default=20,

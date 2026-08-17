@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from finiexragengine.core.outcome.outcome_exporter import OutcomeArchiveExporter
+from finiexragengine.utils.console_encoding import use_utf8_output
 
 
 def _resolve_since(value: str) -> str:
@@ -24,6 +25,8 @@ def _resolve_since(value: str) -> str:
 
 
 def main() -> None:
+    # Reports carry `→`, `⚠`, `—`; a piped run would die on a cp1252 stdout.
+    use_utf8_output()
     parser = argparse.ArgumentParser(
         description='Export persisted outcomes to the rotated JSONL archive layout')
     parser.add_argument('--out', default='data/signal_export',

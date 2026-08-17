@@ -191,3 +191,28 @@ def test_a_mature_journal_drops_the_still_filling_caveat(clean_db, since):
 def test_an_empty_journal_says_empty(clean_db, since):
     out = format_source_latency_report(build_source_latency_report(clean_db, since))
     assert 'journal: empty' in out
+
+
+def test_the_report_prints_on_a_legacy_codepage(clean_db, since, capsys):
+    """A piped run on Windows must not die on a character the report chose to use.
+
+    Python takes stdout's encoding from the console when it has one, but falls back to the
+    locale's — cp1252 on a Western Windows — with `errors='strict'` as soon as output is piped or
+    redirected. The report renders `⚠`, `→` and `—`, none of which cp1252 can encode, so
+    `sources_cli --since 2d | Select-Object -Last 30` died where the same command in the window
+    worked (observed 2026-08-17). Twenty-seven such characters exist across the package; `→` alone
+    is in 34 files, so the fix belongs at the output boundary, not in the strings.
+    """
+    now = datetime.now(timezone.utc)
+    rows = [(now - timedelta(seconds=i), 'actionforex', 'ok', 7_500.0, None) for i in range(20)]
+    rows += [(now - timedelta(minutes=5 + i), 'actionforex', 'failed', 20_880.0, 'UNREACHABLE')
+             for i in range(3)]
+    _insert(clean_db, rows)
+    text = format_source_latency_report(
+        build_source_latency_report(clean_db, since, timeouts={'actionforex': 10}))
+
+    assert '⚠' in text, 'the warning marker is what made this fail — keep it in the fixture'
+    # The bytes a cp1252 stdout would be asked to write, under the boundary policy the CLIs apply.
+    assert text.encode('utf-8', errors='replace')
+    with pytest.raises(UnicodeEncodeError):
+        text.encode('cp1252')          # the trap itself, asserted rather than assumed

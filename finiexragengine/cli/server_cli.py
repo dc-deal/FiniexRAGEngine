@@ -4,9 +4,12 @@ import os
 import sys
 
 import uvicorn
+from finiexragengine.utils.console_encoding import use_utf8_output
 
 
 def main() -> None:
+    # The live display and the startup override report both carry Unicode.
+    use_utf8_output()
     parser = argparse.ArgumentParser(description='FiniexRAGEngine API server')
     parser.add_argument('--host', default='0.0.0.0')
     parser.add_argument('--port', type=int, default=8100)

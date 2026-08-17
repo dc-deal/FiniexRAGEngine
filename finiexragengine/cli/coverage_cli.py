@@ -12,9 +12,12 @@ from finiexragengine.core.observability.reports.coverage_report import (
 from finiexragengine.core.rag.openai_embedder import OpenAIEmbedder
 from finiexragengine.core.rag.query_vector_cache import QueryVectorCache
 from finiexragengine.exceptions.ragengine_errors import PipelineNotFoundError
+from finiexragengine.utils.console_encoding import use_utf8_output
 
 
 def main() -> None:
+    # Reports carry `→`, `⚠`, `—`; a piped run would die on a cp1252 stdout.
+    use_utf8_output()
     parser = argparse.ArgumentParser(
         description='Corpus coverage report per symbol query')
     parser.add_argument('--pipeline', default='crypto_sentiment',

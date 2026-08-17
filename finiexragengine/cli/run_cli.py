@@ -10,9 +10,12 @@ from finiexragengine.configuration.app_config_manager import AppConfigManager
 from finiexragengine.core.observability.reports.envelope_report import format_envelope_run
 from finiexragengine.core.pipeline.pipeline_assembler import PipelineAssembler
 from finiexragengine.exceptions.ragengine_errors import PipelineNotFoundError
+from finiexragengine.utils.console_encoding import use_utf8_output
 
 
 def main() -> None:
+    # Reports carry `→`, `⚠`, `—`; a piped run would die on a cp1252 stdout.
+    use_utf8_output()
     parser = argparse.ArgumentParser(
         description='Run one full pipeline pass (ingest -> eval all symbols -> envelope)')
     parser.add_argument('--pipeline', default='crypto_sentiment',

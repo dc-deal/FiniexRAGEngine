@@ -17,9 +17,12 @@ from finiexragengine.core.observability.reports.weekly_report import (
     format_weekly_report,
 )
 from finiexragengine.core.outcome.outcome_exporter import auto_export_weekly
+from finiexragengine.utils.console_encoding import use_utf8_output
 
 
 def main() -> None:
+    # Reports carry `→`, `⚠`, `—`; a piped run would die on a cp1252 stdout.
+    use_utf8_output()
     parser = argparse.ArgumentParser(
         description='Weekly report: cost + performance + sources + coverage + status')
     parser.add_argument('--send', action='store_true',
