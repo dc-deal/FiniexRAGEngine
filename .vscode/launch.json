@@ -226,6 +226,23 @@
             }
         },
         {
+            // "This feed keeps dropping out — was our reaction proportionate?" One feed's
+            // quarantine episodes with the ladder rung each reached, and the polls the policy
+            // cost kept apart from the polls an outage cost. Add --episode <ISO ts> for the
+            // poll-by-poll run-up to a single decision.
+            "name": "📊 RAGEngine: Source History (quarantine episodes)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/finiexragengine/cli/sources_cli.py",
+            "args": ["--history", "ecb_press", "--since", "30d"],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "04_diagnostics",
+                "order": 8
+            }
+        },
+        {
             // Touches the feeds' network (no LLM/embeddings — no spend); resolves URLs from
             // the source-set configs. Omit --source to probe all feeds.
             "name": "📊 RAGEngine: Feed Doctor (raw output + parse diagnosis)",
@@ -237,7 +254,7 @@
             "justMyCode": false,
             "presentation": {
                 "group": "04_diagnostics",
-                "order": 8
+                "order": 9
             }
         },
         // ====================================================

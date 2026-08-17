@@ -14,6 +14,7 @@ from finiexragengine.core.triggers.event_trigger import EventTrigger
 from finiexragengine.core.triggers.interval_trigger import IntervalTrigger
 from finiexragengine.core.ui.engine_stats import EngineStats
 from finiexragengine.exceptions.ragengine_errors import ConfigurationError
+from finiexragengine.types.alert_types import AlertCallback
 from finiexragengine.types.config_types.pipeline_config_types import TriggerConfig
 from finiexragengine.types.worker_types import WorkerState
 from finiexragengine.utils.timeframe import TIMEFRAMES, seconds_until_next_boundary
@@ -72,6 +73,18 @@ class WorkerSupervisor:
                 self._eval_trigger(config.trigger, subscription,
                                    f'pipeline {config.pipeline_id}'),
                 pass_timeout_seconds, engine_stats=engine_stats))
+
+    def set_host_alert(self, alert: Optional[AlertCallback]) -> None:
+        """Route set-wide connectivity events to an alert channel (ISSUE_84).
+
+        Only the ingest workers poll feeds, so only they can observe the condition. Wired here
+        rather than at construction because the alert channel is built later (the same reason
+        `StallWatchdog.set_alert` exists) — and, like the watchdog, detection and logging work
+        with no channel at all.
+        """
+        for worker in self._workers:
+            if isinstance(worker, IngestWorker):
+                worker.set_host_alert(alert)
 
     @staticmethod
     def _interval_trigger(trigger_config: TriggerConfig, owner: str) -> IntervalTrigger:

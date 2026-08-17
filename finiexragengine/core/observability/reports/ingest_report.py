@@ -25,6 +25,10 @@ _STATUS_LABELS: Dict[str, str] = {
     'quarantined': 'QUARANTINED',
     'floor_skipped': 'poll floor',
     'suspended': 'SUSPENDED',
+    # ISSUE_84: the set is paused because local connectivity failed, not because this feed did
+    # anything. Upper case (it wants attention) but deliberately worded away from the feed —
+    # 'QUARANTINED' here would send the operator to the wrong place.
+    'host_backoff': 'HOST BACK-OFF',
 }
 _DISABLED = 'disabled'
 _NOT_POLLED = 'not polled'
@@ -129,7 +133,8 @@ def format_ingest_report(report: IngestReport) -> str:
         lines.append('  ⏸ paid work suspended (provider quota) — embedding skipped this pass')
     # The window line answers what the old output could not: how many feeds actually ran.
     window = [f'{report.declared} declared', f'{report.polled} polled']
-    for label in (_STATUS_LABELS['failed'], _STATUS_LABELS['quarantined'], _DISABLED,
+    for label in (_STATUS_LABELS['failed'], _STATUS_LABELS['quarantined'],
+                  _STATUS_LABELS['host_backoff'], _DISABLED,
                   _NOT_POLLED, _STATUS_LABELS['floor_skipped']):
         count = report.count_status(label)
         if count:

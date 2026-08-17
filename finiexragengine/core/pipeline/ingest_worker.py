@@ -14,8 +14,9 @@ from finiexragengine.core.ui.engine_stats import (
     IngestSnapshot,
     SourcesSnapshot,
 )
+from finiexragengine.types.alert_types import AlertCallback
 from finiexragengine.types.config_types.source_set_types import SourceSetConfig
-from finiexragengine.types.ingest_types import IngestResult
+from finiexragengine.types.ingest_types import HostEvent, IngestResult
 from finiexragengine.types.trigger_types import TriggerReason
 from finiexragengine.types.worker_types import WorkerState
 
@@ -47,6 +48,21 @@ def _overdue_feeds(last_ok: Dict[str, datetime], expected: Dict[str, int],
     return overdue
 
 
+def _quarantine_chip(poll: SourcePoll, now: datetime) -> str:
+    """`ecb_press q 42m (2/3)` — how long the cool-off still runs, and which rung it is on.
+
+    The rung is the part that carries information (ISSUE_84): "wait an hour" and "this feed is
+    effectively gone" were the same word before. Falls back to the bare marker when the ingestor
+    could not resolve a rung (no episode row — e.g. a quarantine written before ISSUE_84).
+    """
+    left = ''
+    if poll.until is not None:
+        left = f' {_format_age((poll.until - now).total_seconds())}'
+    if poll.rung is None:
+        return f'{poll.source_id} quarantined{left}'
+    return f'{poll.source_id} q{left} ({poll.rung[0] + 1}/{poll.rung[1]})'
+
+
 class IngestWorker:
     """Runs fetch -> embed-only-new -> upsert for ONE source-set on its own cadence.
 
@@ -60,7 +76,8 @@ class IngestWorker:
                  trigger: AbstractTrigger, pass_timeout_seconds: int = 300,
                  cost_recorder: Optional[CostRecorder] = None,
                  on_candidates: Optional[Callable[[int], None]] = None,
-                 engine_stats: Optional[EngineStats] = None) -> None:
+                 engine_stats: Optional[EngineStats] = None,
+                 on_host_event: Optional[AlertCallback] = None) -> None:
         self._ingestor = ingestor
         self._trigger = trigger
         # Wall-clock deadline for one pass (ISSUE_74). There is deliberately NO lock here any
@@ -75,6 +92,10 @@ class IngestWorker:
         # Optional (ISSUE_26): the live dashboard's shared state. None = no display (the
         # /health-only and CLI paths), in which case every push below is skipped — zero overhead.
         self._engine_stats = engine_stats
+        # Optional (ISSUE_84): where a set-wide connectivity event is announced. Reuses the
+        # watchdog's alert seam, so Telegram wiring lives in exactly one place and this worker
+        # only knows "there is somewhere to say it". None = log and dashboard only.
+        self._on_host_event = on_host_event
         # Per-feed expected cadence (its own poll_interval / politeness, else the set's interval)
         # + the last successful poll, so a stuck slow feed can be flagged overdue on the dashboard.
         set_interval = source_set.trigger.interval_seconds
@@ -88,6 +109,14 @@ class IngestWorker:
 
     def get_state(self) -> WorkerState:
         return self._state
+
+    def set_host_alert(self, alert: Optional[AlertCallback]) -> None:
+        """Give connectivity events a voice (ISSUE_84), once a channel exists.
+
+        A setter rather than a constructor argument for the same reason the stall watchdog has
+        one: the workers are assembled before the Telegram client, and detection must never wait
+        on delivery being configured."""
+        self._on_host_event = alert
 
     async def start(self) -> None:
         await self._trigger.start(self._pass)
@@ -168,6 +197,8 @@ class IngestWorker:
                            '[%s] %s · $%.6f · %.0fms', self._state.name,
                            self._state.last_detail, usd, duration_ms)
                 self._log_source_health(result)
+                if result.host_event is not None:
+                    await self._report_host_event(result.host_event)
                 # Feed the live dashboard from the same structured pass (ISSUE_26) — next to the
                 # log call, never parsed back from it. Skipped entirely without a display.
                 self._push_stats(result, usd, duration_ms, eventful)
@@ -196,11 +227,20 @@ class IngestWorker:
         already: Set[str] = set(result.quarantined_skips) | set(result.failed_sources)
         # SOURCES row: healthy collapses to `N/N ok`; only failed/quarantined/overdue feeds named.
         ok = sum(1 for poll in result.polls if poll.status == 'ok')
-        deviations = ([f'{source_id} quarantined' for source_id in result.quarantined_skips]
+        deviations = ([_quarantine_chip(poll, now) for poll in result.polls
+                       if poll.status == 'quarantined']
                       + [f'{source_id} failed' for source_id in result.failed_sources]
                       + _overdue_feeds(self._last_ok, self._expected, now, already))
-        stats.set_sources(source_set_id, SourcesSnapshot(last=now, ok=ok, total=len(result.polls),
-                                                         deviations=deviations))
+        # A set-wide back-off replaces the per-feed story rather than adding to it (ISSUE_84):
+        # naming twelve blameless feeds is exactly the noise the guard exists to remove.
+        backoff = next((poll.until for poll in result.polls if poll.status == 'host_backoff'), None)
+        event = result.host_event
+        stats.set_sources(source_set_id, SourcesSnapshot(
+            last=now, ok=ok, total=len(result.polls),
+            deviations=[] if backoff else deviations,
+            host_backoff_until=backoff or (event.backoff_until if event
+                                           and not event.resumed else None),
+            host_detail=event.fleet if event and not event.resumed else ''))
         # INGEST row + the activity line (only an eventful pass streams — mirrors the log level so
         # a warm 304-ing corpus does not flood the stream).
         stats.set_ingest(source_set_id, IngestSnapshot(last=now, fetched=result.fetched,
@@ -225,6 +265,44 @@ class IngestWorker:
         # 'ingest:crypto_news' -> 'crypto_news' for the compact stream line.
         return self._state.name.split(':', 1)[-1]
 
+    async def _report_host_event(self, event: HostEvent) -> None:
+        """One line — and, on the edges, one alert — for a set-wide connectivity failure (ISSUE_84).
+
+        Nothing else would speak for this condition: the stall watchdog watches for passes that
+        stop *completing*, and during a connectivity outage every pass completes perfectly while
+        failing every poll. Before ISSUE_84 the operator's only signal was twelve identical
+        "feed unreachable" warnings per pass, which read like a feed problem and buried the one
+        fact that mattered.
+
+        Rate limiting needs no extra machinery: while the back-off holds, `should_poll` skips
+        every source, so a pass polls nothing and produces no event. One line per back-off cycle
+        falls out of the mechanism itself.
+        """
+        if event.resumed:
+            message = (f'host connectivity recovered after {_format_age(event.duration_seconds)} '
+                       f'— normal polling resumed ({self._set_name()})')
+            logger.warning('[HOST] %s', message)
+        elif event.opened:
+            message = (f'host connectivity — {event.fleet} unreachable in one pass, '
+                       f'no quarantine applied, retry '
+                       f'{event.backoff_until.strftime("%H:%M:%S")} UTC')
+            logger.error('[HOST] %s', message)
+        else:
+            # A continuation is loud enough in the log and would only repeat an alert the
+            # operator already has.
+            logger.warning('[HOST] still down — %s/%s unreachable in %s, next retry %s',
+                           event.failed, event.pollable, self._set_name(),
+                           event.backoff_until.strftime('%H:%M:%S'))
+            return
+        if self._engine_stats is not None:
+            self._engine_stats.push_event('SOURCE', message)
+        if self._on_host_event is None:
+            return
+        try:
+            await self._on_host_event(message)
+        except Exception:   # noqa: BLE001 — an undelivered alert must not fail the pass
+            logger.exception('[HOST] alert delivery failed')
+
     def _log_source_health(self, result: IngestResult) -> None:
         """Emit source-failure lines at a level that denoises repeats (ISSUE_11).
 
@@ -242,10 +320,24 @@ class IngestWorker:
         for source_id, message in result.failed_sources.items():
             note = result.health_notes.get(source_id)
             if note is not None and note.just_flagged:
-                logger.warning('[%s] source %s flagged + quarantined until %s (%d consecutive): %s',
-                               self._state.name, source_id,
-                               note.quarantined_until.isoformat() if note.quarantined_until else '?',
-                               note.consecutive_failures, message)
+                # The rung is the news, not the fact of a quarantine (ISSUE_84): "1/3, one hour"
+                # and "3/3, a day" are the difference between a wobble and a lost feed, and the
+                # top rung is an ERROR because nothing shorter will get it looked at.
+                rung = f'{(note.rung or 0) + 1}/{note.rungs_total}'
+                top = note.rungs_total > 1 and note.rung == note.rungs_total - 1
+                logger.log(
+                    logging.ERROR if top else logging.WARNING,
+                    '[%s] source %s quarantined until %s — rung %s%s (%d consecutive): %s',
+                    self._state.name, source_id,
+                    note.quarantined_until.isoformat() if note.quarantined_until else '?',
+                    rung, ' after a failed probe' if note.probe else '',
+                    note.consecutive_failures, message)
+            elif note is not None and note.suppressed:
+                # The threshold was crossed but the correlated guard ruled it a local problem.
+                # DEBUG, because the host event itself is the line worth reading — repeating it
+                # per feed is exactly the 144-lines-per-feed noise ISSUE_84 set out to remove.
+                logger.debug('[%s] source %s failed during a connectivity event — no quarantine',
+                             self._state.name, source_id)
             elif note is None or note.consecutive_failures <= 1:
                 logger.warning('[%s] source %s failed: %s', self._state.name, source_id, message)
             else:

@@ -73,6 +73,15 @@ class RssSource(AbstractSource):
         # default. Resolved once here so every poll uses the same value without re-deriving it.
         self._timeout_seconds: int = config.timeout_seconds or default_timeout_seconds
 
+    def get_fetch_deadline_ms(self) -> Optional[float]:
+        # The per-poll socket deadline (ISSUE_73), as the quarantine ladder needs it (ISSUE_84).
+        # Deliberately the SINGLE deadline even though `_fetch_parsed` retries once on a
+        # transient failure: a timed-out poll then measures ~2x this value and still reads as
+        # "burned the deadline", while a retried DNS failure is ~10ms and still reads as a
+        # refusal. Both classify correctly against one deadline, so nothing has to model the
+        # retry.
+        return float(self._timeout_seconds) * 1000.0
+
     def due_for_fetch(self) -> bool:
         # Per-source poll floor (ISSUE_11): a feed that ignores conditional GET (e.g. cryptoslate,
         # which 429s a fast loop) opts out until its own interval elapses. Measured from the last

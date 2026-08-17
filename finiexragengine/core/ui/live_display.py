@@ -234,9 +234,20 @@ class LiveDisplay:
         if snapshot is None:
             return Text('—', style='dim')
         # Healthy collapses to `N/N ok` (exception density); only deviations spend words.
-        healthy = not snapshot.deviations
+        healthy = not snapshot.deviations and snapshot.host_backoff_until is None
         head = Text(f'{snapshot.ok}/{snapshot.total} ok',
                     style='green' if healthy else 'yellow')
+        # A set-wide connectivity failure replaces the per-feed list rather than joining it
+        # (ISSUE_84): naming every blameless feed is the noise the guard exists to remove, and
+        # the operator needs to be sent to the host, not to the feeds.
+        if snapshot.host_backoff_until is not None:
+            left = _format_age((snapshot.host_backoff_until
+                                - datetime.now(timezone.utc)).total_seconds())
+            detail = f' — {snapshot.host_detail}' if snapshot.host_detail else ''
+            head.append('    ')
+            head.append(f'⚠ host connectivity{detail} — back-off {left}, no quarantine',
+                        style='red')
+            return head
         if snapshot.deviations:
             head.append('    ')
             head.append(' · '.join(snapshot.deviations), style='red')

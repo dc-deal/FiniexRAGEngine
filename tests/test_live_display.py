@@ -132,6 +132,27 @@ def test_healthy_sources_collapse_but_a_deviation_is_named():
     assert 'cryptoslate quarantined' in text                 # only the deviation spends words
 
 
+def test_a_connectivity_event_replaces_the_per_feed_list(monkeypatch):
+    # ISSUE_84: when the whole set is held by a local connectivity failure, naming seven blameless
+    # feeds is exactly the noise the guard exists to remove — and it points the operator at the
+    # feeds instead of at the host. The row says the one thing that is true.
+    stats = _stats()
+    stats.set_sources('forex_news', SourcesSnapshot(
+        last=_NOW, ok=0, total=7,
+        deviations=['ecb_press failed', 'fed_press failed', 'boe_news failed'],
+        host_backoff_until=_NOW + timedelta(minutes=5),
+        host_detail='forex_news 7/7 + crypto_news 5/5'))
+    text = _render(stats)
+    # The row is long enough to wrap inside the panel (ISSUE_70 measures the height for exactly
+    # that), so the fleet breakdown is checked across the fold rather than on one physical line.
+    unwrapped = ' '.join(text.replace('│', ' ').split())
+
+    assert 'host connectivity' in text
+    assert 'forex_news 7/7 + crypto_news 5/5' in unwrapped
+    assert 'no quarantine' in text
+    assert 'ecb_press failed' not in text                    # the feeds are not the story
+
+
 def test_a_stalled_worker_paints_its_last_cell_red():
     # ISSUE_75: the cell that read a neutral `last 212h…` for nine days. A stalled worker must be
     # visually distinct from a healthy one — colour is the signal (the column has no room for a
