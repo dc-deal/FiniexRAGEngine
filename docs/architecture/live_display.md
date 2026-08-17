@@ -68,6 +68,18 @@ Notes on the rows:
   symbol count, so the consolidation is visible (not hidden behind row-count parity). On a narrow
   console the row **word-wraps** at ` · ` boundaries rather than truncating — the state panel height
   is measured, so the wrapped rows are shown and the activity panel below takes what is left.
+- **SOURCES `… q 42m (2/3)`** (ISSUE_84) — a quarantined feed now names the **ladder rung** it sits
+  on and how long is left, not just that it is held: `1/3` is an hour, `3/3` is a day, and those
+  were the same word before. The rung travels structurally on `SourcePoll.rung`; the display renders
+  it from the pass and never parses it back out of a detail string.
+- **SOURCES `⚠ host connectivity … no quarantine`** (ISSUE_84) — the correlated guard fired: at
+  least 85 % of the set's pollable feeds failed in one pass, so no feed was quarantined and the set
+  is backing off instead. This **replaces** the per-feed deviation list rather than joining it —
+  naming seven blameless feeds is exactly the noise the guard exists to remove, and it would send
+  the operator to the feeds instead of to the host. The cell carries the fleet view
+  (`forex_news 7/7 + crypto_news 5/5`), which distinguishes a host-level failure from one upstream
+  provider taking a single set down. The activity stream gets **one** line per event — start and
+  recovery — never one per feed.
 - **SOURCES `… overdue Nm`** — a feed whose last successful poll exceeded twice its expected cadence
   (its own `poll_interval_seconds` / politeness, else the set's interval) — 'is my slow feed still
   alive?'. Only named when stuck; a healthy slow feed cycles within its interval and stays folded

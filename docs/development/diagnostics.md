@@ -71,6 +71,54 @@ Because it reads gaps rather than quarantine records, it also catches a feed tha
 polled for reasons that have nothing to do with quarantine — a dead worker, a config change, a
 raised poll floor.
 
+## Was that quarantine proportionate? Did we do it to ourselves?
+
+`sources_cli --history <source_id>` (ISSUE_84). The gaps section above says a feed was gone; this
+says **why, for how long, on whose decision, and what it cost**.
+
+```
+quarantine history — ecb_press (30d, forex_news)
+------------------------------------------------------------------------------------------------
+started (UTC)        rung  cool-off  trigger                      ended (UTC)          outcome   missed
+------------------------------------------------------------------------------------------------
+2026-07-29 15:04:51   —    5m        ⚠ host 12/12                 2026-07-29 20:54:31  resumed    4310
+                                     no quarantine, no rung advance
+2026-08-15 05:04:04  1/3   1h        UNREACHABLE 10.0s            2026-08-15 06:04:07  probe ok      79
+------------------------------------------------------------------------------------------------
+2 events (1 quarantines, 1 host) · rung now 1/3, resets 2026-08-22 05:04 · escalations to max: 0
+polls missed:  79 to policy · 4310 to the outage
+```
+
+The last line is the one to read first: **`to policy` is what our own reaction cost, `to the
+outage` is what the world cost.** Before ISSUE_84 both were the same undifferentiated "the feed was
+gone", which is precisely why a 3m42s wobble could cost a day of ingest for three weeks before
+anyone noticed.
+
+The other columns answer the follow-ups without a second query:
+
+- **rung** — `1/3` is an hour, `3/3` is a day. A feed climbing the ladder is getting worse; one
+  sitting at `1/3` is having bad afternoons.
+- **trigger** — the failure *and its duration*. `UNREACHABLE 10.0s` burned the deadline (went
+  quiet → short rung); `HTTP_ERROR 403 0.04s` was refused (durable → long rung). Same taxonomy,
+  different verdict, and this column is where that becomes visible.
+- **a `⚠ host` row** — the correlated guard fired: the whole set failed at once, so *nothing* was
+  quarantined. It appears in a feed's history because it explains a gap the feed did not cause.
+- **recurrence** — the summary's reset date plus the interval between rows. Two episodes 41 hours
+  apart are noise; two ninety minutes apart are a feed on its way out. Same count, opposite
+  diagnosis.
+
+For one decision in full, add `--episode`:
+
+```
+sources_cli --history ecb_press --episode 2026-08-15T05:04:04
+```
+
+That prints the run-up poll by poll with the decision next to its evidence — including why the
+correlated guard did *not* fire — plus what the old flat policy would have charged. Poll detail
+comes from `source_poll_log` while inside its 14-day window; past that it falls back to the
+snapshot frozen into the episode when the decision was taken, which is the reason that snapshot
+exists.
+
 ## Why is a pipeline `partial` instead of `success`?
 
 `partial` means the analysis ran but not every configured source was reachable — the engine
@@ -162,6 +210,7 @@ minutes, while the report showed a 107-minute median. That gap is the proxy, not
 |---|---|---|
 | `source_health` | one rolling row per feed: counters, flag/quarantine, last errors | forever |
 | `source_poll_log` | one row per poll attempt: duration, outcome, error type | `diagnostics.poll_log_retention_days` (14) |
+| `source_quarantine_log` | one row per quarantine episode / connectivity event: rung, cool-off, trigger, frozen timeline | forever (~1 MB/year) |
 | `cost_log` | one row per paid API call: tokens, USD, duration | forever (billing) |
 | `outcomes` | every produced envelope | forever |
 | `articles` | the corpus + embed token counts + breaking flags | forever |
