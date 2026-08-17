@@ -116,10 +116,13 @@ def test_a_gap_beyond_the_feeds_own_cadence_is_an_outage_with_a_cost(clean_db, s
     *own* cadence is what turns that into a comparable number without a global threshold.
     """
     now = datetime.now(timezone.utc)
-    # 40s cadence for 30 polls, then a two-hour hole, then the cadence resumes.
-    rows = [(now - timedelta(hours=6) + timedelta(seconds=40 * i), 'ecb_press', 'ok', 500.0, None)
+    # 40s cadence for 30 polls, a two-hour hole, then the cadence resumes for 30 more — and the
+    # series has to END at `now`. A fixture that simply stops hours ago is, by the trailing-edge
+    # rule, a feed that is still down: it would report a second gap, correctly.
+    start = now - timedelta(seconds=40 * 29 + 7200 + 40 * 29)
+    rows = [(start + timedelta(seconds=40 * i), 'ecb_press', 'ok', 500.0, None)
             for i in range(30)]
-    resume = now - timedelta(hours=6) + timedelta(seconds=40 * 29) + timedelta(hours=2)
+    resume = start + timedelta(seconds=40 * 29) + timedelta(hours=2)
     rows += [(resume + timedelta(seconds=40 * i), 'ecb_press', 'ok', 500.0, None)
              for i in range(30)]
     _insert(clean_db, rows)
@@ -136,11 +139,58 @@ def test_a_gap_beyond_the_feeds_own_cadence_is_an_outage_with_a_cost(clean_db, s
 def test_a_steady_feed_reports_no_outage(clean_db, since):
     """Scheduling jitter is not an incident — the factor and the 5-minute floor keep it quiet."""
     now = datetime.now(timezone.utc)
-    rows = [(now - timedelta(hours=2) + timedelta(seconds=40 * i), 'coindesk', 'ok', 500.0, None)
+    # Ends at `now` on purpose — a series stopping an hour ago is a *currently down* feed, not a
+    # steady one, and would (rightly) report a trailing outage.
+    start = now - timedelta(seconds=40 * 99)
+    rows = [(start + timedelta(seconds=40 * i), 'coindesk', 'ok', 500.0, None)
             for i in range(100)]
     rows[50] = (rows[50][0] + timedelta(seconds=90), 'coindesk', 'ok', 500.0, None)   # one hiccup
     _insert(clean_db, rows)
     assert build_source_latency_report(clean_db, since).gaps == []
+
+
+def test_a_feed_that_stopped_shows_up_as_still_down(clean_db, since):
+    """The trailing edge through the real query, not just the arithmetic.
+
+    `_edge_gaps` is unit-tested without a database, but the integration was not — and that is
+    exactly where this broke: CI caught two fixtures whose series ended hours before `now`, which
+    the new rule correctly reads as "this feed is down right now". This test asserts the intended
+    case end to end, so the DB path is covered rather than inferred.
+    """
+    now = datetime.now(timezone.utc)
+    # A healthy 40s cadence that simply stops two hours ago.
+    start = now - timedelta(hours=4)
+    _insert(clean_db, [(start + timedelta(seconds=40 * i), 'boe_news', 'ok', 500.0, None)
+                       for i in range(180)])          # last sample: start + 7160s = now - 2h
+
+    gap = build_source_latency_report(clean_db, since).gaps[0]
+    assert gap.source_id == 'boe_news'
+    assert gap.ongoing_s == pytest.approx(2 * 3600, abs=120)
+    assert gap.gaps == 1                              # the trailing edge is the only outage
+    assert 'STILL DOWN' in format_source_latency_report(
+        build_source_latency_report(clean_db, since))
+
+
+def test_a_feed_absent_at_the_window_start_shows_up_too(clean_db, since):
+    """The leading edge, end to end — the ecb_press shape of 2026-08-17.
+
+    One feed polls the whole window; another only starts three hours in, because it was
+    quarantined until then. `lag()` gives the late starter no predecessor, so before the fix its
+    missing hours were invisible while its poll count plainly disagreed with its peers'.
+    """
+    now = datetime.now(timezone.utc)
+    start = now - timedelta(hours=6)
+    rows = [(start + timedelta(seconds=40 * i), 'coindesk', 'ok', 500.0, None)
+            for i in range(540)]                      # covers the whole window
+    late = start + timedelta(hours=3)
+    rows += [(late + timedelta(seconds=40 * i), 'ecb_press', 'ok', 500.0, None)
+             for i in range(270)]                     # only the second half
+    _insert(clean_db, rows)
+
+    gaps = {g.source_id: g for g in build_source_latency_report(clean_db, since).gaps}
+    assert 'coindesk' not in gaps                     # polled throughout
+    assert gaps['ecb_press'].longest_gap_s == pytest.approx(3 * 3600, abs=120)
+    assert gaps['ecb_press'].ongoing_s is None        # it is polling again, just started late
 
 
 def test_a_database_without_the_journal_answers_empty_instead_of_crashing(clean_db, since):
