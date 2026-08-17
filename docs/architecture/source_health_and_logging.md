@@ -77,7 +77,8 @@ studying — left no trace at all.
 The journal is `cost_log`'s shape applied to the **unpaid** calls: one row per poll attempt with
 `ts · source_id · source_set · outcome · duration_ms · error_type · status · articles`, read back as
 a windowed aggregate with native `percentile_cont`. A raw journal rather than pre-aggregated
-buckets, because at ~26k rows/day it also answers the questions nobody has asked yet.
+buckets, because at ~56k rows/day (measured on the server, ~11 MB/day including indexes) it also
+answers the questions nobody has asked yet.
 
 Two design points carry the unit:
 
@@ -91,7 +92,8 @@ Two design points carry the unit:
 
 Unlike `source_health`, a journal write **never fails a pass**: every DB error is logged and
 swallowed. Diagnostics must not become a new cause of the outages they exist to explain. Retention
-is `diagnostics.poll_log_retention_days` (30), pruned by the writer once per UTC day.
+is `diagnostics.poll_log_retention_days` (14 — the same window the rotating file log keeps),
+pruned by the writer once per UTC day.
 
 ## Reports & CLIs
 

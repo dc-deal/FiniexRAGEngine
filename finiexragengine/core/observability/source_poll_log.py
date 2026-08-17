@@ -39,7 +39,7 @@ class SourcePollLog:
     sample.
     """
 
-    def __init__(self, database_url: str, *, retention_days: int = 30,
+    def __init__(self, database_url: str, *, retention_days: int = 14,
                  table: str = 'source_poll_log') -> None:
         self._database_url = database_url
         self._retention_days = retention_days
