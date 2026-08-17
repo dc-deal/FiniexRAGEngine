@@ -9,6 +9,7 @@ import psycopg
 import pytest
 
 from finiexragengine.core.observability.reports.source_latency_report import (
+    _edge_gaps,
     build_source_latency_report,
     format_source_latency_report,
 )
@@ -216,3 +217,64 @@ def test_the_report_prints_on_a_legacy_codepage(clean_db, since, capsys):
     assert text.encode('utf-8', errors='replace')
     with pytest.raises(UnicodeEncodeError):
         text.encode('cp1252')          # the trap itself, asserted rather than assumed
+
+
+# --- the window edges a lag()-based gap measure cannot see -----------------------------------
+
+_THRESHOLD = 300.0
+
+
+def _edges(first_offset_s, last_offset_s, window_h=48.0):
+    """Place a source's first/last sample relative to a window, return the two edge gaps."""
+    now = datetime(2026, 8, 17, 12, 0, tzinfo=timezone.utc)
+    window_start = now - timedelta(hours=window_h)
+    return _edge_gaps(window_start + timedelta(seconds=first_offset_s),
+                      now - timedelta(seconds=last_offset_s),
+                      window_start, now, _THRESHOLD)
+
+
+def test_a_feed_already_down_when_the_window_opened_is_seen():
+    """The ecb_press case, 2026-08-17.
+
+    Its 24h quarantine ran into the window, so its first journal row is the moment the quarantine
+    lifted — ~19h after the window opened. `lag()` returns NULL for a first row, so that outage had
+    no predecessor to be measured from and the gap section reported nothing at all, while the poll
+    counter plainly showed 5,129 against its peers' 8,727.
+    """
+    leading, trailing = _edges(first_offset_s=19 * 3600, last_offset_s=20)
+    assert leading == pytest.approx(19 * 3600)
+    assert leading > _THRESHOLD          # -> counted as an outage
+    assert trailing < _THRESHOLD         # it is polling again, so nothing ongoing
+
+
+def test_a_feed_that_stopped_and_never_came_back_is_seen():
+    """The more urgent half: not history, a feed that is down **now**.
+
+    It has no *later* row, so a between-rows measure is blind to it — exactly the case an operator
+    most wants surfaced.
+    """
+    leading, trailing = _edges(first_offset_s=15, last_offset_s=2 * 3600)
+    assert trailing == pytest.approx(2 * 3600)
+    assert trailing > _THRESHOLD
+    assert leading < _THRESHOLD
+
+
+def test_a_healthy_feed_reports_neither_edge():
+    leading, trailing = _edges(first_offset_s=12, last_offset_s=18)
+    assert leading < _THRESHOLD and trailing < _THRESHOLD
+
+
+def test_the_window_start_is_the_journals_own_start_not_the_requested_one():
+    """Otherwise every feed reports a leading outage for the time before the journal existed.
+
+    The caller passes `max(since, oldest_sample)`; this asserts the arithmetic that relies on it —
+    a sample sitting exactly at the window start yields no leading gap.
+    """
+    leading, _ = _edges(first_offset_s=0, last_offset_s=10)
+    assert leading == 0.0
+
+
+def test_a_sample_marginally_outside_the_window_does_not_go_negative():
+    """`now` and the window edge are computed a moment apart; a small overshoot must clamp to 0."""
+    leading, trailing = _edges(first_offset_s=-0.5, last_offset_s=-0.5)
+    assert leading == 0.0 and trailing == 0.0
