@@ -32,7 +32,9 @@
     },
     "breaking": {
         "urgency_threshold": 0.8,
-        "min_importance": 2
+        "min_importance": 2,
+        "urgency_exit_threshold": 0.7,
+        "episode_gap_minutes": 45
     },
     "output_guard": {
         "score_signal_tolerance": 0.1,

@@ -1,21 +1,20 @@
-"""Edge-triggered breaking episodes (ISSUE_11 · groundwork for ISSUE_9).
+"""Edge-triggered breaking episodes (ISSUE_11 · ISSUE_82 · groundwork for ISSUE_9).
 
 A hot story stays `is_breaking` across many eval passes; counting or pushing on every pass inflates
 "confirmed" and lets the reaction time grow with the wall-clock (it keeps re-anchoring on ageing
 context articles). An **episode** is instead counted once, on the transition *into* breaking — the
-streaming twin of the batch grouping the store-based `breaking_report` already does. `EPISODE_GAP`
-lives here as the single source of truth both surfaces share, so the live dashboard and the store
-report agree by construction.
+streaming twin of the batch grouping the store-based `breaking_report` does.
+
+Where the episode boundary falls is decided by `BreakingEpisodeRule` (ISSUE_82), which both this
+streaming tracker and the store report drive. This file keeps what is specific to the *live* path:
+turning an opened episode into a `BreakingEpisode` with its frozen reaction time and reason.
 """
-from dataclasses import dataclass
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import List, Optional, Tuple
 
+from finiexragengine.core.pipeline.breaking_episode_rule import BreakingEpisodeRule
 from finiexragengine.types.outcome_types import AnalysisEnvelope, SentimentResult
-
-# Consecutive is_breaking passes for one symbol within this gap = one episode; a longer gap starts
-# a fresh one. Shared with reports/breaking_report.py so the live and store surfaces never diverge.
-EPISODE_GAP = timedelta(minutes=30)
 
 
 @dataclass
@@ -30,6 +29,20 @@ class BreakingEpisode:
     # Why it broke (ISSUE_64 Phase 1): the LLM's own per-symbol `reasoning`, carried through so the
     # dashboard/report can show the trigger. Phase 2 replaces this with a dedicated `breaking_reason`.
     reason: str = ''
+
+
+@dataclass
+class BreakingPass:
+    """What one envelope did to the episode state (ISSUE_82).
+
+    A result object rather than the previous bare `List[BreakingEpisode]`: the pass now has a
+    second thing to say — which symbols *held* an already-open episode without opening one. With
+    hysteresis that is no longer the same as "was breaking", because a pass below the confirm gate
+    but at or above the exit gate keeps the story alive. Lives next to `BreakingEpisode` because
+    the two are one unit's shapes; the cross-seam decision shape is `types.eval_types`.
+    """
+    started: List[BreakingEpisode] = field(default_factory=list)
+    held: List[str] = field(default_factory=list)     # symbols whose open episode this pass held
 
 
 def reaction_times(result: SentimentResult, ts: datetime) -> Tuple[Optional[float], Optional[float]]:
@@ -51,7 +64,8 @@ def reaction_times(result: SentimentResult, ts: datetime) -> Tuple[Optional[floa
     (`articles.flagged_at`), but the envelope does not record *which* of its sources was flagged —
     the store report could join it and the live path could not, and the two must agree by
     construction. Carrying that flag on the envelope rides ISSUE_64 Phase 2, which extends it
-    anyway.
+    anyway. Note that a large class of episodes has no flagged article at all: the confirm gate
+    fires on the LLM's urgency independently of detection (measured 2026-08-17, ISSUE_82).
 
     A date-less feed falls back to `published_at := fetched_at` (so recency filtering still works);
     those estimated dates would collapse e2e onto engine, so they are excluded from the e2e sample.
@@ -66,34 +80,43 @@ def reaction_times(result: SentimentResult, ts: datetime) -> Tuple[Optional[floa
 
 
 class BreakingEpisodeTracker:
-    """Streaming edge detector: which breaking results START a new episode this pass.
+    """Streaming driver of `BreakingEpisodeRule`: which results START an episode this pass.
 
-    In-memory / session-scoped (resets on restart) — the right lifetime for a live counter; the
-    store report re-derives episodes from the persisted envelopes for the durable, restart-robust
-    view. One tracker per eval worker (a worker owns one pipeline's symbols).
+    One tracker per eval worker (a worker owns one pipeline's symbols). Its state is the rule's,
+    and the rule is seeded at boot from the persisted envelopes (`pipeline_assembler`), so a
+    restart no longer re-opens an ongoing story as a fresh episode — the divergence between this
+    live view and the store report that ISSUE_82 measured twice in one week.
     """
 
-    def __init__(self, gap: timedelta = EPISODE_GAP) -> None:
-        self._gap = gap
-        self._last: Dict[str, datetime] = {}     # symbol -> last is_breaking timestamp seen
+    def __init__(self, rule: Optional[BreakingEpisodeRule] = None) -> None:
+        self._rule = rule if rule is not None else BreakingEpisodeRule()
 
-    def new_episodes(self, envelope: AnalysisEnvelope) -> List[BreakingEpisode]:
-        """The breaking results that transition into a NEW episode this pass (edge-triggered)."""
+    def get_rule(self) -> BreakingEpisodeRule:
+        """The rule driving this tracker — surfaces read its gap to render live-vs-ended."""
+        return self._rule
+
+    def observe(self, envelope: AnalysisEnvelope) -> BreakingPass:
+        """Fold one envelope into the episode state (edge-triggered).
+
+        Every result is observed, not only the breaking ones: under hysteresis a pass below the
+        confirm gate is what keeps an episode open, so skipping it would close stories early. This
+        is also the seeding path — `pipeline_assembler` replays recent envelopes through it and
+        discards the result, so live and store share one code path rather than two.
+        """
         ts = envelope.timestamp
-        started: List[BreakingEpisode] = []
+        outcome = BreakingPass()
         for result in envelope.result:
-            if not result.is_breaking:
-                continue
             # Key the episode on the asset (base_currency), not the ticker: a query group's fanned
             # symbols (ETHUSD/ETHEUR, both base ETH) are one analysis → one episode, no double-count
             # (ISSUE_70). Falls back to the symbol for pre-#70 envelopes without a base.
             group_key = result.base_currency or result.symbol
-            last = self._last.get(group_key)
-            self._last[group_key] = ts           # every occurrence advances the gap anchor
-            if last is not None and (ts - last) <= self._gap:
-                continue                          # same ongoing story — not a new episode
-            engine, end_to_end = reaction_times(result, ts)
-            started.append(BreakingEpisode(result.symbol, result.signal, result.urgency,
-                                           engine, end_to_end, len(result.sources),
-                                           reason=result.reasoning))
-        return started
+            decision = self._rule.observe(group_key, ts, result.is_breaking, result.urgency)
+            if decision.opened:
+                engine, end_to_end = reaction_times(result, ts)
+                outcome.started.append(
+                    BreakingEpisode(result.symbol, result.signal, result.urgency,
+                                    engine, end_to_end, len(result.sources),
+                                    reason=result.reasoning))
+            elif decision.held:
+                outcome.held.append(result.symbol)
+        return outcome

@@ -1,5 +1,6 @@
 """Pipeline assembler — builds the per-pipeline object graph behind a PipelineRunner (ISSUE_7)."""
 import logging
+from datetime import datetime, timezone
 
 from finiexragengine.configuration.app_config_manager import AppConfigManager
 from finiexragengine.configuration.config_fingerprint import compute_config_fingerprint
@@ -14,6 +15,8 @@ from finiexragengine.core.observability.source_poll_log import SourcePollLog
 from finiexragengine.core.observability.source_reach import SourceReach
 from finiexragengine.core.outcome.outcome_store import OutcomeStore
 from finiexragengine.core.pipeline.breaking_detector import BreakingDetector
+from finiexragengine.core.pipeline.breaking_episode import BreakingEpisodeTracker
+from finiexragengine.core.pipeline.breaking_episode_rule import rule_from_config
 from finiexragengine.core.pipeline.ingestor import Ingestor
 from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
 from finiexragengine.core.pipeline.pipeline_runner import PipelineRunner
@@ -24,7 +27,7 @@ from finiexragengine.core.rag.query_vector_cache import QueryVectorCache
 from finiexragengine.core.rag.retriever import Retriever
 from finiexragengine.core.schema.schema_guard import verify_schema_current
 from finiexragengine.core.sources.source_factory import build_source
-from finiexragengine.exceptions.ragengine_errors import ConfigurationError
+from finiexragengine.exceptions.ragengine_errors import ConfigurationError, VectorStoreError
 from finiexragengine.types.config_types.pipeline_config_types import PipelineConfig
 
 logger = logging.getLogger(__name__)
@@ -137,6 +140,46 @@ class PipelineAssembler:
                                prompt_name=config.prompt.name,
                                prompt_version=config.prompt.version,
                                breaking_threshold=config.breaking.urgency_threshold)
+
+    def build_episode_tracker(self, config: PipelineConfig) -> BreakingEpisodeTracker:
+        """The live breaking tracker for one pipeline, seeded from the store (ISSUE_82).
+
+        Two things happen here that cannot happen inside the worker: the episode rule is built
+        from this pipeline's `breaking` config, and its state is warmed from the persisted
+        envelopes so a restart resumes an open episode instead of re-opening it. Measured before
+        this: two of one week's 66 episodes were boot artefacts — a story re-confirmed 3 and 11
+        minutes after its previous breaking pass, i.e. well inside any gap, which only an empty
+        tracker can produce.
+
+        The seed window is `2 × gap`. One gap is what the rule can still hold open; the second is
+        headroom so the boundary pass itself is inside the replay rather than exactly on its edge.
+
+        Seeding is best-effort: a store that cannot be read costs episode continuity across one
+        restart, which must never stop the engine from evaluating. A failing *health* write raises
+        because it drives the reach decision; this one is diagnostics-grade, like `source_poll_log`.
+        """
+        rule = rule_from_config(config)
+        tracker = BreakingEpisodeTracker(rule)
+        since = datetime.now(timezone.utc) - 2 * rule.get_gap()
+        try:
+            seen = self._outcome_store.get_since(config.pipeline_id, since)
+        except VectorStoreError as exc:
+            logger.warning('[BREAKING] %s: episode state not seeded (%s) — a story open across '
+                           'this restart will be counted again', config.pipeline_id, exc)
+            return tracker
+        # Replayed through the same `observe` the live path uses, so seeding cannot drift from
+        # scoring; the returned episodes are discarded because they were already logged and
+        # counted by the process that produced them.
+        for envelope in seen:
+            tracker.observe(envelope)
+        # Count against the rule's own key (asset, not ticker — ISSUE_70), or a fanned pair would
+        # report two open episodes where the rule holds one.
+        keys = {r.base_currency or r.symbol for envelope in seen for r in envelope.result}
+        open_now = sum(1 for key in keys if rule.is_open(key))
+        logger.info('[BREAKING] %s: episode state seeded from %d envelope(s) since %s · '
+                    '%d episode(s) still open', config.pipeline_id, len(seen),
+                    since.strftime('%Y-%m-%d %H:%M UTC'), open_now)
+        return tracker
 
     def build_ingestor(self, source_set_id: str, billing_label: str = '') -> Ingestor:
         """Assemble the ingest pass for one source-set (ISSUE_10) — worker + CLI unit.

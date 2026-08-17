@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 
 from rich.console import Console
 
-from finiexragengine.core.pipeline.breaking_episode import EPISODE_GAP
+from finiexragengine.core.pipeline.breaking_episode_rule import DEFAULT_EPISODE_GAP
 from finiexragengine.core.ui.engine_stats import (
     EngineStats,
     IngestSnapshot,
@@ -43,7 +43,7 @@ def test_render_smoke_on_empty_stats():
 
 def test_breaking_section_lists_live_episodes_with_reason():
     # ISSUE_64: each confirmed episode is one line — symbol+signal, a live marker, and *why* it broke
-    # (the reused reasoning). Added at real `now` so they render as live (within EPISODE_GAP).
+    # (the reused reasoning). Added at real `now` so they render as live (within the episode gap).
     now = datetime.now(timezone.utc)
     stats = _stats()
     stats.add_breaking_episode('ADAUSD', 'SELL', 'regulatory probe cluster', 'engine 1.4m', at=now)
@@ -56,11 +56,12 @@ def test_breaking_section_lists_live_episodes_with_reason():
 
 
 def test_breaking_section_marks_an_ended_episode():
-    # A last-seen older than EPISODE_GAP means the episode closed by the gap rule → 'N ago', not live.
+    # A last-seen older than the record's own gap means the episode closed → 'N ago', not live.
+    # The gap rides on the record because it is per-pipeline config (ISSUE_82).
     now = datetime.now(timezone.utc)
     stats = _stats()
     stats.add_breaking_episode('BTCUSD', 'SELL', 'old crash story', 'engine 2m',
-                               at=now - EPISODE_GAP - timedelta(minutes=5))
+                               at=now - DEFAULT_EPISODE_GAP - timedelta(minutes=5))
     text = _render(stats, worker_count=4)
     assert 'BTCUSD SELL' in text
     assert 'ago' in text                                      # ended → recency, not a live dot

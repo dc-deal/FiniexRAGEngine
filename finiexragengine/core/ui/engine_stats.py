@@ -98,17 +98,22 @@ class BreakingSnapshot:
 class BreakingRecord:
     """One recent confirmed episode — for the BREAKING section (newest kept, oldest drops).
 
-    `last_seen` advances every pass the symbol re-breaks (`touch_breaking_episode`), so the renderer
-    tells a live episode (`now − last_seen ≤ EPISODE_GAP`) from an ended one and shows a duration.
-    Deliberately **not frozen** (unlike the stage snapshots): `last_seen` is updated in place — a
-    single atomic reference assignment under the GIL, and every writer runs under this module's
-    own counter lock (ISSUE_74), so a reader never sees a torn value.
+    `last_seen` advances every pass that HOLDS the episode open (`touch_breaking_episode`), so the
+    renderer tells a live episode (`now − last_seen ≤ gap_seconds`) from an ended one and shows a
+    duration. Deliberately **not frozen** (unlike the stage snapshots): `last_seen` is updated in
+    place — a single atomic reference assignment under the GIL, and every writer runs under this
+    module's own counter lock (ISSUE_74), so a reader never sees a torn value.
+
+    `gap_seconds` travels with the record because the episode gap is **per-pipeline** config
+    (ISSUE_82) and this deque mixes pipelines: the renderer must judge each episode against the
+    value its own rule used, not against a module constant.
     """
     started: datetime
     last_seen: datetime
     symbol: str
     signal: str
     reason: str = ''                             # why it broke (the LLM's reasoning; ISSUE_64)
+    gap_seconds: float = 2700.0                  # this episode's close delay (ISSUE_82; 45 min)
 
 
 @dataclass(frozen=True)
@@ -181,7 +186,7 @@ class EngineStats:
                                               confirmed=current.confirmed, detail=current.detail)
 
     def add_breaking_episode(self, symbol: str, signal: str, reason: str, detail: str, *,
-                             at: datetime) -> None:
+                             at: datetime, gap_seconds: float = 2700.0) -> None:
         """One confirmed breaking episode (edge-triggered, ISSUE_11): bump the episode count, set
         the reaction detail, and record it (with its reason) for the BREAKING section (ISSUE_64)."""
         with self._counter_lock:                          # read-modify-write (ISSUE_74)
@@ -189,12 +194,13 @@ class EngineStats:
             self._breaking = BreakingSnapshot(last=at, detected=current.detected,
                                               confirmed=current.confirmed + 1, detail=detail)
             self._recent_breaking.append(BreakingRecord(started=at, last_seen=at, symbol=symbol,
-                                                        signal=signal, reason=reason))
+                                                        signal=signal, reason=reason,
+                                                        gap_seconds=gap_seconds))
 
     def touch_breaking_episode(self, symbol: str, *, at: datetime) -> None:
-        """A symbol still breaking this pass (same ongoing episode, ISSUE_64): advance its record's
-        `last_seen` so the renderer keeps it 'live' and grows its duration. A no-op if the episode's
-        start already dropped off the bounded deque — the count already carries it."""
+        """A symbol whose open episode this pass held (same ongoing episode, ISSUE_64/82): advance
+        its record's `last_seen` so the renderer keeps it 'live' and grows its duration. A no-op if
+        the episode's start already dropped off the bounded deque — the count already carries it."""
         # Under the counter lock too: it walks the same deque `add_breaking_episode` appends to.
         with self._counter_lock:
             for record in reversed(self._recent_breaking):  # newest match = the open episode

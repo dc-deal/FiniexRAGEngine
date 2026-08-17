@@ -204,6 +204,60 @@ GROUP BY source_id ORDER BY flagged DESC;
 Measured 2026-08-15: `fetch_lag` 1–6 min, `flag_lag` 2–7 **seconds** — so publication to flag takes
 minutes, while the report showed a 107-minute median. That gap is the proxy, not the engine.
 
+## Did the engine really break N times?
+
+```bash
+python -m finiexragengine.cli.breaking_cli --since 7d --timeline
+python -m finiexragengine.cli.breaking_cli --since 7d --timeline XRPUSD    # one symbol
+```
+
+Every pass as one cell — `#` breaking, `.` held open by the exit gate, `_` below both — with the
+**verdict flips** next to the **episodes**. That pairing is the whole diagnostic: flips are the
+model's noise and do not change when the grouping rule is retuned; episodes are what the rule made
+of them. A clean block is one story; a comb is a threshold being crossed by drift.
+
+```
+XRPUSD        16    8     9    1  08-17 13:00 → 08-17 15:10  ####...#.#.#_#__
+```
+
+Nine flips, one episode: the hysteresis (ISSUE_82) holding a story together that the old rule split
+in two. If you see many episodes on a comb-shaped series, `breaking.urgency_exit_threshold` is too
+close to `urgency_threshold` for that pipeline. If you see one episode spanning a whole day, it is
+too far below.
+
+The underlying question — how reproducible the model is at all — is answered in SQL, by comparing
+passes that saw a **byte-identical** source set:
+
+```sql
+WITH p AS (
+  SELECT o.id, o.ts, r->>'symbol' AS symbol,
+         md5(string_agg(s->>'article_id', ',' ORDER BY s->>'article_id')) AS set_hash,
+         min((r->>'urgency')::float) AS urgency, min(r->>'signal') AS signal
+  FROM outcomes o,
+       LATERAL jsonb_array_elements(o.envelope->'result') r,
+       LATERAL jsonb_array_elements(r->'sources') s
+  WHERE o.pipeline_id = 'crypto_sentiment' AND r->>'basis' = 'llm'
+    AND o.ts >= now() - interval '7 days'
+  GROUP BY o.id, o.ts, r->>'symbol'
+), d AS (
+  SELECT symbol, ts, set_hash, urgency, signal,
+         lag(set_hash) OVER w AS p_hash, lag(ts) OVER w AS p_ts,
+         lag(urgency)  OVER w AS p_urgency, lag(signal) OVER w AS p_signal
+  FROM p WINDOW w AS (PARTITION BY symbol ORDER BY ts)
+)
+SELECT symbol, count(*) AS pairs,
+       round(avg(abs(urgency - p_urgency))::numeric, 3) AS d_urgency,
+       round(100.0 * count(*) FILTER (WHERE signal <> p_signal) / count(*), 1) AS signal_flip_pct
+FROM d WHERE p_hash = set_hash AND ts - p_ts <= interval '15 minutes'
+GROUP BY symbol ORDER BY d_urgency DESC;
+```
+
+Only **adjacent** passes, because the prompt carries `Current time:` and absolute article
+timestamps: over hours a falling urgency is correct decay, not drift. Measured 2026-08-17 over
+~6,200 pairs: mean `urgency` drift **0.032**, `signal` flips **2.8 %** of adjacent pairs (0 % on
+thinly-covered symbols, 6.8 % on BTCUSD). Small everywhere — the breaking gate is simply the one
+place where a third of a lattice step becomes a categorical error.
+
 ## Reference — the diagnostic stores
 
 | Store | Holds | Lifetime |

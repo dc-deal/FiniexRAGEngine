@@ -199,6 +199,26 @@
             }
         },
         {
+            // "Do I believe that episode count?" The per-pass on/off series behind it: verdict
+            // flips (the model's noise, unchanged by any grouping rule) next to episodes (what
+            // the hysteresis rule made of them). Add a symbol for one series: --timeline XRPUSD.
+            "name": "📊 RAGEngine: Breaking Timeline (flips vs episodes)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/finiexragengine/cli/breaking_cli.py",
+            "args": [
+                "--since",
+                "7d",
+                "--timeline"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "04_diagnostics",
+                "order": 6
+            }
+        },
+        {
             "name": "📊 RAGEngine: Model Check (ingest + llm stage vs available)",
             "type": "debugpy",
             "request": "launch",
@@ -207,7 +227,7 @@
             "justMyCode": false,
             "presentation": {
                 "group": "04_diagnostics",
-                "order": 6
+                "order": 7
             }
         },
         {
@@ -217,12 +237,15 @@
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/finiexragengine/cli/sources_cli.py",
-            "args": ["--since", "7d"],
+            "args": [
+                "--since",
+                "7d"
+            ],
             "console": "integratedTerminal",
             "justMyCode": false,
             "presentation": {
                 "group": "04_diagnostics",
-                "order": 7
+                "order": 8
             }
         },
         {
@@ -234,12 +257,17 @@
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/finiexragengine/cli/sources_cli.py",
-            "args": ["--history", "ecb_press", "--since", "30d"],
+            "args": [
+                "--history",
+                "ecb_press",
+                "--since",
+                "30d"
+            ],
             "console": "integratedTerminal",
             "justMyCode": false,
             "presentation": {
                 "group": "04_diagnostics",
-                "order": 8
+                "order": 9
             }
         },
         {
@@ -254,7 +282,7 @@
             "justMyCode": false,
             "presentation": {
                 "group": "04_diagnostics",
-                "order": 9
+                "order": 10
             }
         },
         // ====================================================

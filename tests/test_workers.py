@@ -9,6 +9,7 @@ from typing import List
 
 import pytest
 
+from finiexragengine.core.pipeline.breaking_episode import BreakingEpisodeTracker
 from finiexragengine.core.pipeline.eval_worker import EvalWorker
 from finiexragengine.core.pipeline.ingest_worker import IngestWorker
 from finiexragengine.core.triggers.interval_trigger import IntervalTrigger
@@ -272,6 +273,11 @@ def test_supervisor_builds_one_ingest_per_referenced_set_and_one_eval_per_stream
         def get_cost_recorder(self):
             return None
 
+        def build_episode_tracker(self, config):
+            # The real one seeds from the outcome store (ISSUE_82); the supervisor only has to
+            # hand whatever it gets to the worker, so an unseeded tracker is the honest stand-in.
+            return BreakingEpisodeTracker()
+
     async def _scenario():
         return WorkerSupervisor(_FakeAssembler(), registry).states()
 
@@ -325,9 +331,9 @@ def test_breaking_confirmation_log_reports_reaction_time():
             SentimentResult(symbol='ETHUSD', signal='HOLD', sentiment_score=0.0, confidence=0.5,
                             reasoning='calm', urgency=0.1, is_breaking=False),
         ])
-    episodes = BreakingEpisodeTracker().new_episodes(envelope)
-    assert len(episodes) == 1                               # only the breaking row = one episode
-    line = _breaking_line('crypto_sentiment', episodes[0])
+    started = BreakingEpisodeTracker().observe(envelope).started
+    assert len(started) == 1                                # only the breaking row = one episode
+    line = _breaking_line('crypto_sentiment', started[0])
     assert 'BTCUSD' in line
     assert 'engine 42s' in line and 'e2e 49s' in line       # published≠fetched → real e2e
 

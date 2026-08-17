@@ -146,9 +146,22 @@ class BreakingConfig(BaseModel):
     - `urgency_threshold` — the **confirm** gate: `is_breaking = urgency >= this` on the LLM's own
       score. Answers "having read it, is it market-moving enough to count as breaking?" — after the
       LLM read it. The two are orthogonal on purpose (see docs/architecture).
+
+    The last two shape the *episode* — the grouping of consecutive passes into one story
+    (ISSUE_82). They govern reporting only; `is_breaking` on the envelope stays the raw per-pass
+    verdict above, so a consumer's reading of the contract is unchanged:
+
+    - `urgency_exit_threshold` — the **hold** gate of the Schmitt trigger. An episode opens at
+      `urgency_threshold` and stays open while urgency holds at or above this. Set equal to
+      `urgency_threshold` to disable the hysteresis and get the pre-ISSUE_82 behaviour.
+    - `episode_gap_minutes` — how long neither condition may hold before the episode closes.
+      Keep it OFF a multiple of the eval cadence: at exactly 30 min on a 600 s grid, two missed
+      passes plus a second of scheduling jitter decided whether a story was split in two.
     """
     urgency_threshold: float = 0.8       # push gate for breaking news (ISSUE_6)
     min_importance: int = 2              # wake sensitivity: MID+ clusters wake this pipeline (ISSUE_11)
+    urgency_exit_threshold: float = 0.7  # episode hold gate — hysteresis (ISSUE_82)
+    episode_gap_minutes: int = 45        # episode close delay; deliberately off the grid (ISSUE_82)
 
 
 class OutputGuardConfig(BaseModel):

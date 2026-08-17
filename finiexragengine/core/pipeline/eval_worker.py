@@ -3,11 +3,12 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 from time import perf_counter
-from typing import List, Optional
+from typing import Optional
 
 from finiexragengine.core.pipeline.breaking_episode import (
     BreakingEpisode,
     BreakingEpisodeTracker,
+    BreakingPass,
 )
 from finiexragengine.core.pipeline.pipeline import Pipeline
 from finiexragengine.core.triggers.abstract_trigger import AbstractTrigger
@@ -53,7 +54,8 @@ class EvalWorker:
 
     def __init__(self, pipeline: Pipeline, trigger: AbstractTrigger,
                  pass_timeout_seconds: int = 300,
-                 engine_stats: Optional[EngineStats] = None) -> None:
+                 engine_stats: Optional[EngineStats] = None,
+                 episode_tracker: Optional[BreakingEpisodeTracker] = None) -> None:
         self._pipeline = pipeline
         self._trigger = trigger
         # Wall-clock deadline for one pass (ISSUE_74) — see IngestWorker for the rationale, and
@@ -63,8 +65,10 @@ class EvalWorker:
         # push below is skipped, so the /health-only and CLI paths carry zero overhead.
         self._engine_stats = engine_stats
         # Edge-triggered breaking (ISSUE_11): a hot story is counted/logged once, on the transition
-        # into breaking — not every pass it lingers. Session-scoped; the store report is durable.
-        self._episodes = BreakingEpisodeTracker()
+        # into breaking — not every pass it lingers. Built and seeded by the assembler (ISSUE_82),
+        # which has both the pipeline's `breaking` config and the outcome store; the bare fallback
+        # keeps direct construction (tests, /run) working on the schema defaults.
+        self._episodes = episode_tracker if episode_tracker is not None else BreakingEpisodeTracker()
         config = pipeline.get_config()
         # Eval cadence is a bar-close timeframe (ISSUE_timeframe); expose it as the label plus
         # the derived seconds value (via cadence_seconds) so /health still shows a number.
@@ -122,16 +126,16 @@ class EvalWorker:
             # transition into breaking — not every pass it lingers (that flooded the log with 59
             # identical lines/day and inflated the count). Cross-checks the store `breaking`
             # report, which groups the same episodes.
-            episodes = self._episodes.new_episodes(envelope)
-            for episode in episodes:
+            breaking = self._episodes.observe(envelope)
+            for episode in breaking.started:
                 logger.info(_breaking_line(envelope.pipeline_id, episode))
             # Feed the live dashboard from the same envelope (ISSUE_26); no-op without a display.
-            self._push_stats(envelope, tokens, duration_ms, episodes)
+            self._push_stats(envelope, tokens, duration_ms, breaking)
         self._state.runs += 1
         self._state.last_duration_ms = (perf_counter() - started) * 1000.0
 
     def _push_stats(self, envelope: AnalysisEnvelope, tokens: int, duration_ms: float,
-                    episodes: List[BreakingEpisode]) -> None:
+                    breaking: BreakingPass) -> None:
         """Push this eval pass into the live dashboard's shared state (ISSUE_26); no-op without one."""
         stats = self._engine_stats
         if stats is None:
@@ -156,14 +160,18 @@ class EvalWorker:
         # BREAKING (confirmed side): one activity line + one recorded episode per NEW episode —
         # bumps the count, sets the frozen reaction detail, and feeds the BREAKING section with the
         # episode's reason (ISSUE_64).
-        started_symbols = {episode.symbol for episode in episodes}
-        for episode in episodes:
+        gap_seconds = self._episodes.get_rule().get_gap().total_seconds()
+        for episode in breaking.started:
             stats.push_event('BREAKING', _breaking_line(envelope.pipeline_id, episode))
             detail = (f'engine {_fmt_seconds(episode.engine_s)} / '
                       f'e2e {_fmt_seconds(episode.end_to_end_s)}')
-            stats.add_breaking_episode(episode.symbol, episode.signal, episode.reason, detail, at=now)
-        # A symbol still breaking but NOT a new episode is an ongoing story (edge-triggered): advance
-        # its record's last_seen so the section keeps it 'live' and grows its duration (ISSUE_64).
-        for result in envelope.result:
-            if result.is_breaking and result.symbol not in started_symbols:
-                stats.touch_breaking_episode(result.symbol, at=now)
+            # The record carries its pipeline's gap so the renderer decides live-vs-ended against
+            # the value the rule actually used (ISSUE_82) — `breaking` is per-pipeline config.
+            stats.add_breaking_episode(episode.symbol, episode.signal, episode.reason, detail,
+                                       at=now, gap_seconds=gap_seconds)
+        # A symbol whose open episode this pass HELD is an ongoing story: advance its record's
+        # last_seen so the section keeps it 'live' and grows its duration (ISSUE_64). Under
+        # hysteresis this is no longer "was breaking" — a pass below the confirm gate but at or
+        # above the exit gate holds the story open too (ISSUE_82).
+        for symbol in breaking.held:
+            stats.touch_breaking_episode(symbol, at=now)

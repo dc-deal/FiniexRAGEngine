@@ -207,8 +207,12 @@ today, most load-bearing first:
   detector that flags candidates on the corpus; a flag **wakes the eval worker out-of-band**
   (jumps the interval) at each pipeline's own sensitivity, the LLM **confirms**
   (`urgency ≥ threshold`), and a **reaction-time report** (engine vs end-to-end, from the
-  store) shows the flagged→confirmed funnel. The live SSE push is the next slice (Stage C,
-  IDE-accepted, paired with #9). See [breaking_detection.md](docs/architecture/breaking_detection.md).
+  store) shows the flagged→confirmed funnel. Consecutive confirmations are grouped into one
+  **episode** by a Schmitt trigger (open high, hold low) rather than a bare gap — the LLM's
+  urgency is quantised, so a threshold-sized wobble used to split one story into five (#82);
+  a **state timeline** (`--timeline`) shows the flips next to the episodes. The live SSE push
+  is the next slice (Stage C, IDE-accepted, paired with #9).
+  See [breaking_detection.md](docs/architecture/breaking_detection.md).
 - **Honest retrieval — the "squeeze" (#5, #24)**: two-tier top-k with a recency window,
   symbol-aware query expansion, semantic dedup before the token cap, and a min-similarity
   floor — a symbol with only off-topic coverage degrades to a clean, zero-cost `no_data`

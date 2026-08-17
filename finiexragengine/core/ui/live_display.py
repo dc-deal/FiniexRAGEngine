@@ -22,7 +22,6 @@ from rich.text import Text
 
 from finiexragengine.core.observability.budget_guard import BudgetGuard
 from finiexragengine.core.observability.stall_watchdog import StallWatchdog
-from finiexragengine.core.pipeline.breaking_episode import EPISODE_GAP
 from finiexragengine.core.ui.engine_stats import (
     BreakingRecord,
     BreakingSnapshot,
@@ -313,11 +312,13 @@ class LiveDisplay:
 
     @staticmethod
     def _episode_status(now: datetime, record: BreakingRecord) -> Text:
-        # Live vs ended, edge-triggered on EPISODE_GAP: a pass within the gap still saw it breaking
-        # (live → a red dot + how long it has been running); otherwise the episode closed by the gap
-        # rule (ended → how long ago it last broke). Matches the store report's grouping.
+        # Live vs ended, edge-triggered on the episode's own gap: a pass within it still held the
+        # story open (live → a red dot + how long it has been running); otherwise the episode closed
+        # by the gap rule (ended → how long ago it last held). The gap rides on the record because
+        # it is per-pipeline config and this deque mixes pipelines (ISSUE_82). Matches the store
+        # report's grouping, which drives the same rule.
         since_seen = (now - record.last_seen).total_seconds()
-        if since_seen <= EPISODE_GAP.total_seconds():
+        if since_seen <= record.gap_seconds:
             running = _format_age((now - record.started).total_seconds())
             return Text(f'● {running}', style='red')
         return Text(f'{_format_age(since_seen)} ago', style='dim')

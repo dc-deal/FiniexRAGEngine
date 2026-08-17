@@ -165,13 +165,12 @@ t3 envelope ts    ─┘
   in the corpus; the report joins it by `article_id` for detection latency.
 - **Episode de-dup (live AND store):** a hot story stays `is_breaking` across many envelopes —
   counting/logging every pass inflates "confirmed" (one lingering ADAUSD story = 89 raw hits, 2
-  episodes) and lets reaction grow with the wall-clock. So a breaking *episode* (consecutive
-  `is_breaking` per pipeline+symbol within `EPISODE_GAP` = 30 min) is counted **once**, on the
-  transition into breaking, with reaction anchored on the **first** confirming envelope. The store
-  report groups this in batch (`breaking_report._aggregate`, restart-robust); the live eval worker
-  +dashboard do it streaming (`core/pipeline/breaking_episode.py` — `BreakingEpisodeTracker`,
-  session-scoped). Both import the same `EPISODE_GAP`, so they agree by construction (verified: 14
-  episodes each on the same day). The `[BREAKING ✓]` log now fires once per episode, not per pass.
+  episodes) and lets reaction grow with the wall-clock. So a breaking *episode* is counted
+  **once**, on the transition into breaking, with reaction anchored on the **first** confirming
+  envelope. Where that boundary falls is `BreakingEpisodeRule`'s decision (see *The episode rule*
+  below); the store report drives it in batch (`breaking_report._aggregate`, restart-robust), the
+  live eval worker + dashboard drive it streaming (`BreakingEpisodeTracker`). One rule object, two
+  callers — they cannot diverge. The `[BREAKING ✓]` log fires once per episode, not per pass.
 - **Estimated publish dates excluded from e2e:** a date-less feed falls back `published_at :=
   fetched_at` (so recency filtering still works). Those estimated dates would collapse e2e onto
   engine, so both surfaces drop sources where `published_at == fetched_at` from the e2e sample;
@@ -185,29 +184,90 @@ counting each observation counts the *state*, not distinct breaks — like count
 fire alarm rings instead of counting one fire. That is the "confirmed" inflation.
 
 An **episode** is the fix: one continuous stretch of breaking, counted **once** on the transition
-into breaking. It stays the same episode while breaking continues (or resumes within `EPISODE_GAP`);
-a quiet gap longer than `EPISODE_GAP` re-arms it, so the next break is a new episode.
+into breaking.
 
 A real day for `ADAUSD` — **89 breaking passes → 2 episodes**:
 
 ```
 09:37 │ breaking · breaking · … · breaking      ◀ EPISODE 1 (the transition into breaking)
       │ (ON every 10-min pass — the same story)
-      ┊   … 101 min quiet (not breaking) …       > 30 min ⇒ the episode is considered over
-14:41 │ breaking · breaking · … · 23:50          ◀ EPISODE 2 (gap 101 min > 30 → new)
+      ┊   … 101 min quiet (not breaking) …       ⇒ past the gap, the episode is over
+14:41 │ breaking · breaking · … · 23:50          ◀ EPISODE 2
 ```
-
-The gap rule in three cases (`EPISODE_GAP` = 30 min):
-
-| breaking at | episodes | why |
-|---|---|---|
-| 10:00 · 10:10 · 10:20 · 10:30 | 1 | every gap ≤ 30 min → one story |
-| 10:00 · 10:10 · [25 min] · 10:35 | 1 | 25 ≤ 30 → still the same |
-| 10:00 · 10:10 · [40 min] · 10:50 | 2 | 40 > 30 → a new episode |
 
 Reaction time follows the same logic: sampled once, at the episode's first confirming pass, then
 frozen. Otherwise it re-anchors on the ageing oldest article every pass and grows with the
 wall-clock (a lingering story drifted `863m → 873m → 883m` — a symptom, not a signal).
+
+### The episode rule — a Schmitt trigger, not a plain gap (ISSUE_82)
+
+A pure gap rule ("breaking, then quiet for N minutes") is not enough, because `is_breaking` is a
+threshold verdict on a **quantised** score. Measured over seven days of `crypto_sentiment`, the
+model emits exactly seven `urgency` values — never 0.65/0.75/0.85 — and the confirm gate at 0.8
+sits on one of them, with the largest non-zero bucket (0.7) one step below. **70 % of all non-zero
+scores sit on the pair straddling the threshold.** Mean pass-to-pass drift on a *byte-identical*
+source set is 0.032, a third of a lattice step, and that is enough to flip the verdict: on
+2026-08-17 XRPUSD crossed the threshold nine times in fifteen passes while `signal` stayed BUY
+15/15 and the freshest retrieved source never moved.
+
+The result was a **~4.7x overcount** — 394 breaking passes → 66 episodes → ~14 real stories in one
+week — and a corrupted reaction metric, because every re-trigger re-samples against an ageing
+article (one XRPUSD story climbed 0.5 → 130.6 min of "engine reaction" purely with the wall clock).
+
+`BreakingEpisodeRule` (`core/pipeline/breaking_episode_rule.py`) answers that with the standard
+treatment for a noisy signal crossing a threshold — **open high, hold low**:
+
+| | condition | config |
+|---|---|---|
+| **opens** | the pass's recorded `is_breaking` | `breaking.urgency_threshold` (0.8) |
+| **stays open** | `urgency >= exit` — or breaking again | `breaking.urgency_exit_threshold` (0.7) |
+| **closes** | neither, for longer than the gap | `breaking.episode_gap_minutes` (45) |
+
+Two properties worth knowing:
+
+- **Opening uses the recorded verdict, never a re-derivation from today's threshold.** An archived
+  pass keeps the decision its pipeline actually took, so retuning `urgency_threshold` later cannot
+  rewrite history when the store report re-groups it. `urgency` is read only for the hold
+  condition — which also makes pre-ISSUE_6 rows degrade to the old behaviour instead of misbehaving.
+- **The gap is deliberately off the eval grid.** At the previous 30 min on a 600 s cadence, two
+  missed passes plus a second of scheduling jitter decided whether a story was split: every
+  symbol's smallest observed gap was 30:00.6–30:22, i.e. exactly the boundary. 45 is not a
+  multiple of 10 minutes, so nothing lands on the edge.
+
+The same rule in three cases:
+
+| passes (urgency) | episodes | why |
+|---|---|---|
+| 0.8 · 0.8 · 0.7 · 0.7 · 0.8 | 1 | the 0.7 passes hold — this is the ISSUE_82 case |
+| 0.8 · [0.3 for 50 min] · 0.8 | 2 | below the exit gate past the gap → genuinely over |
+| 0.8 · [0.3 for 20 min] · 0.8 | 1 | a dip inside the gap does not end a story |
+
+Setting `urgency_exit_threshold` equal to `urgency_threshold` disables the hysteresis and restores
+the pre-ISSUE_82 grouping — the documented escape hatch.
+
+**The envelope is untouched by all of this.** `is_breaking` remains the raw per-pass verdict, so a
+consumer's reading of the contract does not change and no `schema_version`/`prompt_version` moves.
+Consequently the two episode knobs are **excluded from the `config_fingerprint`** (the only dotted
+exclusions in `_PIPELINE_EXCLUDED`): they regroup a report at read time, and two runs either side
+of a retune emit byte-identical envelopes — hashing them would fork a series that did not fork.
+Giving the *consumer* a debounced regime is a contract change, and belongs to `breaking_episode_id`
+(#65), which is sequenced after this.
+
+**Restart robustness.** The live tracker's state is seeded at boot from the persisted envelopes
+(`pipeline_assembler.build_episode_tracker` replays the last `2 × gap` through the same `observe`),
+so a restart mid-story resumes the episode instead of re-opening it. Before that, two of one week's
+66 episodes were boot artefacts — re-confirmed 3 and 11 minutes after the previous breaking pass,
+i.e. well inside any gap, which only an empty tracker can produce. Seeding is best-effort: an
+unreadable store costs episode continuity across one restart and never stops the engine.
+
+### Is `confirmed` a subset of `flagged`? No.
+
+The funnel prints `N flagged → M confirmed`, which reads like a yield. It is not one. Detection
+(the ingest-side flag) and confirmation (the LLM's urgency) are independent paths, and a story can
+be confirmed with **no** flagged article behind it at all: on 2026-08-17 both XRPUSD episodes came
+from articles with `importance = NULL`, `breaking_candidate = false`, `flagged_at = NULL`. The
+out-of-band wake that ran during them was triggered by an unrelated headline. Read the two numbers
+as two independent measurements of the same window, never as a ratio.
 
 **The report** (`core/observability/breaking_report.py`, CLI `cli/breaking_cli.py`) — the shared
 pattern table, windowed all-time / this week / recent, aggregated from the store; **no per-run
@@ -235,7 +295,7 @@ A breaking episode is the engine's most important event, so both surfaces show *
 whether it is still live — not just that it did:
 
 - **Live** (#26): the BREAKING section lists up to three recent episodes, one line each —
-  `SYMBOL SIGNAL` · **live** (`● <running>`, a pass within `EPISODE_GAP` still saw it breaking) or
+  `SYMBOL SIGNAL` · **live** (`● <running>`, a pass within the episode gap still held it open) or
   **ended** (`<age> ago`, closed by the gap rule) · **why** (the LLM's `reasoning`).
 - **Weekly** (`breaking_report`): a per-episode listing grouped by pipeline — `started`, `duration`
   (last pass − start), and the same reason — read from each episode's *first* confirming envelope.
