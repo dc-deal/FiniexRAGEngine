@@ -1,6 +1,6 @@
 """Abstract base for an input source (RSS, blog, socket, API)."""
 from abc import ABC, abstractmethod
-from typing import List
+from typing import List, Optional
 
 from finiexragengine.types.article_types import Article
 from finiexragengine.types.config_types.source_set_types import SourceConfig
@@ -22,6 +22,19 @@ class AbstractSource(ABC):
     def get_url(self) -> str:
         """The feed URL — used to derive the health-store `host` (ISSUE_11)."""
         return self._config.url
+
+    def get_fetch_deadline_ms(self) -> Optional[float]:
+        """This source's effective fetch deadline in milliseconds, when it has one (ISSUE_84).
+
+        The quarantine ladder reads a failure's duration *against its deadline*: a failure that
+        burned the deadline is a feed that went quiet (transient, short cool-off), one that came
+        back in milliseconds is a refusal (durable, long cool-off). Without the deadline that
+        split cannot be made, because both arrive as `UNREACHABLE`.
+
+        None means "this source type has no deadline to compare against" — the policy then reads
+        the failure conservatively rather than guessing.
+        """
+        return None
 
     def due_for_fetch(self) -> bool:
         """Whether this source should be polled this pass (ISSUE_11).

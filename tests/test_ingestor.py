@@ -2,7 +2,8 @@
 
 Pure logic: fake source/store/embedder, so no DB and no API budget are touched.
 """
-from datetime import datetime, timezone
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from time import sleep
 from typing import List, Optional
 
@@ -116,26 +117,45 @@ def test_failing_source_is_recorded_others_proceed():
 
 
 class _FakeHealth:
-    """In-memory stand-in for SourceHealthStore (ISSUE_11) — no DB."""
+    """In-memory stand-in for SourceHealthStore (ISSUE_11, ISSUE_84) — no DB."""
 
-    def __init__(self, quarantined=(), until=None):
+    def __init__(self, quarantined=(), until=None, host_backoff_until=None, rung=None):
         self.quarantined = set(quarantined)
         self._until = until
+        self._host_backoff_until = host_backoff_until
+        self._rung = rung
         self.successes = []
         self.failures = []
+        self.scopes = []              # the source-sets the ingestor opened a pass for
+        self.host_event = None
+
+    @contextmanager
+    def pass_scope(self, source_set):
+        self.scopes.append(source_set)
+        yield
+
+    def take_host_event(self):
+        return self.host_event
+
+    def host_backoff_until(self):
+        return self._host_backoff_until
 
     def should_poll(self, source_id):
-        return source_id not in self.quarantined
+        return self._host_backoff_until is None and source_id not in self.quarantined
 
     def quarantined_until(self, source_id):
         return self._until if source_id in self.quarantined else None
+
+    def rung_of(self, source_id):
+        return self._rung
 
     def record_success(self, source_id, host, source_set):
         self.successes.append((source_id, host))
         return False
 
-    def record_failure(self, source_id, host, source_set, *, error_type, status, message):
-        self.failures.append((source_id, error_type))
+    def record_failure(self, source_id, host, source_set, *, error_type, status, message,
+                       duration_ms=None, deadline_ms=None):
+        self.failures.append((source_id, error_type, duration_ms, deadline_ms))
         return HealthOutcome(consecutive_failures=1, just_flagged=False, quarantined_until=None)
 
 
@@ -146,8 +166,13 @@ def test_health_records_success_and_typed_failure():
     result = Ingestor([bad, good], _CountingEmbedder(), _FakeStore(),
                       health_store=health, source_set_id='crypto_news').run()
     assert ('good', 'example.test') in health.successes    # reachable poll -> success + host
-    assert ('bad', 'UNREACHABLE') in health.failures       # typed failure recorded
     assert 'bad' in result.health_notes                    # carried for the worker's log level
+    assert health.scopes == ['crypto_news']                # the pass was bracketed (ISSUE_84)
+    # The failure carries its measured duration and the source's deadline (ISSUE_84) — that pair
+    # is what picks the cool-off rung, so losing it here would silently flatten the ladder.
+    (source_id, error_type, duration_ms, deadline_ms), = health.failures
+    assert (source_id, error_type) == ('bad', 'UNREACHABLE')
+    assert duration_ms is not None and duration_ms >= 0.0
 
 
 def test_quarantined_source_is_skipped_not_polled():
@@ -363,3 +388,31 @@ def test_the_pass_runs_unchanged_without_a_journal():
     source = _FakeSource('coindesk', [_article('a1')])
     result = Ingestor([source], _CountingEmbedder(), _FakeStore()).run()
     assert result.stored == 1 and result.polls[0].status == 'ok'
+
+
+def test_a_set_wide_back_off_is_not_reported_as_a_quarantine():
+    # ISSUE_84: during a connectivity back-off no feed is at fault, so the pass must not label
+    # them QUARANTINED — that is the word that sends the operator to the feeds instead of to the
+    # host, which is exactly what cost ~20 self-inflicted hours on 2026-07-29.
+    until = datetime.now(timezone.utc) + timedelta(minutes=5)
+    health = _FakeHealth(host_backoff_until=until)
+    result = Ingestor([_FakeSource('good', [_article('a1')]), _FakeSource('bad', fail=True)],
+                      _CountingEmbedder(), _FakeStore(),
+                      health_store=health, source_set_id='forex_news').run()
+
+    assert [poll.status for poll in result.polls] == ['host_backoff', 'host_backoff']
+    assert result.quarantined_skips == []                  # not a quarantine, and not counted as one
+    assert health.successes == [] and health.failures == []   # nothing was polled at all
+
+
+def test_a_quarantined_source_carries_its_rung_to_the_surfaces():
+    # The rung travels structurally on the poll (ISSUE_84) — the live display renders from the
+    # pass, it never parses the detail string back.
+    until = datetime.now(timezone.utc) + timedelta(hours=6)
+    health = _FakeHealth(quarantined={'bad'}, until=until, rung=(1, 3))
+    result = Ingestor([_FakeSource('bad', fail=True)], _CountingEmbedder(), _FakeStore(),
+                      health_store=health, source_set_id='forex_news').run()
+
+    poll, = result.polls
+    assert poll.rung == (1, 3)
+    assert 'rung 2/3' in poll.detail                        # 0-based stored, 1-based displayed

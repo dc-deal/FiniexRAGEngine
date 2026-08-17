@@ -4,7 +4,7 @@ Defaults mirror configs/app_config.json exactly (operator-visible, tunable).
 """
 from typing import Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class ApiConfig(BaseModel):
@@ -124,16 +124,47 @@ class LoggingConfig(BaseModel):
 
 
 class SourceHealthConfig(BaseModel):
-    """Source-health flagging policy (ISSUE_11) — app-wide, not per source-set.
+    """Source-health flagging policy (ISSUE_11, ISSUE_84) — app-wide, not per source-set.
 
     A feed that keeps failing (rate-limit, malformed body, TLS drop) is flagged and
-    quarantined: polling pauses for `quarantine_hours`, then it is retried once; still
-    failing → flagged again. The last few warnings/errors are kept per source so the
-    Sources report / weekly is debugging-ready without digging through logs.
+    quarantined: polling pauses for a cool-off, then exactly one probe decides whether it
+    recovered. The last few warnings/errors are kept per source so the Sources report /
+    weekly is debugging-ready without digging through logs.
+
+    ISSUE_84 replaced the flat 24h with the circuit-breaker shape `BudgetGuard` already owns:
+    a graduated ladder, a half-open probe, and a guard against punishing feeds for what is
+    plainly a local connectivity failure.
     """
     flag_after_consecutive_failures: int = 5   # consecutive fails -> flag + quarantine
-    quarantine_hours: int = 24                  # a flagged source is skipped this long, then retried
+    # The escalation ladder (ISSUE_84): first episode 1h, a repeat within `ladder_reset_hours`
+    # 6h, the third and beyond 24h. A flat 24h treated a feed at 99.97% availability exactly
+    # like one that has never answered — 3m42s of trouble on ecb_press cost a day of ingest.
+    # A bare integer stays valid and means a single-rung ladder (see the validator below).
+    quarantine_hours: List[int] = Field(default_factory=lambda: [1, 6, 24])
     recent_events_kept: int = 10                # capped warn/error ring per source (overview)
+    # How long a feed's episodes stay "recent" for the ladder. A full window without a new
+    # episode drops it back to the first rung — the memory is derived from the episode history
+    # itself (a SQL count), never from a stored counter that could drift from it.
+    ladder_reset_hours: int = 168               # 7 days
+    # Splits the overloaded UNREACHABLE bucket: DNS/refused come back in milliseconds, a feed
+    # that went quiet burns the deadline. Three orders of magnitude apart, so the cut is safe
+    # anywhere in between — a failure at/above this share of the fetch deadline reads as
+    # transient (short rung), below it as a durable refusal (long rung).
+    deadline_ratio: float = 0.7
+    # Correlated-failure guard (ISSUE_84): when this share of a pass's pollable sources fails
+    # at once, the common cause is local (DNS, network, the container) and quarantining every
+    # feed converts a short shared outage into a long self-inflicted one — 2026-07-29 turned
+    # ~5h into ~25h that way. Its second job is protecting the ladder: without it one host
+    # event escalates every healthy feed a rung.
+    correlated_failure_ratio: float = 0.85
+    correlated_min_pollable: int = 3            # below this a thin pass can't look "correlated"
+    correlated_backoff_minutes: int = 5         # set-level pause instead of N per-feed quarantines
+
+    @field_validator('quarantine_hours', mode='before')
+    @classmethod
+    def _accept_single_rung(cls, value: object) -> object:
+        """`24` (the pre-ISSUE_84 shape) means a one-rung ladder — existing overrides keep working."""
+        return [value] if isinstance(value, (int, float)) else value
 
 
 class StallWatchdogConfig(BaseModel):

@@ -66,6 +66,20 @@ class Ingestor:
 
     def run(self) -> IngestResult:
         """Fetch, embed only the new articles and upsert; return per-source + totals."""
+        # The health decisions of this pass are resolved together at the end (ISSUE_84): whether
+        # a crossed failure threshold means "this feed is broken" or "our connectivity is gone"
+        # depends on how the *other* sources fared, which is not knowable inside the loop. The
+        # counters are still written per failure, so a pass that dies mid-way loses no accounting.
+        if self._health_store is None:
+            return self._run_pass()
+        with self._health_store.pass_scope(self._source_set_id):
+            result = self._run_pass()
+        # Read after the scope closed — that is when the correlated verdict exists.
+        result.host_event = self._health_store.take_host_event()
+        return result
+
+    def _run_pass(self) -> IngestResult:
+        """One acquisition pass over every source of the set."""
         result = IngestResult()
         # Every stage is timed (ISSUE_32): one fetch/embed/upsert record per source; the
         # CLI footer aggregates them per stage, ISSUE_7 persists them with the envelope.
@@ -80,11 +94,24 @@ class Ingestor:
             # surface has to remember.
             # 0. Skip a quarantined source (ISSUE_11) — it keeps failing (e.g. rate-limiting us),
             #    so we back off entirely until its cool-off elapses instead of hammering it.
+            #    The same check also holds the whole set during a connectivity back-off
+            #    (ISSUE_84), which is a different fact and gets its own status: the feed did
+            #    nothing wrong, so a surface must not point the operator at it.
             if self._health_store is not None and not self._health_store.should_poll(source_id):
+                host_until = self._health_store.host_backoff_until()
+                if host_until is not None:
+                    result.polls.append(SourcePoll(
+                        source_id, 'host_backoff', until=host_until,
+                        detail='set-wide back-off — local connectivity failure, not this feed'))
+                    continue
                 until = self._health_store.quarantined_until(source_id)
+                # Carry the rung so every surface can say "wait an hour" and "this feed is
+                # effectively gone" differently — one word apart today.
+                rung = self._health_store.rung_of(source_id)
+                ladder = f' (rung {rung[0] + 1}/{rung[1]})' if rung else ''
                 result.polls.append(SourcePoll(
-                    source_id, 'quarantined', until=until,
-                    detail='in source-health cool-off after repeated failures'))
+                    source_id, 'quarantined', until=until, rung=rung,
+                    detail=f'in source-health cool-off after repeated failures{ladder}'))
                 continue
             # 0b. Skip a source that is within its poll floor — a deliberate local no-op, so it is
             #     NOT recorded as a poll (a floor skip must never reset a failure streak).
@@ -108,9 +135,14 @@ class Ingestor:
                                          error_type=exc.error_type, status=exc.status))
                 result.polls.append(SourcePoll(source_id, 'failed', detail=str(exc)))
                 if self._health_store is not None:
+                    # The duration and the source's own deadline ride along (ISSUE_84): they are
+                    # what splits the overloaded UNREACHABLE bucket into "went quiet" and
+                    # "refused", and therefore what picks the cool-off.
                     result.health_notes[source_id] = self._health_store.record_failure(
                         source_id, host, self._source_set_id,
-                        error_type=exc.error_type, status=exc.status, message=str(exc))
+                        error_type=exc.error_type, status=exc.status, message=str(exc),
+                        duration_ms=fetch_ms,
+                        deadline_ms=source.get_fetch_deadline_ms())
                 continue
             fetch_ms = (perf_counter() - fetch_start) * 1000.0
             timer.record('fetch', fetch_started, fetch_ms)

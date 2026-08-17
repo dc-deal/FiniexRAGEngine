@@ -18,16 +18,13 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Awaitable, Callable, Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set
 
+from finiexragengine.types.alert_types import AlertCallback
 from finiexragengine.types.config_types.app_config_types import StallWatchdogConfig
 from finiexragengine.types.worker_types import WorkerState
 
 logger = logging.getLogger(__name__)
-
-# Called with one ready-to-send message per transition. Async because the only real sink is a
-# network send; `None` disables delivery without disabling detection (the log still records it).
-AlertCallback = Callable[[str], Awaitable[None]]
 
 
 def _format_age(seconds: float) -> str:

@@ -175,6 +175,12 @@ def create_app(attach_runners: Optional[bool] = None,
             # the detection.
             if stall_watchdog is not None:
                 stall_watchdog.set_alert(telegram_client.send_message)
+            # The same voice for a set-wide connectivity failure (ISSUE_84). The watchdog cannot
+            # cover this one: during a connectivity outage every ingest pass still *completes*,
+            # it just fails every poll — so without this the condition is silent until the
+            # weekly report.
+            if supervisor is not None:
+                supervisor.set_host_alert(telegram_client.send_message)
 
     # Live terminal dashboard (ISSUE_26): only when live mode won its guards in server_cli AND
     # workers run — it renders the workers' shared EngineStats plus the live BudgetGuard state on

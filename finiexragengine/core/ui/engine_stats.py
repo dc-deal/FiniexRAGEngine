@@ -41,6 +41,11 @@ class SourcesSnapshot:
     ok: int                                      # sources that polled ok this pass
     total: int                                   # sources the pass considered
     deviations: List[str] = field(default_factory=list)   # named problem feeds only (exception density)
+    # Set-wide connectivity back-off (ISSUE_84). When set, the whole set is paused because the
+    # local connectivity failed — which is a different sentence from "these feeds are broken",
+    # and the row has to say so or it sends the operator to the wrong place.
+    host_backoff_until: Optional[datetime] = None
+    host_detail: str = ''                        # e.g. 'forex_news 7/7 + crypto_news 5/5'
 
 
 @dataclass(frozen=True)

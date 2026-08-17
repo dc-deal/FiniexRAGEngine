@@ -68,7 +68,7 @@ Top-down, each new article flows through these units in order:
 
    **Every source is accounted for — the pass reports all of them.** A pass records exactly one
    `SourcePoll` per source it considers (`ok`, `failed`, `quarantined`, `floor_skipped`,
-   `suspended`), appended in config order; `IngestResult.polls` is the single record and the
+   `suspended`, `host_backoff`), appended in config order; `IngestResult.polls` is the single record and the
    dict views (`per_source`, `failed_sources`, `quarantined_skips`, `floor_skips`) are derived
    from it. This matters because it was once otherwise: each fate went into its own collection,
    the CLI iterated two of them, and a feed in **quarantine therefore vanished from the output
@@ -87,6 +87,31 @@ Top-down, each new article flows through these units in order:
    15s cadence), so it carries the skip count on the pass line it logs anyway — and in the
    `WorkerState` the API serves — while the per-skip line stays DEBUG. Entering quarantine still
    WARNs once.
+
+   **The pass is bracketed, because one source's fate depends on the others (ISSUE_84).** The loop
+   runs inside `SourceHealthStore.pass_scope(source_set)`. A failure still writes its counters,
+   streak and event ring the moment it happens — a pass that dies mid-way must lose no accounting —
+   but the **quarantine decision is withheld** until the scope closes, because the question "is this
+   feed broken, or is our connectivity gone?" cannot be answered while the loop is still running.
+   At scope exit the store compares failures against the sources the pass actually attempted
+   (`failed + succeeded`, accumulated rather than handed in, so no second code path can disagree
+   with the loop):
+
+   - **≥ 85 % of them failed** (and at least 3 were attempted) → a connectivity event. Every
+     withheld flag is discarded, no rung advances, the whole set backs off for five minutes, and one
+     `[HOST]` line + one Telegram alert replace what used to be twelve identical feed warnings per
+     pass. The sources render as `host_backoff`, never `quarantined` — the feed did nothing wrong,
+     and the word that names it sends the operator to the wrong place.
+   - **otherwise** → the withheld flags apply, each resolving its own rung from the episode history
+     and from the failure's type *and measured duration*. That duration is why `record_failure`
+     takes `duration_ms` and the source's `get_fetch_deadline_ms()`: `UNREACHABLE` covers both a
+     DNS refusal (~44 ms) and a feed that went quiet (~20.9 s, twice the deadline because the fetch
+     retries once), and only the duration tells them apart.
+
+   Letting the streak advance during a connectivity event is deliberate: only the *flag* is
+   withheld. When the outage lifts partially — ten feeds answer, two stay dead — the ratio drops
+   below the threshold, the event closes, and the two genuinely dead feeds are flagged at once,
+   carrying the streak they built during the outage.
 
    **The fetch deadline — why a feed must be *able* to fail (ISSUE_73).** Everything above only
    engages when a fetch **returns**. On 2026-08-01 one did not: `cryptonews.com` accepted the TCP

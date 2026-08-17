@@ -74,8 +74,17 @@
     "pass_timeout_seconds": 300,
     "source_health": {
         "flag_after_consecutive_failures": 5,
-        "quarantine_hours": 24,
-        "recent_events_kept": 10
+        "quarantine_hours": [
+            1,
+            6,
+            24
+        ],
+        "recent_events_kept": 10,
+        "ladder_reset_hours": 168,
+        "deadline_ratio": 0.7,
+        "correlated_failure_ratio": 0.85,
+        "correlated_min_pollable": 3,
+        "correlated_backoff_minutes": 5
     },
     "diagnostics": {
         "poll_log_enabled": true,

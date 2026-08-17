@@ -6,7 +6,7 @@ Behaviour lives in `core/pipeline/` and `core/observability/`; only the shapes l
 """
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Dict, List, Literal, Optional
+from typing import Dict, List, Literal, Optional, Tuple
 
 from finiexragengine.types.outcome_types import StageTiming
 
@@ -15,9 +15,12 @@ from finiexragengine.types.outcome_types import StageTiming
 # suspended pass succeeded, and the quota stopped the embed stage one step later.
 PollOutcome = Literal['ok', 'failed']
 # What became of one source in one pass. `ok` and `suspended` were polled (they carry counters);
-# the rest never reached the feed — `failed` tried and could not, `quarantined` and `floor_skipped`
-# were deliberately not tried.
-PollStatus = Literal[PollOutcome, 'quarantined', 'floor_skipped', 'suspended']
+# the rest never reached the feed — `failed` tried and could not, `quarantined`, `floor_skipped`
+# and `host_backoff` were deliberately not tried. `host_backoff` is its own status rather than a
+# flavour of `quarantined` (ISSUE_84): the feed did nothing wrong, the whole set is paused because
+# the local connectivity failed, and a surface that says "QUARANTINED" there tells the operator to
+# look at the feed — which is exactly the wrong place.
+PollStatus = Literal[PollOutcome, 'quarantined', 'floor_skipped', 'suspended', 'host_backoff']
 
 
 @dataclass
@@ -48,6 +51,10 @@ class SourcePoll:
     ingest: Optional[SourceIngest] = None   # the counters — only a source that was polled has them
     detail: str = ''                        # error message / skip reason, ready to display
     until: Optional[datetime] = None        # when a deferred source becomes pollable again
+    # Ladder position of a quarantined source as (rung, total), 0-based (ISSUE_84). Carried
+    # structurally rather than left inside `detail`: the live display renders from the pass, it
+    # never parses a display string back — the same rule the INGEST row follows.
+    rung: Optional[Tuple[int, int]] = None
 
 
 @dataclass
@@ -73,10 +80,51 @@ class PollSample:
 
 @dataclass
 class HealthOutcome:
-    """What a failure record did — lets the worker pick a log level (denoise repeats)."""
+    """What a failure record did — lets the worker pick a log level (denoise repeats).
+
+    Resolved at the *end* of the pass since ISSUE_84: whether a crossed threshold actually
+    becomes a quarantine depends on how the rest of the pass fared, which is not knowable while
+    the loop is still running.
+    """
     consecutive_failures: int
     just_flagged: bool          # this failure crossed the threshold -> newly quarantined
     quarantined_until: Optional[datetime]
+    # Which cool-off the ladder picked, 0-based, and how many rungs it has (renders as "1/3").
+    # None while nothing was flagged (ISSUE_84).
+    rung: Optional[int] = None
+    rungs_total: int = 0
+    probe: bool = False         # this failure was the half-open probe, not an ordinary poll
+    # The threshold was crossed but no quarantine applied: the correlated-failure guard ruled
+    # this a local connectivity problem, so the feed keeps its streak and its rung.
+    suppressed: bool = False
+
+
+@dataclass
+class HostEvent:
+    """A pass in which (nearly) every pollable source failed at once (ISSUE_84).
+
+    Twelve of twelve feeds failing in the same minutes is evidence that the feeds are not the
+    problem — so no feed is quarantined, no rung advances, and the set backs off once instead of
+    N times. The event travels out on the ingest result rather than being logged inside the
+    health store, so the store never learns about consoles or alert channels.
+
+    `fleet` is the engine-wide view resolved when the event opens (e.g.
+    'forex_news 7/7 + crypto_news 5/5'): the *decision* is per source-set, but the *wording*
+    distinguishes a host-level failure from one upstream provider taking a set down.
+    """
+    source_set: str
+    failed: int
+    pollable: int
+    started_at: datetime
+    backoff_until: datetime
+    fleet: str = ''
+    opened: bool = False        # this pass OPENED the event (the loud one)
+    resumed: bool = False       # this pass CLOSED the event (connectivity came back)
+    duration_seconds: float = 0.0    # set on the closing event
+
+    @property
+    def ratio(self) -> float:
+        return self.failed / self.pollable if self.pollable else 0.0
 
 
 @dataclass
@@ -157,6 +205,9 @@ class IngestResult:
     health_notes: Dict[str, HealthOutcome] = field(default_factory=dict)   # per failed source
     recovered_sources: List[str] = field(default_factory=list)     # sources that came back this pass
     stage_timings: List[StageTiming] = field(default_factory=list)  # fetch/embed/upsert per source (ISSUE_32)
+    # Set-wide connectivity event (ISSUE_84), when this pass opened, continued or closed one.
+    # None on an ordinary pass — the overwhelming majority.
+    host_event: Optional[HostEvent] = None
 
     @property
     def duplicates(self) -> int:
