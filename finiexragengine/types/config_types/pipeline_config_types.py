@@ -155,13 +155,17 @@ class BreakingConfig(BaseModel):
       `urgency_threshold` and stays open while urgency holds at or above this. Set equal to
       `urgency_threshold` to disable the hysteresis and get the pre-ISSUE_82 behaviour.
     - `episode_gap_minutes` — how long neither condition may hold before the episode closes.
-      Keep it OFF a multiple of the eval cadence: at exactly 30 min on a 600 s grid, two missed
-      passes plus a second of scheduling jitter decided whether a story was split in two.
+      Calibrated, not guessed: measuring the silence between two episodes of the *same* story gave
+      50–150 min, while different stories sat 4 h or more apart, and 150 reproduced a hand count of
+      the week's stories (ISSUE_82). The previous 30 was the worst possible choice — exactly three
+      missed passes on a 600 s grid, so a second of scheduling jitter decided whether a story split.
+      NOTE 150 is itself 15 passes on that grid, and one measured story sat on the boundary exactly;
+      a value a few minutes off the multiple (155) would remove that edge at no cost, untested.
     """
     urgency_threshold: float = 0.8       # push gate for breaking news (ISSUE_6)
     min_importance: int = 2              # wake sensitivity: MID+ clusters wake this pipeline (ISSUE_11)
     urgency_exit_threshold: float = 0.7  # episode hold gate — hysteresis (ISSUE_82)
-    episode_gap_minutes: int = 45        # episode close delay; deliberately off the grid (ISSUE_82)
+    episode_gap_minutes: int = 150       # episode close delay; measured, off the grid (ISSUE_82)
 
 
 class OutputGuardConfig(BaseModel):

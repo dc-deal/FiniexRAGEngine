@@ -221,7 +221,7 @@ treatment for a noisy signal crossing a threshold — **open high, hold low**:
 |---|---|---|
 | **opens** | the pass's recorded `is_breaking` | `breaking.urgency_threshold` (0.8) |
 | **stays open** | `urgency >= exit` — or breaking again | `breaking.urgency_exit_threshold` (0.7) |
-| **closes** | neither, for longer than the gap | `breaking.episode_gap_minutes` (45) |
+| **closes** | neither, for longer than the gap | `breaking.episode_gap_minutes` (150) |
 
 Two properties worth knowing:
 
@@ -229,10 +229,16 @@ Two properties worth knowing:
   pass keeps the decision its pipeline actually took, so retuning `urgency_threshold` later cannot
   rewrite history when the store report re-groups it. `urgency` is read only for the hold
   condition — which also makes pre-ISSUE_6 rows degrade to the old behaviour instead of misbehaving.
-- **The gap is deliberately off the eval grid.** At the previous 30 min on a 600 s cadence, two
-  missed passes plus a second of scheduling jitter decided whether a story was split: every
-  symbol's smallest observed gap was 30:00.6–30:22, i.e. exactly the boundary. 45 is not a
-  multiple of 10 minutes, so nothing lands on the edge.
+- **The gap is measured, not guessed.** The first value (30 min) was the worst possible choice on a
+  600 s cadence: three missed passes plus a second of jitter decided whether a story split, and
+  every symbol's smallest observed gap was 30:00.6–30:22 — exactly the boundary. Measuring the
+  silence between two episodes of the *same* story then gave **50–150 min**, while different
+  stories sat **4 h or more** apart, and 150 reproduced a hand count of the week's stories.
+  Sweeping 45 → 150 → 180 over the archive (the rule runs at read time, so this re-derives the
+  whole history) gave 24 → 14 → 12 crypto episodes against ~15 hand-counted stories, and cut the
+  reaction median from 116.4 to **18.4 min**. 180 was rejected: it merged an ETHUSD SELL episode
+  with a separate BUY story, and **a split is recoverable downstream while a merge is lossy** —
+  the absorbed story is frozen out of the episode's signal and reason entirely.
 
 The same rule in three cases:
 

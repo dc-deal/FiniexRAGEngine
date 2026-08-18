@@ -140,7 +140,7 @@ def test_a_dip_below_the_exit_gate_inside_the_gap_is_still_one_episode():
     tracker = BreakingEpisodeTracker()
     tracker.observe(_envelope(_T0, urgency=0.8))
     tracker.observe(_envelope(_T0 + timedelta(minutes=10), is_breaking=False, urgency=0.6))
-    # 20 minutes total — inside the 45-minute gap, so the story never closed.
+    # 20 minutes total — well inside the gap, so the story never closed.
     assert tracker.observe(_envelope(_T0 + timedelta(minutes=20), urgency=0.8)).started == []
 
 

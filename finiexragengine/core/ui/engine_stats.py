@@ -113,7 +113,7 @@ class BreakingRecord:
     symbol: str
     signal: str
     reason: str = ''                             # why it broke (the LLM's reasoning; ISSUE_64)
-    gap_seconds: float = 2700.0                  # this episode's close delay (ISSUE_82; 45 min)
+    gap_seconds: float = 9000.0                  # this episode's close delay (ISSUE_82; 150 min)
 
 
 @dataclass(frozen=True)
@@ -186,7 +186,7 @@ class EngineStats:
                                               confirmed=current.confirmed, detail=current.detail)
 
     def add_breaking_episode(self, symbol: str, signal: str, reason: str, detail: str, *,
-                             at: datetime, gap_seconds: float = 2700.0) -> None:
+                             at: datetime, gap_seconds: float = 9000.0) -> None:
         """One confirmed breaking episode (edge-triggered, ISSUE_11): bump the episode count, set
         the reaction detail, and record it (with its reason) for the BREAKING section (ISSUE_64)."""
         with self._counter_lock:                          # read-modify-write (ISSUE_74)

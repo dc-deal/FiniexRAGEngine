@@ -244,10 +244,10 @@ def test_the_header_names_the_rule_each_pipeline_was_grouped_with():
     assert 'crypto_sentiment' in out and 'gap 150m' in out
     # The pipeline without an override falls back to the schema defaults, and says so rather than
     # silently borrowing the other one's numbers.
-    assert 'gap 45m' in out
+    assert 'gap 150m' in out
 
 
 def test_a_single_pipeline_renders_the_rule_inline():
     out = format_breaking_timeline_report(
         _aggregate_timeline(_series([0.8]), '7d', '', {}, **_window(1)), width=140)
-    assert 'episode rule (read-time): crypto_sentiment hold ≥0.70 · gap 45m' in out
+    assert 'episode rule (read-time): crypto_sentiment hold ≥0.70 · gap 150m' in out

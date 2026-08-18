@@ -35,7 +35,7 @@ from finiexragengine.types.eval_types import BreakingPassDecision
 # Mirrors `BreakingConfig` in types/config_types/pipeline_config_types.py — the config is the
 # truth, these keep a bare `BreakingEpisodeRule()` (tests, legacy call sites) meaningful.
 DEFAULT_EXIT_THRESHOLD = 0.7
-DEFAULT_EPISODE_GAP = timedelta(minutes=45)
+DEFAULT_EPISODE_GAP = timedelta(minutes=150)
 
 
 @dataclass
@@ -105,24 +105,59 @@ class BreakingEpisodeRule:
         return self._exit_threshold
 
 
-# The class's config constructors. They live here rather than at each call site because four
-# places need the same mapping (the assembler, the store report, the weekly report, the CLI) and
-# a second reading of `breaking.*` is exactly how the two groupings drifted apart before.
+@dataclass
+class EpisodeGrouping:
+    """*When* an episode breaks (the rule) plus *what* it groups by (the key) — one pipeline's pair.
+
+    The key answers "which analysis is this?". It used to be `base_currency or symbol`, on the
+    assumption that one base is one analysis. That holds for crypto and is false for FX: USDJPY,
+    USDCAD and USDCHF are three separate retrieval queries under the base `USD`, so they shared one
+    episode. It fired on 2026-08-18 — only USDCAD broke, but every pass of all three fed the `USD`
+    key, and USDJPY (in the hold band 49% of the time) re-anchored the gap on an episode it had no
+    part in. A USDCAD story could then only close once *USDJPY* went quiet.
+
+    The retrieval query is the operational analysis key, and ISSUE_70 already learned this once: the
+    live display first merged its signal chips by `(base, signal)`, falsely joined USDJPY+USDCAD,
+    and was corrected to merge by query. This is the same correction, one layer down.
+
+    Rule and key travel together because a caller holding one without the other silently regroups —
+    which is exactly the class of divergence ISSUE_82 removed from the two report paths.
+    """
+    rule: BreakingEpisodeRule
+    # `{symbol: retrieval_query}` over the pipeline's ACTIVE symbols. Empty = key on the base, i.e.
+    # the pre-fix behaviour, which is what a caller without a config context should get.
+    query_map: Dict[str, str] = field(default_factory=dict)
+
+    def key_for(self, symbol: str, base_currency: Optional[str] = None) -> str:
+        """The episode key for one result — same query = same analysis = one episode.
+
+        The fallbacks are the degradation path, not decoration: an archived envelope can carry a
+        symbol that is no longer configured (a retired stream, a renamed ticker), and it then keys
+        exactly as it did before this fix rather than splitting off a phantom unit.
+        """
+        return self.query_map.get(symbol) or base_currency or symbol
+
+
+# The config constructors. They live here rather than at each call site because four places need
+# the same mapping (the assembler, the store report, the weekly report, the CLI) and a second
+# reading of `breaking.*` is exactly how the two groupings drifted apart before.
 # Deliberately typed against `PipelineConfig`, not the registry: the registry reaches
 # Pipeline -> PipelineRunner, and this module is imported from inside that graph.
 
-def rule_from_config(config: PipelineConfig) -> BreakingEpisodeRule:
-    """One pipeline's episode rule, from its `breaking` block."""
-    return BreakingEpisodeRule(exit_threshold=config.breaking.urgency_exit_threshold,
-                               gap=timedelta(minutes=config.breaking.episode_gap_minutes))
+def grouping_from_config(config: PipelineConfig) -> EpisodeGrouping:
+    """One pipeline's rule + episode key, from its `breaking` block and its symbol table."""
+    return EpisodeGrouping(
+        rule=BreakingEpisodeRule(exit_threshold=config.breaking.urgency_exit_threshold,
+                                 gap=timedelta(minutes=config.breaking.episode_gap_minutes)),
+        query_map=config.symbol_query_map())
 
 
-def rules_from_configs(configs: Iterable[PipelineConfig]) -> Dict[str, BreakingEpisodeRule]:
-    """`pipeline_id -> rule` for the store-side reports, which group many pipelines at once.
+def groupings_from_configs(configs: Iterable[PipelineConfig]) -> Dict[str, EpisodeGrouping]:
+    """`pipeline_id -> grouping` for the store-side reports, which cover many pipelines at once.
 
     Callers pass `[p.get_config() for p in registry.list_pipelines()]` — the registry must come
     from `AppConfigManager.build_pipeline_registry()`, the only load path that applies the
     `user_configs/` overlay. A pipeline_id in the archive but not in this map is an orphan (a
     retired stream) and the report falls back to the schema defaults for it.
     """
-    return {config.pipeline_id: rule_from_config(config) for config in configs}
+    return {config.pipeline_id: grouping_from_config(config) for config in configs}

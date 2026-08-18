@@ -220,7 +220,7 @@ of them. A clean block is one story; a comb is a threshold being crossed by drif
 ```
 episode rule (read-time):
   crypto_sentiment       hold ≥0.70 · gap 150m
-  forex_macro_sentiment  hold ≥0.70 · gap 45m
+  forex_macro_sentiment  hold ≥0.70 · gap 150m
 ------------------------------------------------------------------------------------------
 unit                 passes  mech  brk flips  epi  first → last breaking      series
 crypto_sentiment
@@ -233,8 +233,8 @@ Read it in this order:
 
 - **The rule header first.** Both breaking reports re-derive the whole archive at read time, so the
   same command over the same data gives different numbers under a different rule. The header names
-  the rule per pipeline, including when they differ (above: a `user_configs` override on crypto
-  only). The *open* gate is deliberately absent — an episode opens on the `is_breaking` recorded at
+  the rule per pipeline, and shows it when they differ — a `user_configs` override on one pipeline
+  is otherwise invisible in the output. The *open* gate is deliberately absent — an episode opens on the `is_breaking` recorded at
   the time, possibly under a different threshold than today's config.
 - **A row is an analysis unit, not a ticker.** `ETHUSD/ETHEUR` is one fanned analysis (ISSUE_70) and
   therefore one episode.
