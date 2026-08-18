@@ -87,12 +87,10 @@ class EvalWorker:
             return
         gap_seconds = self._episodes.get_rule().get_gap().total_seconds()
         for running in self._episodes.open_episodes():
-            # The frozen reaction rides along, rendered exactly as a live episode renders it.
-            detail = (f'engine {_fmt_seconds(running.episode.engine_s)} / '
-                      f'e2e {_fmt_seconds(running.episode.end_to_end_s)}')
+            # No reaction time: the replay re-opened this episode at the window's edge, so any
+            # measurement here would be re-sampled against stale evidence (see the store method).
             stats.restore_breaking_episode(running.episode.symbol, running.episode.signal,
-                                           running.episode.reason, detail,
-                                           started=running.started,
+                                           running.episode.reason, started=running.started,
                                            last_seen=running.last_seen, gap_seconds=gap_seconds)
 
     def get_state(self) -> WorkerState:

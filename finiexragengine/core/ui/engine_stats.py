@@ -114,6 +114,10 @@ class BreakingRecord:
     signal: str
     reason: str = ''                             # why it broke (the LLM's reasoning; ISSUE_64)
     gap_seconds: float = 9000.0                  # this episode's close delay (ISSUE_82; 150 min)
+    # Inherited from a previous process by replay (ISSUE_82). The seed replays a bounded window
+    # (`2 × gap`), so an episode that opened before it has its `started` clipped to the window's
+    # edge — the duration is then a LOWER BOUND, and the renderer has to say so.
+    inherited: bool = False
 
 
 @dataclass(frozen=True)
@@ -197,7 +201,7 @@ class EngineStats:
                                                         signal=signal, reason=reason,
                                                         gap_seconds=gap_seconds))
 
-    def restore_breaking_episode(self, symbol: str, signal: str, reason: str, detail: str = '', *,
+    def restore_breaking_episode(self, symbol: str, signal: str, reason: str, *,
                                  started: datetime, last_seen: datetime,
                                  gap_seconds: float = 9000.0) -> None:
         """Re-attach an episode a previous process opened and this one inherited (ISSUE_82).
@@ -207,23 +211,30 @@ class EngineStats:
         - **`detected`/`confirmed` are accumulators** and stay untouched. They count what *this*
           process saw, and adding to them on every boot is the very defect the seeded rule removed
           one layer down.
-        - **`last` and `detail` are point-in-time facts** about the world — when breaking last
-          happened and how fast it was — so they *are* restored. Leaving them out rendered the row
-          header as `idle` directly above two episodes marked live (production, 2026-08-18): an
-          accumulator's session scope had leaked onto a timestamp, where it does not belong.
+        - **`last` is a point-in-time fact** about the world — when breaking last happened — so it
+          *is* restored. Leaving it out rendered the row header as `idle` directly above two
+          episodes marked live (production, 2026-08-18): an accumulator's session scope had leaked
+          onto a timestamp, where it does not belong.
+        - **The reaction `detail` is NOT restored.** It looks like a fact but is not one this
+          process can state: the seed replays only `2 × gap`, so an episode that opened earlier is
+          re-opened at the window's edge and its reaction re-sampled against evidence hours older
+          than the real trigger. Production showed `engine 118.2m` for an episode logged at
+          `engine 8.4m` — the exact re-trigger error ISSUE_82 removed everywhere else, reintroduced
+          in the panel. A blank reaction is honest; a plausible wrong number is not.
 
-        `started` is the original opening time, so the row renders its true running duration rather
-        than restarting the clock at boot.
+        `started` is likewise bounded by the replay window, so the record is marked `inherited` and
+        the renderer shows the duration as a lower bound.
         """
         with self._counter_lock:                          # walks the deque the writers share
             self._recent_breaking.append(
                 BreakingRecord(started=started, last_seen=last_seen, symbol=symbol,
-                               signal=signal, reason=reason, gap_seconds=gap_seconds))
+                               signal=signal, reason=reason, gap_seconds=gap_seconds,
+                               inherited=True))
             current = self._breaking
             if current.last is None or last_seen > current.last:
                 self._breaking = BreakingSnapshot(last=last_seen, detected=current.detected,
                                                   confirmed=current.confirmed,
-                                                  detail=detail or current.detail)
+                                                  detail=current.detail)
 
     def touch_breaking_episode(self, symbol: str, *, at: datetime) -> None:
         """A symbol whose open episode this pass held (same ongoing episode, ISSUE_64/82): advance

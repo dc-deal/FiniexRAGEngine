@@ -176,15 +176,19 @@ def test_restoring_an_episode_shows_it_without_touching_the_session_counters():
     stats = EngineStats(source_set_ids=['crypto_news'], pipeline_ids=['crypto_sentiment'])
     started = datetime(2026, 8, 18, 15, 20, tzinfo=timezone.utc)
     last_seen = started + timedelta(hours=6)
-    stats.restore_breaking_episode('USDCAD', 'SELL', 'tariffs', 'engine 8.4m / e2e 9.8m',
+    stats.restore_breaking_episode('USDCAD', 'SELL', 'tariffs',
                                    started=started, last_seen=last_seen, gap_seconds=9000.0)
 
     records = stats.recent_breaking()
     assert len(records) == 1
     assert records[0].symbol == 'USDCAD' and records[0].started == started
-    assert records[0].last_seen == last_seen                       # true running time, not boot time
-    # Accumulators stay session-scoped; point-in-time facts about the world are restored, or the
-    # row header reads `idle` directly above an episode marked live.
+    assert records[0].last_seen == last_seen           # the inherited clock, not the boot time
+    assert records[0].inherited is True                # so the renderer can bound the duration
+    # Accumulators stay session-scoped, or every boot would re-count what it inherited.
     assert stats.breaking().confirmed == 0 and stats.breaking().detected == 0
+    # `last` is a fact about the world and IS restored — without it the row header read `idle`
+    # directly above an episode marked live.
     assert stats.breaking().last == last_seen
-    assert stats.breaking().detail == 'engine 8.4m / e2e 9.8m'
+    # The reaction is NOT: the replay re-opens an older episode at the window edge, so any number
+    # here would be re-sampled against stale evidence (production showed 118.2m for a logged 8.4m).
+    assert stats.breaking().detail == ''

@@ -214,3 +214,17 @@ def test_the_version_segment_is_omitted_when_unknown():
     display = LiveDisplay(EngineStats(), worker_count=1)
     header = display._header(datetime.now(timezone.utc))
     assert header.startswith('FiniexRAGEngine — up ') and ' v' not in header
+
+
+def test_an_inherited_episode_renders_its_duration_as_a_lower_bound():
+    """ISSUE_82: the boot replay covers `2 × gap`, so a story that opened earlier has its start
+    clipped to the window edge. The row must not present that clipped span as the real duration."""
+    now = datetime.now(timezone.utc)
+    stats = _stats()
+    stats.restore_breaking_episode('USDCAD', 'SELL', 'tariffs',
+                                   started=now - timedelta(hours=4, minutes=47),
+                                   last_seen=now - timedelta(minutes=3), gap_seconds=9000.0)
+    text = _render(stats, worker_count=4)
+    assert 'USDCAD SELL' in text
+    assert '≥' in text                                   # a bound, not a measurement
+    assert 'last 3m' in text                             # the freshness fact IS restored
