@@ -245,6 +245,12 @@ The same rule in three cases:
 Setting `urgency_exit_threshold` equal to `urgency_threshold` disables the hysteresis and restores
 the pre-ISSUE_82 grouping — the documented escape hatch.
 
+**Both breaking reports name the rule they used** in a header line, per pipeline. They re-derive the
+whole archive at read time, so the same command over the same data yields different numbers under a
+different rule; without the header a retune is invisible on the page. The *open* gate is
+deliberately not printed — an episode opens on the `is_breaking` recorded at the time, which may
+have been taken under a different `urgency_threshold` than the one loaded now.
+
 **The envelope is untouched by all of this.** `is_breaking` remains the raw per-pass verdict, so a
 consumer's reading of the contract does not change and no `schema_version`/`prompt_version` moves.
 Consequently the two episode knobs are **excluded from the `config_fingerprint`** (the only dotted

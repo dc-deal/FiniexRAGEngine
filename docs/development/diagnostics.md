@@ -211,19 +211,39 @@ python -m finiexragengine.cli.breaking_cli --since 7d --timeline
 python -m finiexragengine.cli.breaking_cli --since 7d --timeline XRPUSD    # one symbol
 ```
 
-Every pass as one cell — `#` breaking, `.` held open by the exit gate, `_` below both — with the
+The window as a strip of cells — `#` breaking, `.` in the hold band, `_` below both, `-` the pass
+ran but this symbol was not scored (`basis = no_data`), `~` no pass at all (an outage) — with the
 **verdict flips** next to the **episodes**. That pairing is the whole diagnostic: flips are the
 model's noise and do not change when the grouping rule is retuned; episodes are what the rule made
 of them. A clean block is one story; a comb is a threshold being crossed by drift.
 
 ```
-XRPUSD        16    8     9    1  08-17 13:00 → 08-17 15:10  ####...#.#.#_#__
+episode rule (read-time):
+  crypto_sentiment       hold ≥0.70 · gap 150m
+  forex_macro_sentiment  hold ≥0.70 · gap 45m
+------------------------------------------------------------------------------------------
+unit                 passes  mech  brk flips  epi  first → last breaking      series
+crypto_sentiment
+ETHUSD/ETHEUR          1076     0  133   128    4  08-11 15:10 → 08-18 05:00  ##...####.__.##...####.
+SOLUSD                  827   249  210    68    5  08-11 10:50 → 08-18 10:10  ###__###.____##...------####
+ADAUSD                    0   304    0     0    0  —                          ---------------------------
 ```
 
-Nine flips, one episode: the hysteresis (ISSUE_82) holding a story together that the old rule split
-in two. If you see many episodes on a comb-shaped series, `breaking.urgency_exit_threshold` is too
-close to `urgency_threshold` for that pipeline. If you see one episode spanning a whole day, it is
-too far below.
+Read it in this order:
+
+- **The rule header first.** Both breaking reports re-derive the whole archive at read time, so the
+  same command over the same data gives different numbers under a different rule. The header names
+  the rule per pipeline, including when they differ (above: a `user_configs` override on crypto
+  only). The *open* gate is deliberately absent — an episode opens on the `is_breaking` recorded at
+  the time, possibly under a different threshold than today's config.
+- **A row is an analysis unit, not a ticker.** `ETHUSD/ETHEUR` is one fanned analysis (ISSUE_70) and
+  therefore one episode.
+- **`passes + mech` is the envelope count.** A row of `0 / 304` means the symbol was never scored,
+  which is a different statement from "never broke" — and both are different from a missing row.
+
+If you see many episodes on a comb-shaped series, the gap is too short for that pipeline. If you
+see one episode spanning days, check the hold band: at 40–50 % band occupancy an episode chains
+through the lulls instead of closing.
 
 The underlying question — how reproducible the model is at all — is answered in SQL, by comparing
 passes that saw a **byte-identical** source set:

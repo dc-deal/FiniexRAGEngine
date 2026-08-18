@@ -62,6 +62,10 @@ class BreakingReport:
     flagged_candidates: int             # corpus breaking_candidate=TRUE in the window (all sets)
     confirmed_episodes: int
     episodes: List[BreakingEpisodeRow] = field(default_factory=list)   # per-episode listing (ISSUE_64)
+    # The rule each pipeline was actually grouped with. A report that re-derives history at read
+    # time has to say under which rule, or two runs of the same command over the same archive are
+    # silently incomparable — the `[OVERRIDE]` startup line only shows up when an override exists.
+    rules_applied: Dict[str, BreakingEpisodeRule] = field(default_factory=dict)
 
 
 def _parse_dt(value: str) -> datetime:
@@ -197,7 +201,7 @@ def _aggregate(rows: List[Tuple[str, object]], flagged: int, since_label: str,
     # consistency (all BUY vs a BUY→SELL flip) is scannable at a glance (ISSUE_64 feedback).
     episodes.sort(key=lambda episode: (episode.pipeline_id, episode.symbol, episode.started))
     return BreakingReport(since_label, ordered, flagged,
-                          sum(row.confirmed for row in ordered), episodes)
+                          sum(row.confirmed for row in ordered), episodes, engines)
 
 
 def _fmt_seconds(seconds: Optional[float]) -> str:
@@ -211,6 +215,29 @@ def _fmt_pair(values: List[float]) -> str:
     if median is None:
         return '—'
     return f'{_fmt_seconds(median)} / {_fmt_seconds(_percentile(values, 0.9))}'
+
+
+def format_rule_lines(rules_applied: Dict[str, BreakingEpisodeRule]) -> List[str]:
+    """The episode rule each pipeline was grouped with, as header lines (ISSUE_82).
+
+    Both breaking surfaces render this, because both re-derive the archive at read time: without it
+    two runs of the same command over the same data can differ and nothing on the page says why.
+    The **open** gate is deliberately absent — an episode opens on the `is_breaking` recorded at the
+    time, which may have been taken under a different `urgency_threshold` than today's config, so
+    printing one would misdescribe the history.
+    """
+    if not rules_applied:
+        return []
+    parts = [f'{pipeline_id} hold ≥{rule.get_exit_threshold():.2f} · '
+             f'gap {int(rule.get_gap().total_seconds() // 60)}m'
+             for pipeline_id, rule in sorted(rules_applied.items())]
+    if len(parts) == 1:
+        return [f'episode rule (read-time): {parts[0]}']
+    width = max(len(pipeline_id) for pipeline_id in rules_applied)
+    return ['episode rule (read-time):'] + [
+        f'  {pipeline_id:{width}}  hold ≥{rule.get_exit_threshold():.2f} · '
+        f'gap {int(rule.get_gap().total_seconds() // 60)}m'
+        for pipeline_id, rule in sorted(rules_applied.items())]
 
 
 def _truncate(text: str, budget: int) -> str:
@@ -229,6 +256,7 @@ def format_breaking_report(report: BreakingReport, *, width: Optional[int] = Non
     lines = [
         'Breaking Detection — reaction & funnel',
         f'window: last {report.since_label}',
+        *format_rule_lines(report.rules_applied),
         divider,
         f'{"pipeline":24} {"confirmed":>9}  {"engine react":>15}  {"end-to-end":>15}',
         f'{"":24} {"episodes":>9}  {"med / p90":>15}  {"med / p90":>15}',

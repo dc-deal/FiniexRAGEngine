@@ -34,7 +34,10 @@ from typing import Dict, List, Optional, Tuple
 
 import psycopg
 
-from finiexragengine.core.observability.reports.breaking_report import PipelineRules
+from finiexragengine.core.observability.reports.breaking_report import (
+    PipelineRules,
+    format_rule_lines,
+)
 from finiexragengine.core.pipeline.breaking_episode_rule import BreakingEpisodeRule
 from finiexragengine.exceptions.ragengine_errors import VectorStoreError
 
@@ -82,6 +85,9 @@ class BreakingTimelineReport:
     symbol_filter: str = ''
     since: Optional[datetime] = None     # window bounds, so the strip can span them honestly
     until: Optional[datetime] = None
+    # The rule each pipeline was grouped with — rendered in the header for the same reason the
+    # funnel does it: this report re-derives the archive at read time (ISSUE_82).
+    rules_applied: Dict[str, BreakingEpisodeRule] = field(default_factory=dict)
 
 
 def _parse_dt(value: str) -> datetime:
@@ -210,7 +216,8 @@ def _aggregate_timeline(rows: List[Tuple[str, object]], since_label: str, symbol
     stamps = [ts for row in rows_out for ts, _ in row.samples]
     return BreakingTimelineReport(since_label, rows_out, symbol_filter,
                                   since=since or (min(stamps) if stamps else None),
-                                  until=until or (max(stamps) if stamps else None))
+                                  until=until or (max(stamps) if stamps else None),
+                                  rules_applied=engines)
 
 
 def _fmt_span(row: SymbolTimeline) -> str:
@@ -286,6 +293,7 @@ def format_breaking_timeline_report(report: BreakingTimelineReport, *,
     lines = [
         title,
         window,
+        *format_rule_lines(report.rules_applied),
         f'{_CELL_BREAKING} breaking · {_CELL_HELD} hold band · {_CELL_BELOW} below · '
         f'{_CELL_MECHANICAL} not scored · {_CELL_NO_PASS} no pass',
         divider,
