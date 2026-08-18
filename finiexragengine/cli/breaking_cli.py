@@ -15,7 +15,7 @@ from finiexragengine.core.observability.reports.breaking_timeline_report import 
     build_breaking_timeline_report,
     format_breaking_timeline_report,
 )
-from finiexragengine.core.pipeline.breaking_episode_rule import rules_from_configs
+from finiexragengine.core.pipeline.breaking_episode_rule import groupings_from_configs
 from finiexragengine.utils.console_encoding import use_utf8_output
 from finiexragengine.utils.report_window import parse_since
 
@@ -39,7 +39,7 @@ def main() -> None:
     # Episode boundaries are per-pipeline config (ISSUE_82), so both surfaces are told the rules.
     # Registry via the manager factory — the only load path that applies the user_configs overlay.
     registry = AppConfigManager().build_pipeline_registry()
-    rules = rules_from_configs(p.get_config() for p in registry.list_pipelines())
+    rules = groupings_from_configs(p.get_config() for p in registry.list_pipelines())
 
     if args.timeline is not None:
         report = build_breaking_timeline_report(database_url, since, since_label=label,

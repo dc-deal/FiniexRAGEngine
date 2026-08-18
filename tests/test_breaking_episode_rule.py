@@ -9,8 +9,9 @@ from finiexragengine.core.pipeline.breaking_episode_rule import (
     DEFAULT_EPISODE_GAP,
     DEFAULT_EXIT_THRESHOLD,
     BreakingEpisodeRule,
-    rule_from_config,
-    rules_from_configs,
+    EpisodeGrouping,
+    grouping_from_config,
+    groupings_from_configs,
 )
 from finiexragengine.types.config_types.pipeline_config_types import PipelineConfig
 
@@ -21,10 +22,19 @@ def _at(minutes: int) -> datetime:
     return _T0 + timedelta(minutes=minutes)
 
 
-def _config(pipeline_id: str, **breaking: object) -> PipelineConfig:
+_FX_SYMBOLS = [
+    {'key': 'USDJPY', 'base': 'USD', 'quote': 'JPY', 'query': 'US Dollar Japanese Yen'},
+    {'key': 'USDCAD', 'base': 'USD', 'quote': 'CAD', 'query': 'US Dollar Canadian Dollar'},
+    {'key': 'ETHUSD', 'base': 'ETH', 'quote': 'USD', 'query': 'Ethereum ETH'},
+    {'key': 'ETHEUR', 'base': 'ETH', 'quote': 'EUR', 'query': 'Ethereum ETH'},
+]
+
+
+def _config(pipeline_id: str, *, symbols: object = None, **breaking: object) -> PipelineConfig:
     return PipelineConfig(
         pipeline_id=pipeline_id, outcome_type='sentiment_fear_greed', market='crypto',
-        symbols=[{'key': 'BTCUSD', 'base': 'BTC', 'quote': 'USD', 'query': 'Bitcoin BTC'}],
+        symbols=symbols or [{'key': 'BTCUSD', 'base': 'BTC', 'quote': 'USD',
+                             'query': 'Bitcoin BTC'}],
         prompt={'name': 'crypto_sentiment', 'version': '2'}, llm={'model': 'gpt-4o-mini'},
         trigger={'type': 'interval', 'timeframe': 'M10'}, source_set='crypto_news',
         breaking=breaking or {})
@@ -104,10 +114,44 @@ def test_keys_do_not_share_state():
 
 # --- config constructors ------------------------------------------------------------------------
 
-def test_rule_from_config_reads_the_breaking_block():
-    rule = rule_from_config(_config('p', urgency_exit_threshold=0.55, episode_gap_minutes=90))
-    assert rule.get_exit_threshold() == 0.55
-    assert rule.get_gap() == timedelta(minutes=90)
+def test_grouping_from_config_reads_the_breaking_block():
+    grouping = grouping_from_config(
+        _config('p', urgency_exit_threshold=0.55, episode_gap_minutes=90))
+    assert grouping.rule.get_exit_threshold() == 0.55
+    assert grouping.rule.get_gap() == timedelta(minutes=90)
+
+
+# --- the episode key (ISSUE_82 finding 6) ------------------------------------------------------
+
+def test_same_query_symbols_share_one_episode_key():
+    # ISSUE_70: ETHUSD and ETHEUR are one analysis fanned to two labels, so one episode.
+    grouping = grouping_from_config(_config('p', symbols=_FX_SYMBOLS))
+    assert grouping.key_for('ETHUSD', 'ETH') == grouping.key_for('ETHEUR', 'ETH')
+
+
+def test_same_base_different_query_symbols_do_not():
+    """The production defect, as a regression.
+
+    USDJPY/USDCAD/USDCHF share the base USD but are three separate retrieval queries. Keying on the
+    base put them in one episode: on 2026-08-18 only USDCAD broke, yet USDJPY — in the hold band
+    half the time — kept re-anchoring the gap on an episode it had no part in.
+    """
+    grouping = grouping_from_config(_config('p', symbols=_FX_SYMBOLS))
+    assert grouping.key_for('USDJPY', 'USD') != grouping.key_for('USDCAD', 'USD')
+
+
+def test_an_unconfigured_symbol_falls_back_to_its_base():
+    # A retired or renamed stream still sits in the archive; it must key as it did before the fix
+    # rather than splitting off a phantom unit.
+    grouping = grouping_from_config(_config('p', symbols=_FX_SYMBOLS))
+    assert grouping.key_for('DOGEUSD', 'DOGE') == 'DOGE'
+    assert grouping.key_for('DOGEUSD', None) == 'DOGEUSD'
+
+
+def test_a_grouping_without_a_map_keys_on_the_base():
+    # The no-config-context default — what a caller that was handed no registry should get.
+    grouping = EpisodeGrouping(BreakingEpisodeRule())
+    assert grouping.key_for('USDJPY', 'USD') == grouping.key_for('USDCAD', 'USD') == 'USD'
 
 
 def test_defaults_match_the_schema():
@@ -119,11 +163,13 @@ def test_defaults_match_the_schema():
     assert DEFAULT_EXIT_THRESHOLD == schema.urgency_exit_threshold
 
 
-def test_rules_from_configs_keys_by_pipeline_id():
-    rules = rules_from_configs([_config('crypto_sentiment', episode_gap_minutes=45),
-                                _config('forex_macro_sentiment', episode_gap_minutes=90)])
-    assert set(rules) == {'crypto_sentiment', 'forex_macro_sentiment'}
-    assert rules['forex_macro_sentiment'].get_gap() == timedelta(minutes=90)
+def test_groupings_from_configs_keys_by_pipeline_id():
+    groupings = groupings_from_configs([_config('crypto_sentiment', episode_gap_minutes=45),
+                                        _config('forex_macro_sentiment', episode_gap_minutes=90)])
+    assert set(groupings) == {'crypto_sentiment', 'forex_macro_sentiment'}
+    assert groupings['forex_macro_sentiment'].rule.get_gap() == timedelta(minutes=90)
+    # Rule and key travel together: a grouping always carries its pipeline's symbol table.
+    assert groupings['crypto_sentiment'].key_for('BTCUSD', 'BTC') == 'Bitcoin BTC'
 
 
 def test_disabling_the_hysteresis_restores_the_pre_issue_82_behaviour():

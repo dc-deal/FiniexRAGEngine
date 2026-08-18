@@ -16,7 +16,7 @@ from finiexragengine.core.observability.source_reach import SourceReach
 from finiexragengine.core.outcome.outcome_store import OutcomeStore
 from finiexragengine.core.pipeline.breaking_detector import BreakingDetector
 from finiexragengine.core.pipeline.breaking_episode import BreakingEpisodeTracker
-from finiexragengine.core.pipeline.breaking_episode_rule import rule_from_config
+from finiexragengine.core.pipeline.breaking_episode_rule import grouping_from_config
 from finiexragengine.core.pipeline.ingestor import Ingestor
 from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
 from finiexragengine.core.pipeline.pipeline_runner import PipelineRunner
@@ -158,8 +158,9 @@ class PipelineAssembler:
         restart, which must never stop the engine from evaluating. A failing *health* write raises
         because it drives the reach decision; this one is diagnostics-grade, like `source_poll_log`.
         """
-        rule = rule_from_config(config)
-        tracker = BreakingEpisodeTracker(rule)
+        grouping = grouping_from_config(config)
+        rule = grouping.rule
+        tracker = BreakingEpisodeTracker(grouping)
         since = datetime.now(timezone.utc) - 2 * rule.get_gap()
         try:
             seen = self._outcome_store.get_since(config.pipeline_id, since)
@@ -172,9 +173,10 @@ class PipelineAssembler:
         # counted by the process that produced them.
         for envelope in seen:
             tracker.observe(envelope)
-        # Count against the rule's own key (asset, not ticker — ISSUE_70), or a fanned pair would
-        # report two open episodes where the rule holds one.
-        keys = {r.base_currency or r.symbol for envelope in seen for r in envelope.result}
+        # Count against the rule's own key (the analysis unit, not the ticker), or a fanned pair
+        # would report two open episodes where the rule holds one.
+        keys = {grouping.key_for(r.symbol, r.base_currency)
+                for envelope in seen for r in envelope.result}
         open_now = sum(1 for key in keys if rule.is_open(key))
         logger.info('[BREAKING] %s: episode state seeded from %d envelope(s) since %s · '
                     '%d episode(s) still open', config.pipeline_id, len(seen),

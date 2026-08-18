@@ -223,6 +223,13 @@ treatment for a noisy signal crossing a threshold — **open high, hold low**:
 | **stays open** | `urgency >= exit` — or breaking again | `breaking.urgency_exit_threshold` (0.7) |
 | **closes** | neither, for longer than the gap | `breaking.episode_gap_minutes` (150) |
 
+**What an episode is keyed by:** the **retrieval query**, i.e. the analysis unit — not the ticker
+and not the base currency. Fanned symbols (ETHUSD/ETHEUR, one query under ISSUE_70) are one
+episode; same-base but differently-queried instruments (USDJPY/USDCAD/USDCHF) are not. Falls back
+to `base_currency`, then the ticker, for a symbol no longer configured. One derivation,
+`EpisodeGrouping.key_for`, shared by the live tracker and both store reports — see
+`symbol_model_and_grouping.md` for why base was wrong and how it surfaced in production.
+
 Two properties worth knowing:
 
 - **Opening uses the recorded verdict, never a re-derivation from today's threshold.** An archived

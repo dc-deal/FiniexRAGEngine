@@ -25,7 +25,7 @@ Two design points worth keeping:
   derivations silently diverged for weeks (see `breaking_report`). One stateful rule object driven
   by two thin callers removes that class of bug rather than documenting around it.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Dict, Iterable, Optional
 
@@ -53,9 +53,9 @@ class BreakingEpisodeRule:
     identical decision for identical input, which is the property the two hand-rolled groupings
     could never guarantee.
 
-    Keyed on the caller's choice of key. Both callers pass `base_currency or symbol`, so a query
-    group's fanned symbols (ETHUSD/ETHEUR, both base ETH) are one analysis and one episode
-    (ISSUE_70) rather than two.
+    Keyed on an opaque key the caller supplies — `EpisodeGrouping.key_for` below is the one
+    implementation of it, so a query group's fanned symbols (ETHUSD/ETHEUR, one analysis under
+    ISSUE_70) are one episode while a same-base/different-query FX group is not.
     """
 
     def __init__(self, exit_threshold: float = DEFAULT_EXIT_THRESHOLD,

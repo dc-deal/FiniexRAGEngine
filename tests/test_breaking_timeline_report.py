@@ -8,7 +8,10 @@ from finiexragengine.core.observability.reports.breaking_timeline_report import 
     _aggregate_timeline,
     format_breaking_timeline_report,
 )
-from finiexragengine.core.pipeline.breaking_episode_rule import BreakingEpisodeRule
+from finiexragengine.core.pipeline.breaking_episode_rule import (
+    BreakingEpisodeRule,
+    EpisodeGrouping,
+)
 
 _T0 = datetime(2026, 8, 17, 12, 0, tzinfo=timezone.utc)
 
@@ -70,8 +73,8 @@ def test_the_series_marks_breaking_held_and_below_apart():
 def test_the_exit_gate_comes_from_the_pipelines_own_rule():
     # A pipeline configured without hysteresis renders the same passes differently — the strip is
     # the rule's view, not a second opinion about it.
-    rules = {'crypto_sentiment': BreakingEpisodeRule(exit_threshold=0.8,
-                                                     gap=timedelta(minutes=45))}
+    rules = {'crypto_sentiment': EpisodeGrouping(
+        BreakingEpisodeRule(exit_threshold=0.8, gap=timedelta(minutes=45)))}
     report = _aggregate_timeline(_series([0.8, 0.7]), '7d', '', rules, **_window(2))
     assert _strip_of(report, 'XRPUSD')[:2] == '#_'
 
@@ -236,8 +239,8 @@ def test_the_header_names_the_rule_each_pipeline_was_grouped_with():
     explains why — the `[OVERRIDE]` startup line only appears when an override happens to exist.
     """
     rows = _series([0.8]) + [_row('forex_macro_sentiment', _T0, symbol='GBPUSD', urgency=0.8)]
-    rules = {'crypto_sentiment': BreakingEpisodeRule(exit_threshold=0.7,
-                                                     gap=timedelta(minutes=150))}
+    rules = {'crypto_sentiment': EpisodeGrouping(
+        BreakingEpisodeRule(exit_threshold=0.7, gap=timedelta(minutes=150)))}
     out = format_breaking_timeline_report(
         _aggregate_timeline(rows, '7d', '', rules, **_window(1)), width=140)
     assert 'episode rule (read-time):' in out
@@ -251,3 +254,33 @@ def test_a_single_pipeline_renders_the_rule_inline():
     out = format_breaking_timeline_report(
         _aggregate_timeline(_series([0.8]), '7d', '', {}, **_window(1)), width=140)
     assert 'episode rule (read-time): crypto_sentiment hold ≥0.70 · gap 150m' in out
+
+
+def test_same_base_different_query_symbols_get_their_own_rows():
+    """ISSUE_82 finding 6, at the report level.
+
+    Before the fix the USD trio rendered as one row `USDJPY/USDCAD/USDCHF` carrying USDCAD's 30
+    breaking passes and its episode, with nothing to say that the other two never broke.
+    """
+    from finiexragengine.core.pipeline.breaking_episode_rule import grouping_from_config
+    from finiexragengine.types.config_types.pipeline_config_types import PipelineConfig
+
+    config = PipelineConfig(
+        pipeline_id='forex_macro_sentiment', outcome_type='sentiment_fear_greed', market='forex',
+        symbols=[{'key': 'USDJPY', 'base': 'USD', 'quote': 'JPY', 'query': 'US Dollar Yen'},
+                 {'key': 'USDCAD', 'base': 'USD', 'quote': 'CAD', 'query': 'US Dollar Canadian'}],
+        prompt={'name': 'forex_macro_sentiment', 'version': '1'}, llm={'model': 'gpt-4o-mini'},
+        trigger={'type': 'interval', 'timeframe': 'M10'}, source_set='forex_news')
+
+    rows = []
+    for index in range(3):
+        ts = _T0 + timedelta(minutes=10 * index)
+        rows.append(('forex_macro_sentiment', {'timestamp': ts.isoformat(), 'result': [
+            _result('USDJPY', 0.7, base='USD'), _result('USDCAD', 0.9, base='USD')]}))
+    report = _aggregate_timeline(
+        rows, '7d', '', {'forex_macro_sentiment': grouping_from_config(config)}, **_window(3))
+
+    by_label = {row.label(): row for row in report.rows}
+    assert set(by_label) == {'USDCAD', 'USDJPY'}          # not one merged 'USDJPY/USDCAD' row
+    assert by_label['USDCAD'].breaking_passes == 3 and by_label['USDCAD'].episodes == 1
+    assert by_label['USDJPY'].breaking_passes == 0 and by_label['USDJPY'].episodes == 0

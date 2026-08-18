@@ -35,10 +35,13 @@ from typing import Dict, List, Optional, Tuple
 import psycopg
 
 from finiexragengine.core.observability.reports.breaking_report import (
-    PipelineRules,
+    PipelineGroupings,
     format_rule_lines,
 )
-from finiexragengine.core.pipeline.breaking_episode_rule import BreakingEpisodeRule
+from finiexragengine.core.pipeline.breaking_episode_rule import (
+    BreakingEpisodeRule,
+    EpisodeGrouping,
+)
 from finiexragengine.exceptions.ragengine_errors import VectorStoreError
 
 # The cell alphabet. The first three are what the rule distinguishes, so the strip reads as the
@@ -87,7 +90,7 @@ class BreakingTimelineReport:
     until: Optional[datetime] = None
     # The rule each pipeline was grouped with — rendered in the header for the same reason the
     # funnel does it: this report re-derives the archive at read time (ISSUE_82).
-    rules_applied: Dict[str, BreakingEpisodeRule] = field(default_factory=dict)
+    rules_applied: Dict[str, EpisodeGrouping] = field(default_factory=dict)
 
 
 def _parse_dt(value: str) -> datetime:
@@ -98,7 +101,7 @@ def build_breaking_timeline_report(database_url: str, since: datetime, *,
                                    since_label: str = '7d',
                                    symbol: str = '',
                                    outcomes_table: str = 'outcomes',
-                                   rules: Optional[PipelineRules] = None,
+                                   rules: Optional[PipelineGroupings] = None,
                                    ) -> BreakingTimelineReport:
     """The per-unit on/off series over the window, grouped by the configured episode rule."""
     try:
@@ -121,7 +124,7 @@ def build_breaking_timeline_report(database_url: str, since: datetime, *,
 
 
 def _aggregate_timeline(rows: List[Tuple[str, object]], since_label: str, symbol_filter: str,
-                        rules: PipelineRules, *, since: Optional[datetime] = None,
+                        rules: PipelineGroupings, *, since: Optional[datetime] = None,
                         until: Optional[datetime] = None) -> BreakingTimelineReport:
     """Build the series per (pipeline, episode key) — the DB-free core (tested)."""
     parsed: List[Tuple[str, datetime, Dict[str, object]]] = []
@@ -131,13 +134,14 @@ def _aggregate_timeline(rows: List[Tuple[str, object]], since_label: str, symbol
     parsed.sort(key=lambda item: (item[0], item[1]))
 
     wanted = symbol_filter.upper()
-    engines: Dict[str, BreakingEpisodeRule] = {}
+    engines: Dict[str, EpisodeGrouping] = {}
     built: Dict[Tuple[str, str], SymbolTimeline] = {}
     previous: Dict[Tuple[str, str], bool] = {}
 
     for pipeline_id, ts, env in parsed:
-        rule = engines.setdefault(pipeline_id, rules.get(pipeline_id) or BreakingEpisodeRule())
-        exit_threshold = rule.get_exit_threshold()
+        grouping = engines.setdefault(
+            pipeline_id, rules.get(pipeline_id) or EpisodeGrouping(BreakingEpisodeRule()))
+        exit_threshold = grouping.rule.get_exit_threshold()
         # One sample per (episode key, envelope), not per result: a fanned pair is one analysis, so
         # counting both legs would double every pass, every flip and every mechanical hold.
         pass_state: Dict[str, str] = {}
@@ -147,10 +151,9 @@ def _aggregate_timeline(rows: List[Tuple[str, object]], since_label: str, symbol
 
         for result in env.get('result', []):
             name = result['symbol']
-            # The episode key IS the rule's key — the row therefore shows exactly what the rule
-            # reasons about. Where that grouping is too coarse (a same-base, different-query FX
-            # group), this makes it visible as one row rather than hiding it behind a zero.
-            group_key = result.get('base_currency') or name
+            # The row IS the rule's grouping — one row per analysis unit, keyed on the retrieval
+            # query exactly as the live tracker keys it (see `EpisodeGrouping.key_for`).
+            group_key = grouping.key_for(name, result.get('base_currency'))
             key = (pipeline_id, group_key)
             row = built.setdefault(key, SymbolTimeline(pipeline_id))
             if name not in row.symbols:
@@ -162,7 +165,7 @@ def _aggregate_timeline(rows: List[Tuple[str, object]], since_label: str, symbol
             # it. Such a row carries urgency 0.0, so it qualifies for nothing and the rule's state
             # is unchanged either way — but "provably a no-op" is a property of today's rule, and
             # the two paths must not depend on it staying true.
-            decision = rule.observe(group_key, ts, is_breaking, urgency)
+            decision = grouping.rule.observe(group_key, ts, is_breaking, urgency)
             if decision.opened:
                 opened[group_key] = opened.get(group_key, 0) + 1
 

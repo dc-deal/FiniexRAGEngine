@@ -20,15 +20,19 @@ from typing import Dict, List, Optional, Tuple
 
 import psycopg
 
-from finiexragengine.core.pipeline.breaking_episode_rule import BreakingEpisodeRule
+from finiexragengine.core.pipeline.breaking_episode_rule import (
+    BreakingEpisodeRule,
+    EpisodeGrouping,
+)
 from finiexragengine.exceptions.ragengine_errors import VectorStoreError
 
-# Where an episode begins and ends is `BreakingEpisodeRule`'s decision, driven here exactly as the
-# live tracker drives it — one implementation, two callers, so the dashboard and this report cannot
-# diverge (they did, silently, for weeks when each grouped for itself). Rules are per pipeline
-# because `breaking` is per-pipeline config; a pipeline_id present in the archive but no longer in
-# config falls back to the schema defaults, the same orphan handling `sources_cli` uses.
-PipelineRules = Dict[str, BreakingEpisodeRule]
+# Where an episode begins and ends, and what it is keyed by, is `EpisodeGrouping`'s decision —
+# driven here exactly as the live tracker drives it. One implementation, two callers, so the
+# dashboard and this report cannot diverge (they did, silently, for weeks when each grouped for
+# itself). Groupings are per pipeline because `breaking` and the symbol table both are; a
+# pipeline_id present in the archive but no longer in config falls back to the schema defaults,
+# the same orphan handling `sources_cli` uses.
+PipelineGroupings = Dict[str, EpisodeGrouping]
 
 
 @dataclass
@@ -65,7 +69,7 @@ class BreakingReport:
     # The rule each pipeline was actually grouped with. A report that re-derives history at read
     # time has to say under which rule, or two runs of the same command over the same archive are
     # silently incomparable — the `[OVERRIDE]` startup line only shows up when an override exists.
-    rules_applied: Dict[str, BreakingEpisodeRule] = field(default_factory=dict)
+    rules_applied: Dict[str, EpisodeGrouping] = field(default_factory=dict)
 
 
 def _parse_dt(value: str) -> datetime:
@@ -87,7 +91,7 @@ def _percentile(values: List[float], pct: float) -> Optional[float]:
 def build_breaking_report(database_url: str, since: datetime, *, since_label: str = '7d',
                           outcomes_table: str = 'outcomes',
                           articles_table: str = 'articles',
-                          rules: Optional[PipelineRules] = None) -> BreakingReport:
+                          rules: Optional[PipelineGroupings] = None) -> BreakingReport:
     """Aggregate confirmed breaking episodes + reaction times + the corpus flag count.
 
     `rules` carries each pipeline's episode rule, resolved by the caller from the registry
@@ -139,7 +143,7 @@ def _reaction(result: Dict[str, object], t3: datetime) -> Tuple[Optional[float],
 
 
 def _aggregate(rows: List[Tuple[str, object]], flagged: int, since_label: str,
-               rules: Optional[PipelineRules] = None) -> BreakingReport:
+               rules: Optional[PipelineGroupings] = None) -> BreakingReport:
     """Group passes into episodes + reaction samples — the DB-free core (tested).
 
     Drives `BreakingEpisodeRule` exactly as the live tracker does. Note that **every** result is
@@ -159,19 +163,19 @@ def _aggregate(rows: List[Tuple[str, object]], flagged: int, since_label: str,
 
     per_pipeline: Dict[str, PipelineBreaking] = {}
     episodes: List[BreakingEpisodeRow] = []
-    engines: Dict[str, BreakingEpisodeRule] = {}
+    engines: Dict[str, EpisodeGrouping] = {}
     # The episode row currently open per (pipeline, asset) — continuations grow it in place.
     open_rows: Dict[Tuple[str, str], BreakingEpisodeRow] = {}
 
     for pipeline_id, t3, env in parsed:
-        rule = engines.setdefault(pipeline_id, rules.get(pipeline_id) or BreakingEpisodeRule())
+        grouping = engines.setdefault(
+            pipeline_id, rules.get(pipeline_id) or EpisodeGrouping(BreakingEpisodeRule()))
         for result in env.get('result', []):
-            # Keyed on the asset (base_currency), not the ticker — a query group's fanned symbols
-            # (ETHUSD/ETHEUR, both base ETH) are one analysis → one episode, mirroring the live
-            # tracker (ISSUE_70); falls back to the symbol for pre-#70 envelopes.
-            group_key = result.get('base_currency') or result['symbol']
-            decision = rule.observe(group_key, t3, bool(result.get('is_breaking')),
-                                    float(result.get('urgency') or 0.0))
+            # Keyed on the retrieval query — the analysis unit, mirroring the live tracker exactly
+            # (see `EpisodeGrouping.key_for`).
+            group_key = grouping.key_for(result['symbol'], result.get('base_currency'))
+            decision = grouping.rule.observe(group_key, t3, bool(result.get('is_breaking')),
+                                             float(result.get('urgency') or 0.0))
             if decision.opened:
                 # Reaction time and reason are sampled only at the edge — later confirmations of
                 # the same story do not reset them; continuations only extend the duration.
@@ -217,7 +221,7 @@ def _fmt_pair(values: List[float]) -> str:
     return f'{_fmt_seconds(median)} / {_fmt_seconds(_percentile(values, 0.9))}'
 
 
-def format_rule_lines(rules_applied: Dict[str, BreakingEpisodeRule]) -> List[str]:
+def format_rule_lines(rules_applied: Dict[str, EpisodeGrouping]) -> List[str]:
     """The episode rule each pipeline was grouped with, as header lines (ISSUE_82).
 
     Both breaking surfaces render this, because both re-derive the archive at read time: without it
@@ -228,16 +232,17 @@ def format_rule_lines(rules_applied: Dict[str, BreakingEpisodeRule]) -> List[str
     """
     if not rules_applied:
         return []
-    parts = [f'{pipeline_id} hold ≥{rule.get_exit_threshold():.2f} · '
-             f'gap {int(rule.get_gap().total_seconds() // 60)}m'
-             for pipeline_id, rule in sorted(rules_applied.items())]
-    if len(parts) == 1:
-        return [f'episode rule (read-time): {parts[0]}']
+    def _render(grouping: EpisodeGrouping) -> str:
+        return (f'hold ≥{grouping.rule.get_exit_threshold():.2f} · '
+                f'gap {int(grouping.rule.get_gap().total_seconds() // 60)}m')
+
+    ordered = sorted(rules_applied.items())
+    if len(ordered) == 1:
+        pipeline_id, grouping = ordered[0]
+        return [f'episode rule (read-time): {pipeline_id} {_render(grouping)}']
     width = max(len(pipeline_id) for pipeline_id in rules_applied)
     return ['episode rule (read-time):'] + [
-        f'  {pipeline_id:{width}}  hold ≥{rule.get_exit_threshold():.2f} · '
-        f'gap {int(rule.get_gap().total_seconds() // 60)}m'
-        for pipeline_id, rule in sorted(rules_applied.items())]
+        f'  {pipeline_id:{width}}  {_render(grouping)}' for pipeline_id, grouping in ordered]
 
 
 def _truncate(text: str, budget: int) -> str:

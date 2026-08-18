@@ -13,7 +13,10 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Optional, Tuple
 
-from finiexragengine.core.pipeline.breaking_episode_rule import BreakingEpisodeRule
+from finiexragengine.core.pipeline.breaking_episode_rule import (
+    BreakingEpisodeRule,
+    EpisodeGrouping,
+)
 from finiexragengine.types.outcome_types import AnalysisEnvelope, SentimentResult
 
 
@@ -88,12 +91,12 @@ class BreakingEpisodeTracker:
     live view and the store report that ISSUE_82 measured twice in one week.
     """
 
-    def __init__(self, rule: Optional[BreakingEpisodeRule] = None) -> None:
-        self._rule = rule if rule is not None else BreakingEpisodeRule()
+    def __init__(self, grouping: Optional[EpisodeGrouping] = None) -> None:
+        self._grouping = grouping if grouping is not None else EpisodeGrouping(BreakingEpisodeRule())
 
     def get_rule(self) -> BreakingEpisodeRule:
         """The rule driving this tracker — surfaces read its gap to render live-vs-ended."""
-        return self._rule
+        return self._grouping.rule
 
     def observe(self, envelope: AnalysisEnvelope) -> BreakingPass:
         """Fold one envelope into the episode state (edge-triggered).
@@ -106,11 +109,11 @@ class BreakingEpisodeTracker:
         ts = envelope.timestamp
         outcome = BreakingPass()
         for result in envelope.result:
-            # Key the episode on the asset (base_currency), not the ticker: a query group's fanned
-            # symbols (ETHUSD/ETHEUR, both base ETH) are one analysis → one episode, no double-count
-            # (ISSUE_70). Falls back to the symbol for pre-#70 envelopes without a base.
-            group_key = result.base_currency or result.symbol
-            decision = self._rule.observe(group_key, ts, result.is_breaking, result.urgency)
+            # The episode key is the retrieval query — the analysis unit, not the ticker and not the
+            # base currency (see `EpisodeGrouping.key_for`). One derivation, shared with the store
+            # reports, so the live and batch views cannot group differently.
+            group_key = self._grouping.key_for(result.symbol, result.base_currency)
+            decision = self._grouping.rule.observe(group_key, ts, result.is_breaking, result.urgency)
             if decision.opened:
                 engine, end_to_end = reaction_times(result, ts)
                 outcome.started.append(

@@ -58,13 +58,25 @@ for query, specs in group_by_query(active_symbols):
   query *is* the grouping key. (Grouping same-base FX pairs would be wrong: the quote is load-bearing
   there.)
 
-## Breaking episodes collapse to the asset
+## Breaking episodes collapse to the analysis
 
 Because the fanned rows are both `is_breaking`, keying breaking episodes on the *ticker* would
 double-count one story (ETHUSD + ETHEUR = two episodes for one ETH event). So the episode is keyed
-on **`base_currency`** — in the live `BreakingEpisodeTracker` and the store `breaking_report`
-alike — collapsing fanned same-base symbols into **one** episode. Falls back to the ticker for
-pre-#70 envelopes without a base.
+on the **retrieval query** — in the live `BreakingEpisodeTracker` and the store reports alike —
+collapsing fanned same-query symbols into **one** episode. Falls back to `base_currency`, then the
+ticker, for a symbol no longer in the config (a retired or renamed stream still sitting in the
+archive).
+
+> **This key was `base_currency` until ISSUE_82.** That is the same mistake the signal chips made
+> and this document already warns about two sections up: it grouped `USDJPY`, `USDCAD` and `USDCHF`
+> into one episode because they share the base `USD`, when they are three separate analyses. It
+> fired on 2026-08-18 — only USDCAD broke, but every pass of all three fed the `USD` key, and
+> USDJPY (in the hold band ~49 % of the time) kept re-anchoring the episode gap on a story it had
+> no part in. A USDCAD episode could then only close once *USDJPY* went quiet.
+>
+> The correction is the rule this document states at the end: **the query is the operational key;
+> `base`/`quote` are the output labels, not the grouping trigger.** One derivation now serves every
+> surface — `EpisodeGrouping.key_for` in `core/pipeline/breaking_episode_rule.py`.
 
 ## Verifying the grouping (from a live run)
 

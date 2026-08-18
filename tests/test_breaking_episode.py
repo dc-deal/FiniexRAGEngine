@@ -10,7 +10,10 @@ from finiexragengine.core.pipeline.breaking_episode import BreakingEpisodeTracke
 from finiexragengine.core.pipeline.breaking_episode_rule import (
     DEFAULT_EPISODE_GAP,
     BreakingEpisodeRule,
+    EpisodeGrouping,
+    grouping_from_config,
 )
+from finiexragengine.types.config_types.pipeline_config_types import PipelineConfig
 from finiexragengine.types.outcome_types import (
     ArticleRef,
     RunMetadata,
@@ -176,8 +179,8 @@ def test_the_measured_xrpusd_sequence_is_one_episode():
 def test_the_rule_is_configurable_per_pipeline():
     # Setting the exit gate equal to the confirm gate disables the hysteresis — the documented
     # way back to the pre-ISSUE_82 behaviour.
-    rule = BreakingEpisodeRule(exit_threshold=0.8, gap=timedelta(minutes=30))
-    tracker = BreakingEpisodeTracker(rule)
+    tracker = BreakingEpisodeTracker(
+        EpisodeGrouping(BreakingEpisodeRule(exit_threshold=0.8, gap=timedelta(minutes=30))))
     tracker.observe(_envelope(_T0, urgency=0.8))
     tracker.observe(_envelope(_T0 + timedelta(minutes=10), is_breaking=False, urgency=0.7))
     assert len(tracker.observe(_envelope(_T0 + timedelta(minutes=40), urgency=0.8)).started) == 1
@@ -220,3 +223,77 @@ def test_a_single_source_is_unaffected_by_the_change():
     only = _src(published=_T0 - timedelta(minutes=5), fetched=_T0 - timedelta(minutes=3))
     episode = BreakingEpisodeTracker().observe(_envelope(_T0, sources=[only])).started[0]
     assert round(episode.engine_s) == 180 and round(episode.end_to_end_s) == 300
+
+
+# --- ISSUE_82 finding 6: the episode key is the analysis, not the base currency ----------------
+
+_FX_CONFIG = PipelineConfig(
+    pipeline_id='forex_macro_sentiment', outcome_type='sentiment_fear_greed', market='forex',
+    symbols=[{'key': 'USDJPY', 'base': 'USD', 'quote': 'JPY', 'query': 'US Dollar Japanese Yen'},
+             {'key': 'USDCAD', 'base': 'USD', 'quote': 'CAD', 'query': 'US Dollar Canadian Dollar'}],
+    prompt={'name': 'forex_macro_sentiment', 'version': '1'}, llm={'model': 'gpt-4o-mini'},
+    trigger={'type': 'interval', 'timeframe': 'M10'}, source_set='forex_news')
+
+
+def _fx_envelope(ts: datetime, *, cad: float, jpy: float) -> SentimentEnvelope:
+    """One forex pass: USDCAD and USDJPY at their own urgencies, same base `USD`."""
+    def _r(symbol: str, urgency: float, quote: str) -> SentimentResult:
+        return SentimentResult(symbol=symbol, signal='SELL', sentiment_score=-0.5, confidence=0.8,
+                               reasoning='uk data', urgency=urgency, is_breaking=urgency >= 0.8,
+                               base_currency='USD', quote_currency=quote)
+    return SentimentEnvelope(
+        pipeline_id='forex_macro_sentiment', outcome_type='sentiment_fear_greed',
+        prompt_version='1', timestamp=ts, status='success', metadata=RunMetadata(model='m'),
+        result=[_r('USDJPY', jpy, 'JPY'), _r('USDCAD', cad, 'CAD')])
+
+
+def test_a_quiet_pair_no_longer_holds_its_base_mates_episode_open():
+    """2026-08-18 in production, as a regression.
+
+    USDJPY, USDCAD and USDCHF share the base `USD` but are three separate retrieval queries. Only
+    USDCAD ever broke — yet every pass of all three fed the `USD` key, and USDJPY (in the hold band
+    49% of the time) re-anchored the gap on an episode it had no part in. A USDCAD story could then
+    only close once *USDJPY* went quiet, which is a coupling between unrelated instruments.
+    """
+    tracker = BreakingEpisodeTracker(grouping_from_config(_FX_CONFIG))
+
+    opened = tracker.observe(_fx_envelope(_T0, cad=0.9, jpy=0.7)).started
+    assert [episode.symbol for episode in opened] == ['USDCAD']   # not USDJPY, which never broke
+
+    # USDCAD goes quiet; USDJPY keeps idling in the hold band for far longer than the gap.
+    quiet_for = DEFAULT_EPISODE_GAP + timedelta(minutes=20)
+    minute = 10
+    while minute * 60 <= quiet_for.total_seconds():
+        outcome = tracker.observe(_fx_envelope(_T0 + timedelta(minutes=minute), cad=0.2, jpy=0.7))
+        assert outcome.started == [] and outcome.held == []       # USDJPY holds nothing of USDCAD's
+        minute += 10
+
+    # USDCAD breaking again is a genuinely NEW story — under the base key it would have been a
+    # continuation of the first, kept alive by an instrument that never broke.
+    resumed = tracker.observe(_fx_envelope(_T0 + quiet_for + timedelta(minutes=10),
+                                           cad=0.9, jpy=0.7)).started
+    assert [episode.symbol for episode in resumed] == ['USDCAD']
+
+
+def test_fanned_symbols_still_share_one_episode_under_the_query_key():
+    # The property the base key was protecting (ISSUE_70) must survive the change: same query,
+    # one analysis, one episode — now for the right reason.
+    config = PipelineConfig(
+        pipeline_id='crypto_sentiment', outcome_type='sentiment_fear_greed', market='crypto',
+        symbols=[{'key': 'ETHUSD', 'base': 'ETH', 'quote': 'USD', 'query': 'Ethereum ETH'},
+                 {'key': 'ETHEUR', 'base': 'ETH', 'quote': 'EUR', 'query': 'Ethereum ETH'}],
+        prompt={'name': 'crypto_sentiment', 'version': '2'}, llm={'model': 'gpt-4o-mini'},
+        trigger={'type': 'interval', 'timeframe': 'M10'}, source_set='crypto_news')
+
+    def _r(symbol: str, quote: str) -> SentimentResult:
+        return SentimentResult(symbol=symbol, signal='BUY', sentiment_score=0.5, confidence=0.8,
+                               reasoning='hack', urgency=0.9, is_breaking=True,
+                               base_currency='ETH', quote_currency=quote)
+    env = SentimentEnvelope(
+        pipeline_id='crypto_sentiment', outcome_type='sentiment_fear_greed', prompt_version='2',
+        timestamp=_T0, status='success', metadata=RunMetadata(model='m'),
+        result=[_r('ETHUSD', 'USD'), _r('ETHEUR', 'EUR')])
+
+    outcome = BreakingEpisodeTracker(grouping_from_config(config)).observe(env)
+    assert len(outcome.started) == 1 and outcome.started[0].symbol == 'ETHUSD'
+    assert outcome.held == ['ETHEUR']
