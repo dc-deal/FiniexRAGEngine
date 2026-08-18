@@ -277,7 +277,10 @@ Giving the *consumer* a debounced regime is a contract change, and belongs to `b
 so a restart mid-story resumes the episode instead of re-opening it. Before that, two of one week's
 66 episodes were boot artefacts — re-confirmed 3 and 11 minutes after the previous breaking pass,
 i.e. well inside any gap, which only an empty tracker can produce. Seeding is best-effort: an
-unreadable store costs episode continuity across one restart and never stops the engine.
+unreadable store costs episode continuity across one restart and never stops the engine. The live
+dashboard resumes displaying whatever the replay left open (`BreakingEpisodeTracker.open_episodes`),
+so a story spanning a restart keeps its row and its real running time; the session counters beside
+it are not restored, because they count what this process saw.
 
 ### Is `confirmed` a subset of `flagged`? No.
 

@@ -11,7 +11,7 @@ turning an opened episode into a `BreakingEpisode` with its frozen reaction time
 """
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from finiexragengine.core.pipeline.breaking_episode_rule import (
     BreakingEpisodeRule,
@@ -46,6 +46,23 @@ class BreakingPass:
     """
     started: List[BreakingEpisode] = field(default_factory=list)
     held: List[str] = field(default_factory=list)     # symbols whose open episode this pass held
+
+
+@dataclass
+class OpenEpisode:
+    """An episode still running after a replay — what a fresh process needs to keep showing it.
+
+    The seeded rule knows an episode is open, but the live dashboard's episode list is written only
+    by `add_breaking_episode`, so after a restart the panel read `none active` while a story was
+    demonstrably still running (production, 2026-08-18). The state was correct and invisible, which
+    on the one panel built to show breaking state is the worse half of the two.
+
+    Carries the opening pass's `BreakingEpisode` (symbol, signal, reason, frozen reaction) plus the
+    two timestamps the renderer needs: when it started, and when it was last held open.
+    """
+    episode: BreakingEpisode
+    started: datetime
+    last_seen: datetime
 
 
 def reaction_times(result: SentimentResult, ts: datetime) -> Tuple[Optional[float], Optional[float]]:
@@ -93,6 +110,9 @@ class BreakingEpisodeTracker:
 
     def __init__(self, grouping: Optional[EpisodeGrouping] = None) -> None:
         self._grouping = grouping if grouping is not None else EpisodeGrouping(BreakingEpisodeRule())
+        # Per open episode key: what it is and how long it has been running. Kept so a process that
+        # inherits state by replay can hand the display something to show (see `open_episodes`).
+        self._open: Dict[str, OpenEpisode] = {}
 
     def get_rule(self) -> BreakingEpisodeRule:
         """The rule driving this tracker — surfaces read its gap to render live-vs-ended."""
@@ -116,10 +136,26 @@ class BreakingEpisodeTracker:
             decision = self._grouping.rule.observe(group_key, ts, result.is_breaking, result.urgency)
             if decision.opened:
                 engine, end_to_end = reaction_times(result, ts)
-                outcome.started.append(
-                    BreakingEpisode(result.symbol, result.signal, result.urgency,
-                                    engine, end_to_end, len(result.sources),
-                                    reason=result.reasoning))
+                episode = BreakingEpisode(result.symbol, result.signal, result.urgency,
+                                          engine, end_to_end, len(result.sources),
+                                          reason=result.reasoning)
+                outcome.started.append(episode)
+                self._open[group_key] = OpenEpisode(episode, started=ts, last_seen=ts)
             elif decision.held:
                 outcome.held.append(result.symbol)
+                running = self._open.get(group_key)
+                if running is not None:
+                    running.last_seen = ts
+            if not decision.in_episode:
+                # The gap closed it (or it never opened) — drop it so `open_episodes` only ever
+                # reports what the rule still holds.
+                self._open.pop(group_key, None)
         return outcome
+
+    def open_episodes(self) -> List[OpenEpisode]:
+        """The episodes still running — for a fresh process to resume displaying them.
+
+        Built from the decisions themselves rather than by reaching into the rule, so the two can
+        never disagree about what is open.
+        """
+        return list(self._open.values())

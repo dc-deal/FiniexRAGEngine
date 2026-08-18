@@ -163,3 +163,28 @@ def test_concurrent_episode_writes_keep_count_and_deque_consistent():
             thread.join()
     assert stats.breaking().confirmed == 4 * 500
     assert len(stats.recent_breaking()) == 6            # the bounded deque held its cap
+
+
+def test_restoring_an_episode_shows_it_without_touching_the_session_counters():
+    """ISSUE_82: a story running across a restart stays on the panel, but is not re-counted.
+
+    Inflating `confirmed` on every boot is the defect the seeded rule removed one layer down; the
+    counters mean "what this process saw" and must keep meaning that.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    stats = EngineStats(source_set_ids=['crypto_news'], pipeline_ids=['crypto_sentiment'])
+    started = datetime(2026, 8, 18, 15, 20, tzinfo=timezone.utc)
+    last_seen = started + timedelta(hours=6)
+    stats.restore_breaking_episode('USDCAD', 'SELL', 'tariffs', 'engine 8.4m / e2e 9.8m',
+                                   started=started, last_seen=last_seen, gap_seconds=9000.0)
+
+    records = stats.recent_breaking()
+    assert len(records) == 1
+    assert records[0].symbol == 'USDCAD' and records[0].started == started
+    assert records[0].last_seen == last_seen                       # true running time, not boot time
+    # Accumulators stay session-scoped; point-in-time facts about the world are restored, or the
+    # row header reads `idle` directly above an episode marked live.
+    assert stats.breaking().confirmed == 0 and stats.breaking().detected == 0
+    assert stats.breaking().last == last_seen
+    assert stats.breaking().detail == 'engine 8.4m / e2e 9.8m'

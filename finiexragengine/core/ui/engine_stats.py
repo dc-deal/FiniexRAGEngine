@@ -197,6 +197,34 @@ class EngineStats:
                                                         signal=signal, reason=reason,
                                                         gap_seconds=gap_seconds))
 
+    def restore_breaking_episode(self, symbol: str, signal: str, reason: str, detail: str = '', *,
+                                 started: datetime, last_seen: datetime,
+                                 gap_seconds: float = 9000.0) -> None:
+        """Re-attach an episode a previous process opened and this one inherited (ISSUE_82).
+
+        The split is between the two kinds of thing this snapshot holds:
+
+        - **`detected`/`confirmed` are accumulators** and stay untouched. They count what *this*
+          process saw, and adding to them on every boot is the very defect the seeded rule removed
+          one layer down.
+        - **`last` and `detail` are point-in-time facts** about the world — when breaking last
+          happened and how fast it was — so they *are* restored. Leaving them out rendered the row
+          header as `idle` directly above two episodes marked live (production, 2026-08-18): an
+          accumulator's session scope had leaked onto a timestamp, where it does not belong.
+
+        `started` is the original opening time, so the row renders its true running duration rather
+        than restarting the clock at boot.
+        """
+        with self._counter_lock:                          # walks the deque the writers share
+            self._recent_breaking.append(
+                BreakingRecord(started=started, last_seen=last_seen, symbol=symbol,
+                               signal=signal, reason=reason, gap_seconds=gap_seconds))
+            current = self._breaking
+            if current.last is None or last_seen > current.last:
+                self._breaking = BreakingSnapshot(last=last_seen, detected=current.detected,
+                                                  confirmed=current.confirmed,
+                                                  detail=detail or current.detail)
+
     def touch_breaking_episode(self, symbol: str, *, at: datetime) -> None:
         """A symbol whose open episode this pass held (same ongoing episode, ISSUE_64/82): advance
         its record's `last_seen` so the renderer keeps it 'live' and grows its duration. A no-op if

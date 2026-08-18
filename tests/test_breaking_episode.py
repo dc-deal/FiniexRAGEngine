@@ -297,3 +297,30 @@ def test_fanned_symbols_still_share_one_episode_under_the_query_key():
     outcome = BreakingEpisodeTracker(grouping_from_config(config)).observe(env)
     assert len(outcome.started) == 1 and outcome.started[0].symbol == 'ETHUSD'
     assert outcome.held == ['ETHEUR']
+
+
+def test_the_tracker_reports_what_is_still_open_after_a_replay():
+    """A restart inherits state by replay; the display has to be able to resume showing it.
+
+    Before this, the seeded rule knew an episode was open while the dashboard read `none active`
+    for up to a full gap — correct state, invisible (production, 2026-08-18).
+    """
+    tracker = BreakingEpisodeTracker()
+    tracker.observe(_envelope(_T0, urgency=0.9))                      # opens
+    tracker.observe(_envelope(_T0 + timedelta(minutes=10), is_breaking=False, urgency=0.7))
+
+    running = tracker.open_episodes()
+    assert len(running) == 1
+    assert running[0].episode.symbol == 'ADAUSD'
+    assert running[0].episode.reason == 'x'                           # frozen at the opening pass
+    assert running[0].started == _T0                                  # the real start, not the boot
+    assert running[0].last_seen == _T0 + timedelta(minutes=10)
+
+
+def test_a_closed_episode_is_not_reported_as_open():
+    tracker = BreakingEpisodeTracker()
+    tracker.observe(_envelope(_T0, urgency=0.9))
+    # Past the gap with nothing qualifying — the rule drops it, so the display must not resume it.
+    tracker.observe(_envelope(_T0 + DEFAULT_EPISODE_GAP + timedelta(minutes=1),
+                              is_breaking=False, urgency=0.1))
+    assert tracker.open_episodes() == []

@@ -75,6 +75,25 @@ class EvalWorker:
         self._state = WorkerState(name=f'eval:{config.pipeline_id}', kind='eval',
                                   interval_seconds=config.trigger.cadence_seconds,
                                   timeframe=config.trigger.timeframe)
+        # A story running across a restart stays on the dashboard (ISSUE_82). The assembler seeded
+        # the rule from the store, so the episodes are known — without this the panel showed
+        # `none active` for up to a full gap while one was demonstrably open.
+        self._restore_open_episodes()
+
+    def _restore_open_episodes(self) -> None:
+        """Show the episodes this process inherited; the session counters stay untouched."""
+        stats = self._engine_stats
+        if stats is None:
+            return
+        gap_seconds = self._episodes.get_rule().get_gap().total_seconds()
+        for running in self._episodes.open_episodes():
+            # The frozen reaction rides along, rendered exactly as a live episode renders it.
+            detail = (f'engine {_fmt_seconds(running.episode.engine_s)} / '
+                      f'e2e {_fmt_seconds(running.episode.end_to_end_s)}')
+            stats.restore_breaking_episode(running.episode.symbol, running.episode.signal,
+                                           running.episode.reason, detail,
+                                           started=running.started,
+                                           last_seen=running.last_seen, gap_seconds=gap_seconds)
 
     def get_state(self) -> WorkerState:
         return self._state

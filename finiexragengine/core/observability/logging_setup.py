@@ -13,7 +13,10 @@ surfaces, not long-running services, so they do not spin up a file.
 import logging
 import logging.handlers
 import os
+from datetime import datetime
 from pathlib import Path
+
+from typing import Optional
 
 from finiexragengine.configuration.override_report import replay_pending_reports
 from finiexragengine.types.config_types.app_config_types import AppConfig
@@ -25,6 +28,25 @@ _FINIEX_HANDLER = '_finiex_managed'
 _FORMAT = '%(asctime)s %(levelname)s %(name)s: %(message)s'
 
 
+class _IsoFormatter(logging.Formatter):
+    """Timestamps as ISO 8601 **with the UTC offset**, so a line states which clock wrote it.
+
+    Python's default (`2026-08-18 23:36:13,334`) is local wall-clock with nothing saying so, while
+    every other operator surface — the live display, the reports, the store — is UTC. Correlating
+    a log line against the dashboard therefore meant knowing the machine's offset by heart, and the
+    seed line printed both in one sentence (`23:36:13 … since 16:36 UTC`) without either being
+    labelled. Worse, the drift is silent across a DST change.
+
+    The clock is deliberately unchanged — the operator reads this file next to a wall clock — but
+    it is now self-describing: `2026-08-18T23:36:13.334+02:00`. Milliseconds survive, which a bare
+    `datefmt` would drop (`strftime` has no sub-second directive).
+    """
+
+    def formatTime(self, record: logging.LogRecord, datefmt: Optional[str] = None) -> str:
+        stamp = datetime.fromtimestamp(record.created).astimezone()
+        return stamp.isoformat(timespec='milliseconds')
+
+
 def configure_logging(config: AppConfig, *, live_mode: bool = False) -> None:
     """Wire the root logger: console + optional daily/size-rotating file, per app config.
 
@@ -33,7 +55,7 @@ def configure_logging(config: AppConfig, *, live_mode: bool = False) -> None:
     record. Default off: the console is on, exactly as before (every existing call is unchanged).
     """
     level = getattr(logging, config.log_level.upper(), logging.INFO)
-    formatter = logging.Formatter(_FORMAT)
+    formatter = _IsoFormatter(_FORMAT)
     root = logging.getLogger()
     root.setLevel(level)
 
