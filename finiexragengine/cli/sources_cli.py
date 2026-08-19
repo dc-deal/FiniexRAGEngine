@@ -8,6 +8,10 @@ series). Health says *whether* a feed is delivering; the journal says *how* it h
 `--history <source_id>` switches to the third question (ISSUE_84): *what did we do about it, and
 was that proportionate* — one feed's quarantine episodes, the rung each reached, and the polls the
 policy cost kept apart from the polls an outage cost.
+
+`--contribution [source_set_id]` switches to the fourth (ISSUE_82 finding 9): *is a feed worth the
+weight it was given* — articles produced against articles that actually reached a prompt. Health
+and latency describe the pipe; this describes what came through it.
 """
 import argparse
 import os
@@ -15,6 +19,10 @@ from datetime import datetime, timezone
 from typing import Dict
 
 from finiexragengine.configuration.app_config_manager import AppConfigManager
+from finiexragengine.core.observability.reports.source_contribution_report import (
+    build_source_contribution_report,
+    format_source_contribution_report,
+)
 from finiexragengine.core.observability.reports.source_health_report import (
     build_source_health_report,
     format_source_health_report,
@@ -29,6 +37,7 @@ from finiexragengine.core.observability.reports.source_quarantine_report import 
     format_quarantine_episode,
     format_source_quarantine_report,
 )
+from finiexragengine.exceptions.ragengine_errors import ConfigurationError
 from finiexragengine.utils.console_encoding import use_utf8_output
 from finiexragengine.utils.report_window import parse_since
 
@@ -47,6 +56,10 @@ def main() -> None:
     parser.add_argument('--episode', metavar='UTC_TIMESTAMP',
                         help='with --history: the poll-by-poll run-up to one episode, by its '
                              'start time (e.g. 2026-08-15T05:04:04)')
+    parser.add_argument('--contribution', metavar='SOURCE_SET_ID', nargs='?', const='',
+                        help='what each feed of a source-set actually contributed: articles '
+                             'produced vs articles that reached a prompt, next to the weight '
+                             'assigned by hand (ISSUE_82 finding 9). Omit the id for every set')
     args = parser.parse_args()
 
     database_url = os.environ.get('DATABASE_URL')
@@ -55,6 +68,10 @@ def main() -> None:
 
     if args.history:
         _print_history(parser, database_url, args)
+        return
+
+    if args.contribution is not None:
+        _print_contribution(parser, database_url, args)
         return
 
     # Currently-configured source ids across every set — anything in the store but not here is
@@ -90,6 +107,36 @@ def main() -> None:
         warn_ratio=manager.get_config().diagnostics.timeout_warn_ratio)
     print()
     print(format_source_latency_report(latency))
+
+
+def _print_contribution(parser: argparse.ArgumentParser, database_url: str,
+                        args: argparse.Namespace) -> None:
+    """Per-feed contribution for one source-set (ISSUE_82 #9) — reception only, no logic here."""
+    manager = AppConfigManager()
+    sets = manager.build_source_set_registry()
+    pipelines = manager.build_pipeline_registry()
+    since, since_label = parse_since(args.since)
+    wanted = [args.contribution] if args.contribution else [
+        source_set.source_set_id for source_set in sets.list_sets()]
+    for index, source_set_id in enumerate(wanted):
+        try:
+            source_set = sets.get(source_set_id)
+        except ConfigurationError as exc:
+            parser.error(str(exc))    # an unknown id is a usage error, not a crash
+        # Only pipelines reading this set can cite its articles; envelopes from another set
+        # would count nothing and cost the walk.
+        pipeline_ids = {pipeline.get_config().pipeline_id
+                        for pipeline in pipelines.list_pipelines()
+                        if pipeline.get_config().source_set == source_set_id}
+        report = build_source_contribution_report(
+            database_url, since, source_set_id=source_set_id, pipeline_ids=pipeline_ids,
+            weights={source.source_id: source.weight for source in source_set.sources},
+            disabled_ids={source.source_id for source in source_set.sources
+                          if not source.enabled},
+            since_label=since_label)
+        if index:
+            print()
+        print(format_source_contribution_report(report))
 
 
 def _print_history(parser: argparse.ArgumentParser, database_url: str,

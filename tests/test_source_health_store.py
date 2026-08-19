@@ -325,3 +325,51 @@ def test_counters_survive_a_pass_that_never_resolves(ladder_store, clean_db):
         cur.execute(f'SELECT total_failures, consecutive_failures FROM {_TABLE} '
                     'WHERE source_id = %s', ('ecb_press',))
         assert cur.fetchone() == (1, 1)
+
+
+# --- ISSUE_84 follow-ups --------------------------------------------------------------------
+
+def test_the_rung_is_answered_without_touching_the_database(ladder_store, clean_db):
+    # The ingestor asks on every skipped poll, which is the hot path `should_poll` promises to
+    # keep DB-free — at a 15s cadence a query here would run ~5,760 times a day per quarantined
+    # feed. Proven by making a connection fatal: if `rung_of` still answers, it never asked.
+    _fail(ladder_store, 'ecb_press', 'UNREACHABLE', None, 10_000.0, 10_000.0)
+    _fail(ladder_store, 'ecb_press', 'UNREACHABLE', None, 10_000.0, 10_000.0)
+
+    def _explode():
+        raise AssertionError('rung_of must not open a connection')
+
+    ladder_store._connect = _explode
+    assert ladder_store.rung_of('ecb_press') == (0, 3)
+    assert ladder_store.rung_of('never_quarantined') is None
+
+
+def test_the_cached_rung_survives_a_worker_restart(ladder_store, clean_db):
+    # A fresh process must be able to render "rung 1/3" too, or the marker silently degrades to
+    # "quarantined" after every restart — one query for the whole fleet at boot, not one per skip.
+    _fail(ladder_store, 'ecb_press', 'UNREACHABLE', None, 10_000.0, 10_000.0)
+    _fail(ladder_store, 'ecb_press', 'UNREACHABLE', None, 10_000.0, 10_000.0)
+    reborn = SourceHealthStore(clean_db, ladder_store._config)
+    assert reborn.should_poll('ecb_press') is False
+    assert reborn.rung_of('ecb_press') == (0, 3)
+
+
+def test_a_probe_success_drops_the_cached_rung(ladder_store, clean_db):
+    from datetime import datetime, timedelta, timezone
+    _fail(ladder_store, 'ecb_press', 'UNREACHABLE', None, 10_000.0, 10_000.0)
+    _fail(ladder_store, 'ecb_press', 'UNREACHABLE', None, 10_000.0, 10_000.0)
+    ladder_store._quarantined['ecb_press'] = datetime.now(timezone.utc) - timedelta(seconds=1)
+    ladder_store.should_poll('ecb_press')
+    ladder_store.record_success('ecb_press', 'ecb.europa.eu', 'forex_news')
+    assert ladder_store.rung_of('ecb_press') is None      # no longer held, so no rung to show
+
+
+def test_a_success_clears_the_error_type_it_no_longer_describes(store, clean_db):
+    # `last_status` describes THIS poll; leaving `last_error_type` from an older one made healthy
+    # rows read 'UNREACHABLE / 200' — two events rendered as one contradictory state.
+    _fail(store, 'boe_news', error_type='HTTP_ERROR', status=500)
+    store.record_success('boe_news', 'bankofengland.co.uk', 'forex_news')
+    with psycopg.connect(clean_db) as conn, conn.cursor() as cur:
+        cur.execute(f'SELECT last_error_type, last_status FROM {_TABLE} WHERE source_id = %s',
+                    ('boe_news',))
+        assert cur.fetchone() == (None, 200)

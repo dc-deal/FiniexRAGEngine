@@ -119,6 +119,68 @@ comes from `source_poll_log` while inside its 14-day window; past that it falls 
 snapshot frozen into the episode when the decision was taken, which is the reason that snapshot
 exists.
 
+## Is the relevance floor cutting real news — or cutting nothing?
+
+`coverage_cli --floor-profile` (ISSUE_55 groundwork). `retrieval.floor_distance` is **one absolute
+cut applied to per-query distance distributions that are not comparable**, so the same number can
+starve one symbol and wave everything through for another. Both failures are silent: a starved
+symbol produces a mechanical `no_data` HOLD that reads exactly like "no news".
+
+```
+Retrieval Floor Profile — crypto_sentiment · floor 0.700 · window 1440min/24h · 312 articles
+--------------------------------------------------------------------------------------------
+query                   nearest     p10  median  <=floor  foreign    knee  mech.HOLD  symbols
+--------------------------------------------------------------------------------------------
+Bitcoin BTC               0.483   0.559   0.702      128       11   0.612      0.0 %  BTCUSD
+Dash cryptocurrency       0.612   0.633   0.688       47       19   0.530 ⚠    0.0 %  DASHUSD
+Cardano ADA               0.706   0.741   0.798        0        0   0.712 ✗   38.1 %  ADAUSD
+--------------------------------------------------------------------------------------------
+```
+
+Read the two markers, both threshold-free:
+
+- **`✗` starved** — the *nearest* article in the window is already beyond the floor, so the query
+  is scored on nothing. Measured 2026-08-19: ADAUSD lost **410 of 1075 passes** this way, with its
+  nearest candidate at 0.706 against a floor of 0.700 — six thousandths.
+- **`⚠` indiscriminate** — the window *median* is inside the floor, i.e. more than half the corpus
+  counts as relevant to one symbol. For a symbol-specific query that is implausible, and it is the
+  direction ISSUE_55 does not consider: a floor too *low* for a generic query feeds a symbol
+  articles that are not about it, which is what ISSUE_24 exists to prevent.
+
+`foreign` is the corroboration: the corpus is shared across pipelines and `pgvector_store.query`
+applies no source-set filter, so this counts in-floor articles coming from another pipeline's
+feeds. `knee` is the largest gap in the below-median part of the distance curve — the floor the
+corpus itself suggests, computed without an LLM (ISSUE_55's cross-check, step 7).
+
+`--floor 0.72` re-reads the whole profile at a candidate value without touching config, and
+`--archive-since 30d` widens the mech.HOLD column.
+
+## Is a feed worth the weight it was given?
+
+`sources_cli --contribution [source_set_id]` (ISSUE_82 finding 9). Health says a feed is reachable
+and latency says it is quick; neither says whether what it publishes ever reaches a prompt.
+
+```
+Source Contribution — crypto_news · last 7d
+--------------------------------------------------------------------------------------------
+source              weight  articles   cited  citation%  breaking  note
+--------------------------------------------------------------------------------------------
+cryptonews            0.80       136      20     14.7 %         7
+cointelegraph         1.00       234       9      3.8 %         2  ⚠ high volume, rarely cited
+decrypt               1.00       174       2      1.1 %         0  ⚠ high volume, rarely cited
+--------------------------------------------------------------------------------------------
+```
+
+`cited` counts **distinct** articles that appeared in at least one envelope's `sources[]` — the
+question is whether an article reached a prompt at all, not how often it was reused, or a feed's
+rank would become a function of pass cadence.
+
+The point of the table is the first two columns read together: `source_weight` has two hand-set
+levels with 10 of 14 feeds at 1.0, and it has never been checked against anything. This is that
+check. It **ranks**, it does not judge — a low citation rate can mean a feed is off-topic for these
+symbols, syndicated (dedup drops it), or genuinely less useful, and the table does not distinguish
+them.
+
 ## Why is a pipeline `partial` instead of `success`?
 
 `partial` means the analysis ran but not every configured source was reachable — the engine

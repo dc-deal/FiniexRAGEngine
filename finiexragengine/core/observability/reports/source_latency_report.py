@@ -306,8 +306,11 @@ def format_source_latency_report(report: SourceLatencyReport) -> str:
                  f'timeout might help)')
     lines.append(f'     `refused` = it failed immediately (the feed said no — a longer timeout '
                  f'would change nothing)')
-    lines.append(f'  ⚠  p99 is within {(1 - report.warn_ratio) * 100:.0f}% of the configured '
-                 f'timeout — review the value before it starts failing')
+    # Only when a row actually carries the marker: a legend for a symbol that is nowhere in the
+    # table explains something the operator cannot see, and trains them to skip the legend.
+    if any(row.nearing_timeout for row in report.latency):
+        lines.append(f'  ⚠  p99 is within {(1 - report.warn_ratio) * 100:.0f}% of the configured '
+                     f'timeout — review the value before it starts failing')
 
     lines.append('')
     lines.append(f'poll gaps (last {report.since_label}) — outages measured against each feed\'s '
