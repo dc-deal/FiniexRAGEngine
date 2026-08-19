@@ -7,6 +7,7 @@ from finiexragengine.core.alerts.telegram_weekly_format import (
 )
 from finiexragengine.core.observability.reports.breaking_report import BreakingReport
 from finiexragengine.core.observability.reports.cost_report import CostReport, RealWindow
+from finiexragengine.core.observability.reports.resource_report import ResourceStats
 from finiexragengine.core.observability.reports.no_data_report import NoDataReport, NoDataRow
 from finiexragengine.core.observability.reports.perf_report import PerfReport
 from finiexragengine.core.observability.reports.source_health_report import SourceHealthReport
@@ -35,6 +36,9 @@ def _model(**overrides) -> WeeklyReport:
                                      _NOW - timedelta(minutes=4), stale=False)],
         errors=[ErrorTypeCount('SOURCE_UNREACHABLE', 7)],
         storage=StorageStats(1312, 87, 1841, 214 * 1024 ** 2),
+        resources=ResourceStats(
+            samples=10080, rss_mean=412.0, rss_min=388.0, rss_max=447.0,
+            sockets_last=24, threads_last=31, rss_mean_previous=406.0),
         last_ingest_at=_NOW - timedelta(minutes=9))
     fields.update(overrides)
     return WeeklyReport(**fields)

@@ -75,6 +75,6 @@ def clean_db(db_dsn: str) -> Iterator[str]:
     with psycopg.connect(db_dsn) as conn:
         conn.execute('TRUNCATE articles, corpus_meta, outcomes, cost_log, query_vectors, '
                      'source_health, source_poll_log, source_quarantine_log, '
-                     'archive_export_log, config_fingerprints')
+                     'resource_samples, archive_export_log, config_fingerprints')
         conn.commit()
     yield db_dsn

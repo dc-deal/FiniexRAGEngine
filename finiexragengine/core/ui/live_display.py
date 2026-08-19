@@ -21,6 +21,7 @@ from rich.table import Table
 from rich.text import Text
 
 from finiexragengine.core.observability.budget_guard import BudgetGuard
+from finiexragengine.core.observability.resource_gauge import ResourceGauge
 from finiexragengine.core.observability.stall_watchdog import StallWatchdog
 from finiexragengine.core.ui.engine_stats import (
     BreakingRecord,
@@ -97,6 +98,7 @@ class LiveDisplay:
     def __init__(self, stats: EngineStats, *,
                  budget_guard: Optional[BudgetGuard] = None,
                  stall_watchdog: Optional[StallWatchdog] = None,
+                 resource_gauge: Optional[ResourceGauge] = None,
                  worker_count: int = 0,
                  version: str = '',
                  refresh_seconds: float = 1.0,
@@ -110,6 +112,11 @@ class LiveDisplay:
         # Optional (ISSUE_75): asked each frame which workers are stalled, so a silent stage turns
         # red instead of ageing quietly. None = no stall rendering (CLI/test paths).
         self._stall_watchdog = stall_watchdog
+        # Optional (ISSUE_89): the process gauge, read only to mark a crossed RSS ceiling in the
+        # header. Deliberately NOT a permanent figure — a memory number that is fine 99 % of the
+        # time costs a row and trains the eye to skip it, which is the same exception-density rule
+        # the SOURCES row follows. None = nothing rendered.
+        self._resource_gauge = resource_gauge
         self._worker_count = worker_count
         self._refresh_seconds = refresh_seconds
         self._console = console if console is not None else Console()
@@ -172,8 +179,14 @@ class LiveDisplay:
         uptime = _format_age((now - self._started_at).total_seconds())
         spend = self._budget_status().get('day_spend_usd', 0.0) if self._budget_guard else 0.0
         version = f' v{self._version}' if self._version else ''
-        return (f'FiniexRAGEngine{version} — up {uptime} — {self._worker_count} workers '
-                f'— ${spend:.3f} today')
+        header = (f'FiniexRAGEngine{version} — up {uptime} — {self._worker_count} workers '
+                  f'— ${spend:.3f} today')
+        # Only while over the ceiling, and only when one is configured (default 0 = off).
+        if self._resource_gauge is not None and self._resource_gauge.over_ceiling:
+            sample = self._resource_gauge.latest()
+            if sample is not None:
+                header += f' — ⚠ rss {sample.rss_mb:.0f} MB'
+        return header
 
     def _stage_rows(self, now: datetime) -> Table:
         # A grid (no borders): stage label + per-worker id + `last` cell + a free detail column.

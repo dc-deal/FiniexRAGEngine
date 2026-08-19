@@ -5,6 +5,7 @@ from fastapi import APIRouter
 
 from finiexragengine.configuration.app_config_manager import AppConfigManager
 from finiexragengine.core.observability.budget_guard import BudgetGuard
+from finiexragengine.core.observability.resource_gauge import ResourceGauge
 from finiexragengine.core.observability.stall_watchdog import StallWatchdog
 from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
 from finiexragengine.core.pipeline.worker_supervisor import WorkerSupervisor
@@ -13,6 +14,7 @@ from finiexragengine.types.api_types import (
     HealthResponse,
     PipelineInfo,
     PipelinesResponse,
+    ResourceInfo,
     StallInfo,
     WorkerInfo,
 )
@@ -22,7 +24,8 @@ def build_health_router(config_manager: AppConfigManager,
                         registry: PipelineRegistry,
                         supervisor: Optional[WorkerSupervisor] = None,
                         budget_guard: Optional[BudgetGuard] = None,
-                        stall_watchdog: Optional[StallWatchdog] = None) -> APIRouter:
+                        stall_watchdog: Optional[StallWatchdog] = None,
+                        resource_gauge: Optional[ResourceGauge] = None) -> APIRouter:
     """Build the health/pipelines router bound to the given config + registry.
 
     `supervisor` (ISSUE_10) adds the live worker states to /health — the first
@@ -40,8 +43,11 @@ def build_health_router(config_manager: AppConfigManager,
                    if supervisor is not None else [])
         budget = BudgetInfo(**budget_guard.status()) if budget_guard is not None else None
         stall = StallInfo(**stall_watchdog.status()) if stall_watchdog is not None else None
+        resources = (ResourceInfo(**resource_gauge.status())
+                     if resource_gauge is not None else None)
         return HealthResponse(version=config_manager.get_config().version,
-                              workers=workers, budget=budget, stall=stall)
+                              workers=workers, budget=budget, stall=stall,
+                              resources=resources)
 
     @router.get('/pipelines', response_model=PipelinesResponse)
     def list_pipelines() -> PipelinesResponse:

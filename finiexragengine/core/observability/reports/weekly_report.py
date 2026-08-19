@@ -39,6 +39,12 @@ from finiexragengine.core.observability.reports.perf_report import (
     build_perf_report,
     format_perf_report,
 )
+from finiexragengine.core.observability.resource_sample_store import ResourceSampleStore
+from finiexragengine.core.observability.reports.resource_report import (
+    ResourceStats,
+    build_resource_stats,
+    format_resource_line,
+)
 from finiexragengine.core.observability.reports.source_health_report import (
     SourceHealthReport,
     build_source_health_report,
@@ -101,6 +107,9 @@ class WeeklyReport:
     pipelines: List[PipelineStatusRow]
     errors: List[ErrorTypeCount]
     storage: StorageStats
+    # What the process itself cost the machine over the window (ISSUE_89) — the delta against the
+    # previous week is the signal; a single reading never was.
+    resources: ResourceStats
     last_ingest_at: Optional[datetime]
 
 
@@ -155,7 +164,14 @@ def collect_weekly_report(config_manager: AppConfigManager, database_url: str, *
         breaking=build_breaking_report(
             database_url, since,
             rules=groupings_from_configs(p.get_config() for p in registry.list_pipelines())),
-        pipelines=pipelines, errors=errors, storage=storage, last_ingest_at=last_ingest)
+        pipelines=pipelines, errors=errors, storage=storage,
+        # Reads the window and the one before it. The store answers `[]` for a missing table, so a
+        # database from before migration 008 renders "not sampled" instead of failing the report.
+        resources=build_resource_stats(
+            ResourceSampleStore(database_url,
+                                retention_days=cfg.diagnostics.resource_retention_days),
+            since, until),
+        last_ingest_at=last_ingest)
 
 
 def _table_exists(cur: psycopg.Cursor, table: str) -> bool:
@@ -287,6 +303,9 @@ def _format_storage(report: WeeklyReport, divider: str) -> str:
         divider,
         f'corpus {s.articles_total} articles (+{s.articles_week} this week) · '
         f'envelopes {s.outcomes_total} · DB {_fmt_bytes(s.db_bytes)}',
+        # The process's own footprint sits under storage on purpose: both answer "what is this
+        # engine accumulating", one on disk and one in memory (ISSUE_89).
+        format_resource_line(report.resources),
         divider,
     ])
 
