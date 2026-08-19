@@ -1,13 +1,19 @@
-"""BreakingEpisodeTracker (ISSUE_11) — edge-triggered breaking episodes, the live counterpart to
-the store report's batch grouping: a hot story is counted once, not every pass it lingers.
+"""BreakingEpisodeTracker (ISSUE_11 · ISSUE_82) — the live driver of the episode rule.
+
+A hot story is counted once, not every pass it lingers, and — since ISSUE_82 — a single pass
+dipping below the confirm gate no longer ends it.
 """
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
-from finiexragengine.core.pipeline.breaking_episode import (
-    EPISODE_GAP,
-    BreakingEpisodeTracker,
+from finiexragengine.core.pipeline.breaking_episode import BreakingEpisodeTracker
+from finiexragengine.core.pipeline.breaking_episode_rule import (
+    DEFAULT_EPISODE_GAP,
+    BreakingEpisodeRule,
+    EpisodeGrouping,
+    grouping_from_config,
 )
+from finiexragengine.types.config_types.pipeline_config_types import PipelineConfig
 from finiexragengine.types.outcome_types import (
     ArticleRef,
     RunMetadata,
@@ -23,45 +29,47 @@ def _src(published: datetime, fetched: datetime) -> ArticleRef:
 
 
 def _envelope(ts: datetime, *, symbol: str = 'ADAUSD', is_breaking: bool = True,
+              urgency: float = 0.9,
               sources: Optional[List[ArticleRef]] = None) -> SentimentEnvelope:
     result = SentimentResult(
         symbol=symbol, signal='SELL', sentiment_score=-0.5, confidence=0.8,
-        reasoning='x', urgency=0.9, is_breaking=is_breaking, sources=sources or [])
+        reasoning='x', urgency=urgency, is_breaking=is_breaking, sources=sources or [])
     return SentimentEnvelope(
         pipeline_id='crypto_sentiment', outcome_type='sentiment_fear_greed', prompt_version='2',
         timestamp=ts, status='success', metadata=RunMetadata(model='m'), result=[result])
 
 
 def test_first_breaking_is_one_episode():
-    episodes = BreakingEpisodeTracker().new_episodes(_envelope(_T0))
-    assert len(episodes) == 1 and episodes[0].symbol == 'ADAUSD'
+    started = BreakingEpisodeTracker().observe(_envelope(_T0)).started
+    assert len(started) == 1 and started[0].symbol == 'ADAUSD'
 
 
 def test_re_break_within_the_gap_is_not_a_new_episode():
     tracker = BreakingEpisodeTracker()
-    tracker.new_episodes(_envelope(_T0))                            # episode start
+    tracker.observe(_envelope(_T0))                                 # episode start
     # 10 min later, still breaking — the same ongoing story, not counted again (the 248 bug).
-    assert tracker.new_episodes(_envelope(_T0 + timedelta(minutes=10))) == []
+    outcome = tracker.observe(_envelope(_T0 + timedelta(minutes=10)))
+    assert outcome.started == [] and outcome.held == ['ADAUSD']
 
 
 def test_re_break_after_the_gap_starts_a_new_episode():
     tracker = BreakingEpisodeTracker()
-    tracker.new_episodes(_envelope(_T0))
-    tracker.new_episodes(_envelope(_T0 + timedelta(minutes=10)))    # within gap — no
-    later = _T0 + timedelta(minutes=10) + EPISODE_GAP + timedelta(minutes=1)   # gap re-arms
-    assert len(tracker.new_episodes(_envelope(later))) == 1
+    tracker.observe(_envelope(_T0))
+    tracker.observe(_envelope(_T0 + timedelta(minutes=10)))         # within gap — no
+    later = _T0 + timedelta(minutes=10) + DEFAULT_EPISODE_GAP + timedelta(minutes=1)
+    assert len(tracker.observe(_envelope(later)).started) == 1
 
 
 def test_ongoing_story_over_many_passes_counts_once():
     tracker = BreakingEpisodeTracker()
-    total = sum(len(tracker.new_episodes(_envelope(_T0 + timedelta(minutes=10 * i))))
+    total = sum(len(tracker.observe(_envelope(_T0 + timedelta(minutes=10 * i))).started)
                 for i in range(20))                                # 20 consecutive 10-min passes
-    assert total == 1                                              # one episode, not twenty (was: 59/day)
+    assert total == 1                                              # one episode, not twenty
 
 
 def test_reaction_time_anchored_at_the_episode_start():
     src = _src(published=_T0 - timedelta(minutes=6), fetched=_T0 - timedelta(minutes=2))
-    episode = BreakingEpisodeTracker().new_episodes(_envelope(_T0, sources=[src]))[0]
+    episode = BreakingEpisodeTracker().observe(_envelope(_T0, sources=[src])).started[0]
     assert round(episode.engine_s) == 120                          # t3 − fetched = 2 min
     assert round(episode.end_to_end_s) == 360                      # t3 − real published = 6 min
 
@@ -69,18 +77,20 @@ def test_reaction_time_anchored_at_the_episode_start():
 def test_estimated_publish_is_excluded_from_e2e():
     # published == fetched (a date-less feed's fallback) → estimated → dropped from e2e.
     est = _src(published=_T0 - timedelta(minutes=2), fetched=_T0 - timedelta(minutes=2))
-    episode = BreakingEpisodeTracker().new_episodes(_envelope(_T0, sources=[est]))[0]
+    episode = BreakingEpisodeTracker().observe(_envelope(_T0, sources=[est])).started[0]
     assert round(episode.engine_s) == 120                          # engine still from fetched
     assert episode.end_to_end_s is None                            # no real published → honest '—'
 
 
-def test_non_breaking_results_are_ignored():
-    assert BreakingEpisodeTracker().new_episodes(_envelope(_T0, is_breaking=False)) == []
+def test_a_non_breaking_pass_opens_nothing():
+    outcome = BreakingEpisodeTracker().observe(
+        _envelope(_T0, is_breaking=False, urgency=0.1))
+    assert outcome.started == [] and outcome.held == []
 
 
 def test_reason_is_carried_from_reasoning():
     # ISSUE_64 Phase 1: the LLM's per-symbol reasoning rides along as the episode's `reason`.
-    episode = BreakingEpisodeTracker().new_episodes(_envelope(_T0))[0]
+    episode = BreakingEpisodeTracker().observe(_envelope(_T0)).started[0]
     assert episode.reason == 'x'                                    # _envelope's reasoning
 
 
@@ -94,8 +104,86 @@ def test_fanned_same_base_symbols_are_one_episode():
         pipeline_id='crypto_sentiment', outcome_type='sentiment_fear_greed', prompt_version='2',
         timestamp=_T0, status='success', metadata=RunMetadata(model='m'),
         result=[_r('ETHUSD'), _r('ETHEUR')])
-    episodes = BreakingEpisodeTracker().new_episodes(env)
-    assert len(episodes) == 1 and episodes[0].symbol == 'ETHUSD'    # one asset-level episode
+    outcome = BreakingEpisodeTracker().observe(env)
+    assert len(outcome.started) == 1 and outcome.started[0].symbol == 'ETHUSD'
+    assert outcome.held == ['ETHEUR']          # the fanned twin holds the same asset's episode
+
+
+# --- ISSUE_82: hysteresis — one dip must not end a story -------------------------------------
+
+
+def test_a_dip_below_the_confirm_gate_holds_the_episode():
+    """The production defect, as a regression.
+
+    `urgency` is quantised to seven values and the confirm gate sits on one of them, so a story
+    oscillated 0.8/0.7 on a byte-identical source set. Under the old rule the 0.7 passes counted
+    as "not breaking" and two of them ended the episode; here they hold it open.
+    """
+    tracker = BreakingEpisodeTracker()
+    assert len(tracker.observe(_envelope(_T0, urgency=0.8)).started) == 1
+    for minute in (10, 20, 30):                                    # three passes at the exit gate
+        outcome = tracker.observe(_envelope(_T0 + timedelta(minutes=minute),
+                                            is_breaking=False, urgency=0.7))
+        assert outcome.started == [] and outcome.held == ['ADAUSD']
+    # Back above the confirm gate 40 minutes in — still the SAME story, not a second episode.
+    assert tracker.observe(_envelope(_T0 + timedelta(minutes=40), urgency=0.8)).started == []
+
+
+def test_a_drop_below_the_exit_gate_closes_after_the_gap():
+    tracker = BreakingEpisodeTracker()
+    tracker.observe(_envelope(_T0, urgency=0.8))
+    quiet = _envelope(_T0 + timedelta(minutes=10), is_breaking=False, urgency=0.3)
+    assert tracker.observe(quiet).held == []                       # below exit → nothing held
+    # Past the gap measured from the last qualifying pass, a fresh confirm opens a new episode.
+    later = _T0 + DEFAULT_EPISODE_GAP + timedelta(minutes=1)
+    assert len(tracker.observe(_envelope(later, urgency=0.8)).started) == 1
+
+
+def test_a_dip_below_the_exit_gate_inside_the_gap_is_still_one_episode():
+    tracker = BreakingEpisodeTracker()
+    tracker.observe(_envelope(_T0, urgency=0.8))
+    tracker.observe(_envelope(_T0 + timedelta(minutes=10), is_breaking=False, urgency=0.6))
+    # 20 minutes total — well inside the gap, so the story never closed.
+    assert tracker.observe(_envelope(_T0 + timedelta(minutes=20), urgency=0.8)).started == []
+
+
+def test_opening_uses_the_recorded_verdict_not_todays_threshold():
+    """An archived pass keeps the verdict its pipeline actually took.
+
+    A high `urgency` with `is_breaking=False` is what a pass looks like when it was scored under a
+    stricter threshold. Re-deriving the open decision from urgency would rewrite that history on
+    every report run; the rule must not.
+    """
+    outcome = BreakingEpisodeTracker().observe(
+        _envelope(_T0, is_breaking=False, urgency=0.95))
+    assert outcome.started == []
+
+
+def test_the_measured_xrpusd_sequence_is_one_episode():
+    """2026-08-17, the case that produced ISSUE_82 — real urgencies, real cadence.
+
+    Fifteen passes on a byte-identical source set; the old rule split them into two episodes
+    because 13:40–14:00 sat below the confirm gate for 40 minutes.
+    """
+    measured = [0.8, 0.8, 0.8, 0.8, 0.7, 0.7, 0.7, 0.8, 0.7, 0.8, 0.7, 0.8, 0.6, 0.8]
+    tracker = BreakingEpisodeTracker()
+    opened = 0
+    for index, urgency in enumerate(measured):
+        outcome = tracker.observe(_envelope(_T0 + timedelta(minutes=10 * index),
+                                            symbol='XRPUSD', is_breaking=urgency >= 0.8,
+                                            urgency=urgency))
+        opened += len(outcome.started)
+    assert opened == 1                                             # was 2 before ISSUE_82
+
+
+def test_the_rule_is_configurable_per_pipeline():
+    # Setting the exit gate equal to the confirm gate disables the hysteresis — the documented
+    # way back to the pre-ISSUE_82 behaviour.
+    tracker = BreakingEpisodeTracker(
+        EpisodeGrouping(BreakingEpisodeRule(exit_threshold=0.8, gap=timedelta(minutes=30))))
+    tracker.observe(_envelope(_T0, urgency=0.8))
+    tracker.observe(_envelope(_T0 + timedelta(minutes=10), is_breaking=False, urgency=0.7))
+    assert len(tracker.observe(_envelope(_T0 + timedelta(minutes=40), urgency=0.8)).started) == 1
 
 
 # --- ISSUE_81: the anchor is the freshest source, not the oldest ----------------------------
@@ -113,8 +201,8 @@ def test_reaction_is_not_measured_from_the_oldest_context_article():
     triggering = _src(published=_T0 - timedelta(seconds=45), fetched=_T0 - timedelta(seconds=30))
     stale_context = _src(published=_T0 - timedelta(hours=20), fetched=_T0 - timedelta(hours=20))
 
-    episode = BreakingEpisodeTracker().new_episodes(
-        _envelope(_T0, sources=[stale_context, triggering]))[0]
+    episode = BreakingEpisodeTracker().observe(
+        _envelope(_T0, sources=[stale_context, triggering])).started[0]
 
     assert round(episode.engine_s) == 30            # the freshest evidence, not the oldest
     assert round(episode.end_to_end_s) == 45
@@ -125,13 +213,155 @@ def test_source_order_does_not_change_the_anchor():
     # Retrieval order is by similarity, not by time — the metric must not depend on it.
     old = _src(published=_T0 - timedelta(hours=6), fetched=_T0 - timedelta(hours=6))
     fresh = _src(published=_T0 - timedelta(minutes=2), fetched=_T0 - timedelta(minutes=1))
-    forwards = BreakingEpisodeTracker().new_episodes(_envelope(_T0, sources=[old, fresh]))[0]
-    backwards = BreakingEpisodeTracker().new_episodes(_envelope(_T0, sources=[fresh, old]))[0]
+    forwards = BreakingEpisodeTracker().observe(_envelope(_T0, sources=[old, fresh])).started[0]
+    backwards = BreakingEpisodeTracker().observe(_envelope(_T0, sources=[fresh, old])).started[0]
     assert forwards.engine_s == backwards.engine_s == 60
 
 
 def test_a_single_source_is_unaffected_by_the_change():
     # The one case where min and max agree — kept so the fix cannot silently break the simple path.
     only = _src(published=_T0 - timedelta(minutes=5), fetched=_T0 - timedelta(minutes=3))
-    episode = BreakingEpisodeTracker().new_episodes(_envelope(_T0, sources=[only]))[0]
+    episode = BreakingEpisodeTracker().observe(_envelope(_T0, sources=[only])).started[0]
     assert round(episode.engine_s) == 180 and round(episode.end_to_end_s) == 300
+
+
+# --- ISSUE_82 finding 6: the episode key is the analysis, not the base currency ----------------
+
+_FX_CONFIG = PipelineConfig(
+    pipeline_id='forex_macro_sentiment', outcome_type='sentiment_fear_greed', market='forex',
+    symbols=[{'key': 'USDJPY', 'base': 'USD', 'quote': 'JPY', 'query': 'US Dollar Japanese Yen'},
+             {'key': 'USDCAD', 'base': 'USD', 'quote': 'CAD', 'query': 'US Dollar Canadian Dollar'}],
+    prompt={'name': 'forex_macro_sentiment', 'version': '1'}, llm={'model': 'gpt-4o-mini'},
+    trigger={'type': 'interval', 'timeframe': 'M10'}, source_set='forex_news')
+
+
+def _fx_envelope(ts: datetime, *, cad: float, jpy: float) -> SentimentEnvelope:
+    """One forex pass: USDCAD and USDJPY at their own urgencies, same base `USD`."""
+    def _r(symbol: str, urgency: float, quote: str) -> SentimentResult:
+        return SentimentResult(symbol=symbol, signal='SELL', sentiment_score=-0.5, confidence=0.8,
+                               reasoning='uk data', urgency=urgency, is_breaking=urgency >= 0.8,
+                               base_currency='USD', quote_currency=quote)
+    return SentimentEnvelope(
+        pipeline_id='forex_macro_sentiment', outcome_type='sentiment_fear_greed',
+        prompt_version='1', timestamp=ts, status='success', metadata=RunMetadata(model='m'),
+        result=[_r('USDJPY', jpy, 'JPY'), _r('USDCAD', cad, 'CAD')])
+
+
+def test_a_quiet_pair_no_longer_holds_its_base_mates_episode_open():
+    """2026-08-18 in production, as a regression.
+
+    USDJPY, USDCAD and USDCHF share the base `USD` but are three separate retrieval queries. Only
+    USDCAD ever broke — yet every pass of all three fed the `USD` key, and USDJPY (in the hold band
+    49% of the time) re-anchored the gap on an episode it had no part in. A USDCAD story could then
+    only close once *USDJPY* went quiet, which is a coupling between unrelated instruments.
+    """
+    tracker = BreakingEpisodeTracker(grouping_from_config(_FX_CONFIG))
+
+    opened = tracker.observe(_fx_envelope(_T0, cad=0.9, jpy=0.7)).started
+    assert [episode.symbol for episode in opened] == ['USDCAD']   # not USDJPY, which never broke
+
+    # USDCAD goes quiet; USDJPY keeps idling in the hold band for far longer than the gap.
+    quiet_for = DEFAULT_EPISODE_GAP + timedelta(minutes=20)
+    minute = 10
+    while minute * 60 <= quiet_for.total_seconds():
+        outcome = tracker.observe(_fx_envelope(_T0 + timedelta(minutes=minute), cad=0.2, jpy=0.7))
+        assert outcome.started == [] and outcome.held == []       # USDJPY holds nothing of USDCAD's
+        minute += 10
+
+    # USDCAD breaking again is a genuinely NEW story — under the base key it would have been a
+    # continuation of the first, kept alive by an instrument that never broke.
+    resumed = tracker.observe(_fx_envelope(_T0 + quiet_for + timedelta(minutes=10),
+                                           cad=0.9, jpy=0.7)).started
+    assert [episode.symbol for episode in resumed] == ['USDCAD']
+
+
+def test_fanned_symbols_still_share_one_episode_under_the_query_key():
+    # The property the base key was protecting (ISSUE_70) must survive the change: same query,
+    # one analysis, one episode — now for the right reason.
+    config = PipelineConfig(
+        pipeline_id='crypto_sentiment', outcome_type='sentiment_fear_greed', market='crypto',
+        symbols=[{'key': 'ETHUSD', 'base': 'ETH', 'quote': 'USD', 'query': 'Ethereum ETH'},
+                 {'key': 'ETHEUR', 'base': 'ETH', 'quote': 'EUR', 'query': 'Ethereum ETH'}],
+        prompt={'name': 'crypto_sentiment', 'version': '2'}, llm={'model': 'gpt-4o-mini'},
+        trigger={'type': 'interval', 'timeframe': 'M10'}, source_set='crypto_news')
+
+    def _r(symbol: str, quote: str) -> SentimentResult:
+        return SentimentResult(symbol=symbol, signal='BUY', sentiment_score=0.5, confidence=0.8,
+                               reasoning='hack', urgency=0.9, is_breaking=True,
+                               base_currency='ETH', quote_currency=quote)
+    env = SentimentEnvelope(
+        pipeline_id='crypto_sentiment', outcome_type='sentiment_fear_greed', prompt_version='2',
+        timestamp=_T0, status='success', metadata=RunMetadata(model='m'),
+        result=[_r('ETHUSD', 'USD'), _r('ETHEUR', 'EUR')])
+
+    outcome = BreakingEpisodeTracker(grouping_from_config(config)).observe(env)
+    assert len(outcome.started) == 1 and outcome.started[0].symbol == 'ETHUSD'
+    assert outcome.held == ['ETHEUR']
+
+
+def test_the_tracker_reports_what_is_still_open_after_a_replay():
+    """A restart inherits state by replay; the display has to be able to resume showing it.
+
+    Before this, the seeded rule knew an episode was open while the dashboard read `none active`
+    for up to a full gap — correct state, invisible (production, 2026-08-18).
+    """
+    tracker = BreakingEpisodeTracker()
+    tracker.observe(_envelope(_T0, urgency=0.9))                      # opens
+    tracker.observe(_envelope(_T0 + timedelta(minutes=10), is_breaking=False, urgency=0.7))
+
+    running = tracker.open_episodes()
+    assert len(running) == 1
+    assert running[0].episode.symbol == 'ADAUSD'
+    assert running[0].episode.reason == 'x'                           # frozen at the opening pass
+    assert running[0].started == _T0                                  # the real start, not the boot
+    assert running[0].last_seen == _T0 + timedelta(minutes=10)
+
+
+def test_a_closed_episode_is_not_reported_as_open():
+    tracker = BreakingEpisodeTracker()
+    tracker.observe(_envelope(_T0, urgency=0.9))
+    # Past the gap with nothing qualifying — the rule drops it, so the display must not resume it.
+    tracker.observe(_envelope(_T0 + DEFAULT_EPISODE_GAP + timedelta(minutes=1),
+                              is_breaking=False, urgency=0.1))
+    assert tracker.open_episodes() == []
+
+
+def test_seed_recovers_an_episode_whose_last_breaking_pass_predates_the_window_start():
+    """The production case, 2026-08-18: two restarts four minutes apart logged `1 episode(s)
+    still open` and then `0`, because BTCUSD's last breaking pass at 17:00 UTC fell one minute
+    outside the second window. The replay can only OPEN on a breaking pass, so the window has to
+    span the episode — not merely the gap the hold band keeps it alive with.
+    """
+    # A window wide enough to start in the quiet BEFORE the story, so the transition into breaking
+    # is observed; then one break, then hold-band passes carrying it for five hours — far longer
+    # than `2 × gap`, which is exactly what the old window failed to span.
+    envelopes = [_envelope(_T0, symbol='BTCUSD', is_breaking=False, urgency=0.2)]
+    envelopes.append(_envelope(_T0 + timedelta(minutes=10), symbol='BTCUSD', urgency=0.9))
+    envelopes += [_envelope(_T0 + timedelta(minutes=10 * i), symbol='BTCUSD',
+                            is_breaking=False, urgency=0.7) for i in range(2, 32)]
+
+    running = BreakingEpisodeTracker().seed(envelopes)
+
+    assert [open_episode.episode.symbol for open_episode in running] == ['BTCUSD']
+    assert running[0].started == _T0 + timedelta(minutes=10)   # the observed opening
+    assert running[0].started_bounded is False                 # so the duration is a measurement
+
+
+def test_seed_marks_an_episode_that_was_already_open_at_the_first_replayed_envelope():
+    """Any finite window has an edge; this is the one case where it bites, and it must say so."""
+    # The replay starts mid-story: the very first envelope is already breaking, so whatever came
+    # before it is unknowable from this window.
+    envelopes = [_envelope(_T0 + timedelta(minutes=10 * i), symbol='BTCUSD', urgency=0.9)
+                 for i in range(5)]
+
+    running = BreakingEpisodeTracker().seed(envelopes)
+
+    assert len(running) == 1
+    assert running[0].started_bounded is True
+
+
+def test_seed_reports_nothing_for_a_story_that_closed_inside_the_window():
+    envelopes = [_envelope(_T0, urgency=0.9)]
+    envelopes.append(_envelope(_T0 + DEFAULT_EPISODE_GAP + timedelta(minutes=10),
+                               is_breaking=False, urgency=0.1))
+    assert BreakingEpisodeTracker().seed(envelopes) == []

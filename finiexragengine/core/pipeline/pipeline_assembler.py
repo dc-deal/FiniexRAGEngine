@@ -1,5 +1,6 @@
 """Pipeline assembler — builds the per-pipeline object graph behind a PipelineRunner (ISSUE_7)."""
 import logging
+from datetime import datetime, timedelta, timezone
 
 from finiexragengine.configuration.app_config_manager import AppConfigManager
 from finiexragengine.configuration.config_fingerprint import compute_config_fingerprint
@@ -14,6 +15,8 @@ from finiexragengine.core.observability.source_poll_log import SourcePollLog
 from finiexragengine.core.observability.source_reach import SourceReach
 from finiexragengine.core.outcome.outcome_store import OutcomeStore
 from finiexragengine.core.pipeline.breaking_detector import BreakingDetector
+from finiexragengine.core.pipeline.breaking_episode import BreakingEpisodeTracker
+from finiexragengine.core.pipeline.breaking_episode_rule import grouping_from_config
 from finiexragengine.core.pipeline.ingestor import Ingestor
 from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
 from finiexragengine.core.pipeline.pipeline_runner import PipelineRunner
@@ -24,7 +27,7 @@ from finiexragengine.core.rag.query_vector_cache import QueryVectorCache
 from finiexragengine.core.rag.retriever import Retriever
 from finiexragengine.core.schema.schema_guard import verify_schema_current
 from finiexragengine.core.sources.source_factory import build_source
-from finiexragengine.exceptions.ragengine_errors import ConfigurationError
+from finiexragengine.exceptions.ragengine_errors import ConfigurationError, VectorStoreError
 from finiexragengine.types.config_types.pipeline_config_types import PipelineConfig
 
 logger = logging.getLogger(__name__)
@@ -81,7 +84,7 @@ class PipelineAssembler:
     def _today_spend(self) -> float:
         """Sum of the billing log since UTC midnight — seeds the guard's warn-only day line."""
         import psycopg   # local import: only used when the soft daily line is armed
-        from datetime import datetime, timezone
+        from datetime import datetime, timedelta, timezone
         midnight = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
         try:
             with psycopg.connect(self._database_url) as conn, conn.cursor() as cur:
@@ -137,6 +140,61 @@ class PipelineAssembler:
                                prompt_name=config.prompt.name,
                                prompt_version=config.prompt.version,
                                breaking_threshold=config.breaking.urgency_threshold)
+
+    def build_episode_tracker(self, config: PipelineConfig) -> BreakingEpisodeTracker:
+        """The live breaking tracker for one pipeline, seeded from the store (ISSUE_82).
+
+        Two things happen here that cannot happen inside the worker: the episode rule is built
+        from this pipeline's `breaking` config, and its state is warmed from the persisted
+        envelopes so a restart resumes an open episode instead of re-opening it. Measured before
+        this: two of one week's 66 episodes were boot artefacts — a story re-confirmed 3 and 11
+        minutes after its previous breaking pass, i.e. well inside any gap, which only an empty
+        tracker can produce.
+
+        The window is `breaking.episode_seed_hours`, floored at `2 × gap`, and it has to span an
+        entire **episode** — not merely the gap. The replay can only *open* an episode on a recorded
+        breaking pass, while the hold band keeps one alive long after the last one: measured
+        2026-08-18, that tail ran 5 h (BTCUSD), 8.7 h (ETHUSD) and 33 h (XRPUSD). The original
+        `2 × gap` = 5 h therefore recovered **0 of 4** open episodes, and two restarts four minutes
+        apart logged `1 episode(s) still open` and then `0`, because one symbol's last breaking pass
+        fell a minute outside.
+
+        Any finite window has an edge, so the remaining one is reported rather than hidden: an
+        episode already open at the first replayed envelope may reach back further, and both the log
+        line and the dashboard mark its duration as a lower bound.
+
+        Seeding is best-effort: a store that cannot be read costs episode continuity across one
+        restart, which must never stop the engine from evaluating. A failing *health* write raises
+        because it drives the reach decision; this one is diagnostics-grade, like `source_poll_log`.
+        """
+        grouping = grouping_from_config(config)
+        rule = grouping.rule
+        tracker = BreakingEpisodeTracker(grouping)
+        window = max(2 * rule.get_gap(),
+                      timedelta(hours=config.breaking.episode_seed_hours))
+        since = datetime.now(timezone.utc) - window
+        try:
+            seen = self._outcome_store.get_since(config.pipeline_id, since)
+        except VectorStoreError as exc:
+            logger.warning('[BREAKING] %s: episode state not seeded (%s) — a story open across '
+                           'this restart will be counted again', config.pipeline_id, exc)
+            return tracker
+        # Replayed through the same `observe` the live path uses, so seeding cannot drift from
+        # scoring. The episodes come back so the display can resume showing them; they are not
+        # counted, because the process that produced them already did.
+        running = tracker.seed(seen)
+        logger.info('[BREAKING] %s: episode state seeded from %d envelope(s) since %s · '
+                    '%d episode(s) still open', config.pipeline_id, len(seen),
+                    since.strftime('%Y-%m-%d %H:%M UTC'), len(running))
+        bounded = [open_episode.episode.symbol for open_episode in running
+                   if open_episode.started_bounded]
+        if bounded:
+            # The window's edge, said out loud. The first version of this seed hid it, and the only
+            # reason it surfaced was an operator noticing a missing dashboard row.
+            logger.warning('[BREAKING] %s: %d open at the window edge (%s) — the start and any '
+                           'earlier chain are outside the replay, so durations shown for them are '
+                           'lower bounds', config.pipeline_id, len(bounded), ', '.join(bounded))
+        return tracker
 
     def build_ingestor(self, source_set_id: str, billing_label: str = '') -> Ingestor:
         """Assemble the ingest pass for one source-set (ISSUE_10) — worker + CLI unit.

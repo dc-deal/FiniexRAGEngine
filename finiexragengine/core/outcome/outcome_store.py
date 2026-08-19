@@ -1,7 +1,8 @@
 """Persistence for pipeline outcomes — the source of truth for backtest replay (ISSUE_8)."""
 import json
 import logging
-from typing import Any, Dict, Optional
+from datetime import datetime
+from typing import Any, Dict, List, Optional
 
 import psycopg
 
@@ -77,6 +78,31 @@ class OutcomeStore:
         # contract promises, not a raw dict. (Payload typing: sentiment is the only
         # outcome_type today; a second payload model dispatches on outcome_type here.)
         return SentimentEnvelope.model_validate(row[0])
+
+    def get_since(self, pipeline_id: str, since: datetime) -> List[AnalysisEnvelope]:
+        """One pipeline's envelopes from `since` onward, **oldest first** (ISSUE_82).
+
+        The seeding read for the live breaking tracker: a restart used to start with empty episode
+        state, so the boot pass re-opened an ongoing story as a fresh episode while the store report
+        — re-deriving from these same rows — did not. Replaying the recent tail through the same
+        rule makes the two agree across a restart instead of only within one process lifetime.
+
+        Ascending order is the contract, not a convenience: `BreakingEpisodeRule` is driven in
+        timestamp order. `status <> 'error'` mirrors the store report's filter, so both see the
+        same population (an error envelope carries an empty `result` and could not hold an episode
+        open anyway). One index walk on `(pipeline_id, ts DESC)`.
+        """
+        try:
+            with self._connect() as conn, conn.cursor() as cur:
+                cur.execute(
+                    f'SELECT envelope FROM {self._table} '
+                    "WHERE pipeline_id = %s AND ts >= %s AND status <> 'error' "
+                    'ORDER BY ts ASC, id ASC',
+                    (pipeline_id, since))
+                rows = cur.fetchall()
+        except psycopg.Error as exc:
+            raise VectorStoreError(f'outcome read failed: {exc}') from exc
+        return [SentimentEnvelope.model_validate(row[0]) for row in rows]
 
     def get_latest_raw_output(self, pipeline_id: str) -> Optional[Dict[str, Any]]:
         """The raw LLM output stored with the newest envelope (debug/replay, ISSUE_36)."""

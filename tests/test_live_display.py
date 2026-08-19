@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 
 from rich.console import Console
 
-from finiexragengine.core.pipeline.breaking_episode import EPISODE_GAP
+from finiexragengine.core.pipeline.breaking_episode_rule import DEFAULT_EPISODE_GAP
 from finiexragengine.core.ui.engine_stats import (
     EngineStats,
     IngestSnapshot,
@@ -43,7 +43,7 @@ def test_render_smoke_on_empty_stats():
 
 def test_breaking_section_lists_live_episodes_with_reason():
     # ISSUE_64: each confirmed episode is one line — symbol+signal, a live marker, and *why* it broke
-    # (the reused reasoning). Added at real `now` so they render as live (within EPISODE_GAP).
+    # (the reused reasoning). Added at real `now` so they render as live (within the episode gap).
     now = datetime.now(timezone.utc)
     stats = _stats()
     stats.add_breaking_episode('ADAUSD', 'SELL', 'regulatory probe cluster', 'engine 1.4m', at=now)
@@ -56,11 +56,12 @@ def test_breaking_section_lists_live_episodes_with_reason():
 
 
 def test_breaking_section_marks_an_ended_episode():
-    # A last-seen older than EPISODE_GAP means the episode closed by the gap rule → 'N ago', not live.
+    # A last-seen older than the record's own gap means the episode closed → 'N ago', not live.
+    # The gap rides on the record because it is per-pipeline config (ISSUE_82).
     now = datetime.now(timezone.utc)
     stats = _stats()
     stats.add_breaking_episode('BTCUSD', 'SELL', 'old crash story', 'engine 2m',
-                               at=now - EPISODE_GAP - timedelta(minutes=5))
+                               at=now - DEFAULT_EPISODE_GAP - timedelta(minutes=5))
     text = _render(stats, worker_count=4)
     assert 'BTCUSD SELL' in text
     assert 'ago' in text                                      # ended → recency, not a live dot
@@ -213,3 +214,31 @@ def test_the_version_segment_is_omitted_when_unknown():
     display = LiveDisplay(EngineStats(), worker_count=1)
     header = display._header(datetime.now(timezone.utc))
     assert header.startswith('FiniexRAGEngine — up ') and ' v' not in header
+
+
+def test_an_episode_clipped_by_the_replay_window_renders_a_lower_bound():
+    """ISSUE_82: the boot replay covers a bounded window, so a story that opened earlier has its
+    start clipped to the edge. The row must not present that clipped span as the real duration."""
+    now = datetime.now(timezone.utc)
+    stats = _stats()
+    stats.restore_breaking_episode('USDCAD', 'SELL', 'tariffs',
+                                   started=now - timedelta(hours=4, minutes=47),
+                                   last_seen=now - timedelta(minutes=3), gap_seconds=9000.0,
+                                   started_bounded=True)
+    text = _render(stats, worker_count=4)
+    assert 'USDCAD SELL' in text
+    assert '≥' in text                                   # a bound, not a measurement
+    assert 'last 3m' in text                             # the freshness fact IS restored
+
+
+def test_an_episode_whose_start_was_observed_shows_no_bound():
+    # With a window wide enough to contain the opening, the duration is a measurement — the `≥`
+    # would understate what the process actually knows.
+    now = datetime.now(timezone.utc)
+    stats = _stats()
+    stats.restore_breaking_episode('BTCUSD', 'BUY', 'institutional interest',
+                                   started=now - timedelta(hours=17, minutes=11),
+                                   last_seen=now - timedelta(minutes=2), gap_seconds=9000.0)
+    line = next(line for line in _render(stats, worker_count=4).splitlines()
+                if 'BTCUSD BUY' in line)
+    assert '17h11m' in line and '≥' not in line

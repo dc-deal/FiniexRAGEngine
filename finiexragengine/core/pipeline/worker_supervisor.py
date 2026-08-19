@@ -72,7 +72,10 @@ class WorkerSupervisor:
                 pipeline,
                 self._eval_trigger(config.trigger, subscription,
                                    f'pipeline {config.pipeline_id}'),
-                pass_timeout_seconds, engine_stats=engine_stats))
+                pass_timeout_seconds, engine_stats=engine_stats,
+                # Built here rather than inside the worker (ISSUE_82): the assembler owns the
+                # per-pipeline graph and holds the outcome store the episode state is seeded from.
+                episode_tracker=assembler.build_episode_tracker(config)))
 
     def set_host_alert(self, alert: Optional[AlertCallback]) -> None:
         """Route set-wide connectivity events to an alert channel (ISSUE_84).

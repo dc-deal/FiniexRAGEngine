@@ -87,7 +87,20 @@ Notes on the rows:
   view lives in the Sources report (`sources_cli`).
 - **BREAKING section** (ISSUE_64) — the summary row (`N detected · M confirmed · reaction`)
   followed by up to three recent *episodes*, one line each: `SYMBOL SIGNAL` · **live/ended** ·
-  **why it broke**. A live episode shows `● <running>` (a pass within `EPISODE_GAP` still saw it
+  **why it broke**. An episode a restart inherited is restored into this list from the seeded
+  rule (ISSUE_82) with its original start, so a story running across a restart keeps its true
+  duration instead of vanishing. What gets restored is decided per value, and the reasons differ:
+
+  - `detected` / `confirmed` are **accumulators** — session-scoped. They say what *this* process
+    saw, and re-counting on every boot is the defect the seeded rule removed one layer down.
+  - `last` is a **fact about the world** — restored. Without it the row header rendered `idle`
+    directly above an episode marked live.
+  - the reaction `detail` is **not restored**. The seed replays a bounded window (`2 × gap`), so an
+    episode that opened earlier is re-opened at the window's edge and its reaction re-sampled
+    against evidence hours older than the real trigger: production showed `engine 118.2m` for an
+    episode logged at `engine 8.4m`. A blank reaction is honest; a plausible wrong number is not.
+  - `started` is bounded by the same window, so an inherited record is marked and the duration
+    renders as **`● ≥4h47m`** — a lower bound, not a measurement. A live episode shows `● <running>` (a pass within the episode's own gap still held it
   breaking); an ended one shows `<age> ago` (closed by the gap rule). The *why* is the LLM's own
   `reasoning` (Phase 1; Phase 2 swaps in a dedicated `breaking_reason`). Episodes are edge-triggered
   (see `breaking_detection.md`), so a lingering story appears once with a growing duration, not every

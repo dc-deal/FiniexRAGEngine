@@ -49,6 +49,7 @@ from finiexragengine.core.observability.reports.source_latency_report import (
     build_source_latency_report,
     format_source_latency_report,
 )
+from finiexragengine.core.pipeline.breaking_episode_rule import groupings_from_configs
 from finiexragengine.exceptions.ragengine_errors import VectorStoreError
 
 _WINDOW = timedelta(days=7)
@@ -149,7 +150,11 @@ def collect_weekly_report(config_manager: AppConfigManager, database_url: str, *
             database_url, since, since_label='7d', timeouts=timeouts,
             warn_ratio=cfg.diagnostics.timeout_warn_ratio),
         no_data=build_no_data_report(database_url, since),
-        breaking=build_breaking_report(database_url, since),
+        # Episode grouping is per-pipeline config (ISSUE_82), so the report is told the rules
+        # rather than assuming defaults — same registry the cadences above came from.
+        breaking=build_breaking_report(
+            database_url, since,
+            rules=groupings_from_configs(p.get_config() for p in registry.list_pipelines())),
         pipelines=pipelines, errors=errors, storage=storage, last_ingest_at=last_ingest)
 
 

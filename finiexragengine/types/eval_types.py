@@ -4,6 +4,7 @@ The shape the `SymbolEvaluator` produces and the `PipelineRunner` folds into the
 Behaviour lives in `core/pipeline/`; only the shape lives here.
 """
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from finiexragengine.types.article_types import Article
@@ -32,3 +33,28 @@ class SymbolEval:
 
     def total_ms(self) -> float:
         return sum(timing.duration_ms for timing in self.stage_timings)
+
+
+@dataclass
+class BreakingPassDecision:
+    """What `BreakingEpisodeRule` decided about one symbol in one pass (ISSUE_82).
+
+    Crosses a seam: the live tracker (`core/pipeline/breaking_episode`) and the store report
+    (`core/observability/reports/breaking_report`) both write signatures against it, so the shape
+    lives here while the decision itself stays in `core/pipeline/`.
+
+    The three flags are deliberately separate rather than one enum, because they answer three
+    different questions and two of them can be false together:
+
+    - `opened`   this pass started a NEW episode (the edge — reaction time and reason are
+                 sampled here, and only here).
+    - `held`     this pass met the stay-open condition of an episode that was already running,
+                 so it is what advances the "still live" clock. False on the opening pass.
+    - `in_episode` an episode is open after this pass — **including** a pass that qualified for
+                 nothing but arrived before the gap elapsed. The episode is not closed by a dip;
+                 it is closed by a dip that lasts longer than the gap.
+    """
+    opened: bool
+    held: bool
+    in_episode: bool
+    started_at: Optional[datetime] = None   # the open episode's start; None when none is open

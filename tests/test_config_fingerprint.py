@@ -155,6 +155,27 @@ def test_detection_thresholds_and_vocabulary_change_it(baseline):
     assert _fingerprint(source_set=vocabulary) != baseline
 
 
+def test_the_confirm_gate_changes_it_but_the_episode_knobs_do_not(baseline):
+    """ISSUE_82 split one config block across the denylist boundary — this pins the split.
+
+    `urgency_threshold` decides what the envelope *says* (`is_breaking`), so retuning it forks a
+    comparable series. `urgency_exit_threshold` and `episode_gap_minutes` only decide how passes
+    are grouped into episodes when a report reads them back: two runs either side of a retune emit
+    byte-identical envelopes, so hashing them would mark every pipeline `(new)` for a change that
+    produced nothing new. That is also why they are the first *dotted* exclusions — the block they
+    sit in stays hashed.
+    """
+    confirm_gate = _edited(_PIPELINE)
+    confirm_gate['breaking']['urgency_threshold'] = 0.75
+    assert _fingerprint(pipeline=confirm_gate) != baseline
+
+    for knob, value in (('urgency_exit_threshold', 0.6), ('episode_gap_minutes', 50)):
+        regrouped = _edited(_PIPELINE)
+        regrouped['breaking'][knob] = value
+        assert _fingerprint(pipeline=regrouped) == baseline, \
+            f'retuning {knob} regroups a report, it does not fork the series'
+
+
 def test_acquisition_pace_and_timeouts_do_not_change_it(baseline):
     # The whole operational surface at once: per-feed pace, per-feed and set-wide deadlines, the
     # ingest cadence, and the editorial comment. Retuning any of these is a maintenance action —

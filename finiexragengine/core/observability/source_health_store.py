@@ -112,6 +112,12 @@ class SourceHealthStore:
         self._ladder: List[int] = list(config.quarantine_hours) or [24]
         # source_id -> quarantine expiry (in memory; the DB row is the source of truth).
         self._quarantined: Dict[str, datetime] = {}
+        # ...and the ladder position that expiry came from, cached beside it. Both are written
+        # in the same moment (`_apply_flag`) and loaded in the same query at construction, so
+        # asking the DB for the rung on every skipped poll bought nothing — and `should_poll`
+        # promises no round-trip on the hot path. At a 15s cadence that query would have run
+        # ~5,760 times a day per quarantined feed.
+        self._rungs: Dict[str, Tuple[int, int]] = {}
         # Sources whose cool-off has elapsed and that are owed exactly one probe poll (ISSUE_84).
         self._probing: Set[str] = set()
         # The enclosing pass, while one is open. Safe as instance state: every Ingestor gets its
@@ -141,6 +147,16 @@ class SourceHealthStore:
                             'WHERE quarantined_until IS NOT NULL')
                 self._quarantined = {sid: until for sid, until in cur.fetchall()
                                      if until and until > now}
+                # The rung of each of those, from the episode that set it — one query for the
+                # whole fleet at boot instead of one per skip forever after.
+                if self._quarantined:
+                    cur.execute(
+                        f'SELECT DISTINCT ON (source_id) source_id, rung, rungs_total '
+                        f'FROM {self._EPISODES} WHERE kind = %s AND ended_at IS NULL '
+                        'AND source_id = ANY(%s) ORDER BY source_id, started_at DESC',
+                        (_QUARANTINE, sorted(self._quarantined)))
+                    self._rungs = {sid: (rung, total) for sid, rung, total in cur.fetchall()
+                                   if rung is not None}
                 # A correlated event left open by a killed process would otherwise read as
                 # "still running" forever. Close it at its last extension — the final moment the
                 # engine actually observed the outage.
@@ -307,7 +323,8 @@ class SourceHealthStore:
             return True
         if until > datetime.now(timezone.utc):
             return False
-        # Cool-off elapsed — hand out the single half-open probe.
+        # Cool-off elapsed — hand out the single half-open probe. The rung stays cached: the
+        # probe's outcome is what decides whether it resets or climbs, not the expiry.
         self._quarantined.pop(source_id, None)
         self._probing.add(source_id)
         return True
@@ -352,19 +369,12 @@ class SourceHealthStore:
     def rung_of(self, source_id: str) -> Optional[Tuple[int, int]]:
         """The ladder position a currently-quarantined source sits on, as (rung, total).
 
-        Read from the open episode, so the surfaces can say "1/3" instead of only "quarantined" —
-        the difference between "wait an hour" and "this feed is effectively gone".
+        Lets the surfaces say "1/3" instead of only "quarantined" — the difference between "wait
+        an hour" and "this feed is effectively gone". Answered from memory: the ingestor asks on
+        every skipped poll, which is the hot path `should_poll` keeps DB-free, and the value is
+        already known wherever it is set (`_apply_flag`) or loaded (`_load_quarantines`).
         """
-        try:
-            with self._connect() as conn, conn.cursor() as cur:
-                cur.execute(
-                    f'SELECT rung, rungs_total FROM {self._EPISODES} '
-                    'WHERE kind = %s AND source_id = %s AND ended_at IS NULL '
-                    'ORDER BY started_at DESC LIMIT 1', (_QUARANTINE, source_id))
-                row = cur.fetchone()
-        except psycopg.Error:
-            return None
-        return (row[0], row[1]) if row and row[0] is not None else None
+        return self._rungs.get(source_id)
 
     def record_success(self, source_id: str, host: str, source_set: str,
                        status: int = 200) -> bool:
@@ -387,6 +397,11 @@ class SourceHealthStore:
                     f'total_success = {self._TABLE}.total_success + 1, '
                     'consecutive_failures = 0, last_success_at = EXCLUDED.last_success_at, '
                     'last_status = EXCLUDED.last_status, flagged = FALSE, flagged_at = NULL, '
+                    # Cleared with the streak: `last_status` describes THIS poll, so leaving the
+                    # error type from an older one made healthy rows read 'UNREACHABLE / 200' —
+                    # two different events rendered as one contradictory state. The failure
+                    # history it carried lives in `recent_events` and the poll journal.
+                    'last_error_type = NULL, '
                     'quarantined_until = NULL, updated_at = EXCLUDED.updated_at',
                     (source_id, host, source_set, now, status, now))
                 # The probe answered: close the episode it belonged to. `probe_ok` is what the
@@ -397,6 +412,7 @@ class SourceHealthStore:
         except psycopg.Error as exc:
             raise VectorStoreError(f'source_health success record failed: {exc}') from exc
         self._quarantined.pop(source_id, None)
+        self._rungs.pop(source_id, None)
         self._probing.discard(source_id)
         if self._pass is not None:
             self._pass.succeeded.add(source_id)
@@ -515,6 +531,7 @@ class SourceHealthStore:
         except psycopg.Error as exc:
             raise VectorStoreError(f'source_health quarantine failed: {exc}') from exc
         self._quarantined[pending.source_id] = until
+        self._rungs[pending.source_id] = (rung, last + 1)
         self._probing.discard(pending.source_id)
         # Completed in place — see `_PendingFlag.outcome`.
         outcome = pending.outcome

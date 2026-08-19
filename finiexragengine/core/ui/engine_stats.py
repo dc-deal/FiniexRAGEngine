@@ -98,17 +98,26 @@ class BreakingSnapshot:
 class BreakingRecord:
     """One recent confirmed episode — for the BREAKING section (newest kept, oldest drops).
 
-    `last_seen` advances every pass the symbol re-breaks (`touch_breaking_episode`), so the renderer
-    tells a live episode (`now − last_seen ≤ EPISODE_GAP`) from an ended one and shows a duration.
-    Deliberately **not frozen** (unlike the stage snapshots): `last_seen` is updated in place — a
-    single atomic reference assignment under the GIL, and every writer runs under this module's
-    own counter lock (ISSUE_74), so a reader never sees a torn value.
+    `last_seen` advances every pass that HOLDS the episode open (`touch_breaking_episode`), so the
+    renderer tells a live episode (`now − last_seen ≤ gap_seconds`) from an ended one and shows a
+    duration. Deliberately **not frozen** (unlike the stage snapshots): `last_seen` is updated in
+    place — a single atomic reference assignment under the GIL, and every writer runs under this
+    module's own counter lock (ISSUE_74), so a reader never sees a torn value.
+
+    `gap_seconds` travels with the record because the episode gap is **per-pipeline** config
+    (ISSUE_82) and this deque mixes pipelines: the renderer must judge each episode against the
+    value its own rule used, not against a module constant.
     """
     started: datetime
     last_seen: datetime
     symbol: str
     signal: str
     reason: str = ''                             # why it broke (the LLM's reasoning; ISSUE_64)
+    gap_seconds: float = 9000.0                  # this episode's close delay (ISSUE_82; 150 min)
+    # Set when `started` is a LOWER BOUND rather than the observed opening: the boot replay covers
+    # a bounded window (`breaking.episode_seed_hours`), so a chain reaching back further has its
+    # start clipped to the window edge. The renderer marks those with `≥` (ISSUE_82).
+    started_bounded: bool = False
 
 
 @dataclass(frozen=True)
@@ -181,7 +190,7 @@ class EngineStats:
                                               confirmed=current.confirmed, detail=current.detail)
 
     def add_breaking_episode(self, symbol: str, signal: str, reason: str, detail: str, *,
-                             at: datetime) -> None:
+                             at: datetime, gap_seconds: float = 9000.0) -> None:
         """One confirmed breaking episode (edge-triggered, ISSUE_11): bump the episode count, set
         the reaction detail, and record it (with its reason) for the BREAKING section (ISSUE_64)."""
         with self._counter_lock:                          # read-modify-write (ISSUE_74)
@@ -189,12 +198,49 @@ class EngineStats:
             self._breaking = BreakingSnapshot(last=at, detected=current.detected,
                                               confirmed=current.confirmed + 1, detail=detail)
             self._recent_breaking.append(BreakingRecord(started=at, last_seen=at, symbol=symbol,
-                                                        signal=signal, reason=reason))
+                                                        signal=signal, reason=reason,
+                                                        gap_seconds=gap_seconds))
+
+    def restore_breaking_episode(self, symbol: str, signal: str, reason: str, *,
+                                 started: datetime, last_seen: datetime,
+                                 gap_seconds: float = 9000.0,
+                                 started_bounded: bool = False) -> None:
+        """Re-attach an episode a previous process opened and this one inherited (ISSUE_82).
+
+        The split is between the two kinds of thing this snapshot holds:
+
+        - **`detected`/`confirmed` are accumulators** and stay untouched. They count what *this*
+          process saw, and adding to them on every boot is the very defect the seeded rule removed
+          one layer down.
+        - **`last` is a point-in-time fact** about the world — when breaking last happened — so it
+          *is* restored. Leaving it out rendered the row header as `idle` directly above two
+          episodes marked live (production, 2026-08-18): an accumulator's session scope had leaked
+          onto a timestamp, where it does not belong.
+        - **The reaction `detail` is NOT restored.** It looks like a fact but is not one this
+          process can state: the seed replays only `2 × gap`, so an episode that opened earlier is
+          re-opened at the window's edge and its reaction re-sampled against evidence hours older
+          than the real trigger. Production showed `engine 118.2m` for an episode logged at
+          `engine 8.4m` — the exact re-trigger error ISSUE_82 removed everywhere else, reintroduced
+          in the panel. A blank reaction is honest; a plausible wrong number is not.
+
+        `started` is likewise bounded by the replay window, so the record is marked `inherited` and
+        the renderer shows the duration as a lower bound.
+        """
+        with self._counter_lock:                          # walks the deque the writers share
+            self._recent_breaking.append(
+                BreakingRecord(started=started, last_seen=last_seen, symbol=symbol,
+                               signal=signal, reason=reason, gap_seconds=gap_seconds,
+                               started_bounded=started_bounded))
+            current = self._breaking
+            if current.last is None or last_seen > current.last:
+                self._breaking = BreakingSnapshot(last=last_seen, detected=current.detected,
+                                                  confirmed=current.confirmed,
+                                                  detail=current.detail)
 
     def touch_breaking_episode(self, symbol: str, *, at: datetime) -> None:
-        """A symbol still breaking this pass (same ongoing episode, ISSUE_64): advance its record's
-        `last_seen` so the renderer keeps it 'live' and grows its duration. A no-op if the episode's
-        start already dropped off the bounded deque — the count already carries it."""
+        """A symbol whose open episode this pass held (same ongoing episode, ISSUE_64/82): advance
+        its record's `last_seen` so the renderer keeps it 'live' and grows its duration. A no-op if
+        the episode's start already dropped off the bounded deque — the count already carries it."""
         # Under the counter lock too: it walks the same deque `add_breaking_episode` appends to.
         with self._counter_lock:
             for record in reversed(self._recent_breaking):  # newest match = the open episode

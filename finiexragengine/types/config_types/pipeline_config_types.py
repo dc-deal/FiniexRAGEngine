@@ -146,9 +146,33 @@ class BreakingConfig(BaseModel):
     - `urgency_threshold` — the **confirm** gate: `is_breaking = urgency >= this` on the LLM's own
       score. Answers "having read it, is it market-moving enough to count as breaking?" — after the
       LLM read it. The two are orthogonal on purpose (see docs/architecture).
+
+    The last two shape the *episode* — the grouping of consecutive passes into one story
+    (ISSUE_82). They govern reporting only; `is_breaking` on the envelope stays the raw per-pass
+    verdict above, so a consumer's reading of the contract is unchanged:
+
+    - `urgency_exit_threshold` — the **hold** gate of the Schmitt trigger. An episode opens at
+      `urgency_threshold` and stays open while urgency holds at or above this. Set equal to
+      `urgency_threshold` to disable the hysteresis and get the pre-ISSUE_82 behaviour.
+    - `episode_gap_minutes` — how long neither condition may hold before the episode closes.
+      Calibrated, not guessed: measuring the silence between two episodes of the *same* story gave
+      50–150 min, while different stories sat 4 h or more apart, and 150 reproduced a hand count of
+      the week's stories (ISSUE_82). The previous 30 was the worst possible choice — exactly three
+      missed passes on a 600 s grid, so a second of scheduling jitter decided whether a story split.
+      NOTE 150 is itself 15 passes on that grid, and one measured story sat on the boundary exactly;
+      a value a few minutes off the multiple (155) would remove that edge at no cost, untested.
+    - `episode_seed_hours` — how far back a restarting process replays persisted envelopes to
+      inherit open episodes. It must span an entire episode, not just the gap: the replay can only
+      *open* an episode on a recorded breaking pass, while the hold band keeps one alive long
+      after. Measured 2026-08-18: the tail after the last breaking pass ran 5 h (BTCUSD), 8.7 h
+      (ETHUSD) and 33 h (XRPUSD). A window of `2 × gap` recovered 0 of 4 open episodes, and losing
+      one to a four-minute window shift is in the log twice.
     """
     urgency_threshold: float = 0.8       # push gate for breaking news (ISSUE_6)
     min_importance: int = 2              # wake sensitivity: MID+ clusters wake this pipeline (ISSUE_11)
+    urgency_exit_threshold: float = 0.7  # episode hold gate — hysteresis (ISSUE_82)
+    episode_gap_minutes: int = 150       # episode close delay; measured, off the grid (ISSUE_82)
+    episode_seed_hours: int = 72         # how far back a restart replays to inherit episodes
 
 
 class OutputGuardConfig(BaseModel):

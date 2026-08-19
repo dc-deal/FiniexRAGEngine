@@ -51,6 +51,19 @@ _PIPELINE_EXCLUDED: Dict[str, str] = {
                    'does not change what was read',
     'variant_group': 'fan-out naming (ISSUE_42) — the variant\'s model itself is in `llm`',
     'variant': 'fan-out naming (ISSUE_42)',
+    # The two episode knobs (ISSUE_82) are the denylist's narrow case, and the reason is worth
+    # stating precisely: they change how passes are GROUPED at read time, never what a pass
+    # produces. Two runs either side of a retuned gap emit byte-identical envelopes — same
+    # `is_breaking`, same `urgency`, same signal — so hashing them would fork a series that did
+    # not fork, and would mark every pipeline `(new)` on the deploy that merely retuned a report.
+    # `breaking.urgency_threshold` and `breaking.min_importance` stay IN: they decide what the
+    # envelope says and which passes run at all.
+    'breaking.urgency_exit_threshold': 'episode grouping only (ISSUE_82) — the envelope is '
+                                       'unchanged by it, so retuning it must not fork the series',
+    'breaking.episode_gap_minutes': 'episode grouping only (ISSUE_82) — a read-time derivation '
+                                    'over persisted passes, applied retroactively to the archive',
+    'breaking.episode_seed_hours': 'boot-time replay depth (ISSUE_82) — decides what a restart '
+                                   'can still SHOW, never what any pass produced',
 }
 
 _SOURCE_SET_EXCLUDED: Dict[str, str] = {
@@ -129,8 +142,26 @@ def _leaf(data: Dict[str, Any], path: str) -> Any:
 
 
 def _prune(data: Dict[str, Any], excluded: Dict[str, str]) -> Dict[str, Any]:
-    """Drop the excluded keys of one level; the reasons live in the constants above."""
-    return {key: value for key, value in data.items() if key not in excluded}
+    """Drop the excluded keys; the reasons live in the constants above.
+
+    A plain key drops a whole top-level block; a **dotted** key (`breaking.episode_gap_minutes`)
+    drops one leaf out of one, so an exclusion can be as narrow as its reason. Without that, a
+    block holding both series-defining and report-only knobs would have to be excluded whole or
+    not at all — and `breaking` is exactly such a block (ISSUE_82). One level of nesting is
+    deliberate: the configs are two levels deep, and a general path walker would invite exclusions
+    too fine-grained to reason about.
+    """
+    pruned = {key: value for key, value in data.items() if key not in excluded}
+    for path in excluded:
+        head, dot, leaf = path.partition('.')
+        if not dot:
+            continue
+        block = pruned.get(head)
+        if isinstance(block, dict) and leaf in block:
+            block = dict(block)                 # copy — never mutate the caller's dump
+            del block[leaf]
+            pruned[head] = block
+    return pruned
 
 
 def _canonical(value: Any) -> Any:

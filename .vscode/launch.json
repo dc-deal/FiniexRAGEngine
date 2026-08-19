@@ -154,6 +154,27 @@
             }
         },
         {
+            // "Is the floor discriminating for this query at all?" Per-query distance
+            // distribution against the live window, the knee the corpus itself suggests, and the
+            // archive's mechanical-HOLD share side by side. Read-only; query vectors come from
+            // the cache, so a run costs nothing on a hit. Groundwork for ISSUE_55.
+            "name": "📊 RAGEngine: Retrieval Floor Profile (is the cut discriminating?)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/finiexragengine/cli/coverage_cli.py",
+            "args": [
+                "--floor-profile",
+                "--pipeline",
+                "${input:pipeline}"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "04_diagnostics",
+                "order": 3
+            }
+        },
+        {
             "name": "📊 RAGEngine: Cost Report (real spend + projection)",
             "type": "debugpy",
             "request": "launch",
@@ -163,7 +184,7 @@
             "justMyCode": false,
             "presentation": {
                 "group": "04_diagnostics",
-                "order": 3
+                "order": 4
             }
         },
         {
@@ -179,7 +200,7 @@
             "justMyCode": false,
             "presentation": {
                 "group": "04_diagnostics",
-                "order": 4
+                "order": 5
             }
         },
         {
@@ -195,7 +216,27 @@
             "justMyCode": false,
             "presentation": {
                 "group": "04_diagnostics",
-                "order": 5
+                "order": 6
+            }
+        },
+        {
+            // "Do I believe that episode count?" The per-pass on/off series behind it: verdict
+            // flips (the model's noise, unchanged by any grouping rule) next to episodes (what
+            // the hysteresis rule made of them). Add a symbol for one series: --timeline XRPUSD.
+            "name": "📊 RAGEngine: Breaking Timeline (flips vs episodes)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/finiexragengine/cli/breaking_cli.py",
+            "args": [
+                "--since",
+                "7d",
+                "--timeline"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "04_diagnostics",
+                "order": 7
             }
         },
         {
@@ -207,7 +248,7 @@
             "justMyCode": false,
             "presentation": {
                 "group": "04_diagnostics",
-                "order": 6
+                "order": 8
             }
         },
         {
@@ -217,12 +258,15 @@
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/finiexragengine/cli/sources_cli.py",
-            "args": ["--since", "7d"],
+            "args": [
+                "--since",
+                "7d"
+            ],
             "console": "integratedTerminal",
             "justMyCode": false,
             "presentation": {
                 "group": "04_diagnostics",
-                "order": 7
+                "order": 9
             }
         },
         {
@@ -234,12 +278,39 @@
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/finiexragengine/cli/sources_cli.py",
-            "args": ["--history", "ecb_press", "--since", "30d"],
+            "args": [
+                "--history",
+                "ecb_press",
+                "--since",
+                "30d"
+            ],
             "console": "integratedTerminal",
             "justMyCode": false,
             "presentation": {
                 "group": "04_diagnostics",
-                "order": 8
+                "order": 10
+            }
+        },
+        {
+            // "Is a feed worth the weight it was given?" Articles produced against articles that
+            // actually reached a prompt, per feed, next to the hand-set source_weight — the
+            // observation that scale has never been checked against (ISSUE_82 finding 9).
+            // Omit the source-set id to render every set.
+            "name": "📊 RAGEngine: Source Contribution (what each feed delivered)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/finiexragengine/cli/sources_cli.py",
+            "args": [
+                "--contribution",
+                "${input:source_set}",
+                "--since",
+                "7d"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "04_diagnostics",
+                "order": 11
             }
         },
         {
@@ -254,7 +325,7 @@
             "justMyCode": false,
             "presentation": {
                 "group": "04_diagnostics",
-                "order": 9
+                "order": 12
             }
         },
         // ====================================================

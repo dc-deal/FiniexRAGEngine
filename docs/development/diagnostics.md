@@ -119,6 +119,68 @@ comes from `source_poll_log` while inside its 14-day window; past that it falls 
 snapshot frozen into the episode when the decision was taken, which is the reason that snapshot
 exists.
 
+## Is the relevance floor cutting real news — or cutting nothing?
+
+`coverage_cli --floor-profile` (ISSUE_55 groundwork). `retrieval.floor_distance` is **one absolute
+cut applied to per-query distance distributions that are not comparable**, so the same number can
+starve one symbol and wave everything through for another. Both failures are silent: a starved
+symbol produces a mechanical `no_data` HOLD that reads exactly like "no news".
+
+```
+Retrieval Floor Profile — crypto_sentiment · floor 0.700 · window 1440min/24h · 312 articles
+--------------------------------------------------------------------------------------------
+query                   nearest     p10  median  <=floor  foreign    knee  mech.HOLD  symbols
+--------------------------------------------------------------------------------------------
+Bitcoin BTC               0.483   0.559   0.702      128       11   0.612      0.0 %  BTCUSD
+Dash cryptocurrency       0.612   0.633   0.688       47       19   0.530 ⚠    0.0 %  DASHUSD
+Cardano ADA               0.706   0.741   0.798        0        0   0.712 ✗   38.1 %  ADAUSD
+--------------------------------------------------------------------------------------------
+```
+
+Read the two markers, both threshold-free:
+
+- **`✗` starved** — the *nearest* article in the window is already beyond the floor, so the query
+  is scored on nothing. Measured 2026-08-19: ADAUSD lost **410 of 1075 passes** this way, with its
+  nearest candidate at 0.706 against a floor of 0.700 — six thousandths.
+- **`⚠` indiscriminate** — the window *median* is inside the floor, i.e. more than half the corpus
+  counts as relevant to one symbol. For a symbol-specific query that is implausible, and it is the
+  direction ISSUE_55 does not consider: a floor too *low* for a generic query feeds a symbol
+  articles that are not about it, which is what ISSUE_24 exists to prevent.
+
+`foreign` is the corroboration: the corpus is shared across pipelines and `pgvector_store.query`
+applies no source-set filter, so this counts in-floor articles coming from another pipeline's
+feeds. `knee` is the largest gap in the below-median part of the distance curve — the floor the
+corpus itself suggests, computed without an LLM (ISSUE_55's cross-check, step 7).
+
+`--floor 0.72` re-reads the whole profile at a candidate value without touching config, and
+`--archive-since 30d` widens the mech.HOLD column.
+
+## Is a feed worth the weight it was given?
+
+`sources_cli --contribution [source_set_id]` (ISSUE_82 finding 9). Health says a feed is reachable
+and latency says it is quick; neither says whether what it publishes ever reaches a prompt.
+
+```
+Source Contribution — crypto_news · last 7d
+--------------------------------------------------------------------------------------------
+source              weight  articles   cited  citation%  breaking  note
+--------------------------------------------------------------------------------------------
+cryptonews            0.80       136      20     14.7 %         7
+cointelegraph         1.00       234       9      3.8 %         2  ⚠ high volume, rarely cited
+decrypt               1.00       174       2      1.1 %         0  ⚠ high volume, rarely cited
+--------------------------------------------------------------------------------------------
+```
+
+`cited` counts **distinct** articles that appeared in at least one envelope's `sources[]` — the
+question is whether an article reached a prompt at all, not how often it was reused, or a feed's
+rank would become a function of pass cadence.
+
+The point of the table is the first two columns read together: `source_weight` has two hand-set
+levels with 10 of 14 feeds at 1.0, and it has never been checked against anything. This is that
+check. It **ranks**, it does not judge — a low citation rate can mean a feed is off-topic for these
+symbols, syndicated (dedup drops it), or genuinely less useful, and the table does not distinguish
+them.
+
 ## Why is a pipeline `partial` instead of `success`?
 
 `partial` means the analysis ran but not every configured source was reachable — the engine
@@ -203,6 +265,80 @@ GROUP BY source_id ORDER BY flagged DESC;
 
 Measured 2026-08-15: `fetch_lag` 1–6 min, `flag_lag` 2–7 **seconds** — so publication to flag takes
 minutes, while the report showed a 107-minute median. That gap is the proxy, not the engine.
+
+## Did the engine really break N times?
+
+```bash
+python -m finiexragengine.cli.breaking_cli --since 7d --timeline
+python -m finiexragengine.cli.breaking_cli --since 7d --timeline XRPUSD    # one symbol
+```
+
+The window as a strip of cells — `#` breaking, `.` in the hold band, `_` below both, `-` the pass
+ran but this symbol was not scored (`basis = no_data`), `~` no pass at all (an outage) — with the
+**verdict flips** next to the **episodes**. That pairing is the whole diagnostic: flips are the
+model's noise and do not change when the grouping rule is retuned; episodes are what the rule made
+of them. A clean block is one story; a comb is a threshold being crossed by drift.
+
+```
+episode rule (read-time):
+  crypto_sentiment       hold ≥0.70 · gap 150m
+  forex_macro_sentiment  hold ≥0.70 · gap 150m
+------------------------------------------------------------------------------------------
+unit                 passes  mech  brk flips  epi  first → last breaking      series
+crypto_sentiment
+ETHUSD/ETHEUR          1076     0  133   128    4  08-11 15:10 → 08-18 05:00  ##...####.__.##...####.
+SOLUSD                  827   249  210    68    5  08-11 10:50 → 08-18 10:10  ###__###.____##...------####
+ADAUSD                    0   304    0     0    0  —                          ---------------------------
+```
+
+Read it in this order:
+
+- **The rule header first.** Both breaking reports re-derive the whole archive at read time, so the
+  same command over the same data gives different numbers under a different rule. The header names
+  the rule per pipeline, and shows it when they differ — a `user_configs` override on one pipeline
+  is otherwise invisible in the output. The *open* gate is deliberately absent — an episode opens on the `is_breaking` recorded at
+  the time, possibly under a different threshold than today's config.
+- **A row is an analysis unit, not a ticker.** `ETHUSD/ETHEUR` is one fanned analysis (ISSUE_70) and
+  therefore one episode.
+- **`passes + mech` is the envelope count.** A row of `0 / 304` means the symbol was never scored,
+  which is a different statement from "never broke" — and both are different from a missing row.
+
+If you see many episodes on a comb-shaped series, the gap is too short for that pipeline. If you
+see one episode spanning days, check the hold band: at 40–50 % band occupancy an episode chains
+through the lulls instead of closing.
+
+The underlying question — how reproducible the model is at all — is answered in SQL, by comparing
+passes that saw a **byte-identical** source set:
+
+```sql
+WITH p AS (
+  SELECT o.id, o.ts, r->>'symbol' AS symbol,
+         md5(string_agg(s->>'article_id', ',' ORDER BY s->>'article_id')) AS set_hash,
+         min((r->>'urgency')::float) AS urgency, min(r->>'signal') AS signal
+  FROM outcomes o,
+       LATERAL jsonb_array_elements(o.envelope->'result') r,
+       LATERAL jsonb_array_elements(r->'sources') s
+  WHERE o.pipeline_id = 'crypto_sentiment' AND r->>'basis' = 'llm'
+    AND o.ts >= now() - interval '7 days'
+  GROUP BY o.id, o.ts, r->>'symbol'
+), d AS (
+  SELECT symbol, ts, set_hash, urgency, signal,
+         lag(set_hash) OVER w AS p_hash, lag(ts) OVER w AS p_ts,
+         lag(urgency)  OVER w AS p_urgency, lag(signal) OVER w AS p_signal
+  FROM p WINDOW w AS (PARTITION BY symbol ORDER BY ts)
+)
+SELECT symbol, count(*) AS pairs,
+       round(avg(abs(urgency - p_urgency))::numeric, 3) AS d_urgency,
+       round(100.0 * count(*) FILTER (WHERE signal <> p_signal) / count(*), 1) AS signal_flip_pct
+FROM d WHERE p_hash = set_hash AND ts - p_ts <= interval '15 minutes'
+GROUP BY symbol ORDER BY d_urgency DESC;
+```
+
+Only **adjacent** passes, because the prompt carries `Current time:` and absolute article
+timestamps: over hours a falling urgency is correct decay, not drift. Measured 2026-08-17 over
+~6,200 pairs: mean `urgency` drift **0.032**, `signal` flips **2.8 %** of adjacent pairs (0 % on
+thinly-covered symbols, 6.8 % on BTCUSD). Small everywhere — the breaking gate is simply the one
+place where a third of a lattice step becomes a categorical error.
 
 ## Reference — the diagnostic stores
 

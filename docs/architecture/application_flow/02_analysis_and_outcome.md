@@ -152,7 +152,7 @@ Two knobs, two stages (wake vs confirm) — see `../breaking_detection.md`.
 A hot story stays `is_breaking` across many passes, so the confirmation is **edge-triggered**: the
 eval worker counts/logs a breaking *episode* once, on the transition into breaking
 (`core/pipeline/breaking_episode.py`), not every pass it lingers — matching the store-based
-`breaking_report`'s grouping (shared `EPISODE_GAP`) and laying the edge-trigger groundwork ISSUE_9's
+`breaking_report`'s grouping (both drive the shared `BreakingEpisodeRule`, ISSUE_82) and laying the edge-trigger groundwork ISSUE_9's
 SSE push needs.
 
 **Bar-close cadence (ISSUE_timeframe, built).** The eval worker's scheduled tick is aligned to a

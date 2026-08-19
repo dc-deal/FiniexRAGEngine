@@ -48,7 +48,7 @@ def main() -> None:
     assembler = PipelineAssembler(app, database_url)
     evaluator = assembler.build_evaluator(pipeline)
 
-    query = pipeline.symbol_queries.get(args.symbol, args.symbol)
+    query = pipeline.symbol_query_map().get(args.symbol, args.symbol)
     # The eval CLI calls the evaluator directly (not via the runner, which degrades to HOLD), so
     # it handles the circuit-breaker suspend itself (ISSUE_47) — a clean message, not a traceback.
     try:
