@@ -9,6 +9,7 @@ import pytest
 
 from finiexragengine.core.observability.reports.breaking_report import BreakingReport
 from finiexragengine.core.observability.reports.cost_report import CostReport
+from finiexragengine.core.observability.reports.resource_report import ResourceStats
 from finiexragengine.core.observability.reports.no_data_report import NoDataReport
 from finiexragengine.core.observability.reports.perf_report import PerfReport
 from finiexragengine.core.observability.reports.source_health_report import SourceHealthReport
@@ -45,6 +46,9 @@ def _model(pipelines=(), errors=(), last_ingest=None) -> WeeklyReport:
         breaking=BreakingReport('7d', [], 0, 0),
         pipelines=list(pipelines), errors=list(errors),
         storage=StorageStats(1312, 87, 1841, 214 * 1024 ** 2),
+        resources=ResourceStats(
+            samples=10080, rss_mean=412.0, rss_min=388.0, rss_max=447.0,
+            sockets_last=24, threads_last=31, rss_mean_previous=406.0),
         last_ingest_at=last_ingest)
 
 

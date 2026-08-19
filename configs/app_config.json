@@ -89,7 +89,10 @@
     "diagnostics": {
         "poll_log_enabled": true,
         "poll_log_retention_days": 14,
-        "timeout_warn_ratio": 0.7
+        "timeout_warn_ratio": 0.7,
+        "resource_gauge_enabled": true,
+        "resource_retention_days": 14,
+        "resource_rss_warn_mb": 0
     },
     "stall_watchdog": {
         "enabled": true,

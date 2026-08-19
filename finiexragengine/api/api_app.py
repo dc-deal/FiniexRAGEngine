@@ -18,6 +18,8 @@ from finiexragengine.core.alerts.weekly_scheduler import WeeklyScheduler
 from finiexragengine.core.llm.model_catalog import verify_configured_models
 from finiexragengine.core.observability.logging_setup import configure_logging
 from finiexragengine.core.observability.reports.weekly_report import collect_weekly_report
+from finiexragengine.core.observability.resource_gauge import ResourceGauge
+from finiexragengine.core.observability.resource_sample_store import ResourceSampleStore
 from finiexragengine.core.observability.stall_watchdog import StallWatchdog
 from finiexragengine.core.outcome.outcome_exporter import auto_export_weekly
 from finiexragengine.core.pipeline.pipeline_assembler import PipelineAssembler
@@ -125,9 +127,22 @@ def create_app(attach_runners: Optional[bool] = None,
     # new capture — only workers can stall, hence the gate. Its alert sink is wired further down,
     # once the Telegram client exists; detection and logging work regardless of delivery.
     stall_watchdog: Optional[StallWatchdog] = None
+    # Process resource gauge (ISSUE_89) — rides the watchdog's tick rather than opening a second
+    # loop on the same cadence. Gated on workers for the same reason the watchdog is: an API-only
+    # process has nothing accumulating worth a fourteen-day series. The gauge disables itself when
+    # psutil is missing, so a deploy that forgot `pip install` degrades instead of failing to boot.
+    resource_gauge: Optional[ResourceGauge] = None
     if supervisor is not None:
         stall_watchdog = StallWatchdog(config_manager.get_config().stall_watchdog,
                                        supervisor.states)
+        diagnostics = config_manager.get_config().diagnostics
+        resource_gauge = ResourceGauge(
+            store=(ResourceSampleStore(
+                database_url, retention_days=diagnostics.resource_retention_days)
+                if database_url else None),
+            enabled=diagnostics.resource_gauge_enabled,
+            rss_warn_mb=diagnostics.resource_rss_warn_mb)
+        stall_watchdog.set_gauge(resource_gauge)
 
     # Operator alert surface (ISSUE_27): /report command loop + the weekly cron. Lives in
     # the API process like the workers (guaranteed event loop); pure store reads + a
@@ -190,6 +205,7 @@ def create_app(attach_runners: Optional[bool] = None,
     if live_mode and supervisor is not None and engine_stats is not None:
         live_display = LiveDisplay(engine_stats, budget_guard=budget_guard,
                                    stall_watchdog=stall_watchdog,
+                                   resource_gauge=resource_gauge,
                                    worker_count=len(supervisor.states()),
                                    version=config_manager.get_config().version)
 
@@ -239,6 +255,7 @@ def create_app(attach_runners: Optional[bool] = None,
     )
     app.include_router(build_health_router(config_manager, registry,
                                            supervisor=supervisor, budget_guard=budget_guard,
-                                           stall_watchdog=stall_watchdog))
+                                           stall_watchdog=stall_watchdog,
+                                           resource_gauge=resource_gauge))
     app.include_router(build_sentiment_router(registry, outcome_store=outcome_store))
     return app

@@ -228,6 +228,60 @@ FROM articles WHERE embed_input_tokens IS NOT NULL
 GROUP BY source_id ORDER BY longest_original DESC;
 ```
 
+## Is the process growing?
+
+The question that had no answer on 2026-08-01. The frozen process showed **5 sockets in
+`CLOSE_WAIT`** and **1,191 MB resident memory**, both read off a live process with `py-spy` and
+`netstat`, both recorded nowhere — and the restart took the measurement with it.
+
+Nothing is leaking that we know of (the one real leak, `report_cli --send` never closing its
+Telegram client, is fixed; the server path was always correct). The point is the design target:
+an unattended run of **weeks**. 5 sockets in nine days is nothing; 5 per day for six weeks is a
+file-descriptor ceiling whose failure mode looks exactly like twelve unreachable feeds.
+
+**Right now** — `GET /health`, served from the gauge's live sample, never from the table:
+
+```json
+"resources": {"enabled": true, "rss_mb": 412.3, "open_sockets": 24, "threads": 31,
+              "sampled_at": "2026-08-19T10:23:04+00:00", "ceiling_mb": 0, "over_ceiling": false}
+```
+
+**Over time** — the weekly report's Storage section:
+
+```
+resources — rss 412 MB (min 388 · max 447) · sockets 24 · threads 31 · vs last week +6 MB rss
+```
+
+**Read the delta, not the value.** A single reading never meant anything — 1,191 MB was alarming
+only because there was nothing to compare it to. A steadily climbing weekly mean is the signal.
+On the first week the line says `first week` rather than inventing a delta against zero, which
+would read as exactly the leak it is meant to detect.
+
+Three ways the line can say it has nothing:
+
+- `not sampled in this window` — the gauge is off (`diagnostics.resource_gauge_enabled`), `psutil`
+  is missing, or migration 008 has not been applied. The gauge **disables itself** rather than
+  blocking boot when `psutil` is absent, so a `git pull` without `pip install` degrades quietly:
+  look for `[RESOURCE] gauge disabled` in the log.
+- `sockets n/a` — the platform refused the count. `psutil.Process().net_connections()` needs
+  privileges Windows does not always grant, and the live host is Windows. Memory and threads still
+  report; `n/a` and `0` are deliberately different.
+- `first week` — no prior window to compare against yet.
+
+Raw series, when a week is not the right window:
+
+```sql
+SELECT date_trunc('hour', ts) AS hour, round(avg(rss_mb)) AS rss_mb,
+       max(open_sockets) AS sockets, max(threads) AS threads
+  FROM resource_samples WHERE ts > now() - interval '3 days'
+ GROUP BY 1 ORDER BY 1;
+```
+
+Sampled on the stall-watchdog tick (60s) — ~1.4k rows/day, retention
+`diagnostics.resource_retention_days` (14), pruned once per UTC day by the writer.
+`diagnostics.resource_rss_warn_mb` warns **once** when crossed and marks the live header;
+it ships at `0` (off) on purpose — the weekly line is what produces a real number to set it from.
+
 ## Is the engine still working at all?
 
 The stall watchdog (ISSUE_75) answers this without being asked: no completed pass within
@@ -347,6 +401,7 @@ place where a third of a lattice step becomes a categorical error.
 | `source_health` | one rolling row per feed: counters, flag/quarantine, last errors | forever |
 | `source_poll_log` | one row per poll attempt: duration, outcome, error type | `diagnostics.poll_log_retention_days` (14) |
 | `source_quarantine_log` | one row per quarantine episode / connectivity event: rung, cool-off, trigger, frozen timeline | forever (~1 MB/year) |
+| `resource_samples` | one row per watchdog tick: rss, sockets, threads | `diagnostics.resource_retention_days` (14) |
 | `cost_log` | one row per paid API call: tokens, USD, duration | forever (billing) |
 | `outcomes` | every produced envelope | forever |
 | `articles` | the corpus + embed token counts + breaking flags | forever |

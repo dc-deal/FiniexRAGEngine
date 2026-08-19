@@ -40,6 +40,25 @@ class StallInfo(BaseModel):
     floor_minutes: int = 15
 
 
+class ResourceInfo(BaseModel):
+    """Process resource state (ISSUE_89) — is this process growing?
+
+    Served from the gauge's **live sample**, never from `resource_samples`: a health endpoint that
+    depends on a diagnostic table being reachable answers the wrong question when the database is
+    the thing that broke. The table is the series; this is the moment.
+
+    Every field is optional because the gauge degrades rather than failing — a missing `psutil`
+    disables it, and a platform that refuses a socket count (Windows) nulls that one field.
+    """
+    enabled: bool = True
+    rss_mb: Optional[float] = None
+    open_sockets: Optional[int] = None
+    threads: Optional[int] = None
+    sampled_at: Optional[str] = None
+    ceiling_mb: int = 0
+    over_ceiling: bool = False
+
+
 class HealthResponse(BaseModel):
     status: str = 'ok'
     service: str = 'FiniexRAGEngine'
@@ -50,6 +69,8 @@ class HealthResponse(BaseModel):
     budget: Optional[BudgetInfo] = None
     # Present only with workers running — nothing can stall without them (ISSUE_75).
     stall: Optional[StallInfo] = None
+    # Present only with workers running — the gauge rides the watchdog's tick (ISSUE_89).
+    resources: Optional[ResourceInfo] = None
 
 
 class PipelineInfo(BaseModel):

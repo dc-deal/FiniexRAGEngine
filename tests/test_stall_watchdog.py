@@ -136,3 +136,51 @@ def test_a_failing_alert_sink_never_kills_the_watchdog():
     watchdog = StallWatchdog(StallWatchdogConfig(), lambda: [state], alert=_broken)
     asyncio.run(watchdog._tick())                       # must not raise
     assert watchdog.stalled_workers() == {'ingest:crypto_news'}
+
+
+# --- ISSUE_89: the resource gauge rides this tick ------------------------------------------
+
+class _RecordingGauge:
+    def __init__(self, explode: bool = False) -> None:
+        self.calls = 0
+        self._explode = explode
+
+    def sample(self):
+        self.calls += 1
+        if self._explode:
+            raise RuntimeError('gauge exploded')
+        return object()
+
+
+def _gauged_watchdog(gauge=None) -> StallWatchdog:
+    """A watchdog with no workers — these cases are about the tick, not about stalls."""
+    watchdog = StallWatchdog(StallWatchdogConfig(), lambda: [])
+    if gauge is not None:
+        watchdog.set_gauge(gauge)
+    return watchdog
+
+
+def test_the_tick_samples_the_gauge_when_one_is_attached():
+    gauge = _RecordingGauge()
+    watchdog = _gauged_watchdog(gauge)
+    asyncio.run(watchdog._tick())
+    asyncio.run(watchdog._tick())
+    # Every tick, not only the ones that produce a stall event — a series with holes in the quiet
+    # weeks would be worthless for exactly the question it exists to answer.
+    assert gauge.calls == 2
+
+
+def test_a_watchdog_without_a_gauge_ticks_unchanged():
+    asyncio.run(_gauged_watchdog()._tick())    # no attribute error, no behaviour change
+
+
+def test_a_failing_gauge_does_not_kill_the_tick():
+    # `sample()` swallows by contract; this is the second belt. A watchdog that dies because a
+    # diagnostic threw is strictly worse than one that misses a sample.
+    gauge = _RecordingGauge(explode=True)
+    watchdog = _gauged_watchdog(gauge)
+    try:
+        asyncio.run(watchdog._tick())
+    except RuntimeError:
+        pass                            # the caller's own try/except is what run() provides
+    assert gauge.calls == 1

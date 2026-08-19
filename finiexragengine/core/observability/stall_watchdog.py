@@ -18,8 +18,9 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional, Set
+from typing import Callable, Dict, List, Optional, Set
 
+from finiexragengine.core.observability.resource_gauge import ResourceGauge
 from finiexragengine.types.alert_types import AlertCallback
 from finiexragengine.types.config_types.app_config_types import StallWatchdogConfig
 from finiexragengine.types.worker_types import WorkerState
@@ -71,16 +72,30 @@ class StallWatchdog:
 
     def __init__(self, config: StallWatchdogConfig,
                  states_provider: Callable[[], List[WorkerState]],
-                 alert: Optional[AlertCallback] = None) -> None:
+                 alert: Optional[AlertCallback] = None,
+                 gauge: Optional[ResourceGauge] = None) -> None:
         self._config = config
         # A provider, not a snapshot: the supervisor's WorkerState objects are mutated in place
         # by the workers, and re-asking each tick keeps this unit from holding engine internals.
         self._states_provider = states_provider
         self._alert = alert
+        # Optional (ISSUE_89): the process resource gauge, sampled on this watchdog's tick.
+        # None = no sampling; the liveness job is unchanged either way.
+        self._gauge = gauge
         # Which workers are currently *known* to be stalled — the episode memory that makes this
         # edge-triggered (one line per stall, one on recovery) instead of a per-tick repeat.
         self._stalled: Set[str] = set()
         self._stop = asyncio.Event()
+
+    def set_gauge(self, gauge: Optional[ResourceGauge]) -> None:
+        """Sample process resources on this watchdog's tick (ISSUE_89).
+
+        Injected rather than constructed here: the watchdog's job is worker liveness, and it must
+        stay buildable without a gauge — the same reason `set_alert` exists. The tick is reused
+        because it already runs on the right cadence (60s) and already guarantees that a failing
+        tick does not kill the loop; a second async loop would only duplicate both.
+        """
+        self._gauge = gauge
 
     def set_alert(self, alert: Optional[AlertCallback]) -> None:
         """Attach the delivery sink after construction — the Telegram client is built later in
@@ -154,6 +169,11 @@ class StallWatchdog:
         self._stop.set()
 
     async def _tick(self) -> None:
+        # The resource sample rides this tick (ISSUE_89) and is deliberately taken FIRST: it must
+        # happen on every tick, not only on the ones that produce a stall event. `sample()` never
+        # raises, and the caller's own `try` is the second belt.
+        if self._gauge is not None:
+            self._gauge.sample()
         events = self.check()
         if not events:
             return

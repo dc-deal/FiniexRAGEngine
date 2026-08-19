@@ -204,6 +204,16 @@ class DiagnosticsConfig(BaseModel):
     # failing yet, but it is close enough that a slow day would make it fail. 0.7 = warn from 7s
     # against the 10s default, which leaves room to react before the quarantine does it for us.
     timeout_warn_ratio: float = 0.7
+    # Process-resource gauge (ISSUE_89). On 2026-08-01 the frozen process showed 5 sockets in
+    # CLOSE_WAIT and 1,191 MB resident memory; neither was recorded anywhere, and the restart took
+    # the measurement with it. Sampled on the stall-watchdog tick (60s) into `resource_samples`.
+    resource_gauge_enabled: bool = True
+    resource_retention_days: int = 14        # same window as the poll journal and the file log
+    # RSS ceiling that warns once when crossed. 0 = off, and that is the shipped default on
+    # purpose: the only datapoint is 1,191 MB on a *frozen* process, which is not a baseline. The
+    # weekly line is what produces the number to set this from — guessing one now would be the
+    # same mistake as moving a retrieval floor on a single window.
+    resource_rss_warn_mb: int = 0
 
 
 class TelegramConfig(BaseModel):

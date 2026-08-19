@@ -32,6 +32,13 @@ apscheduler>=3.10.0,<4
 # Optional: local embeddings (run on host GPU, decouples cost). Uncomment to use.
 # sentence-transformers>=2.2.0
 
+# Process resource gauge (ISSUE_89) — rss / sockets / threads on the watchdog tick. The live host
+# is Windows, so /proc/self/statm is not an option, and resource.getrusage is both Unix-only and
+# reports the PEAK rather than the current value. psutil is the portable answer. The import is
+# guarded at the call site: a missing package disables the gauge with a log line instead of
+# blocking boot, because a diagnostic must never be the reason a deploy fails to come up.
+psutil>=5.9.0
+
 # Console
 rich>=14.0.0
 
