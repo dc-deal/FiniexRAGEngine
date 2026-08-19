@@ -62,6 +62,8 @@ _PIPELINE_EXCLUDED: Dict[str, str] = {
                                        'unchanged by it, so retuning it must not fork the series',
     'breaking.episode_gap_minutes': 'episode grouping only (ISSUE_82) — a read-time derivation '
                                     'over persisted passes, applied retroactively to the archive',
+    'breaking.episode_seed_hours': 'boot-time replay depth (ISSUE_82) — decides what a restart '
+                                   'can still SHOW, never what any pass produced',
 }
 
 _SOURCE_SET_EXCLUDED: Dict[str, str] = {

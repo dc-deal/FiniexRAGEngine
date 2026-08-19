@@ -183,7 +183,7 @@ def test_restoring_an_episode_shows_it_without_touching_the_session_counters():
     assert len(records) == 1
     assert records[0].symbol == 'USDCAD' and records[0].started == started
     assert records[0].last_seen == last_seen           # the inherited clock, not the boot time
-    assert records[0].inherited is True                # so the renderer can bound the duration
+    assert records[0].started_bounded is False         # a full window observed the real start
     # Accumulators stay session-scoped, or every boot would re-count what it inherited.
     assert stats.breaking().confirmed == 0 and stats.breaking().detected == 0
     # `last` is a fact about the world and IS restored — without it the row header read `idle`

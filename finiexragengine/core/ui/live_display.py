@@ -322,7 +322,7 @@ class LiveDisplay:
             running = _format_age((now - record.started).total_seconds())
             # `≥` on an inherited episode: the boot replay covers a bounded window, so a story that
             # opened before it has its start clipped and the duration is a lower bound (ISSUE_82).
-            return Text(f'● {"≥" if record.inherited else ""}{running}', style='red')
+            return Text(f'● {"≥" if record.started_bounded else ""}{running}', style='red')
         return Text(f'{_format_age(since_seen)} ago', style='dim')
 
     @staticmethod

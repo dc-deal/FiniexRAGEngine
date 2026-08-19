@@ -1,6 +1,6 @@
 """Pipeline assembler — builds the per-pipeline object graph behind a PipelineRunner (ISSUE_7)."""
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from finiexragengine.configuration.app_config_manager import AppConfigManager
 from finiexragengine.configuration.config_fingerprint import compute_config_fingerprint
@@ -84,7 +84,7 @@ class PipelineAssembler:
     def _today_spend(self) -> float:
         """Sum of the billing log since UTC midnight — seeds the guard's warn-only day line."""
         import psycopg   # local import: only used when the soft daily line is armed
-        from datetime import datetime, timezone
+        from datetime import datetime, timedelta, timezone
         midnight = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
         try:
             with psycopg.connect(self._database_url) as conn, conn.cursor() as cur:
@@ -151,8 +151,17 @@ class PipelineAssembler:
         minutes after its previous breaking pass, i.e. well inside any gap, which only an empty
         tracker can produce.
 
-        The seed window is `2 × gap`. One gap is what the rule can still hold open; the second is
-        headroom so the boundary pass itself is inside the replay rather than exactly on its edge.
+        The window is `breaking.episode_seed_hours`, floored at `2 × gap`, and it has to span an
+        entire **episode** — not merely the gap. The replay can only *open* an episode on a recorded
+        breaking pass, while the hold band keeps one alive long after the last one: measured
+        2026-08-18, that tail ran 5 h (BTCUSD), 8.7 h (ETHUSD) and 33 h (XRPUSD). The original
+        `2 × gap` = 5 h therefore recovered **0 of 4** open episodes, and two restarts four minutes
+        apart logged `1 episode(s) still open` and then `0`, because one symbol's last breaking pass
+        fell a minute outside.
+
+        Any finite window has an edge, so the remaining one is reported rather than hidden: an
+        episode already open at the first replayed envelope may reach back further, and both the log
+        line and the dashboard mark its duration as a lower bound.
 
         Seeding is best-effort: a store that cannot be read costs episode continuity across one
         restart, which must never stop the engine from evaluating. A failing *health* write raises
@@ -161,7 +170,9 @@ class PipelineAssembler:
         grouping = grouping_from_config(config)
         rule = grouping.rule
         tracker = BreakingEpisodeTracker(grouping)
-        since = datetime.now(timezone.utc) - 2 * rule.get_gap()
+        window = max(2 * rule.get_gap(),
+                      timedelta(hours=config.breaking.episode_seed_hours))
+        since = datetime.now(timezone.utc) - window
         try:
             seen = self._outcome_store.get_since(config.pipeline_id, since)
         except VectorStoreError as exc:
@@ -169,18 +180,20 @@ class PipelineAssembler:
                            'this restart will be counted again', config.pipeline_id, exc)
             return tracker
         # Replayed through the same `observe` the live path uses, so seeding cannot drift from
-        # scoring; the returned episodes are discarded because they were already logged and
-        # counted by the process that produced them.
-        for envelope in seen:
-            tracker.observe(envelope)
-        # Count against the rule's own key (the analysis unit, not the ticker), or a fanned pair
-        # would report two open episodes where the rule holds one.
-        keys = {grouping.key_for(r.symbol, r.base_currency)
-                for envelope in seen for r in envelope.result}
-        open_now = sum(1 for key in keys if rule.is_open(key))
+        # scoring. The episodes come back so the display can resume showing them; they are not
+        # counted, because the process that produced them already did.
+        running = tracker.seed(seen)
         logger.info('[BREAKING] %s: episode state seeded from %d envelope(s) since %s · '
                     '%d episode(s) still open', config.pipeline_id, len(seen),
-                    since.strftime('%Y-%m-%d %H:%M UTC'), open_now)
+                    since.strftime('%Y-%m-%d %H:%M UTC'), len(running))
+        bounded = [open_episode.episode.symbol for open_episode in running
+                   if open_episode.started_bounded]
+        if bounded:
+            # The window's edge, said out loud. The first version of this seed hid it, and the only
+            # reason it surfaced was an operator noticing a missing dashboard row.
+            logger.warning('[BREAKING] %s: %d open at the window edge (%s) — the start and any '
+                           'earlier chain are outside the replay, so durations shown for them are '
+                           'lower bounds', config.pipeline_id, len(bounded), ', '.join(bounded))
         return tracker
 
     def build_ingestor(self, source_set_id: str, billing_label: str = '') -> Ingestor:

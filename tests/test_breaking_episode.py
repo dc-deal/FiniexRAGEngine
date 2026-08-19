@@ -324,3 +324,44 @@ def test_a_closed_episode_is_not_reported_as_open():
     tracker.observe(_envelope(_T0 + DEFAULT_EPISODE_GAP + timedelta(minutes=1),
                               is_breaking=False, urgency=0.1))
     assert tracker.open_episodes() == []
+
+
+def test_seed_recovers_an_episode_whose_last_breaking_pass_predates_the_window_start():
+    """The production case, 2026-08-18: two restarts four minutes apart logged `1 episode(s)
+    still open` and then `0`, because BTCUSD's last breaking pass at 17:00 UTC fell one minute
+    outside the second window. The replay can only OPEN on a breaking pass, so the window has to
+    span the episode — not merely the gap the hold band keeps it alive with.
+    """
+    # A window wide enough to start in the quiet BEFORE the story, so the transition into breaking
+    # is observed; then one break, then hold-band passes carrying it for five hours — far longer
+    # than `2 × gap`, which is exactly what the old window failed to span.
+    envelopes = [_envelope(_T0, symbol='BTCUSD', is_breaking=False, urgency=0.2)]
+    envelopes.append(_envelope(_T0 + timedelta(minutes=10), symbol='BTCUSD', urgency=0.9))
+    envelopes += [_envelope(_T0 + timedelta(minutes=10 * i), symbol='BTCUSD',
+                            is_breaking=False, urgency=0.7) for i in range(2, 32)]
+
+    running = BreakingEpisodeTracker().seed(envelopes)
+
+    assert [open_episode.episode.symbol for open_episode in running] == ['BTCUSD']
+    assert running[0].started == _T0 + timedelta(minutes=10)   # the observed opening
+    assert running[0].started_bounded is False                 # so the duration is a measurement
+
+
+def test_seed_marks_an_episode_that_was_already_open_at_the_first_replayed_envelope():
+    """Any finite window has an edge; this is the one case where it bites, and it must say so."""
+    # The replay starts mid-story: the very first envelope is already breaking, so whatever came
+    # before it is unknowable from this window.
+    envelopes = [_envelope(_T0 + timedelta(minutes=10 * i), symbol='BTCUSD', urgency=0.9)
+                 for i in range(5)]
+
+    running = BreakingEpisodeTracker().seed(envelopes)
+
+    assert len(running) == 1
+    assert running[0].started_bounded is True
+
+
+def test_seed_reports_nothing_for_a_story_that_closed_inside_the_window():
+    envelopes = [_envelope(_T0, urgency=0.9)]
+    envelopes.append(_envelope(_T0 + DEFAULT_EPISODE_GAP + timedelta(minutes=10),
+                               is_breaking=False, urgency=0.1))
+    assert BreakingEpisodeTracker().seed(envelopes) == []

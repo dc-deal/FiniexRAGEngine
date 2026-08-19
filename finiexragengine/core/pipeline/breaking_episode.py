@@ -63,6 +63,9 @@ class OpenEpisode:
     episode: BreakingEpisode
     started: datetime
     last_seen: datetime
+    # True when the episode was already open at the FIRST replayed envelope: the chain may reach
+    # back further than the window, so `started` is a lower bound and every surface must say so.
+    started_bounded: bool = False
 
 
 def reaction_times(result: SentimentResult, ts: datetime) -> Tuple[Optional[float], Optional[float]]:
@@ -151,6 +154,22 @@ class BreakingEpisodeTracker:
                 # reports what the rule still holds.
                 self._open.pop(group_key, None)
         return outcome
+
+    def seed(self, envelopes: List[AnalysisEnvelope]) -> List[OpenEpisode]:
+        """Replay persisted envelopes to inherit episode state; returns what is still open.
+
+        Drives the same `observe` the live path uses — seeding cannot drift from scoring — and
+        then marks the episodes whose start sits at the window edge. That distinction is the whole
+        reason this is a method rather than a loop at the call site: only here is it known which
+        envelope was first, and therefore which starts are lower bounds.
+        """
+        for envelope in envelopes:
+            self.observe(envelope)
+        if envelopes:
+            first_ts = envelopes[0].timestamp
+            for running in self._open.values():
+                running.started_bounded = running.started <= first_ts
+        return list(self._open.values())
 
     def open_episodes(self) -> List[OpenEpisode]:
         """The episodes still running — for a fresh process to resume displaying them.

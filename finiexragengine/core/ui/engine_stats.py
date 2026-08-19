@@ -114,10 +114,10 @@ class BreakingRecord:
     signal: str
     reason: str = ''                             # why it broke (the LLM's reasoning; ISSUE_64)
     gap_seconds: float = 9000.0                  # this episode's close delay (ISSUE_82; 150 min)
-    # Inherited from a previous process by replay (ISSUE_82). The seed replays a bounded window
-    # (`2 × gap`), so an episode that opened before it has its `started` clipped to the window's
-    # edge — the duration is then a LOWER BOUND, and the renderer has to say so.
-    inherited: bool = False
+    # Set when `started` is a LOWER BOUND rather than the observed opening: the boot replay covers
+    # a bounded window (`breaking.episode_seed_hours`), so a chain reaching back further has its
+    # start clipped to the window edge. The renderer marks those with `≥` (ISSUE_82).
+    started_bounded: bool = False
 
 
 @dataclass(frozen=True)
@@ -203,7 +203,8 @@ class EngineStats:
 
     def restore_breaking_episode(self, symbol: str, signal: str, reason: str, *,
                                  started: datetime, last_seen: datetime,
-                                 gap_seconds: float = 9000.0) -> None:
+                                 gap_seconds: float = 9000.0,
+                                 started_bounded: bool = False) -> None:
         """Re-attach an episode a previous process opened and this one inherited (ISSUE_82).
 
         The split is between the two kinds of thing this snapshot holds:
@@ -229,7 +230,7 @@ class EngineStats:
             self._recent_breaking.append(
                 BreakingRecord(started=started, last_seen=last_seen, symbol=symbol,
                                signal=signal, reason=reason, gap_seconds=gap_seconds,
-                               inherited=True))
+                               started_bounded=started_bounded))
             current = self._breaking
             if current.last is None or last_seen > current.last:
                 self._breaking = BreakingSnapshot(last=last_seen, detected=current.detected,

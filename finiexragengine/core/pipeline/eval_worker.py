@@ -91,7 +91,8 @@ class EvalWorker:
             # measurement here would be re-sampled against stale evidence (see the store method).
             stats.restore_breaking_episode(running.episode.symbol, running.episode.signal,
                                            running.episode.reason, started=running.started,
-                                           last_seen=running.last_seen, gap_seconds=gap_seconds)
+                                           last_seen=running.last_seen, gap_seconds=gap_seconds,
+                                           started_bounded=running.started_bounded)
 
     def get_state(self) -> WorkerState:
         return self._state

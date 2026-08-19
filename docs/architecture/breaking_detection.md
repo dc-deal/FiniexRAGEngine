@@ -277,10 +277,24 @@ Giving the *consumer* a debounced regime is a contract change, and belongs to `b
 so a restart mid-story resumes the episode instead of re-opening it. Before that, two of one week's
 66 episodes were boot artefacts — re-confirmed 3 and 11 minutes after the previous breaking pass,
 i.e. well inside any gap, which only an empty tracker can produce. Seeding is best-effort: an
-unreadable store costs episode continuity across one restart and never stops the engine. The live
-dashboard resumes displaying whatever the replay left open (`BreakingEpisodeTracker.open_episodes`),
-so a story spanning a restart keeps its row and its real running time; the session counters beside
-it are not restored, because they count what this process saw.
+unreadable store costs episode continuity across one restart and never stops the engine.
+
+**The window has to span an episode, not the gap.** The replay can only *open* an episode on a
+recorded breaking pass, while the hold band keeps one alive long after the last one — measured
+2026-08-18, that tail ran 5 h (BTCUSD), 8.7 h (ETHUSD) and **33 h** (XRPUSD, which had no breaking
+pass for a day and a half while its episode stayed open). A `2 × gap` window (5 h) therefore
+recovered **0 of 4** open episodes, and the log caught the boundary twice: two restarts four
+minutes apart reported `1 episode(s) still open` and then `0`, because one symbol's last breaking
+pass fell a minute outside. `breaking.episode_seed_hours` (default 72) sets the depth, floored at
+`2 × gap`.
+
+**The remaining edge is reported, not hidden.** An episode already open at the *first* replayed
+envelope may reach back further than the window, so its start is a lower bound. The seed logs it
+(`N open at the window edge (SYMBOL) …`) and the dashboard renders those durations as `● ≥4h47m`,
+while an episode whose opening was observed shows its real duration. The live dashboard resumes
+displaying whatever the replay left open (`BreakingEpisodeTracker.seed`), so a story spanning a
+restart keeps its row; the session counters beside it are not restored, because they count what
+this process saw.
 
 ### Is `confirmed` a subset of `flagged`? No.
 
