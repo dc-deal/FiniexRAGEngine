@@ -16,7 +16,7 @@ from finiexragengine.core.ui.engine_stats import (
 )
 from finiexragengine.types.alert_types import AlertCallback
 from finiexragengine.types.config_types.source_set_types import SourceSetConfig
-from finiexragengine.types.ingest_types import HostEvent, IngestResult
+from finiexragengine.types.ingest_types import HostEvent, IngestResult, SourcePoll
 from finiexragengine.types.trigger_types import TriggerReason
 from finiexragengine.types.worker_types import WorkerState
 

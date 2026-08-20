@@ -96,7 +96,14 @@ Read first, in order:
   - If a runtime import would cycle, use `if TYPE_CHECKING:` + a string annotation. Dropping the
     annotation is never the answer — and check first: `core/` never imports `api/`, so most feared
     cycles do not exist.
-  - Verified mechanically (AST sweep over `finiexragengine/`), not by eye.
+  - Verified mechanically by `tests/test_typing_contract.py`, not by eye — so the rule runs on
+    every suite and in CI instead of being remembered. It checks two different things: that every
+    annotation **exists** (AST sweep over `finiexragengine/`), and that every annotation
+    **resolves** (`typing.get_type_hints`). The second half is not redundant: since Python 3.14
+    (PEP 649) annotations are evaluated lazily, so a name that was never imported no longer fails
+    at import time — `Callable` sat undefined in a live signature for weeks, with a green suite.
+    Names bound under `if TYPE_CHECKING:` are honoured as resolvable, so the sanctioned pattern
+    above is never flagged.
 - **Domain modelling.** Runtime domain types → `@dataclass`; config schemas → Pydantic `BaseModel`
   (in `finiexragengine/types/config_types/`).
 - **A shape that crosses a seam lives in `types/`.** If another module must import it to write a
