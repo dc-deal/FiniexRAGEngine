@@ -44,6 +44,29 @@ def _error_envelope(pipeline: Pipeline, exc: Exception) -> SentimentEnvelope:
     )
 
 
+def _store_silent_envelope(pipeline: Pipeline, detail: str) -> SentimentEnvelope:
+    """The answer when the store cannot supply an envelope and running would cost money.
+
+    Same shape as any failure: every requested symbol present as a degraded HOLD, `status='error'`,
+    the cause in `errors`. `VECTOR_STORE_ERROR` covers both readings — the store failed, or the
+    store is empty — and the message carries which; the taxonomy stays closed, as the contract
+    requires, and a consumer filters on the type it already knows.
+    """
+    config = pipeline.get_config()
+    return SentimentEnvelope(
+        pipeline_id=config.pipeline_id,
+        outcome_type=config.outcome_type,
+        prompt_version=config.prompt.version,
+        timestamp=datetime.now(timezone.utc),
+        status='error',
+        result=[hold_result(symbol, 'No stored outcome available')
+                for symbol in config.symbol_keys()],
+        metadata=RunMetadata(model='unavailable'),
+        errors=[RunError(type='VECTOR_STORE_ERROR', message=detail,
+                         timestamp=datetime.now(timezone.utc))],
+    )
+
+
 def build_sentiment_router(registry: PipelineRegistry,
                            outcome_store: Optional[OutcomeStore] = None) -> APIRouter:
     """Build the pipeline run/latest router bound to the given registry.
@@ -90,9 +113,19 @@ def build_sentiment_router(registry: PipelineRegistry,
     def latest(pipeline_id: str) -> SentimentEnvelope:
         """Return the last persisted outcome instantly (the live-bot path, ISSUE_8).
 
-        Reads the store — no pipeline stage runs, no spend. Cold miss (nothing
-        persisted yet): run once, which persists, then serve that envelope. Without a
-        store (mock mode) this stays a fresh run — same envelope contract either way.
+        **This GET never spends.** It reads the store; when the store cannot supply an envelope —
+        a read failure, or nothing persisted yet — it returns the contract's error envelope rather
+        than running the pipeline. A caller who wants a fresh pass has `POST /run`.
+
+        The previous fallback ran a paid pass on both of those paths, which is the wrong trade for
+        the caller this endpoint exists for. A polling consumer cannot tell a served envelope from a
+        freshly-run one, so a bad minute in the database became continuous spend that looked like
+        normal operation. The write path had the same shape and was worse, because it does not clear
+        on its own: `_persist` swallows a failed save, so the store stays empty, every poll is
+        another cold miss, and every cold miss was another paid run.
+
+        Without a store (scaffold-mock mode) a run is free — no LLM is involved — so that path is
+        unchanged.
         """
         try:
             pipeline = registry.get(pipeline_id)
@@ -101,10 +134,18 @@ def build_sentiment_router(registry: PipelineRegistry,
         if outcome_store is not None:
             try:
                 stored = outcome_store.get_latest(pipeline_id)
-                if stored is not None:
-                    return stored
-            except Exception:   # noqa: BLE001 — degrade to a fresh run, never a 500
+            except Exception as exc:   # noqa: BLE001 — a parseable envelope, never a 500
                 logger.exception('outcome store read failed for %s', pipeline_id)
+                return _store_silent_envelope(
+                    pipeline, f'outcome store unavailable: {exc}')
+            if stored is not None:
+                return stored
+            # Cold miss: the store works and holds nothing yet. Not persisted — writing this would
+            # make it the "latest" and every later call would serve the miss instead of a signal.
+            logger.info('no outcome stored yet for %s — returning the empty-store envelope',
+                        pipeline_id)
+            return _store_silent_envelope(
+                pipeline, 'no outcome persisted yet for this pipeline')
         try:
             # A caller outside the engine asked for this pass (ISSUE_87) — not the engine's own
             # clock. The envelope says so, so a consumer can tell it from the bar-close series.

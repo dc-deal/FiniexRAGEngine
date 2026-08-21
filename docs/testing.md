@@ -58,7 +58,8 @@ never attach one just because `DATABASE_URL`/`OPENAI_API_KEY` are set in the env
 | `test_symbol_evaluator.py` | retrieve → prompt → LLM → enrich; provenance, raw-output + funnel capture | — |
 | `test_pipeline_runner.py` | envelope invariants, taxonomy, guard degrade (ISSUE_35), metric capture, prompt fingerprint, persistence wiring | — |
 | `test_output_guard.py` | coherence rules (signal↔score dead zone, HOLD confidence cap, empty reasoning, provenance backstop), knob overrides, basis skip | — |
-| `test_outcome_store.py` | save→get_latest roundtrip, newest-wins, raw-output column, error rows | PostgreSQL |
+| `test_outcome_store.py` | save→get_latest roundtrip, newest-wins, raw-output column, error rows, the stream position stamped into the envelope JSON, per-stream sequencing, unsequenced legacy lines | PostgreSQL |
+| `test_stream_sequencer.py` | gapless `seq` (a rolled-back pass returns its number), per-stream counters, concurrent minting, the `available_msc` clamp + its counters, epoch bumps on a counter behind the journal / a changed cluster fingerprint, and an epoch that never repeats after its own value was rewound | PostgreSQL |
 | `test_corpus_guard.py` | corpus stamped with embedding model; mismatch refuses to boot | PostgreSQL |
 | `test_source_set_registry.py` | source-set loading, duplicate ids, unknown reference, tracked configs | — |
 | `test_workers.py` | interval-trigger loop, pass resilience, supervisor build (fan variants); worker isolation (ISSUE_74): a worker blocked mid-pass does not stop another — the 2026-08-01 amplifier as a regression test — and a pass over its deadline is abandoned while the worker keeps ticking; the trigger reason reaches the pipeline and opens `last_detail`, the string the log line, the activity stream and /health share (ISSUE_87) | — |

@@ -19,7 +19,11 @@ services:
     depends_on:
       - postgres
     ports:
-      - "8100:8100"
+      # Loopback only: the API has no authentication yet and POST /run spends money on request,
+      # so it must not be reachable from the network. Docker Desktop still routes a container's
+      # `host.docker.internal` to a loopback publish; on plain Linux Docker it does not — verify
+      # the consumer's route after changing this.
+      - "127.0.0.1:8100:8100"
     stdin_open: true
     tty: true
     command: tail -f /dev/null

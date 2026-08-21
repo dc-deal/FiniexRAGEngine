@@ -295,6 +295,51 @@ To check by hand, the newest poll in the journal is the engine's pulse:
 SELECT source_id, max(ts) AS last_poll FROM source_poll_log GROUP BY source_id ORDER BY 2;
 ```
 
+## We restored the database — what does the consumer see?
+
+A restore rewinds `stream_seq`, so the engine re-mints `seq` values a consumer already holds. To a
+cursor-based reader that is the worst failure shape there is: every new frame sits *below* their
+cursor and is silently ignored while the connection stays healthy and heartbeats keep arriving.
+Nothing looks wrong; the signal simply never advances again.
+
+`stream_epoch` is the guard. It bumps automatically when the engine can see the rewind:
+
+```sql
+-- what each stream believes about itself
+SELECT pipeline_id, seq, epoch, cluster_id, updated_at FROM stream_seq ORDER BY pipeline_id;
+
+-- what the journal remembers — a counter behind this is a rewind
+SELECT pipeline_id,
+       max((envelope->>'seq')::BIGINT)          AS journal_seq,
+       max((envelope->>'stream_epoch')::BIGINT) AS journal_epoch
+FROM outcomes GROUP BY pipeline_id;
+```
+
+Boot reconciliation bumps on either of two pieces of evidence: the counter is behind its own
+journal, or `cluster_id` (`<system_identifier>/<timeline_id>`) changed — PITR and standby promotion
+start a new timeline, and a restore into a fresh cluster changes the system identifier. Both log a
+`series rewound` warning naming the old and new epoch. **A boot after a restore that logs nothing is
+the case to look at**, not the one that shouts.
+
+**The one shape the engine cannot see: a logical dump/restore in place.** Neither the timeline nor
+the system identifier changes, and if the journal was restored along with the counter they agree
+with each other. After such a restore, bump the epoch by hand *before* starting the engine:
+
+```sql
+UPDATE stream_seq
+   SET epoch = GREATEST(epoch + 1, extract(epoch FROM now())::BIGINT),
+       last_available_msc = NULL
+ WHERE pipeline_id = '<stream>';
+```
+
+The `GREATEST` matters: a plain `epoch + 1` can reissue a number an earlier series already used, and
+two series sharing an epoch collide the consumer's `(pipeline_id, stream_epoch, seq)` archive key —
+they merge, silently.
+
+If it was missed, the consumer reports it: a client presenting a cursor beyond our head receives a
+`cursor_ahead` control frame. That is the after-the-fact detector for exactly this case — treat it as
+evidence that one of the two stores was rewound, never as something to ignore.
+
 ## How fast did the engine really react to breaking news?
 
 ```bash

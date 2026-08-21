@@ -66,7 +66,9 @@ same shell regardless of the signal type:
 
 ```json
 {
-  "schema_version": "1.0",
+  "schema_version": "2.0",
+  "seq": 1042,
+  "stream_epoch": 1,
   "pipeline_id": "crypto_sentiment",
   "outcome_type": "sentiment_fear_greed",
   "data_origin": "live",
@@ -74,10 +76,12 @@ same shell regardless of the signal type:
   "prompt_version": "1",
   "prompt_id": "sentiment-crypto",
   "prompt_hash": "1f191112898f",
+  "trigger_reason": "scheduled",
   "timestamp": "2026-06-28T11:00:00Z",
+  "available_msc": 1787133785489,
   "status": "success",
-  "result": [ { "symbol": "BTCUSD", "signal": "HOLD", "sentiment_score": 0.45, "confidence": 0.78, "reasoning": "...", "basis": "llm", "base_currency": "BTC", "quote_currency": "USD", "sources": [ ... ] } ],
-  "metadata": { "model": "gpt-4o-mini", "trigger_reason": "scheduled", "articles_relevant": 23, "processing_time_ms": 1823, "cost_usd": 0.0029, "stage_timings": [ ... ] },
+  "result": [ { "symbol": "BTCUSD", "signal": "HOLD", "sentiment_score": 0.45, "confidence": 0.78, "reasoning": "...", "basis": "llm", "evidence_as_of": 1787133205000, "base_currency": "BTC", "quote_currency": "USD", "sources": [ ... ] } ],
+  "metadata": { "model": "gpt-4o-mini", "articles_relevant": 23, "processing_time_ms": 1823, "cost_usd": 0.0029, "stage_timings": [ ... ] },
   "errors": []
 }
 ```

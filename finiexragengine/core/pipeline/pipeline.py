@@ -66,9 +66,10 @@ class Pipeline:
             pipeline_id=self._config.pipeline_id,
             outcome_type=self._config.outcome_type,
             prompt_version=self._config.prompt.version,
+            # The reason is known even here (ISSUE_87) — the scaffold really did run for it.
+            trigger_reason=reason,
             timestamp=now,
             status='success',
             result=results,
-            # The reason is known even here (ISSUE_87) — the scaffold really did run for it.
-            metadata=RunMetadata(model='mock', trigger_reason=reason),
+            metadata=RunMetadata(model='mock'),
         )

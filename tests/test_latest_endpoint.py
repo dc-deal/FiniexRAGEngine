@@ -94,16 +94,31 @@ def test_latest_serves_from_store_without_running():
     assert pipeline.runs == 0                          # the read path spends nothing
 
 
-def test_latest_cold_miss_runs_once():
+def test_latest_cold_miss_answers_without_spending():
+    """A GET never runs the pipeline (ISSUE_9): an empty store answers, it does not evaluate.
+
+    The old behaviour ran one pass on a cold miss. That is a bad trade for the caller this endpoint
+    exists for, and the failure it enables is not self-clearing: `_persist` swallows a failed save,
+    so a broken write path leaves the store empty, every poll is another cold miss, and every cold
+    miss was another paid pass — continuous spend that looks like normal operation from outside.
+    """
     pipeline = _FakePipeline()
     client = _client(pipeline, _FakeStore(stored=None))
     response = client.get('/v1/pipelines/p/latest')
-    assert response.status_code == 200
-    assert response.json()['result'][0]['reasoning'] == 'fresh run'
-    assert pipeline.runs == 1
-    # A pass the API asked for is `external`, not `scheduled` (ISSUE_87): it happened because a
-    # caller wanted an answer, and it is persisted like any other — so it must be filterable.
-    assert pipeline.reasons == ['external']
+    assert response.status_code == 200                 # contract: always a parseable envelope
+    body = response.json()
+    assert body['status'] == 'error'
+    assert body['errors'][0]['type'] == 'VECTOR_STORE_ERROR'
+    assert 'no outcome persisted yet' in body['errors'][0]['message']
+    assert [r['symbol'] for r in body['result']] == ['BTCUSD']   # every symbol still present
+    assert pipeline.runs == 0, 'a GET spent money'
+
+
+def test_a_cold_miss_is_not_persisted():
+    """Writing the miss would make it the "latest" — every later call would serve it."""
+    store = _FakeStore(stored=None)
+    _client(_FakePipeline(), store).get('/v1/pipelines/p/latest')
+    assert store.saved == []
 
 
 def test_latest_without_store_stays_a_fresh_run():
@@ -113,12 +128,16 @@ def test_latest_without_store_stays_a_fresh_run():
     assert pipeline.runs == 1
 
 
-def test_broken_store_degrades_to_fresh_run_not_500():
+def test_broken_store_answers_without_spending_and_never_500s():
+    """A bad minute in the database must not become a paid pass per poll (ISSUE_9)."""
     pipeline = _FakePipeline()
     client = _client(pipeline, _FakeStore(exc=VectorStoreError('db gone')))
     response = client.get('/v1/pipelines/p/latest')
     assert response.status_code == 200
-    assert pipeline.runs == 1
+    body = response.json()
+    assert body['status'] == 'error'
+    assert 'outcome store unavailable' in body['errors'][0]['message']
+    assert pipeline.runs == 0, 'a store failure spent money'
 
 
 def test_run_failure_persists_the_catch_all_error_envelope():

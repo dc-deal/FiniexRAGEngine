@@ -570,7 +570,7 @@ def test_the_config_fingerprint_is_stamped_even_when_every_eval_fails():
     envelope = runner.run('breaking')
     assert envelope.status == 'error'                      # nothing evaluated
     assert envelope.config_fingerprint == '904c2e16bbfb'   # still attributable
-    assert envelope.metadata.trigger_reason == 'breaking'  # and so is the reason (ISSUE_87)
+    assert envelope.trigger_reason == 'breaking'  # and so is the reason (ISSUE_87)
     # The runner stamps what it was given and derives nothing itself — the assembler owns the
     # computation, exactly like the prompt fingerprint next to it.
     assert format_envelope_run(envelope).splitlines()[0].endswith(
@@ -588,18 +588,32 @@ def test_every_pass_says_why_it_ran():
     for reason in ('scheduled', 'boot', 'breaking', 'manual', 'external'):
         envelope = _runner(_config(['BTCUSD']), _FakeIngestor(),
                            _FakeEvaluator({'BTCUSD': _eval('BTCUSD')})).run(reason)
-        assert envelope.metadata.trigger_reason == reason
-        # Serialized on every envelope, so a consumer never has to probe for the key.
-        assert json.loads(envelope.model_dump_json())['metadata']['trigger_reason'] == reason
+        assert envelope.trigger_reason == reason
+        # Serialized on every envelope, so a consumer never has to probe for the key. Top-level
+        # since ISSUE_9: `metadata.*` is declared free to evolve, and a load-bearing field carved
+        # into that container is one the next reorganisation breaks without touching a rule.
+        serialized = json.loads(envelope.model_dump_json())
+        assert serialized['trigger_reason'] == reason
+        assert 'trigger_reason' not in serialized['metadata']
 
 
 def test_a_pre_change_envelope_reads_as_unknown_not_as_scheduled():
-    """An archived envelope has no reason, and '' must not be mistaken for a category (ISSUE_87)."""
+    """An archived envelope has no reason, and '' must not be mistaken for a category (ISSUE_87).
+
+    Two eras in one test since ISSUE_9 moved the field: a pre-ISSUE_87 line has it nowhere, and a
+    1.0-era line carries it inside `metadata`. Neither may read as a category, and neither may fail
+    to load — the envelope contract's "always parseable" rule spans the relocation.
+    """
     old = {'schema_version': '1.0', 'pipeline_id': 'crypto_sentiment',
            'outcome_type': 'sentiment_fear_greed', 'prompt_version': '2',
            'timestamp': '2026-08-14T00:00:15.440452Z', 'status': 'success',
            'result': [], 'metadata': {'model': 'gpt-4o-mini'}}
-    assert SentimentEnvelope(**old).metadata.trigger_reason == ''
+    assert SentimentEnvelope(**old).trigger_reason == ''
+
+    era_1_0 = {**old, 'metadata': {'model': 'gpt-4o-mini', 'trigger_reason': 'scheduled'}}
+    parsed = SentimentEnvelope(**era_1_0)
+    assert parsed.trigger_reason == ''      # the old location is not read back into the new field
+    assert parsed.seq is None               # nor is a position invented for an unsequenced line
 
 
 def test_a_runner_without_a_resolved_fingerprint_stamps_nothing():

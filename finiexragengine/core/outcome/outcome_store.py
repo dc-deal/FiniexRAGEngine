@@ -1,12 +1,13 @@
 """Persistence for pipeline outcomes — the source of truth for backtest replay (ISSUE_8)."""
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import psycopg
 
 from finiexragengine.exceptions.ragengine_errors import VectorStoreError
+from finiexragengine.core.outcome.stream_sequencer import StreamSequencer
 from finiexragengine.types.outcome_types import AnalysisEnvelope, SentimentEnvelope
 
 logger = logging.getLogger(__name__)
@@ -39,6 +40,13 @@ class OutcomeStore:
     def __init__(self, database_url: str, table: str = 'outcomes') -> None:
         self._database_url = database_url
         self._table = table
+        # Not an injected collaborator: minting is part of how this store writes, not a strategy it
+        # picks. The sequencer holds no state of its own — `reconcile()` at boot may use its own
+        # instance without coordination.
+        self._sequencer = StreamSequencer(database_url, outcomes_table=table)
+
+    def get_sequencer(self) -> StreamSequencer:
+        return self._sequencer
 
     def _connect(self) -> psycopg.Connection:
         try:
@@ -48,9 +56,31 @@ class OutcomeStore:
 
     def save(self, envelope: AnalysisEnvelope,
              raw_output: Optional[Dict[str, Any]] = None) -> None:
-        """Persist one envelope (+ the per-symbol raw LLM output next to it)."""
+        """Stamp the envelope with its stream position, then persist it (+ the raw LLM output).
+
+        The stamp is minted **inside this transaction** and written **into the envelope** before it
+        is serialized. Both matter (ISSUE_9):
+
+        * inside the transaction, because that is what makes `seq` gapless — the counter's row lock
+          is held to COMMIT, so a rollback returns the number instead of burning it;
+        * into the envelope, because the JSONB column is the exact served JSON. A `seq` living only
+          in a table column would never reach the archive: `OutcomeExporter` reads the envelope.
+
+        `available_msc` is sampled here rather than at assembly on purpose — it means "the instant
+        this became fetchable via /latest and pushable on the stream", which is the store write, not
+        the end of the analysis. Precisely: it is when the write *began*, sampled after the
+        connection is up so connect latency is not inside the claim. The remaining gap to the commit
+        is the only way it can run early, and it is bounded by one insert.
+        """
         try:
             with self._connect() as conn, conn.cursor() as cur:
+                now_msc = int(datetime.now(timezone.utc).timestamp() * 1000)
+                stamp = self._sequencer.mint(cur, envelope.pipeline_id, now_msc)
+                envelope.seq = stamp.seq
+                envelope.stream_epoch = stamp.epoch
+                envelope.available_msc = stamp.available_msc
+                envelope.available_msc_resyncs = stamp.resyncs
+                envelope.available_msc_max_correction_ms = stamp.max_correction_ms
                 cur.execute(
                     f'INSERT INTO {self._table} '
                     '(pipeline_id, ts, status, envelope, raw_output) '
