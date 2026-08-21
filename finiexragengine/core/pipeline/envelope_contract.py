@@ -17,7 +17,7 @@ from finiexragengine.exceptions.ragengine_errors import (
     SourceFetchError,
     VectorStoreError,
 )
-from finiexragengine.types.outcome_types import SentimentResult
+from finiexragengine.types.outcome_types import RESULT_BASES, ResultBasis, SentimentResult
 
 # The fixed RunError taxonomy (output contract): exact exception class -> type string.
 # Anything unmapped degrades under PARTIAL_RESPONSE — the row-was-degraded marker.
@@ -40,12 +40,19 @@ def taxonomy_type(exc: Exception) -> str:
 
 
 def hold_result(symbol: str, reasoning: str,
-                basis: str = 'degraded') -> SentimentResult:
+                basis: ResultBasis = 'degraded') -> SentimentResult:
     """A contract HOLD row: HOLD / 0.0 / reason / no sources — never a missing symbol.
 
     `basis` tags how the row came to be (ISSUE_24/35): the runner/API use 'degraded'
     (a failure forced the HOLD); the evaluator's data-shortage shortcut emits its own
     row with 'no_data'.
+
+    This is the **producing seam** for the vocabulary (ISSUE_94): the field on the model is a plain
+    `str` so an archived envelope carrying a later version's value still parses, which means the
+    check has to happen where a row is written instead. A typo fails here, loudly, at the one call
+    site that passes the value in.
     """
+    if basis not in RESULT_BASES:
+        raise ValueError(f'basis {basis!r} is not one of {RESULT_BASES}')
     return SentimentResult(symbol=symbol, signal='HOLD', sentiment_score=0.0,
                            confidence=0.0, reasoning=reasoning, basis=basis)

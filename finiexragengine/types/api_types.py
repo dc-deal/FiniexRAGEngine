@@ -63,6 +63,17 @@ class HealthResponse(BaseModel):
     status: str = 'ok'
     service: str = 'FiniexRAGEngine'
     version: str
+    # The deadline a single pass is abandoned at (ISSUE_74). Engine-level and NOT repeated under
+    # each pipeline, deliberately: it is one number for every worker, and a per-pipeline copy would
+    # claim to be a per-stream property. Someone would eventually set two of them differently, and
+    # the engine would honour neither the second value nor the reader's expectation. When it truly
+    # becomes per-pipeline, moving it is a visible contract change rather than a stable name
+    # quietly changing meaning.
+    #
+    # A consumer needs it because it bounds how far an out-of-band pass can overtake a scheduled
+    # one: past this deadline the pass is abandoned and produces nothing, so `seq` can lead
+    # evidence by at most one of these (ISSUE_9 RC-4).
+    pass_timeout_seconds: int
     # Empty when the server runs without --workers (API-only mode, no background spend).
     workers: List[WorkerInfo] = []
     # Present only with real runners attached (the guard lives on the assembler, ISSUE_47).
@@ -79,6 +90,16 @@ class PipelineInfo(BaseModel):
     market: str
     symbols: List[str]
     trigger_type: str
+    # The eval cadence in SECONDS, not as the `M10` token (ISSUE_9). A consumer computes a staleness
+    # threshold with the number; the token is a rendering of it, and shipping both would leave one
+    # of them unread. `None` when the trigger carries no timeframe.
+    #
+    # Exposed because a consumer's staleness contract is derived from it: silence longer than one
+    # cadence is what tells them the producer stopped, so the threshold that blocks their order
+    # entry rested on a hand-copied constant. Note the direction that makes it usable — an
+    # out-of-band pass makes the OBSERVED interval shorter than nominal, never longer, so the
+    # cadence is an upper bound on normal quiet.
+    cadence_seconds: Optional[int] = None
 
 
 class PipelinesResponse(BaseModel):

@@ -9,6 +9,7 @@ from finiexragengine.core.observability.resource_gauge import ResourceGauge
 from finiexragengine.core.observability.stall_watchdog import StallWatchdog
 from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
 from finiexragengine.core.pipeline.worker_supervisor import WorkerSupervisor
+from finiexragengine.utils.timeframe import timeframe_minutes
 from finiexragengine.types.api_types import (
     BudgetInfo,
     HealthResponse,
@@ -18,6 +19,22 @@ from finiexragengine.types.api_types import (
     StallInfo,
     WorkerInfo,
 )
+
+
+def _cadence_seconds(timeframe: Optional[str]) -> Optional[int]:
+    """The trigger's timeframe as seconds — None when it carries none.
+
+    An unknown token would raise here rather than on the worker's first tick, which is the wrong
+    place to find out: the listing must stay answerable even when a pipeline is misconfigured, so
+    an unparseable timeframe reports as absent and the configuration error surfaces where it is
+    acted on (the supervisor refuses to schedule it).
+    """
+    if timeframe is None:
+        return None
+    try:
+        return timeframe_minutes(timeframe) * 60
+    except ValueError:
+        return None
 
 
 def build_health_router(config_manager: AppConfigManager,
@@ -46,6 +63,7 @@ def build_health_router(config_manager: AppConfigManager,
         resources = (ResourceInfo(**resource_gauge.status())
                      if resource_gauge is not None else None)
         return HealthResponse(version=config_manager.get_config().version,
+                              pass_timeout_seconds=config_manager.get_config().pass_timeout_seconds,
                               workers=workers, budget=budget, stall=stall,
                               resources=resources)
 
@@ -58,6 +76,7 @@ def build_health_router(config_manager: AppConfigManager,
                 market=pipeline.get_config().market,
                 symbols=pipeline.get_config().symbol_keys(),
                 trigger_type=pipeline.get_config().trigger.type,
+                cadence_seconds=_cadence_seconds(pipeline.get_config().trigger.timeframe),
             )
             for pipeline in registry.list_pipelines()
         ]

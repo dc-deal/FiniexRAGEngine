@@ -19,6 +19,7 @@ from finiexragengine.types.outcome_types import (
     AnalysisEnvelope,
     RunError,
     RunMetadata,
+    RunStatus,
     SentimentResult,
 )
 from finiexragengine.types.prompt_metadata import PromptMetadata
@@ -232,7 +233,7 @@ class PipelineRunner:
                 envelope.status = 'partial'
 
     def _derive_status(self, errors: List[RunError],
-                       evals: List[SymbolEval]) -> str:
+                       evals: List[SymbolEval]) -> RunStatus:
         """success = clean pass · partial = degraded but data · error = nothing evaluated.
 
         A budget suspend (ISSUE_47) is a *controlled, temporary* degrade — every symbol still

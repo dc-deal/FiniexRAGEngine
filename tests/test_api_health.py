@@ -42,3 +42,39 @@ def test_run_returns_envelope_for_all_symbols(client: TestClient) -> None:
 def test_unknown_pipeline_returns_404(client: TestClient) -> None:
     response = client.post('/v1/pipelines/does_not_exist/run')
     assert response.status_code == 404
+
+def test_health_reports_the_pass_deadline(client: TestClient) -> None:
+    """Engine-level, next to `version` — the bound a consumer's RC-4 tolerance is derived from.
+
+    Deliberately not repeated under each pipeline: it is one number for every worker, and a
+    per-pipeline copy would claim to be a per-stream property that nobody honours.
+    """
+    body = client.get('/v1/health').json()
+    assert body['pass_timeout_seconds'] > 0
+    pipelines = client.get('/v1/pipelines').json()['pipelines']
+    assert all('pass_timeout_seconds' not in p for p in pipelines)
+
+
+def test_pipelines_report_the_cadence_in_seconds(client: TestClient) -> None:
+    """Seconds, not the `M10` token (ISSUE_9).
+
+    A consumer computes a staleness threshold with the number; the token is a rendering of it, and
+    shipping both would leave one unread. Exposed at all because their threshold is *derived* from
+    the cadence — without it, the number that blocks their order entry is a hand-copied constant.
+    """
+    pipelines = {p['pipeline_id']: p for p in client.get('/v1/pipelines').json()['pipelines']}
+    crypto = pipelines['crypto_sentiment']
+    assert crypto['cadence_seconds'] == 600          # M10
+    assert 'M10' not in str(crypto.values())          # the token stays out of the response
+
+
+def test_an_unparseable_timeframe_reports_as_absent_not_as_an_error(monkeypatch) -> None:
+    """The listing must stay answerable when one pipeline is misconfigured.
+
+    Raising here would make a bad timeframe surface at the wrong place — a listing endpoint failing
+    for the whole registry, rather than the supervisor refusing to schedule that one worker.
+    """
+    from finiexragengine.api.endpoints import health_router
+    assert health_router._cadence_seconds('M10') == 600
+    assert health_router._cadence_seconds(None) is None
+    assert health_router._cadence_seconds('M7') is None

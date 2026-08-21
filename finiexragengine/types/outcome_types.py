@@ -4,10 +4,42 @@ These are Pydantic models because they are serialized identically to every
 surface: the collector's JSONL archive, the live worker, and the HTTP API.
 """
 from datetime import datetime
-from typing import Any, Dict, Generic, List, Literal, Optional, TypeVar
+from typing import Any, Dict, Generic, List, Literal, Optional, Tuple, TypeVar, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, model_serializer
 from pydantic.functional_serializers import SerializerFunctionWrapHandler
+
+
+# --- closed vocabularies (ISSUE_94) --------------------------------------------------------
+# Strict at the producing seam, permissive at the parsing boundary. The aliases below type the
+# code that *builds* a row, so a typo fails where it is written; the model fields themselves are
+# plain `str`, so an archived envelope carrying a value a later version introduced still loads.
+# The envelope contract's "always parseable" rule outranks type strictness — a reader pinned to an
+# older version must ignore an unknown tag, not refuse the line. The same split `TriggerReason`
+# and `RunError.type` already use; these four were the ones that did not.
+#
+# The read path that decides it: on boot the breaking tracker validates every envelope of the last
+# 72 h (`outcome_store.get_since`). One line carrying an unknown value would raise, the seed would
+# return nothing, and the boot pass would re-open running stories as fresh episodes — the exact
+# restart artefact ISSUE_82 removed, arriving by a different route.
+
+# Not `Signal`: in a trading codebase that word already means signal data, a signal series and
+# the consumer's SIGNAL worker. A grep for it returns everything, which is the same as nothing.
+SentimentSignal = Literal['BUY', 'SELL', 'HOLD']
+SENTIMENT_SIGNALS: Tuple[str, ...] = get_args(SentimentSignal)
+
+# 'llm' = scored by the model · 'no_data' = mechanical HOLD, retrieval empty after the floor (no
+# LLM call was made) · 'degraded' = a guard or failure produced the row.
+ResultBasis = Literal['llm', 'no_data', 'degraded']
+RESULT_BASES: Tuple[str, ...] = get_args(ResultBasis)
+
+RunStatus = Literal['success', 'partial', 'error']
+RUN_STATUSES: Tuple[str, ...] = get_args(RunStatus)
+
+# Where the data came from. A naming convention could not carry this: the Testing IDE once found a
+# generated week and a real week with byte-identical provenance.
+DataOrigin = Literal['live', 'synthetic']
+DATA_ORIGINS: Tuple[str, ...] = get_args(DataOrigin)
 
 
 class ArticleRef(BaseModel):
@@ -64,7 +96,9 @@ class SentimentResult(BaseModel):
     result model; the envelope below is generic over the payload type.
     """
     symbol: str
-    signal: Literal['BUY', 'SELL', 'HOLD']
+    # `str`, not `SentimentSignal` — see the vocabulary note above: strict where a row is built, permissive
+    # where an archived one is read.
+    signal: str
     sentiment_score: float = Field(ge=-1.0, le=1.0)
     confidence: float = Field(ge=0.0, le=1.0)
     reasoning: str
@@ -85,7 +119,7 @@ class SentimentResult(BaseModel):
     # floor (no evaluation possible due to data shortage — no LLM call was made) ·
     # 'degraded' = a guard/failure degraded the row. Additive with default: old envelopes
     # stay parseable, schema_version is unchanged.
-    basis: Literal['llm', 'no_data', 'degraded'] = 'llm'
+    basis: str = 'llm'
     # The instrument's pair legs (ISSUE_70), attached by the engine from the SymbolSpec — never
     # scored by the LLM. `base_currency` is the asset side (e.g. ETH), `quote_currency` the quote
     # (e.g. USD). Additive with default: old envelopes stay parseable, schema_version unchanged.
@@ -103,7 +137,9 @@ class SentimentLlmOutput(BaseModel):
     """
     model_config = ConfigDict(extra='forbid')
 
-    signal: Literal['BUY', 'SELL', 'HOLD']
+    # Stays a `Literal`: this is the producing seam against the model, where a malformed
+    # completion must fail rather than be absorbed.
+    signal: SentimentSignal
     sentiment_score: float = Field(ge=-1.0, le=1.0)
     confidence: float = Field(ge=0.0, le=1.0)
     reasoning: str
@@ -193,7 +229,7 @@ class AnalysisEnvelope(BaseModel, Generic[T]):
     # apart — an unwritten rule no tool checks. The origin is a property of the data, so it travels
     # with the data. Default 'live' keeps pre-change archived envelopes parseable; a consumer reads
     # an absent field as "unknown, produced before this existed".
-    data_origin: Literal['live', 'synthetic'] = 'live'
+    data_origin: str = 'live'
     # Input provenance (ISSUE_85) — the configuration twin of `prompt_hash` below. Fingerprints
     # the *merged* pipeline config plus its *resolved* source set plus the score-defining slice
     # of the app config, so a feed added, disabled or re-weighted is visible downstream instead
@@ -240,7 +276,7 @@ class AnalysisEnvelope(BaseModel, Generic[T]):
     # stays reserved for a collector sampling its own `collected_msc`.
     available_msc_resyncs: Optional[int] = None
     available_msc_max_correction_ms: Optional[int] = None
-    status: Literal['success', 'partial', 'error']
+    status: str
     result: List[T] = Field(default_factory=list)
     metadata: RunMetadata
     errors: List[RunError] = Field(default_factory=list)

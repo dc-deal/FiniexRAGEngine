@@ -244,6 +244,13 @@ class PipelineAssembler:
         ingest worker's own clock, so the runner evaluates over the shared corpus
         without fetching — and `/run` cannot double-ingest next to a running worker.
         """
+        # Reconcile this stream's series BEFORE a runner exists to mint into it (ISSUE_9). If a
+        # restore rewound the store, the epoch has to move before the first pass re-issues numbers a
+        # consumer already holds — afterwards the two series cannot be told apart. It sits here
+        # rather than in `attach_all` so the CLI path (`run_cli`, which builds a runner directly)
+        # is covered by the same hook; reconciling a consistent series is a no-op, so the repeat
+        # per pipeline at boot costs one query each.
+        self._reconcile_stream(config.pipeline_id)
         source_set = self._source_sets.get(config.source_set)   # fail-fast reference check
         ingestor = (self.build_ingestor(config.source_set, billing_label=config.pipeline_id)
                     if include_ingest else None)
@@ -277,27 +284,24 @@ class PipelineAssembler:
                               config_fingerprint=fingerprint.value)
 
     def attach_all(self, registry: PipelineRegistry, include_ingest: bool = True) -> None:
-        """Give every registered pipeline its real runner (replaces the scaffold mock)."""
-        # Reconcile the output series BEFORE any runner exists to mint into it (ISSUE_9). If a
-        # restore rewound the store, the epoch has to move before the first pass re-issues numbers a
-        # consumer already holds — after that pass it is too late to distinguish the two series.
-        # Same boot slot as the episode tracker's seeding, and for the same reason: state that
-        # outlives a process has to be recovered before the process starts producing.
-        self._reconcile_streams(registry)
+        """Give every registered pipeline its real runner (replaces the scaffold mock).
+
+        Stream reconciliation (ISSUE_9) rides inside `build_runner`, so it happens here too without
+        a second call site.
+        """
         for pipeline in registry.list_pipelines():
             pipeline.set_runner(self.build_runner(pipeline.get_config(),
                                                   include_ingest=include_ingest))
 
-    def _reconcile_streams(self, registry: PipelineRegistry) -> None:
-        """Bump the stream epoch of any series found rewound; never fatal at boot.
+    def _reconcile_stream(self, pipeline_id: str) -> None:
+        """Bump this stream's epoch if its series was rewound; never fatal.
 
         A failure here costs the *detection*, not the engine: without it a consumer may keep a stale
         cursor after a restore, which the stream's `cursor_ahead` control frame still surfaces. That
         is a worse outcome than a working reconciliation and a better one than a refusal to start.
         """
-        pipeline_ids = [p.get_config().pipeline_id for p in registry.list_pipelines()]
         try:
-            self._outcome_store.get_sequencer().reconcile(pipeline_ids)
+            self._outcome_store.get_sequencer().reconcile([pipeline_id])
         except FiniexRagError as exc:
             logger.warning('stream reconciliation skipped (%s) — a rewound series would go '
                            'undetected until a consumer reports cursor_ahead', exc)

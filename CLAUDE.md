@@ -26,7 +26,10 @@ every change is committed manually after review.
   percentage; when it is below ~95%, or a change is public-facing / hard to reverse,
   ask focused, numbered questions before executing instead of guessing.
 - **Addressing.** The human is "the operator"; German (informal *du*) is fine in chat.
-  All artifacts — code, comments, docs, issues, commit messages — stay English.
+  All artifacts — code, comments, docs, issues, commit messages, handover documents — stay
+  English. **The language of the conversation never sets the language of a file**, and a doc
+  written *for* the operator, about their own workflow, is still an artifact: a German chat about
+  a runbook produces an English runbook. That is where it slipped once.
 
 ## Architecture planning
 
@@ -76,6 +79,34 @@ Before committing to a design for a non-trivial feature or change:
   version delivered.
 - **Roadmap #1** ticks a batch's checkbox only when it merges; the version's 🏷️ line is the
   batch's Definition of Done.
+
+## Two environments — and you only ever see one of them
+
+**Everything the assistant can reach is the local dev container. The live engine runs elsewhere and
+is not reachable from here.** This is the assumption most likely to produce a confident wrong answer,
+because the dev container holds a database with the same schema, the same table names and a handful
+of real-looking envelopes — a query against it returns a plausible number for a question that was
+about production.
+
+| | dev container (what you see) | live server (where the engine runs) |
+|---|---|---|
+| Host | Linux container on the operator's laptop | Windows Server, reached by RDP |
+| `outcomes` journal | a few hundred envelopes from test runs | the real series, weeks of continuous operation |
+| RAM | the laptop's | **16 GB** |
+| Disk | hundreds of GB free | **~149 GB total, and treated as scarce** |
+
+Two consequences, both learned the hard way:
+
+- **Never answer a question about production from the dev journal.** "Does the journal predate
+  2026-07-22?" is a question about the server; the dev database answers it with numbers that are
+  real, small and irrelevant. Say the query has to run on the server, and give the query.
+- **Anything sized against dev resources has to be re-checked against the server.** A generator run
+  peaking at 1.5 GB RSS and half a gigabyte of output is unremarkable on the laptop and a
+  significant fraction of the server. The operator moves artifacts to the server deliberately; a
+  process or a file that only fits here is not finished.
+
+The operator bridges the two by hand (RDP, file copy, `export_cli` run on the server). There is no
+tunnel, and asking for one has costs the operator has already weighed.
 
 ## Session start
 
@@ -133,6 +164,19 @@ Read first, in order:
 - **A file's name says what it *is*.** `openai_errors.py` holding no exception (only a
   classifier) is a naming bug, not a placement one — it invited "move it to `exceptions/`",
   which would have leaked one vendor's vocabulary into a shared leaf. Rename before relocating.
+- **Names are searchable; specific beats short.** A term another file greps for has to be
+  *findable*: a few characters more, and the search returns the thing you meant instead of
+  everything. `Signal` in a trading codebase already means signal data, a signal series and the
+  consumer's SIGNAL worker — `SentimentSignal` costs nine characters and is unambiguous. `basis`
+  collides with a cost basis and a hash basis in this repo, which is why the vocabulary alias is
+  `ResultBasis`. Applies to type aliases, constants, public functions and domain terms in docs;
+  a file-private helper (`_fmt`) may stay short, because nobody searches for it.
+- **Closed vocabularies are strict at the producing seam, permissive at the parsing boundary.**
+  The value domain lives as a `Literal` alias plus a data tuple (`ResultBasis` / `RESULT_BASES`)
+  and types the code that *builds* a row, so a typo fails where it is written. The model field
+  itself is a plain `str`: an archived envelope carrying a value a later version introduced must
+  still load, because the envelope contract's "always parseable" rule outranks type strictness.
+  Currently: `TriggerReason`, `RunError.type`, `signal`, `basis`, `status`, `data_origin`.
 - **String literals use single quotes**; double quotes only for f-strings and docstrings.
 - **Imports at the top**, grouped standard library → third party → project. Never mid-file.
 - **No `__init__.py`** — fully-qualified imports from the package root `finiexragengine.`.

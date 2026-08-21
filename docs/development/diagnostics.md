@@ -282,6 +282,60 @@ Sampled on the stall-watchdog tick (60s) — ~1.4k rows/day, retention
 `diagnostics.resource_rss_warn_mb` warns **once** when crossed and marks the live header;
 it ships at `0` (off) on purpose — the weekly line is what produces a real number to set it from.
 
+## Is the engine running right now — and how do I stop it?
+
+The dev container has **no `ps`, `pgrep`, `top`, `curl`, `lsof` or `netstat`**, and `jobs` only sees
+children of the current shell — so it shows nothing started from another terminal. Anyone who
+backgrounds a server without noting the PID cannot find it again without the handles below. That is
+the real reason a background start is a bad idea here, not tidiness.
+
+**What is running?** `/proc` is always there:
+
+```bash
+for p in /proc/[0-9]*; do
+  cmd=$(tr '\0' ' ' < $p/cmdline 2>/dev/null)
+  # Test the FIRST argument only. A pattern like */python* also matches the shell running this
+  # loop, because its own command line contains the search words.
+  case "${cmd%% *}" in *python*) ;; *) continue ;; esac
+  case "$cmd" in *server_cli*|*uvicorn*|*run_cli*|*ingest_cli*)
+    echo "${p#/proc/}  $cmd" ;;
+  esac
+done
+```
+
+**Stopping it:** `pkill -f server_cli` (present, even though `pgrep` is not), or `kill <pid>` with a
+PID from the list above. Then confirm the port is actually dead — a process can linger while
+shutting down workers:
+
+```bash
+python3 -c "import urllib.request as u; u.urlopen('http://localhost:8100/v1/health',timeout=3); print('still answering')" \
+  || echo "port 8100 dead"
+```
+
+**Is the API answering?** Without `curl`:
+
+```bash
+python3 -c "import urllib.request as u,json; print(json.load(u.urlopen('http://localhost:8100/v1/health')))"
+```
+
+The path is `/v1/health`, not `/health` — the health router sits under the same `/v1` prefix as
+everything else.
+
+**Following along:** `tail -f logs/finiex.log` (path from `logging.file`, daily rotation). The log is
+written regardless of who started the server.
+
+**Better: do not background it.** A foreground start in its own terminal is the controllable option
+here — visible, stoppable with Ctrl-C, and the live display (`--live`) is only usable that way:
+
+```bash
+python finiexragengine/cli/server_cli.py --workers        # workers run ingest + eval
+python finiexragengine/cli/server_cli.py                  # API only: no passes, no spend
+```
+
+**Keep the spend in view:** a running `--workers` server pays per pass (M10, two pipelines: roughly
+$0.03/hour). `/v1/health` reports `budget.day_spend_usd`; if it shows `soft_daily_usd: 0.0` there is
+**no cap configured** and the cost circuit breaker (ISSUE_47) will not engage.
+
 ## Is the engine still working at all?
 
 The stall watchdog (ISSUE_75) answers this without being asked: no completed pass within
