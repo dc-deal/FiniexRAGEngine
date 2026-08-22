@@ -19,6 +19,7 @@ from finiexragengine.types.config_types.source_set_types import SourceSetConfig
 from finiexragengine.types.ingest_types import HostEvent, IngestResult, SourcePoll
 from finiexragengine.types.trigger_types import TriggerReason
 from finiexragengine.types.worker_types import WorkerState
+from finiexragengine.utils.relative_age import format_age
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +58,7 @@ def _quarantine_chip(poll: SourcePoll, now: datetime) -> str:
     """
     left = ''
     if poll.until is not None:
-        left = f' {_format_age((poll.until - now).total_seconds())}'
+        left = f' {format_age((poll.until - now).total_seconds())}'
     if poll.rung is None:
         return f'{poll.source_id} quarantined{left}'
     return f'{poll.source_id} q{left} ({poll.rung[0] + 1}/{poll.rung[1]})'
@@ -193,20 +194,30 @@ class IngestWorker:
                             or result.failed_sources or result.suspended
                             or result.truncated or result.rejected)
                 duration_ms = (perf_counter() - started) * 1000.0
-                logger.log(logging.INFO if eventful else logging.DEBUG,
-                           '[%s] %s · $%.6f · %.0fms', self._state.name,
-                           self._state.last_detail, usd, duration_ms)
-                self._log_source_health(result)
-                if result.host_event is not None:
-                    await self._report_host_event(result.host_event)
-                # Feed the live dashboard from the same structured pass (ISSUE_26) — next to the
-                # log call, never parsed back from it. Skipped entirely without a display.
-                self._push_stats(result, usd, duration_ms, eventful)
-                # Nudge the eval workers on this set out-of-band (ISSUE_11) — in the event
-                # loop thread, after the sync pass returned. A missed nudge is harmless: the
-                # candidate is already persisted, the eval worker still catches it next interval.
-                if self._on_candidates is not None and result.max_tier > 0:
-                    self._on_candidates(result.max_tier)
+                # Reporting the pass is guarded separately from running it: the work is already
+                # committed here, so a failure while *describing* it must not be reported as a
+                # failed pass — and must not end the worker. On 2026-08-20 it did: a NameError on
+                # a quarantine chip that had never rendered before escaped this block, unwound the
+                # trigger's loop, and the crypto ingest worker was gone for 37 hours without a
+                # line. The `except Exception` above only ever covered the pass body.
+                try:
+                    logger.log(logging.INFO if eventful else logging.DEBUG,
+                               '[%s] %s · $%.6f · %.0fms', self._state.name,
+                               self._state.last_detail, usd, duration_ms)
+                    self._log_source_health(result)
+                    if result.host_event is not None:
+                        await self._report_host_event(result.host_event)
+                    # Feed the live dashboard from the same structured pass (ISSUE_26) — next to
+                    # the log call, never parsed back from it. Skipped entirely without a display.
+                    self._push_stats(result, usd, duration_ms, eventful)
+                    # Nudge the eval workers on this set out-of-band (ISSUE_11) — in the event
+                    # loop thread, after the sync pass returned. A missed nudge is harmless: the
+                    # candidate is already persisted, the eval worker still catches it next interval.
+                    if self._on_candidates is not None and result.max_tier > 0:
+                        self._on_candidates(result.max_tier)
+                except Exception:   # noqa: BLE001 — reporting must never end the worker
+                    logger.exception('[%s] pass reporting failed — the pass itself succeeded '
+                                     'and the worker continues', self._state.name)
             self._state.runs += 1
             self._state.last_duration_ms = (perf_counter() - started) * 1000.0
 
@@ -279,7 +290,7 @@ class IngestWorker:
         falls out of the mechanism itself.
         """
         if event.resumed:
-            message = (f'host connectivity recovered after {_format_age(event.duration_seconds)} '
+            message = (f'host connectivity recovered after {format_age(event.duration_seconds)} '
                        f'— normal polling resumed ({self._set_name()})')
             logger.warning('[HOST] %s', message)
         elif event.opened:

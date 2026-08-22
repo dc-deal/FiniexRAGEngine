@@ -18,6 +18,7 @@ are collected from the module's own `if TYPE_CHECKING:` block and treated as res
 them would punish the documented pattern.
 """
 import ast
+import builtins
 import importlib
 import inspect
 import pathlib
@@ -25,6 +26,9 @@ import typing
 from typing import Dict, List, Set
 
 _PACKAGE = pathlib.Path(__file__).resolve().parent.parent / 'finiexragengine'
+# Names the interpreter injects into every module namespace.
+_MODULE_DUNDERS = {'__file__', '__name__', '__doc__', '__package__', '__spec__',
+                   '__loader__', '__builtins__', '__class__'}
 
 
 def _modules() -> List[str]:
@@ -102,3 +106,56 @@ def test_every_annotation_resolves():
     assert not unresolved, (
         'annotations that do not resolve (a missing import stays silent under PEP 649):\n  '
         + '\n  '.join(unresolved))
+
+
+def _bound_names(tree: ast.Module) -> Set[str]:
+    """Every name the module could bind, anywhere — deliberately over-approximated.
+
+    Scope is flattened on purpose: a name bound in *any* function counts as bound for the whole
+    module. That under-reports (a genuine leak between two functions slips through) and never
+    over-reports, which is the right trade for a guard that runs on every suite — a test that
+    cries wolf gets switched off, and the case this exists for is a name bound *nowhere*.
+    """
+    names: Set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                names.add(alias.asname or alias.name.split('.')[0])
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            names.add(node.id)          # assignment, for-target, with-as, walrus, comprehension
+        elif isinstance(node, ast.arg):
+            names.add(node.arg)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            names.add(node.name)
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            names.update(node.names)
+    return names
+
+
+def test_no_undefined_names():
+    """Every name *loaded* in a module could have been bound there.
+
+    The third failure of the same family, and the first that check 2 cannot see: `_format_age`
+    was **called** in `ingest_worker` and imported nowhere. Not an annotation, so PEP 649 never
+    entered into it and `get_type_hints` had nothing to say — it was a plain `NameError` waiting
+    on a code path that had never run. It ran on 2026-08-20, when the first feed in this engine's
+    life entered quarantine, and killed the crypto ingest worker for 37 hours.
+
+    A dead worker is silent by construction (see `worker_supervisor`), so the cost of a name that
+    only fails on a rare path is measured in days, not in a stack trace. Hence a sweep, not a
+    review. Annotations are checked here too rather than excluded — check 2 owns them, and a
+    duplicate report is cheaper than the bookkeeping needed to skip them.
+    """
+    undefined: List[str] = []
+    for path in sorted(_PACKAGE.rglob('*.py')):
+        tree = ast.parse(path.read_text(encoding='utf-8'))
+        allowed = _bound_names(tree) | set(dir(builtins)) | _MODULE_DUNDERS
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+                if node.id not in allowed:
+                    undefined.append(f'{path}:{node.lineno} {node.id}')
+    assert not undefined, (
+        'names used but never bound — a NameError waiting on an unexercised path:\n  '
+        + '\n  '.join(undefined))

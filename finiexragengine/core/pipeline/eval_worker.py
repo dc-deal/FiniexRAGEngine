@@ -144,11 +144,19 @@ class EvalWorker:
             # transition into breaking — not every pass it lingers (that flooded the log with 59
             # identical lines/day and inflated the count). Cross-checks the store `breaking`
             # report, which groups the same episodes.
-            breaking = self._episodes.observe(envelope)
-            for episode in breaking.started:
-                logger.info(_breaking_line(envelope.pipeline_id, episode))
-            # Feed the live dashboard from the same envelope (ISSUE_26); no-op without a display.
-            self._push_stats(envelope, tokens, duration_ms, breaking)
+            #
+            # Guarded like the ingest twin: the envelope is persisted by now, so nothing here can
+            # be worth losing the worker over. This block used to sit outside every handler, which
+            # is how one unexercised code path cost 37 hours of crypto ingest on 2026-08-20.
+            try:
+                breaking = self._episodes.observe(envelope)
+                for episode in breaking.started:
+                    logger.info(_breaking_line(envelope.pipeline_id, episode))
+                # Feed the live dashboard from the same envelope (ISSUE_26); no-op without one.
+                self._push_stats(envelope, tokens, duration_ms, breaking)
+            except Exception:   # noqa: BLE001 — reporting must never end the worker
+                logger.exception('[%s] pass reporting failed — the envelope is persisted '
+                                 'and the worker continues', self._state.name)
         self._state.runs += 1
         self._state.last_duration_ms = (perf_counter() - started) * 1000.0
 

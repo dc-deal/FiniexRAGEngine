@@ -67,7 +67,15 @@ def build_health_router(config_manager: AppConfigManager,
         journal_id = outcome_store.journal_id() if outcome_store is not None else None
         # Resolved, never declared: an unmapped or unidentifiable journal is honestly `unknown`.
         environment = config_manager.get_config().journal_names.get(journal_id or '', 'unknown')
-        return HealthResponse(version=config_manager.get_config().version,
+        # 'ok' is a claim, not a default. A worker whose task ended is the strongest reason to
+        # withdraw it — everything that worker feeds is frozen until a restart — and a stall is the
+        # weaker one. Reported together so an external check sees a single field change, which is
+        # the only thing a monitor polls: this endpoint answered 'ok' for the whole 37 hours the
+        # crypto ingest worker lay dead on 2026-08-20.
+        unhealthy = ([worker.name for worker in workers if worker.stopped_at is not None]
+                     + (list(stall.stalled) if stall is not None else []))
+        return HealthResponse(status='degraded' if unhealthy else 'ok',
+                              version=config_manager.get_config().version,
                               pass_timeout_seconds=config_manager.get_config().pass_timeout_seconds,
                               journal_id=journal_id,
                               environment=environment,

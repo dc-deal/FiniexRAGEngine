@@ -1,6 +1,6 @@
 """API-facing response models (Pydantic — required for FastAPI serialization)."""
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from pydantic import BaseModel
 
@@ -15,6 +15,10 @@ class WorkerInfo(BaseModel):
     last_run_at: Optional[datetime] = None
     last_duration_ms: float = 0.0
     last_detail: str = ''
+    # Populated only for a worker whose task ended unexpectedly — the pair that turns a silently
+    # dead worker into something /health states outright rather than implying via a stale `last`.
+    stopped_at: Optional[datetime] = None
+    stopped_reason: str = ''
 
 
 class BudgetInfo(BaseModel):
@@ -59,7 +63,14 @@ class ResourceInfo(BaseModel):
     over_ceiling: bool = False
 
 
+HEALTH_STATUSES: Tuple[str, ...] = ('ok', 'degraded')
+
+
 class HealthResponse(BaseModel):
+    # 'ok' | 'degraded'. A plain str with the domain kept as data (CLAUDE.md): a monitor polling
+    # this endpoint must keep parsing a value a later version introduces. It was a hardcoded 'ok'
+    # until 2026-08-22 — including for the 37 hours an ingest worker lay dead, which is exactly the
+    # window an external check exists to catch.
     status: str = 'ok'
     service: str = 'FiniexRAGEngine'
     version: str

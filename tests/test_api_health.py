@@ -1,8 +1,10 @@
 """Smoke tests for the bootable API shell (scaffold)."""
+from datetime import datetime, timezone
 from fastapi.testclient import TestClient
 
 from finiexragengine.configuration.app_config_manager import AppConfigManager
 from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
+from finiexragengine.types.worker_types import WorkerState
 
 
 def _configured_symbols(pipeline_id: str) -> set:
@@ -118,3 +120,48 @@ def test_an_unmapped_journal_reports_unknown_not_a_guess() -> None:
     named = AppConfig(journal_names={'9c3fa4c80d95': 'dev'})
     assert named.journal_names.get('9c3fa4c80d95', 'unknown') == 'dev'
     assert named.journal_names.get('other', 'unknown') == 'unknown'
+
+
+def test_health_says_degraded_when_a_worker_died() -> None:
+    """`status` is a claim about the engine, not a constant.
+
+    It was a hardcoded `'ok'` until 2026-08-22 — including throughout the 37 hours an ingest worker
+    lay dead on 2026-08-20. An external check polling this endpoint is exactly the thing that should
+    have caught that, and it would have seen green the whole time.
+    """
+    from fastapi import FastAPI
+
+    from finiexragengine.api.endpoints.health_router import build_health_router
+
+    manager = AppConfigManager()
+    registry = PipelineRegistry(manager.get_pipelines_dir(), manager.get_user_pipelines_dir())
+    registry.load()
+
+    healthy = WorkerState(name='ingest:forex_news', kind='ingest', interval_seconds=15)
+    dead = WorkerState(name='ingest:crypto_news', kind='ingest', interval_seconds=15)
+
+    class _Supervisor:
+        """Only the one method /health calls — the seam, not the whole supervisor."""
+
+        def states(self) -> list:
+            return [healthy, dead]
+
+    def _health_body() -> dict:
+        app = FastAPI()
+        app.include_router(build_health_router(manager, registry, supervisor=_Supervisor()))
+        return TestClient(app).get('/v1/health').json()
+
+    assert _health_body()['status'] == 'ok'                 # both workers fine
+
+    # The worker's task ends: exactly what the supervisor's done-callback records.
+    dead.stopped_at = datetime(2026, 8, 20, 19, 24, 56, tzinfo=timezone.utc)
+    dead.stopped_reason = "NameError: name '_format_age' is not defined"
+
+    body = _health_body()
+    assert body['status'] == 'degraded'
+    frozen = next(w for w in body['workers'] if w['name'] == 'ingest:crypto_news')
+    assert frozen['stopped_reason'].startswith('NameError')
+    assert frozen['stopped_at'] is not None
+    # And the healthy one is untouched — 'degraded' names the engine, the fields name the worker.
+    assert next(w for w in body['workers']
+                if w['name'] == 'ingest:forex_news')['stopped_at'] is None

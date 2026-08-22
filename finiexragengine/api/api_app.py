@@ -252,6 +252,7 @@ def create_app(attach_runners: Optional[bool] = None,
                                    stall_watchdog=stall_watchdog,
                                    resource_gauge=resource_gauge,
                                    worker_count=len(supervisor.states()),
+                                   states_provider=supervisor.states,
                                    version=config_manager.get_config().version,
                                    journal_named=journal_named)
 

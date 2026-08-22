@@ -343,11 +343,69 @@ The stall watchdog (ISSUE_75) answers this without being asked: no completed pas
 dashboard row red. On 2026-08-01 the engine stood still for nine days and nothing said so; that
 is the gap it closes.
 
+A standing stall keeps being announced, at a widening interval (1 h, then doubling to a 6 h
+ceiling). It used to be announced exactly once: on 2026-08-20 that single line, fifteen minutes in,
+was the only thing ever said about a worker that stayed dead for 37 hours.
+
 To check by hand, the newest poll in the journal is the engine's pulse:
 
 ```sql
 SELECT source_id, max(ts) AS last_poll FROM source_poll_log GROUP BY source_id ORDER BY 2;
 ```
+
+## A worker has been silent for hours — where do I look?
+
+The dashboard shows `last 37h36m` on one row and everything else looks normal. Three commands, in
+this order, and each one rules out a whole class.
+
+**1. Is it dead, or just slow?** `/v1/health` is the only surface that distinguishes them, and it
+is the first thing to capture — **a restart destroys it**.
+
+```powershell
+Invoke-RestMethod http://localhost:8100/v1/health | ConvertTo-Json -Depth 6
+```
+
+| What you see | What it means |
+|---|---|
+| `stopped_at` set, `stopped_reason` filled | the task **died**. The reason is the exception; the traceback is in the log at ERROR. Only a restart brings it back |
+| `stopped_at` null, `last_run_at` stale | the task is alive but its passes are not completing — a hang, not a crash. Look at `pass_timeout_seconds` and the pass body |
+| `stall.stalled` lists it | the watchdog agrees. This field was right for all 37 hours on 2026-08-20 while nothing said so out loud |
+
+**`last_duration_ms` is the sharp instrument.** It is written at the very end of a pass, after the
+work and after the reporting. Compare it against the durations the log shows for that worker's
+recent passes: if it matches the *previous* pass rather than the one `last_run_at` names, the pass
+named by `last_run_at` never reached the end — and the gap between the two tells you which part it
+did not survive. That one field is what identified the failing call in the 2026-08-20 incident.
+
+**2. Which feeds stopped, and together or apart?**
+
+```bash
+python -m finiexragengine.cli.sources_cli
+```
+
+The **poll gaps** table measures each feed against its own cadence. Feeds that stop *simultaneously*
+and to the millisecond are not a feed problem — that is their shared worker. Feeds that stop apart
+are a feed or host problem, and the latency table's `timeout` vs `refused` column splits those.
+
+**3. What was the last thing that worker actually did?**
+
+```bash
+grep "ingest:crypto_news" finiex.log.<date> | tail -20
+```
+
+Mind the level: a pass that stored nothing, flagged nothing and spent nothing logs at **DEBUG**, so
+on an INFO log the last visible line can be an *earlier* pass than the one that died. Cross-check
+against `last_run_at` from step 1 before concluding anything about ordering — the two disagreeing is
+itself the signal that the fatal pass was a quiet one.
+
+### What the engine now does on its own
+
+A worker task that ends while the engine runs is logged at ERROR with its traceback, recorded in
+`/v1/health` as `stopped_at`/`stopped_reason`, and shown in the live dashboard header as
+`⚠ WORKER DEAD: <name> — restart needed`. Before 2026-08-20 it did none of those: the exception sat
+unretrieved in a task nobody looked at, and because the supervisor holds a strong reference the task
+was never collected, so not even CPython's "Task exception was never retrieved" appeared. The
+dashboard's ageing `last` number was the only evidence, and it looks exactly like a healthy one.
 
 ## Which instance am I looking at?
 
