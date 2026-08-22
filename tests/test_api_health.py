@@ -78,3 +78,43 @@ def test_an_unparseable_timeframe_reports_as_absent_not_as_an_error(monkeypatch)
     assert health_router._cadence_seconds('M10') == 600
     assert health_router._cadence_seconds(None) is None
     assert health_router._cadence_seconds('M7') is None
+
+
+def test_health_reports_no_journal_id_without_a_store(client: TestClient) -> None:
+    """Scaffold-mock mode has no store, so there is no journal to identify (ISSUE_9).
+
+    Absent rather than a placeholder: the field answers "which series is this", and an instance that
+    writes nowhere is not a series a certificate can be taken against.
+    """
+    assert client.get('/v1/health').json()['journal_id'] is None
+
+
+def test_environment_is_resolved_from_the_journal_never_declared(client: TestClient) -> None:
+    """The name is keyed on the journal's fingerprint, so it cannot travel to another database.
+
+    A free-standing `environment: 'production'` would claim something about the *process*: carry the
+    config to another machine and it still says production. Keyed on the identity, a boot against a
+    different journal simply misses the lookup and reports `unknown` — the misconfiguration
+    announces itself instead of being inherited, which is what a release certificate needs.
+    """
+    body = client.get('/v1/health').json()
+    # Scaffold-mock mode: no store, so no fingerprint, so nothing to resolve.
+    assert body['journal_id'] is None
+    assert body['environment'] == 'unknown'
+
+
+def test_an_unmapped_journal_reports_unknown_not_a_guess() -> None:
+    """The tracked example is inert: it shows the shape and can never resolve anything.
+
+    `EXAMPLE_ID` is not twelve lowercase hex characters, so no real fingerprint can equal it. That
+    is what lets the example ship in tracked config without handing every fork a name for a database
+    it does not have — which would re-introduce, through the config file, exactly the failure that
+    keying on the fingerprint prevents.
+    """
+    from finiexragengine.types.config_types.app_config_types import AppConfig
+    config = AppConfig()
+    assert list(config.journal_names) == ['EXAMPLE_ID']
+    assert config.journal_names.get('9c3fa4c80d95', 'unknown') == 'unknown'
+    named = AppConfig(journal_names={'9c3fa4c80d95': 'dev'})
+    assert named.journal_names.get('9c3fa4c80d95', 'unknown') == 'dev'
+    assert named.journal_names.get('other', 'unknown') == 'unknown'

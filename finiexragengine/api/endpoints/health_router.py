@@ -7,6 +7,7 @@ from finiexragengine.configuration.app_config_manager import AppConfigManager
 from finiexragengine.core.observability.budget_guard import BudgetGuard
 from finiexragengine.core.observability.resource_gauge import ResourceGauge
 from finiexragengine.core.observability.stall_watchdog import StallWatchdog
+from finiexragengine.core.outcome.outcome_store import OutcomeStore
 from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
 from finiexragengine.core.pipeline.worker_supervisor import WorkerSupervisor
 from finiexragengine.utils.timeframe import timeframe_minutes
@@ -42,7 +43,8 @@ def build_health_router(config_manager: AppConfigManager,
                         supervisor: Optional[WorkerSupervisor] = None,
                         budget_guard: Optional[BudgetGuard] = None,
                         stall_watchdog: Optional[StallWatchdog] = None,
-                        resource_gauge: Optional[ResourceGauge] = None) -> APIRouter:
+                        resource_gauge: Optional[ResourceGauge] = None,
+                        outcome_store: Optional[OutcomeStore] = None) -> APIRouter:
     """Build the health/pipelines router bound to the given config + registry.
 
     `supervisor` (ISSUE_10) adds the live worker states to /health — the first
@@ -62,8 +64,13 @@ def build_health_router(config_manager: AppConfigManager,
         stall = StallInfo(**stall_watchdog.status()) if stall_watchdog is not None else None
         resources = (ResourceInfo(**resource_gauge.status())
                      if resource_gauge is not None else None)
+        journal_id = outcome_store.journal_id() if outcome_store is not None else None
+        # Resolved, never declared: an unmapped or unidentifiable journal is honestly `unknown`.
+        environment = config_manager.get_config().journal_names.get(journal_id or '', 'unknown')
         return HealthResponse(version=config_manager.get_config().version,
                               pass_timeout_seconds=config_manager.get_config().pass_timeout_seconds,
+                              journal_id=journal_id,
+                              environment=environment,
                               workers=workers, budget=budget, stall=stall,
                               resources=resources)
 

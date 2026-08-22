@@ -9,6 +9,13 @@ worker), and the activity stream below is *history*, filling the rest of the ter
 In live mode rich.Live owns stdout exclusively — the console log handler is suppressed
 (`configure_logging(live_mode=True)`, ISSUE_26 Slice 0) and uvicorn's own logging is routed to
 the file, so nothing else writes to the terminal and frames never tear.
+
+**That suppression is why `_header_warnings()` exists.** A condition an operator must notice cannot
+be a log line here: nothing on the console survives live mode. So instance-wide conditions —
+over the RSS ceiling, an unnamed journal — become header segments that appear while they hold and
+vanish when they stop. **Add the next one there**, as one entry in that list, not as another
+`header +=` and not as a row of its own: a row costs layout in every frame, a segment costs nothing
+once the condition clears.
 """
 import asyncio
 from datetime import datetime, timezone
@@ -33,6 +40,10 @@ from finiexragengine.core.ui.engine_stats import (
     SourcesSnapshot,
 )
 from finiexragengine.utils.windows_console import disable_quickedit
+
+# Prefix for every header warning (see `LiveDisplay._header_warnings`). Named rather than repeated
+# inline so a grep for it finds every warning site at once — including the join that renders them.
+WARNING_MARK = '⚠'
 
 # The BREAKING section reserves this many episode rows (newest first, blank-padded) so the state
 # panel stays fixed-height while listing recent episodes one per line (ISSUE_64).
@@ -101,10 +112,18 @@ class LiveDisplay:
                  resource_gauge: Optional[ResourceGauge] = None,
                  worker_count: int = 0,
                  version: str = '',
+                 journal_named: bool = True,
                  refresh_seconds: float = 1.0,
                  console: Optional[Console] = None) -> None:
         self._stats = stats
         self._budget_guard = budget_guard
+        # Whether this engine's journal has a name in `journal_names` (ISSUE_9). Surfaced here
+        # because the boot warning cannot reach a live console: `--live` runs without a console log
+        # handler, so an operator watching the dashboard would never learn that a consumer's release
+        # certificate taken against this instance will read `unknown`. Defaults to True so every
+        # other caller (tests, CLI paths) stays silent rather than warning about a question it was
+        # not asked.
+        self._journal_named = journal_named
         # The running build, shown in the header. A live console that does not say which version it
         # is showing makes "did the deploy land?" a guess — and this session had to answer exactly
         # that question from commit timestamps. Empty = omit the segment (CLI/test paths).
@@ -181,12 +200,28 @@ class LiveDisplay:
         version = f' v{self._version}' if self._version else ''
         header = (f'FiniexRAGEngine{version} — up {uptime} — {self._worker_count} workers '
                   f'— ${spend:.3f} today')
+        return header + ''.join(f' — {warning}' for warning in self._header_warnings())
+
+    def _header_warnings(self) -> List[str]:
+        """Header segments shown only *while* their condition holds, gone the moment it stops.
+
+        One list rather than a chain of `header +=`: each condition stays a single entry, the
+        separator lives in exactly one place, and the next condition added cannot get it wrong.
+        They belong in the header rather than in rows of their own because each is a property of
+        the whole instance, not of a stage — and a segment that disappears costs no layout.
+        """
+        warnings: List[str] = []
         # Only while over the ceiling, and only when one is configured (default 0 = off).
         if self._resource_gauge is not None and self._resource_gauge.over_ceiling:
             sample = self._resource_gauge.latest()
             if sample is not None:
-                header += f' — ⚠ rss {sample.rss_mb:.0f} MB'
-        return header
+                warnings.append(f'{WARNING_MARK} rss {sample.rss_mb:.0f} MB')
+        # `--live` runs without a console log handler, so the boot warning about this cannot reach
+        # an operator watching the dashboard. Without it they would learn that a consumer's release
+        # certificate reads `unknown` only when the certificate comes out.
+        if not self._journal_named:
+            warnings.append(f'{WARNING_MARK} journal unnamed (see diagnostics.md)')
+        return warnings
 
     def _stage_rows(self, now: datetime) -> Table:
         # A grid (no borders): stage label + per-worker id + `last` cell + a free detail column.

@@ -349,6 +349,52 @@ To check by hand, the newest poll in the journal is the engine's pulse:
 SELECT source_id, max(ts) AS last_poll FROM source_poll_log GROUP BY source_id ORDER BY 2;
 ```
 
+## Which instance am I looking at?
+
+Two journals share this schema — the development container and the live server — so a query answers
+plausibly no matter which one it runs against. `/v1/health` reports two fields that settle it:
+
+```json
+{ "journal_id": "9c3fa4c80d95", "environment": "dev" }
+```
+
+`journal_id` is **derived**: a 12-character fingerprint of the PostgreSQL `system_identifier` of the
+database the engine writes into. It cannot be configured, therefore cannot be set wrong. `environment`
+is that fingerprint looked up in `journal_names`; an unmapped or unidentifiable journal reports
+`unknown` rather than a guess.
+
+**To name a deployment**, read its fingerprint on that machine —
+
+```sql
+SELECT left(encode(sha256(system_identifier::text::bytea), 'hex'), 12) AS journal_id
+FROM pg_control_system();
+```
+
+— and add it to *that machine's* gitignored `user_configs/app_config.json`:
+
+```json
+{ "journal_names": { "9c3fa4c80d95": "dev" } }
+```
+
+The mapping is keyed on the journal's own identity on purpose. A plain `environment: "production"`
+string would claim something about the *process*: copy the config to another machine and it still
+says production. Keyed on the fingerprint, a boot against a different database simply misses the
+lookup and degrades to `unknown` — the misconfiguration announces itself instead of being inherited.
+That is what makes the consumer's release certificate falsifiable: it records which journal it was
+taken against, and a later reader can check whether two certificates describe the same series.
+
+**Which half binds:** `journal_id` is derived and therefore binding — fixed at `initdb`, unchanged
+by restarts, in-place upgrades, PITR or a restore into the same cluster, and changed only when the
+cluster itself changes (fresh install, new hardware, a logical restore into a newly initialised
+database). A physically replicated standby inherits it, so a promoted replica keeps the same id —
+correct, since it is the same series continuing. The **name binds nothing**: free-form, changeable
+at any time, and never persisted — it appears only in the `/v1/health` response, never on an
+envelope. A rename cannot invalidate history. Certify against the id, read the name.
+
+`pg_control_system()` is superuser-restricted by default. On a managed Postgres it is refused, the
+engine reports `journal_id: null` / `environment: "unknown"`, and the remaining epoch detection falls
+back to the journal comparison (see the restore entry above).
+
 ## We restored the database — what does the consumer see?
 
 A restore rewinds `stream_seq`, so the engine re-mints `seq` values a consumer already holds. To a

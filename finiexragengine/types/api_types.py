@@ -74,6 +74,16 @@ class HealthResponse(BaseModel):
     # one: past this deadline the pass is abandoned and produces nothing, so `seq` can lead
     # evidence by at most one of these (ISSUE_9 RC-4).
     pass_timeout_seconds: int
+    # Which journal this engine writes into — a 12-char fingerprint of the database's own identifier
+    # (ISSUE_9). Derived, never configured: a declared environment label is a claim, and a
+    # mislabelled dev instance would make a rehearsal look like proof. `None` when the identifier is
+    # unreadable (managed Postgres) or no store is attached (scaffold-mock mode).
+    journal_id: Optional[str] = None
+    # The human name for the journal above, resolved through `journal_names` in the configuration
+    # (ISSUE_9). `unknown` when the fingerprint has no entry — or when there is no fingerprint to
+    # look up at all. Because the name is keyed on the journal's identity, a configuration carried
+    # to a different database cannot carry its label with it: the lookup simply misses.
+    environment: str = 'unknown'
     # Empty when the server runs without --workers (API-only mode, no background spend).
     workers: List[WorkerInfo] = []
     # Present only with real runners attached (the guard lives on the assembler, ISSUE_47).

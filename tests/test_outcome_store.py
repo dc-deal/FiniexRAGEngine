@@ -124,3 +124,29 @@ def test_an_unsequenced_archive_line_still_loads(store):
            'result': [], 'metadata': {'model': 'gpt-4o-mini'}}
     parsed = SentimentEnvelope(**old)
     assert (parsed.seq, parsed.stream_epoch, parsed.available_msc) == (None, None, None)
+
+def test_journal_id_identifies_the_store_not_the_process(clean_db):
+    """A stable fingerprint of the database the engine writes into (ISSUE_9).
+
+    The consumer's release certificate has to record which producer it was taken against, or it is
+    unfalsifiable a month later. Two engines pointing at one database are one series, so the identity
+    that matters is the store's — hence the name and the derivation.
+    """
+    from finiexragengine.core.outcome.outcome_store import OutcomeStore
+    store = OutcomeStore(clean_db)
+    journal_id = store.journal_id()
+    assert journal_id and len(journal_id) == 12
+    # Stable across calls and across instances pointed at the same database — that is the property
+    # a certificate rests on.
+    assert store.journal_id() == journal_id
+    assert OutcomeStore(clean_db).journal_id() == journal_id
+
+
+def test_an_unreachable_store_reports_no_journal_id():
+    """"Cannot be established" is an answer; a substitute derived from the DSN would collide.
+
+    A dev container and a server deployment can easily share `host:port/database`, so a DSN-derived
+    identity would claim two different journals are one — the failure the field exists to prevent.
+    """
+    from finiexragengine.core.outcome.outcome_store import OutcomeStore
+    assert OutcomeStore('postgresql://nobody:nope@nowhere:5432/none').journal_id() is None
