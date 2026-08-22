@@ -1,57 +1,104 @@
 {
-    "pipeline_id": "crypto_sentiment",
-    "outcome_type": "sentiment_fear_greed",
-    "market": "crypto",
-    "symbols": [
-        { "key": "BTCUSD",  "base": "BTC",  "quote": "USD", "query": "Bitcoin BTC" },
-        { "key": "ETHUSD",  "base": "ETH",  "quote": "USD", "query": "Ethereum ETH" },
-        { "key": "ETHEUR",  "base": "ETH",  "quote": "EUR", "query": "Ethereum ETH" },
-        { "key": "SOLUSD",  "base": "SOL",  "quote": "USD", "query": "Solana SOL" },
-        { "key": "ADAUSD",  "base": "ADA",  "quote": "USD", "query": "Cardano ADA" },
-        { "key": "XRPUSD",  "base": "XRP",  "quote": "USD", "query": "XRP Ripple" },
-        { "key": "DASHUSD", "base": "DASH", "quote": "USD", "query": "Dash cryptocurrency" },
-        { "key": "LTCUSD",  "base": "LTC",  "quote": "USD", "query": "Litecoin LTC" },
-        { "key": "DOTUSD",  "base": "DOT",  "quote": "USD", "query": "Polkadot DOT" }
-    ],
-    "prompt": {
-        "name": "crypto_sentiment",
-        "version": "2"
+  "pipeline_id": "crypto_sentiment",
+  "outcome_type": "sentiment_fear_greed",
+  "market": "crypto",
+  "symbols": [
+    {
+      "key": "BTCUSD",
+      "base": "BTC",
+      "quote": "USD",
+      "query": "Bitcoin BTC"
     },
-    "llm": {
-        "models": [
-            {
-                "name": "gpt-4o-mini",
-                "sub_pipeline_id": "mini",
-                "default": true,
-                "enabled": true
-            },
-            {
-                "name": "gpt-4o",
-                "sub_pipeline_id": "4o_enhanced",
-                "enabled": true
-            }
-        ]
+    {
+      "key": "ETHUSD",
+      "base": "ETH",
+      "quote": "USD",
+      "query": "Ethereum ETH"
     },
-    "trigger": {
-        "type": "interval",
-        "timeframe": "M10"
+    {
+      "key": "ETHEUR",
+      "base": "ETH",
+      "quote": "EUR",
+      "query": "Ethereum ETH"
     },
-    "source_set": "crypto_news",
-    "retrieval": {
-        "top_k": 12,
-        "recency_window_minutes": 1440,
-        "dedup_similarity": 0.85,
-        "floor_distance": 0.70
+    {
+      "key": "SOLUSD",
+      "base": "SOL",
+      "quote": "USD",
+      "query": "Solana SOL"
     },
-    "breaking": {
-        "urgency_threshold": 0.8,
-        "min_importance": 2,
-        "urgency_exit_threshold": 0.7,
-        "episode_gap_minutes": 150,
-        "episode_seed_hours": 72
+    {
+      "key": "ADAUSD",
+      "base": "ADA",
+      "quote": "USD",
+      "query": "Cardano ADA"
     },
-    "output_guard": {
-        "score_signal_tolerance": 0.1,
-        "hold_confidence_max": 0.9
+    {
+      "key": "XRPUSD",
+      "base": "XRP",
+      "quote": "USD",
+      "query": "XRP Ripple"
+    },
+    {
+      "key": "DASHUSD",
+      "base": "DASH",
+      "quote": "USD",
+      "query": "Dash cryptocurrency"
+    },
+    {
+      "key": "LTCUSD",
+      "base": "LTC",
+      "quote": "USD",
+      "query": "Litecoin LTC"
+    },
+    {
+      "key": "DOTUSD",
+      "base": "DOT",
+      "quote": "USD",
+      "query": "Polkadot DOT"
     }
+  ],
+  "prompt": {
+    "name": "crypto_sentiment",
+    "version": "2"
+  },
+  "llm": {
+    "models": [
+      {
+        "name": "gpt-4o-mini",
+        "sub_pipeline_id": "mini",
+        "default": true,
+        "enabled": true
+      },
+      {
+        "name": "gpt-4o",
+        "sub_pipeline_id": "4o_enhanced",
+        "enabled": true
+      }
+    ]
+  },
+  "trigger": {
+    "type": "interval",
+    "timeframe": "M10"
+  },
+  "source_set": "crypto_news",
+  "retrieval": {
+    "top_k": 12,
+    "recency_window_minutes": 1440,
+    "dedup_similarity": 0.85,
+    "floor_distance": 0.7
+  },
+  "breaking": {
+    "urgency_threshold": 0.8,
+    "min_importance": 2,
+    "urgency_exit_threshold": 0.7,
+    "episode_gap_minutes": 150,
+    "episode_seed_hours": 72,
+    "story_similarity": 0.35,
+    "story_window_hours": 72
+  },
+  "output_guard": {
+    "score_signal_tolerance": 0.1,
+    "hold_confidence_max": 0.9
+  }
 }
