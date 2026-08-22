@@ -56,14 +56,20 @@ def _report_journal_identity(config_manager: AppConfigManager,
     if name is not None:
         logger.info('[JOURNAL] %s · %s', journal_id, name)
         return True
+    # Name the ids that ARE mapped when there are any. Once the field exists, the likely mistake is
+    # no longer "nobody filled it in" but "it was filled in for a different database" — a copied
+    # config, a restored cluster, a second deployment. Reporting only "unnamed" would leave the
+    # operator comparing two fingerprints by hand, one of which is not on screen.
+    mapped = sorted(config_manager.get_config().journal_names)
+    mismatch = (f' Mapped ids: {", ".join(mapped)} — none is this one.' if mapped else '')
     logger.warning(
-        '[JOURNAL] %s is unnamed — /health reports environment "unknown". '
+        '[JOURNAL] %s is unnamed — /health reports environment "unknown".%s '
         'MANDATORY before a consumer connects: their release certificate records which producer it '
         'was taken against, and "unknown" makes it unfalsifiable. Add to '
         'user_configs/app_config.json (never to tracked config, it would be inherited by every '
         'fork): {"journal_names": {"%s": "production"}} · '
         'docs/development/diagnostics.md — "Which instance am I looking at?"',
-        journal_id, journal_id)
+        journal_id, mismatch, journal_id)
     return False
 
 
