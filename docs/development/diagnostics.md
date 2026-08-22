@@ -282,6 +282,60 @@ Sampled on the stall-watchdog tick (60s) — ~1.4k rows/day, retention
 `diagnostics.resource_rss_warn_mb` warns **once** when crossed and marks the live header;
 it ships at `0` (off) on purpose — the weekly line is what produces a real number to set it from.
 
+## Is the engine running right now — and how do I stop it?
+
+The dev container has **no `ps`, `pgrep`, `top`, `curl`, `lsof` or `netstat`**, and `jobs` only sees
+children of the current shell — so it shows nothing started from another terminal. Anyone who
+backgrounds a server without noting the PID cannot find it again without the handles below. That is
+the real reason a background start is a bad idea here, not tidiness.
+
+**What is running?** `/proc` is always there:
+
+```bash
+for p in /proc/[0-9]*; do
+  cmd=$(tr '\0' ' ' < $p/cmdline 2>/dev/null)
+  # Test the FIRST argument only. A pattern like */python* also matches the shell running this
+  # loop, because its own command line contains the search words.
+  case "${cmd%% *}" in *python*) ;; *) continue ;; esac
+  case "$cmd" in *server_cli*|*uvicorn*|*run_cli*|*ingest_cli*)
+    echo "${p#/proc/}  $cmd" ;;
+  esac
+done
+```
+
+**Stopping it:** `pkill -f server_cli` (present, even though `pgrep` is not), or `kill <pid>` with a
+PID from the list above. Then confirm the port is actually dead — a process can linger while
+shutting down workers:
+
+```bash
+python3 -c "import urllib.request as u; u.urlopen('http://localhost:8100/v1/health',timeout=3); print('still answering')" \
+  || echo "port 8100 dead"
+```
+
+**Is the API answering?** Without `curl`:
+
+```bash
+python3 -c "import urllib.request as u,json; print(json.load(u.urlopen('http://localhost:8100/v1/health')))"
+```
+
+The path is `/v1/health`, not `/health` — the health router sits under the same `/v1` prefix as
+everything else.
+
+**Following along:** `tail -f logs/finiex.log` (path from `logging.file`, daily rotation). The log is
+written regardless of who started the server.
+
+**Better: do not background it.** A foreground start in its own terminal is the controllable option
+here — visible, stoppable with Ctrl-C, and the live display (`--live`) is only usable that way:
+
+```bash
+python finiexragengine/cli/server_cli.py --workers        # workers run ingest + eval
+python finiexragengine/cli/server_cli.py                  # API only: no passes, no spend
+```
+
+**Keep the spend in view:** a running `--workers` server pays per pass (M10, two pipelines: roughly
+$0.03/hour). `/v1/health` reports `budget.day_spend_usd`; if it shows `soft_daily_usd: 0.0` there is
+**no cap configured** and the cost circuit breaker (ISSUE_47) will not engage.
+
 ## Is the engine still working at all?
 
 The stall watchdog (ISSUE_75) answers this without being asked: no completed pass within
@@ -289,11 +343,160 @@ The stall watchdog (ISSUE_75) answers this without being asked: no completed pas
 dashboard row red. On 2026-08-01 the engine stood still for nine days and nothing said so; that
 is the gap it closes.
 
+A standing stall keeps being announced, at a widening interval (1 h, then doubling to a 6 h
+ceiling). It used to be announced exactly once: on 2026-08-20 that single line, fifteen minutes in,
+was the only thing ever said about a worker that stayed dead for 37 hours.
+
 To check by hand, the newest poll in the journal is the engine's pulse:
 
 ```sql
 SELECT source_id, max(ts) AS last_poll FROM source_poll_log GROUP BY source_id ORDER BY 2;
 ```
+
+## A worker has been silent for hours — where do I look?
+
+The dashboard shows `last 37h36m` on one row and everything else looks normal. Three commands, in
+this order, and each one rules out a whole class.
+
+**1. Is it dead, or just slow?** `/v1/health` is the only surface that distinguishes them, and it
+is the first thing to capture — **a restart destroys it**.
+
+```powershell
+Invoke-RestMethod http://localhost:8100/v1/health | ConvertTo-Json -Depth 6
+```
+
+| What you see | What it means |
+|---|---|
+| `stopped_at` set, `stopped_reason` filled | the task **died**. The reason is the exception; the traceback is in the log at ERROR. Only a restart brings it back |
+| `stopped_at` null, `last_run_at` stale | the task is alive but its passes are not completing — a hang, not a crash. Look at `pass_timeout_seconds` and the pass body |
+| `stall.stalled` lists it | the watchdog agrees. This field was right for all 37 hours on 2026-08-20 while nothing said so out loud |
+
+**`last_duration_ms` is the sharp instrument.** It is written at the very end of a pass, after the
+work and after the reporting. Compare it against the durations the log shows for that worker's
+recent passes: if it matches the *previous* pass rather than the one `last_run_at` names, the pass
+named by `last_run_at` never reached the end — and the gap between the two tells you which part it
+did not survive. That one field is what identified the failing call in the 2026-08-20 incident.
+
+**2. Which feeds stopped, and together or apart?**
+
+```bash
+python -m finiexragengine.cli.sources_cli
+```
+
+The **poll gaps** table measures each feed against its own cadence. Feeds that stop *simultaneously*
+and to the millisecond are not a feed problem — that is their shared worker. Feeds that stop apart
+are a feed or host problem, and the latency table's `timeout` vs `refused` column splits those.
+
+**3. What was the last thing that worker actually did?**
+
+```bash
+grep "ingest:crypto_news" finiex.log.<date> | tail -20
+```
+
+Mind the level: a pass that stored nothing, flagged nothing and spent nothing logs at **DEBUG**, so
+on an INFO log the last visible line can be an *earlier* pass than the one that died. Cross-check
+against `last_run_at` from step 1 before concluding anything about ordering — the two disagreeing is
+itself the signal that the fatal pass was a quiet one.
+
+### What the engine now does on its own
+
+A worker task that ends while the engine runs is logged at ERROR with its traceback, recorded in
+`/v1/health` as `stopped_at`/`stopped_reason`, and shown in the live dashboard header as
+`⚠ WORKER DEAD: <name> — restart needed`. Before 2026-08-20 it did none of those: the exception sat
+unretrieved in a task nobody looked at, and because the supervisor holds a strong reference the task
+was never collected, so not even CPython's "Task exception was never retrieved" appeared. The
+dashboard's ageing `last` number was the only evidence, and it looks exactly like a healthy one.
+
+## Which instance am I looking at?
+
+Two journals share this schema — the development container and the live server — so a query answers
+plausibly no matter which one it runs against. `/v1/health` reports two fields that settle it:
+
+```json
+{ "journal_id": "9c3fa4c80d95", "environment": "dev" }
+```
+
+`journal_id` is **derived**: a 12-character fingerprint of the PostgreSQL `system_identifier` of the
+database the engine writes into. It cannot be configured, therefore cannot be set wrong. `environment`
+is that fingerprint looked up in `journal_names`; an unmapped or unidentifiable journal reports
+`unknown` rather than a guess.
+
+**To name a deployment**, read its fingerprint on that machine —
+
+```sql
+SELECT left(encode(sha256(system_identifier::text::bytea), 'hex'), 12) AS journal_id
+FROM pg_control_system();
+```
+
+— and add it to *that machine's* gitignored `user_configs/app_config.json`:
+
+```json
+{ "journal_names": { "9c3fa4c80d95": "dev" } }
+```
+
+The mapping is keyed on the journal's own identity on purpose. A plain `environment: "production"`
+string would claim something about the *process*: copy the config to another machine and it still
+says production. Keyed on the fingerprint, a boot against a different database simply misses the
+lookup and degrades to `unknown` — the misconfiguration announces itself instead of being inherited.
+That is what makes the consumer's release certificate falsifiable: it records which journal it was
+taken against, and a later reader can check whether two certificates describe the same series.
+
+**Which half binds:** `journal_id` is derived and therefore binding — fixed at `initdb`, unchanged
+by restarts, in-place upgrades, PITR or a restore into the same cluster, and changed only when the
+cluster itself changes (fresh install, new hardware, a logical restore into a newly initialised
+database). A physically replicated standby inherits it, so a promoted replica keeps the same id —
+correct, since it is the same series continuing. The **name binds nothing**: free-form, changeable
+at any time, and never persisted — it appears only in the `/v1/health` response, never on an
+envelope. A rename cannot invalidate history. Certify against the id, read the name.
+
+`pg_control_system()` is superuser-restricted by default. On a managed Postgres it is refused, the
+engine reports `journal_id: null` / `environment: "unknown"`, and the remaining epoch detection falls
+back to the journal comparison (see the restore entry above).
+
+## We restored the database — what does the consumer see?
+
+A restore rewinds `stream_seq`, so the engine re-mints `seq` values a consumer already holds. To a
+cursor-based reader that is the worst failure shape there is: every new frame sits *below* their
+cursor and is silently ignored while the connection stays healthy and heartbeats keep arriving.
+Nothing looks wrong; the signal simply never advances again.
+
+`stream_epoch` is the guard. It bumps automatically when the engine can see the rewind:
+
+```sql
+-- what each stream believes about itself
+SELECT pipeline_id, seq, epoch, cluster_id, updated_at FROM stream_seq ORDER BY pipeline_id;
+
+-- what the journal remembers — a counter behind this is a rewind
+SELECT pipeline_id,
+       max((envelope->>'seq')::BIGINT)          AS journal_seq,
+       max((envelope->>'stream_epoch')::BIGINT) AS journal_epoch
+FROM outcomes GROUP BY pipeline_id;
+```
+
+Boot reconciliation bumps on either of two pieces of evidence: the counter is behind its own
+journal, or `cluster_id` (`<system_identifier>/<timeline_id>`) changed — PITR and standby promotion
+start a new timeline, and a restore into a fresh cluster changes the system identifier. Both log a
+`series rewound` warning naming the old and new epoch. **A boot after a restore that logs nothing is
+the case to look at**, not the one that shouts.
+
+**The one shape the engine cannot see: a logical dump/restore in place.** Neither the timeline nor
+the system identifier changes, and if the journal was restored along with the counter they agree
+with each other. After such a restore, bump the epoch by hand *before* starting the engine:
+
+```sql
+UPDATE stream_seq
+   SET epoch = GREATEST(epoch + 1, extract(epoch FROM now())::BIGINT),
+       last_available_msc = NULL
+ WHERE pipeline_id = '<stream>';
+```
+
+The `GREATEST` matters: a plain `epoch + 1` can reissue a number an earlier series already used, and
+two series sharing an epoch collide the consumer's `(pipeline_id, stream_epoch, seq)` archive key —
+they merge, silently.
+
+If it was missed, the consumer reports it: a client presenting a cursor beyond our head receives a
+`cursor_ahead` control frame. That is the after-the-fact detector for exactly this case — treat it as
+evidence that one of the two stores was rewound, never as something to ignore.
 
 ## How fast did the engine really react to breaking news?
 

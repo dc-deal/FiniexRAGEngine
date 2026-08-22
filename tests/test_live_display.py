@@ -242,3 +242,27 @@ def test_an_episode_whose_start_was_observed_shows_no_bound():
     line = next(line for line in _render(stats, worker_count=4).splitlines()
                 if 'BTCUSD BUY' in line)
     assert '17h11m' in line and '≥' not in line
+
+
+def test_header_warnings_appear_only_while_their_condition_holds():
+    """The convention for instance-wide conditions on the live console (ISSUE_9/ISSUE_26).
+
+    `--live` suppresses the console log handler, so a condition an operator must notice cannot be a
+    log line — it becomes a header segment that appears while it holds and vanishes when it stops.
+    Adding the next one means one entry in `LiveDisplay._header_warnings`, never another
+    `header +=` and never a row of its own: a row costs layout in every frame, a segment costs
+    nothing once the condition clears.
+    """
+    from finiexragengine.core.ui.live_display import WARNING_MARK, LiveDisplay
+    from finiexragengine.core.ui.engine_stats import EngineStats
+
+    named = LiveDisplay(EngineStats(), worker_count=1, version='9.9.9', journal_named=True)
+    assert named._header_warnings() == []
+    assert WARNING_MARK not in named._header(datetime.now(timezone.utc))
+
+    unnamed = LiveDisplay(EngineStats(), worker_count=1, version='9.9.9', journal_named=False)
+    assert [w for w in unnamed._header_warnings() if 'journal' in w]
+    header = unnamed._header(datetime.now(timezone.utc))
+    assert WARNING_MARK in header and 'journal unnamed' in header
+    # Appended to the running header, never replacing it — the operator still sees version/uptime.
+    assert header.startswith('FiniexRAGEngine v9.9.9')

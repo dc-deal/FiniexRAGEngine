@@ -2,7 +2,10 @@
 No DB, no API: fakes sit at the Ingestor/Pipeline seams, intervals are milliseconds.
 """
 import asyncio
+import contextlib
+import functools
 import json
+import logging
 import time
 from datetime import datetime, timezone
 from typing import List
@@ -17,6 +20,7 @@ from finiexragengine.exceptions.ragengine_errors import ConfigurationError
 from finiexragengine.types.config_types.source_set_types import SourceSetConfig
 from finiexragengine.types.ingest_types import IngestResult
 from finiexragengine.types.outcome_types import RunMetadata, SentimentEnvelope
+from finiexragengine.types.worker_types import WorkerState
 
 _SET = SourceSetConfig(
     source_set_id='crypto_news',
@@ -360,3 +364,56 @@ def test_overdue_skips_already_flagged_and_never_polled():
     expected = {'a': 300, 'b': 300}
     last_ok = {'a': now - timedelta(hours=1)}               # 'a' overdue but quarantined this pass
     assert _overdue_feeds(last_ok, expected, now, skip={'a'}) == []   # skipped + 'b' never polled
+
+
+def test_a_dying_worker_task_is_recorded_and_shouted_about(caplog):
+    """A worker task that ends on its own must leave a fact behind, not an unretrieved exception.
+
+    The 2026-08-20 case: `create_task` with nothing watching it. The exception stayed parked in the
+    Task, and because the supervisor holds a strong reference the Task was never collected — so not
+    even CPython's "Task exception was never retrieved" was emitted. The worker was gone for 37
+    hours and every surface still described its last good pass.
+    """
+    from finiexragengine.core.pipeline.worker_supervisor import WorkerSupervisor
+
+    supervisor = WorkerSupervisor.__new__(WorkerSupervisor)
+    supervisor._stopping = False
+    state = WorkerState(name='ingest:crypto_news', kind='ingest', interval_seconds=15)
+
+    async def _die() -> None:
+        raise NameError("name '_format_age' is not defined")     # the actual exception
+
+    async def _drive() -> None:
+        task = asyncio.create_task(_die())
+        task.add_done_callback(functools.partial(supervisor._worker_finished, state))
+        with contextlib.suppress(NameError):
+            await task
+        await asyncio.sleep(0)                                   # let the callback run
+
+    with caplog.at_level(logging.ERROR):
+        asyncio.run(_drive())
+
+    assert state.stopped_at is not None
+    assert '_format_age' in state.stopped_reason and 'NameError' in state.stopped_reason
+    assert any('DIED' in record.message for record in caplog.records)
+
+
+def test_an_orderly_shutdown_is_not_reported_as_a_death():
+    """`stop_all()` ends every task on purpose — the callback must stay quiet for those."""
+    from finiexragengine.core.pipeline.worker_supervisor import WorkerSupervisor
+
+    supervisor = WorkerSupervisor.__new__(WorkerSupervisor)
+    supervisor._stopping = True
+    state = WorkerState(name='eval:crypto_sentiment', kind='eval', interval_seconds=600)
+
+    async def _finish() -> None:
+        return None
+
+    async def _drive() -> None:
+        task = asyncio.create_task(_finish())
+        task.add_done_callback(functools.partial(supervisor._worker_finished, state))
+        await task
+        await asyncio.sleep(0)
+
+    asyncio.run(_drive())
+    assert state.stopped_at is None and state.stopped_reason == ''

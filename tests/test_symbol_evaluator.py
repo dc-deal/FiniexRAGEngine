@@ -1,5 +1,5 @@
 """Tests for SymbolEvaluator (ISSUE_6/7) — enrich + timings, no DB/API."""
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -131,3 +131,44 @@ def test_llm_path_keeps_default_basis():
             'reasoning': 'bullish', 'urgency': 0.2}
     ev = _evaluator([_article('a')], data).evaluate('BTCUSD', 'q')
     assert ev.result.basis == 'llm'
+
+def test_evidence_as_of_is_the_newest_fetch_the_row_actually_saw():
+    """The three invariants the consumer asserts on every frame (ISSUE_9).
+
+    It exists because `seq` orders *availability*, not evidence freshness: since ISSUE_74 removed
+    the shared pass lock, an out-of-band pass can finish after a scheduled one, carry the higher
+    `seq` and rest on older articles. Without this field that flip-flop reads as a reversal.
+    """
+    older, newer = _article('a'), _article('b')
+    newer.fetched_at = _TS + timedelta(minutes=17)
+    data = {'signal': 'SELL', 'sentiment_score': -0.6, 'confidence': 0.8,
+            'reasoning': 'bearish', 'urgency': 0.9}
+
+    ev = _evaluator([older, newer], data).evaluate('BTCUSD', 'Bitcoin BTC')
+    assert ev.result.evidence_as_of == int(newer.fetched_at.timestamp() * 1000)
+    # Our fetch time, not the publisher's: published_at is publisher-controlled and backdatable.
+    assert ev.result.evidence_as_of != int(newer.published_at.timestamp() * 1000)
+
+
+def test_a_row_that_saw_nothing_carries_no_evidence_stamp():
+    """Absent is a value here — it means "rests on no evidence", which is exactly `basis='no_data'`.
+
+    The alternative definition (the retrieval window's upper bound) would report a fresh stamp for
+    a row the model never saw a single article for, making the one envelope worth discounting look
+    current instead.
+    """
+    evaluator = SymbolEvaluator(_FakeRetriever([]), _FakeBuilder(), _MustNotCallProvider(),
+                                breaking_threshold=0.8)
+    ev = evaluator.evaluate('LTCUSD', 'Litecoin LTC')
+    assert ev.result.evidence_as_of is None
+    assert ev.result.basis == 'no_data'          # absent <=> no evidence <=> no_data
+
+
+def test_evidence_without_a_fetch_stamp_is_not_counted_as_fresh():
+    """Pre-ISSUE_11 corpus rows carry no `fetched_at`; absent must not silently become "now"."""
+    undated = _article('a')
+    undated.fetched_at = None
+    data = {'signal': 'HOLD', 'sentiment_score': 0.0, 'confidence': 0.5,
+            'reasoning': 'neutral', 'urgency': 0.3}
+    ev = _evaluator([undated], data).evaluate('BTCUSD', 'q')
+    assert ev.result.sources and ev.result.evidence_as_of is None

@@ -19,6 +19,7 @@ from finiexragengine.types.outcome_types import (
     AnalysisEnvelope,
     RunError,
     RunMetadata,
+    RunStatus,
     SentimentResult,
 )
 from finiexragengine.types.prompt_metadata import PromptMetadata
@@ -177,7 +178,6 @@ class PipelineRunner:
         metadata = RunMetadata(
             model=self._llm_model,
             model_snapshot=', '.join(snapshots),
-            trigger_reason=reason,       # why this pass ran at all (ISSUE_87)
             sources_configured=census.configured,
             sources_reached=census.reached,
             articles_found=ingest.fetched,
@@ -203,6 +203,7 @@ class PipelineRunner:
             prompt_id=self._prompt_metadata.id,
             prompt_hash=self._prompt_metadata.content_hash,
             config_fingerprint=self._config_fingerprint,   # input provenance (ISSUE_85)
+            trigger_reason=reason,       # why this pass ran at all (ISSUE_87/ISSUE_9)
             timestamp=datetime.now(timezone.utc),   # real-time wall clock (live service)
             status=self._derive_status(errors, evals),
             result=results,
@@ -232,7 +233,7 @@ class PipelineRunner:
                 envelope.status = 'partial'
 
     def _derive_status(self, errors: List[RunError],
-                       evals: List[SymbolEval]) -> str:
+                       evals: List[SymbolEval]) -> RunStatus:
         """success = clean pass · partial = degraded but data · error = nothing evaluated.
 
         A budget suspend (ISSUE_47) is a *controlled, temporary* degrade — every symbol still

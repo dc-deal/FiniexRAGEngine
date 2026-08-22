@@ -49,6 +49,8 @@ class WorkerSupervisor:
         self._bus = BreakingBus()
         self._workers: List = []
         self._tasks: List[asyncio.Task] = []
+        # True only between `stop_all()` and process exit — see `_worker_finished`.
+        self._stopping: bool = False
 
         # One ingest worker per source-set actually referenced by a pipeline — a set
         # nobody evaluates over would only burn embedding budget.
@@ -129,11 +131,43 @@ class WorkerSupervisor:
                             state.name, state.timeframe, state.interval_seconds)
             else:
                 logger.info('worker %s every %ds', state.name, state.interval_seconds)
-        self._tasks = [asyncio.create_task(worker.start(), name=worker.get_state().name)
-                       for worker in self._workers]
+        self._stopping = False
+        self._tasks = []
+        for worker in self._workers:
+            task = asyncio.create_task(worker.start(), name=worker.get_state().name)
+            # A worker task that ends on its own is always a defect, and without this callback it
+            # is a *silent* one: the exception stays parked in the Task, and because `self._tasks`
+            # holds a strong reference the Task is never collected — so not even CPython's
+            # "Task exception was never retrieved" is emitted. That is how the crypto ingest worker
+            # died at 2026-08-20 19:24 UTC and was missed for 37 hours (ISSUE_82 follow-up).
+            task.add_done_callback(functools.partial(self._worker_finished, worker.get_state()))
+            self._tasks.append(task)
+
+    def _worker_finished(self, state: WorkerState, task: asyncio.Task) -> None:
+        """Record and shout about a worker task that ended while the engine was still running.
+
+        Deliberately does not restart it. A worker that died from a code defect would die again on
+        the same input, and a silent restart loop is the failure mode this is meant to end — being
+        loud is the fix; reviving is a separate decision with its own issue.
+        """
+        if self._stopping or task.cancelled():
+            return                                  # an orderly shutdown, not a death
+        error = task.exception()
+        state.stopped_at = datetime.now(timezone.utc)
+        state.stopped_reason = (f'{type(error).__name__}: {error}' if error is not None
+                                else 'the run loop returned without raising')
+        if error is not None:
+            logger.error('worker %s DIED — %s. It will not run again until a restart; '
+                         'everything it feeds is now frozen', state.name, state.stopped_reason,
+                         exc_info=error)
+        else:
+            logger.error('worker %s ENDED without an error — its run loop returned, which it '
+                         'never should while the engine runs', state.name)
 
     async def stop_all(self) -> None:
         """Signal every trigger to stop, then wait for in-flight passes to finish."""
+        # Tells `_worker_finished` that the tasks ending now are expected, not deaths.
+        self._stopping = True
         for worker in self._workers:
             await worker.stop()
         for task in self._tasks:

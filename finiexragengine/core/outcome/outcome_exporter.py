@@ -16,6 +16,12 @@ Two properties make it redundancy-proof, which is the whole point:
 
 `collected_msc` here is the envelope's analysis `timestamp` in epoch-ms: there is no
 collector receive-time in a DB export, and this matches the mock the IDE validated against.
+Every line declares `collected_msc_timebase: 'utc'` as a constant of the code (ISSUE_9) — a
+consumer must never have to *infer* which time base an arrival stamp is in, which is the defect
+the cross-collector contract was written after. No `anchor_*` clamp counters ride here: this path
+derives `collected_msc` from the envelope instead of sampling a clock, so a clamp would be
+vacuous. The engine's real clock lives on `available_msc`, inside the envelope, with its own
+`available_msc_*` counters.
 """
 import json
 import os
@@ -147,9 +153,13 @@ class OutcomeArchiveExporter:
             env = envelope if isinstance(envelope, dict) else json.loads(envelope)
             ts = ts.astimezone(timezone.utc)
             # collected_msc = analysis time in epoch-ms (no collector receive-time exists
-            # for a DB export; consistent with the validated mock). Prepended so the line
-            # is exactly `{collected_msc, ...envelope}` — the shape #9/#141 expect.
-            line = {'collected_msc': int(ts.timestamp() * 1000), **env}
+            # for a DB export; consistent with the validated mock), plus the time-base
+            # declaration. Prepended so the line is exactly `{collected_msc, timebase,
+            # ...envelope}` — the shape #9/#141 expect. On this path `collected_msc` equals
+            # `available_msc` to within the persistence call, which is itself the honest
+            # statement that no independent arrival clock exists here.
+            line = {'collected_msc': int(ts.timestamp() * 1000),
+                    'collected_msc_timebase': 'utc', **env}
             grouped.setdefault((pipeline_id, bucket_name(ts, boundary)), []).append(line)
         return grouped
 

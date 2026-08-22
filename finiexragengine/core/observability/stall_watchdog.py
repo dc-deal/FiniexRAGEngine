@@ -24,40 +24,61 @@ from finiexragengine.core.observability.resource_gauge import ResourceGauge
 from finiexragengine.types.alert_types import AlertCallback
 from finiexragengine.types.config_types.app_config_types import StallWatchdogConfig
 from finiexragengine.types.worker_types import WorkerState
+from finiexragengine.utils.relative_age import format_age
 
 logger = logging.getLogger(__name__)
 
-
-def _format_age(seconds: float) -> str:
-    """Compact relative age: `45s` · `15m` · `9h22m` — the live display's vocabulary."""
-    if seconds < 90:
-        return f'{seconds:.0f}s'
-    if seconds < 3600:
-        return f'{seconds / 60:.0f}m'
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    return f'{hours}h{minutes:02d}m'
+# How long after announcing a stall it is announced again, and the ceiling the doubling stops at.
+# A stall is a standing condition, not an event: reporting it once and going quiet is how a dead
+# worker survived 37 hours on 2026-08-20. Doubling keeps a multi-day outage to a handful of lines.
+_REANNOUNCE_FIRST = timedelta(hours=1)
+_REANNOUNCE_MAX = timedelta(hours=6)
 
 
 @dataclass
 class StallEvent:
-    """One transition — a worker entering or leaving a stall. Never one per tick."""
+    """One worker's health changing, or a standing problem restated. Never one per tick."""
     worker: str
     stalled: bool             # True = entered a stall, False = recovered
     silent_seconds: float     # how long the worker had been silent at the transition
     threshold_seconds: float
     last_run_at: Optional[datetime]
+    # The worker's task ENDED — it will not resume on its own, only a restart brings it back.
+    # A strictly worse condition than a stall, and it has to read that way (ISSUE_82 follow-up).
+    dead: bool = False
+    dead_reason: str = ''
+    # This is a restatement of a condition already reported, not its onset.
+    repeat: bool = False
 
     def message(self, running: int, total: int) -> str:
-        """The operator-facing line — same text for the log and the alert sink."""
+        """The operator-facing line — same text for the log and the alert sink.
+
+        Written against a real miss: on 2026-08-20 the first (and for 37 hours the only) alert read
+        *"no completed pass for 15m · 3 of 4 workers still running"*, and was reasonably taken for a
+        hiccup that had since resolved. Every choice here follows from that. The duration leads
+        because it is what grows; the consequence is named because a count of healthy workers reads
+        as reassurance; a death says outright that waiting will not help; and a restatement says it
+        is a restatement, because silence after an alert is read as recovery.
+        """
         if not self.stalled:
             return (f'✅ FiniexRAGEngine — worker recovered\n'
-                    f'{self.worker} · resumed after {_format_age(self.silent_seconds)}')
+                    f'{self.worker} · resumed after {format_age(self.silent_seconds)}')
         last = self.last_run_at.strftime('%Y-%m-%d %H:%M:%S UTC') if self.last_run_at else 'never'
-        return (f'⚠️ FiniexRAGEngine — worker stalled\n'
-                f'{self.worker} · no completed pass for {_format_age(self.silent_seconds)}\n'
+        if self.dead:
+            reason = f'\n{self.dead_reason}' if self.dead_reason else ''
+            return (f'🛑 FiniexRAGEngine — WORKER DIED\n'
+                    f'{self.worker} · dead for {format_age(self.silent_seconds)}{reason}\n'
+                    f'last ok: {last}\n'
+                    f'It will NOT recover on its own — the process must be restarted. '
+                    f'Everything this worker feeds is frozen until then.')
+        headline = ('⚠️ FiniexRAGEngine — worker STILL stalled' if self.repeat
+                    else '⚠️ FiniexRAGEngine — worker stalled')
+        tail = ('Not recovering on its own.' if self.repeat
+                else 'If this repeats it is not a hiccup.')
+        return (f'{headline}\n'
+                f'{self.worker} · no completed pass for {format_age(self.silent_seconds)}\n'
                 f'last ok: {last}\n'
-                f'{running} of {total} workers still running')
+                f'{tail} {running} of {total} workers still running.')
 
 
 class StallWatchdog:
@@ -84,7 +105,10 @@ class StallWatchdog:
         self._gauge = gauge
         # Which workers are currently *known* to be stalled — the episode memory that makes this
         # edge-triggered (one line per stall, one on recovery) instead of a per-tick repeat.
-        self._stalled: Set[str] = set()
+        # name -> when to announce this standing stall again. A set would have been enough for
+        # the edge; the value is what makes a stall that *persists* keep speaking (see `check`).
+        self._stalled: Dict[str, datetime] = {}
+        self._reannounce_gap: Dict[str, timedelta] = {}
         self._stop = asyncio.Event()
 
     def set_gauge(self, gauge: Optional[ResourceGauge]) -> None:
@@ -137,11 +161,28 @@ class StallWatchdog:
             silent = (now - state.last_run_at).total_seconds()
             is_stalled = silent > threshold
             was_stalled = state.name in self._stalled
+            # The watchdog is the single health authority, so it is where 'silent' and 'dead'
+            # are told apart — the state now carries the fact, and 'stalled' is the weaker word.
+            dead = state.stopped_at is not None
             if is_stalled and not was_stalled:
-                self._stalled.add(state.name)
-                events.append(StallEvent(state.name, True, silent, threshold, state.last_run_at))
+                self._stalled[state.name] = now + _REANNOUNCE_FIRST
+                events.append(StallEvent(state.name, True, silent, threshold, state.last_run_at,
+                                         dead=dead, dead_reason=state.stopped_reason))
+            elif is_stalled and now >= self._stalled[state.name]:
+                # The condition still holds, so say so again. Before this, a stall was announced
+                # once and then never mentioned again — the crypto ingest worker was reported at
+                # the 15-minute mark on 2026-08-20 and stayed silently dead for the next 37
+                # hours. The interval doubles so a long outage stays legible rather than hourly
+                # noise, and `stalled` in /health was right the whole time either way.
+                waited = self._reannounce_gap.get(state.name, _REANNOUNCE_FIRST)
+                gap = min(waited * 2, _REANNOUNCE_MAX)
+                self._reannounce_gap[state.name] = gap
+                self._stalled[state.name] = now + gap
+                events.append(StallEvent(state.name, True, silent, threshold, state.last_run_at,
+                                         dead=dead, dead_reason=state.stopped_reason, repeat=True))
             elif not is_stalled and was_stalled:
-                self._stalled.discard(state.name)
+                self._stalled.pop(state.name, None)
+                self._reannounce_gap.pop(state.name, None)
                 events.append(StallEvent(state.name, False, silent, threshold, state.last_run_at))
         return events
 
@@ -181,14 +222,19 @@ class StallWatchdog:
         total = len(states)
         running = total - len(self._stalled)
         for event in events:
-            if event.stalled:
-                logger.warning('[STALL] %s — no completed pass for %s (threshold %s); last ok %s',
-                               event.worker, _format_age(event.silent_seconds),
-                               _format_age(event.threshold_seconds),
+            if event.dead:
+                logger.error('[STALL] %s DEAD for %s — %s; only a restart brings it back',
+                             event.worker, format_age(event.silent_seconds),
+                             event.dead_reason or 'its run loop ended')
+            elif event.stalled:
+                logger.warning('[STALL] %s%s — no completed pass for %s (threshold %s); last ok %s',
+                               event.worker, ' STILL' if event.repeat else '',
+                               format_age(event.silent_seconds),
+                               format_age(event.threshold_seconds),
                                event.last_run_at.isoformat() if event.last_run_at else 'never')
             else:
                 logger.info('[STALL] %s recovered after %s',
-                            event.worker, _format_age(event.silent_seconds))
+                            event.worker, format_age(event.silent_seconds))
             # The alert is best-effort by design: a failed send must never take the watchdog with
             # it — the log line above is already the durable record.
             if self._alert is not None:

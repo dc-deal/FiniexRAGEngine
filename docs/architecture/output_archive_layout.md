@@ -42,6 +42,27 @@ collector mirrors the functions.
 - The line format itself is unchanged (ISSUE_9): one JSONL line =
   `{ collected_msc: <int epoch-ms>, ...AnalysisEnvelope }`.
 
+## The line's own fields (ISSUE_9)
+
+A line is `{collected_msc, collected_msc_timebase, ...AnalysisEnvelope}` — the archiver adds the
+first two, everything else is the stored envelope verbatim. Those two are the exclusion set for any
+parity hash between an archive line and a stream frame.
+
+| Field | Where | Meaning |
+|---|---|---|
+| `collected_msc` | line | arrival time of the archiving process. On the engine's own export path it is the envelope's analysis time — there is no independent arrival clock here, and `collected_msc − available_msc` is 0 by construction, which is the honest way to say so |
+| `collected_msc_timebase` | line | always `"utc"`, a constant of the code. Declared so nobody has to *infer* a time base — that inference is the defect the cross-collector contract was written after |
+| `seq` | envelope | per-stream, **gapless**. A gap means exactly one thing: a record that never arrived |
+| `stream_epoch` | envelope | changes only when the series was rewound (restore, PITR, promotion). The archive key is `(pipeline_id, stream_epoch, seq)` — `seq` is unique *within* an epoch, so after a rollback two lines can legitimately carry the same `seq` |
+| `available_msc` | envelope | when it became fetchable and pushable — the no-look-ahead gate |
+| `available_msc_resyncs` / `_max_correction_ms` | envelope | the monotonic clamp on that stamp. 0/0 means the clock never stepped back on this stream |
+| `evidence_as_of` | `result[]` row | newest `fetched_at` behind the row. **Absent = no evidence**, which coincides with `basis: 'no_data'` |
+| `trigger_reason` | envelope, **top level** | why the pass ran. It was inside `metadata` before `schema_version` 2.0 — a reader spanning the boundary checks both, gated on the major |
+
+**Ordering: `(stream_epoch, seq)`, not a clock.** Lexicographically that is a total chronological
+order, because an epoch changes only at boot — everything of epoch N was committed before that
+instant and everything of N+1 after. Time is the *gate*, never the sort.
+
 ## Reader contract (TestingIDE #141)
 
 For a query range `[start, end]`:
@@ -49,8 +70,8 @@ For a query range `[start, end]`:
 1. compute the overlapping buckets — reference: `buckets_for_range(start, end, boundary)`;
 2. load **only** those files, **concatenate in bucket order** (lines inside a bucket are
    already `collected_msc`-ordered);
-3. merge by `collected_msc <= tick.collected_msc` as before — rotation changes *where*
-   lines live, never what they mean.
+3. merge by `available_msc <= tick` (falling back to `collected_msc` for pre-2.0 lines), ordering
+   by `(stream_epoch, seq)` — rotation changes *where* lines live, never what they mean.
 
 `buckets_for_range(2026-04-28 06:00, 2026-04-30 01:00, 'daily')`
 → `['2026-04-28', '2026-04-29', '2026-04-30']`.

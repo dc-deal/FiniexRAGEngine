@@ -22,12 +22,55 @@ from finiexragengine.core.observability.resource_gauge import ResourceGauge
 from finiexragengine.core.observability.resource_sample_store import ResourceSampleStore
 from finiexragengine.core.observability.stall_watchdog import StallWatchdog
 from finiexragengine.core.outcome.outcome_exporter import auto_export_weekly
+from finiexragengine.core.outcome.outcome_store import OutcomeStore
 from finiexragengine.core.pipeline.pipeline_assembler import PipelineAssembler
 from finiexragengine.core.pipeline.worker_supervisor import WorkerSupervisor
 from finiexragengine.core.ui.engine_stats import EngineStats
 from finiexragengine.core.ui.live_display import LiveDisplay
 
 logger = logging.getLogger(__name__)
+
+
+def _report_journal_identity(config_manager: AppConfigManager,
+                             outcome_store: OutcomeStore) -> bool:
+    """Name the journal at boot, and say so loudly when nobody has named it (ISSUE_9).
+
+    An unnamed journal is not a broken engine — it produces and serves exactly as before. What it
+    cannot do is prove *which* producer a measurement came from, and that is the whole point of the
+    consumer's release certificate. Left to be discovered, it is discovered when the certificate
+    comes out reading `unknown`, which is late and expensive.
+
+    The warning carries the fingerprint and the snippet, because a warning that reports a problem
+    without the value needed to fix it just moves the work.
+
+    Returns whether the journal is named, so the live display can surface the same condition without
+    resolving it a second time — `--live` suppresses the console handler, so the warning below never
+    reaches an operator watching the dashboard.
+    """
+    journal_id = outcome_store.journal_id()
+    if journal_id is None:
+        logger.warning('[JOURNAL] identity unavailable — /health reports environment "unknown". '
+                       'A consumer cannot record which producer it measured.')
+        return False
+    name = config_manager.get_config().journal_names.get(journal_id)
+    if name is not None:
+        logger.info('[JOURNAL] %s · %s', journal_id, name)
+        return True
+    # Name the ids that ARE mapped when there are any. Once the field exists, the likely mistake is
+    # no longer "nobody filled it in" but "it was filled in for a different database" — a copied
+    # config, a restored cluster, a second deployment. Reporting only "unnamed" would leave the
+    # operator comparing two fingerprints by hand, one of which is not on screen.
+    mapped = sorted(config_manager.get_config().journal_names)
+    mismatch = (f' Mapped ids: {", ".join(mapped)} — none is this one.' if mapped else '')
+    logger.warning(
+        '[JOURNAL] %s is unnamed — /health reports environment "unknown".%s '
+        'MANDATORY before a consumer connects: their release certificate records which producer it '
+        'was taken against, and "unknown" makes it unfalsifiable. Add to '
+        'user_configs/app_config.json (never to tracked config, it would be inherited by every '
+        'fork): {"journal_names": {"%s": "production"}} · '
+        'docs/development/diagnostics.md — "Which instance am I looking at?"',
+        journal_id, mismatch, journal_id)
+    return False
 
 
 def create_app(attach_runners: Optional[bool] = None,
@@ -105,6 +148,8 @@ def create_app(attach_runners: Optional[bool] = None,
         assembler.attach_all(registry, include_ingest=not start_workers)
         # /latest serves from the same store every runner persists into (ISSUE_8).
         outcome_store = assembler.get_outcome_store()
+        # Which journal this engine writes into, and whether anyone has named it (ISSUE_9).
+        journal_named = _report_journal_identity(config_manager, outcome_store)
         # The cost circuit-breaker state is surfaced on /health (ISSUE_47).
         budget_guard = assembler.get_budget_guard()
         # Startup model check (ISSUE_40): free provider call, soft by design — a typo'd
@@ -207,7 +252,9 @@ def create_app(attach_runners: Optional[bool] = None,
                                    stall_watchdog=stall_watchdog,
                                    resource_gauge=resource_gauge,
                                    worker_count=len(supervisor.states()),
-                                   version=config_manager.get_config().version)
+                                   states_provider=supervisor.states,
+                                   version=config_manager.get_config().version,
+                                   journal_named=journal_named)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -256,6 +303,7 @@ def create_app(attach_runners: Optional[bool] = None,
     app.include_router(build_health_router(config_manager, registry,
                                            supervisor=supervisor, budget_guard=budget_guard,
                                            stall_watchdog=stall_watchdog,
-                                           resource_gauge=resource_gauge))
+                                           resource_gauge=resource_gauge,
+                                           outcome_store=outcome_store))
     app.include_router(build_sentiment_router(registry, outcome_store=outcome_store))
     return app

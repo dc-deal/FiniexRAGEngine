@@ -1,15 +1,21 @@
 """Persistence for pipeline outcomes — the source of truth for backtest replay (ISSUE_8)."""
+import hashlib
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import psycopg
 
-from finiexragengine.exceptions.ragengine_errors import VectorStoreError
+from finiexragengine.exceptions.ragengine_errors import FiniexRagError, VectorStoreError
+from finiexragengine.core.outcome.stream_sequencer import StreamSequencer
 from finiexragengine.types.outcome_types import AnalysisEnvelope, SentimentEnvelope
 
 logger = logging.getLogger(__name__)
+
+# Distinguishes "not looked up yet" from "looked up and unavailable" — the second is a real answer
+# and must not trigger a retry on every health poll.
+_UNRESOLVED = object()
 
 
 class OutcomeStore:
@@ -39,6 +45,47 @@ class OutcomeStore:
     def __init__(self, database_url: str, table: str = 'outcomes') -> None:
         self._database_url = database_url
         self._table = table
+        # Not an injected collaborator: minting is part of how this store writes, not a strategy it
+        # picks. The sequencer holds no state of its own — `reconcile()` at boot may use its own
+        # instance without coordination.
+        self._sequencer = StreamSequencer(database_url, outcomes_table=table)
+        self._journal_id: Any = _UNRESOLVED     # resolved on first read, then cached
+
+    def get_sequencer(self) -> StreamSequencer:
+        return self._sequencer
+
+    def journal_id(self) -> Optional[str]:
+        """A stable fingerprint of the journal this store writes into (ISSUE_9).
+
+        Two engines pointing at one database are one series; one engine pointed at a different
+        database is a different series, whatever else it has in common. So the identity that matters
+        to a consumer is the **store's**, not the process's — hence the name.
+
+        Derived from PostgreSQL's `system_identifier`, never configured. A declared label
+        (`environment: 'production'`) would be a claim, and a mislabelled development instance is
+        worse than no label at all: it makes a rehearsal look like proof. The consumer asked for this
+        because their release certificate has to record which producer it was taken against, and an
+        unfalsifiable certificate is the artifact it exists to prevent.
+
+        `None` when the identifier cannot be read — on a managed Postgres the engine's role is not a
+        superuser and `pg_control_system()` is refused. "Cannot be established here" is the honest
+        answer; deriving a substitute from the DSN would collide, because a dev and a server
+        deployment can easily share `host:port/database`.
+
+        Cached: the health endpoint is polled, and this cannot change without a restart.
+        """
+        if self._journal_id is not _UNRESOLVED:
+            return self._journal_id
+        try:
+            with self._connect() as conn, conn.cursor() as cur:
+                cur.execute('SELECT system_identifier FROM pg_control_system()')
+                identifier = str(cur.fetchone()[0])
+            self._journal_id = hashlib.sha256(identifier.encode('utf-8')).hexdigest()[:12]
+        except (psycopg.Error, FiniexRagError) as exc:
+            logger.info('journal identity unavailable (%s) — /health reports it as absent',
+                        exc.__class__.__name__)
+            self._journal_id = None
+        return self._journal_id
 
     def _connect(self) -> psycopg.Connection:
         try:
@@ -48,9 +95,31 @@ class OutcomeStore:
 
     def save(self, envelope: AnalysisEnvelope,
              raw_output: Optional[Dict[str, Any]] = None) -> None:
-        """Persist one envelope (+ the per-symbol raw LLM output next to it)."""
+        """Stamp the envelope with its stream position, then persist it (+ the raw LLM output).
+
+        The stamp is minted **inside this transaction** and written **into the envelope** before it
+        is serialized. Both matter (ISSUE_9):
+
+        * inside the transaction, because that is what makes `seq` gapless — the counter's row lock
+          is held to COMMIT, so a rollback returns the number instead of burning it;
+        * into the envelope, because the JSONB column is the exact served JSON. A `seq` living only
+          in a table column would never reach the archive: `OutcomeExporter` reads the envelope.
+
+        `available_msc` is sampled here rather than at assembly on purpose — it means "the instant
+        this became fetchable via /latest and pushable on the stream", which is the store write, not
+        the end of the analysis. Precisely: it is when the write *began*, sampled after the
+        connection is up so connect latency is not inside the claim. The remaining gap to the commit
+        is the only way it can run early, and it is bounded by one insert.
+        """
         try:
             with self._connect() as conn, conn.cursor() as cur:
+                now_msc = int(datetime.now(timezone.utc).timestamp() * 1000)
+                stamp = self._sequencer.mint(cur, envelope.pipeline_id, now_msc)
+                envelope.seq = stamp.seq
+                envelope.stream_epoch = stamp.epoch
+                envelope.available_msc = stamp.available_msc
+                envelope.available_msc_resyncs = stamp.resyncs
+                envelope.available_msc_max_correction_ms = stamp.max_correction_ms
                 cur.execute(
                     f'INSERT INTO {self._table} '
                     '(pipeline_id, ts, status, envelope, raw_output) '

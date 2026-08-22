@@ -44,7 +44,15 @@ def test_a_slow_pass_is_not_a_stall():
     assert _watchdog(states).check(_NOW) == []
 
 
-def test_a_silent_worker_is_flagged_once():
+def test_a_silent_worker_is_flagged_then_re_announced():
+    """The edge fires once; the standing condition keeps speaking, at a widening interval.
+
+    This test used to assert the opposite — flag once, then silence forever, "the nine-day case".
+    That was written against #73's log flooding and it is half right: repeating every tick is
+    noise. But going quiet is worse, and it cost 37 hours on 2026-08-20, when `ingest:crypto_news`
+    was announced at the 15-minute mark and never mentioned again while it lay dead. The condition
+    was in `stalled_workers()` the whole time — nothing said it out loud.
+    """
     states = [_ingest(_NOW - timedelta(minutes=20))]
     watchdog = _watchdog(states)
 
@@ -53,9 +61,21 @@ def test_a_silent_worker_is_flagged_once():
     assert events[0].worker == 'ingest:crypto_news' and events[0].stalled is True
     assert watchdog.stalled_workers() == {'ingest:crypto_news'}
 
-    # Still stalled a tick later — and getting worse — but the episode is already open: silence.
+    # Still stalled a tick later — the episode is open, so nothing new to say yet.
     assert watchdog.check(_NOW + timedelta(minutes=5)) == []
-    assert watchdog.check(_NOW + timedelta(days=9)) == []          # the nine-day case
+    assert watchdog.check(_NOW + timedelta(minutes=30)) == []
+
+    # An hour in, it says so again — and it is still the same open episode, not a new one.
+    repeat = watchdog.check(_NOW + timedelta(hours=1, minutes=1))
+    assert len(repeat) == 1 and repeat[0].stalled is True
+    assert repeat[0].silent_seconds > events[0].silent_seconds     # and getting worse
+
+    # Over nine days it stays legible: a handful of lines a day, not one and not thousands.
+    lines = 0
+    for minute in range(0, 9 * 24 * 60, 5):                        # the watchdog's own cadence
+        lines += len(watchdog.check(_NOW + timedelta(minutes=minute)))
+    assert 20 < lines < 60, f'{lines} lines over nine days'
+    assert watchdog.stalled_workers() == {'ingest:crypto_news'}
 
 
 def test_a_resumed_worker_reports_exactly_one_recovery():
@@ -184,3 +204,37 @@ def test_a_failing_gauge_does_not_kill_the_tick():
     except RuntimeError:
         pass                            # the caller's own try/except is what run() provides
     assert gauge.calls == 1
+
+
+def test_a_dead_worker_alerts_differently_from_a_stalled_one():
+    """'stalled' and 'dead' must not read the same — waiting helps for one and never for the other.
+
+    The 2026-08-20 alert said *"no completed pass for 15m · 3 of 4 workers still running"*, was
+    reasonably read as a hiccup that had resolved, and never repeated. The worker was already dead.
+    """
+    state = _ingest(_NOW - timedelta(hours=20))
+    state.stopped_at = _NOW - timedelta(hours=20)
+    state.stopped_reason = "NameError: name '_format_age' is not defined"
+    watchdog = _watchdog([state])
+
+    event = watchdog.check(_NOW)[0]
+    assert event.dead is True
+    message = event.message(running=3, total=4)
+    assert 'WORKER DIED' in message
+    assert 'must be restarted' in message
+    assert '_format_age' in message                     # the cause travels with the alert
+    assert 'still running' not in message               # no reassurance on a permanent failure
+
+
+def test_a_restated_stall_says_it_is_a_restatement():
+    """Silence after an alert reads as recovery, so a repeat has to announce itself as one."""
+    watchdog = _watchdog([_ingest(_NOW - timedelta(minutes=20))])
+    first = watchdog.check(_NOW)[0]
+    assert first.repeat is False and 'STILL' not in first.message(3, 4)
+
+    again = watchdog.check(_NOW + timedelta(hours=1, minutes=1))[0]
+    assert again.repeat is True
+    message = again.message(running=3, total=4)
+    assert 'STILL stalled' in message and 'Not recovering on its own' in message
+    # And the duration — the number that actually grows — leads the detail line.
+    assert 'no completed pass for 1h' in message

@@ -59,9 +59,15 @@ def test_line_shape_and_collected_msc_equals_ts(seeded, tmp_path):
     OutcomeArchiveExporter(seeded).export(tmp_path, now=_NOW)
     lines = (tmp_path / 'crypto_sentiment' / '2026-07-20.jsonl').read_text().splitlines()
     first = json.loads(lines[0])
-    assert list(first)[0] == 'collected_msc'                # prepended to the envelope
+    assert list(first)[:2] == ['collected_msc', 'collected_msc_timebase']   # prepended, in order
     ts = datetime(2026, 7, 20, 10, 0, tzinfo=timezone.utc)
     assert first['collected_msc'] == int(ts.timestamp() * 1000)
+    # Declared, never inferred (ISSUE_9): a consumer must not have to guess an arrival stamp's
+    # time base — that inference is the defect the cross-collector contract was written after.
+    assert first['collected_msc_timebase'] == 'utc'
+    # No `anchor_*` here: this path derives collected_msc from the envelope instead of sampling a
+    # clock, so a clamp would be vacuous. The engine's real clock rides as available_msc_*.
+    assert not [k for k in first if k.startswith('anchor_')]
     assert first['pipeline_id'] == 'crypto_sentiment'
     msc = [json.loads(line)['collected_msc'] for line in lines]
     assert msc == sorted(msc) and len(set(msc)) == len(msc)  # strictly increasing, unique

@@ -17,6 +17,7 @@ from finiexragengine.core.observability.run_footer import RunFooter
 from finiexragengine.core.observability.stage_timer import StageTimer
 from finiexragengine.core.rag.retriever import Retriever
 from finiexragengine.exceptions.ragengine_errors import LLMParseError
+from finiexragengine.types.article_types import Article
 from finiexragengine.types.eval_types import SymbolEval
 from finiexragengine.types.llm_types import LlmUsage
 from finiexragengine.types.outcome_types import (
@@ -27,6 +28,18 @@ from finiexragengine.types.outcome_types import (
 from finiexragengine.types.prompt_metadata import PromptMetadata
 
 logger = logging.getLogger(__name__)
+
+
+def _evidence_as_of(articles: List[Article]) -> Optional[int]:
+    """Newest `fetched_at` across the evidence, epoch-ms UTC — None when there is none (ISSUE_9).
+
+    Derived here rather than at envelope assembly so it cannot drift from the `sources` list it
+    describes: both come off the same `articles`. Our fetch time, not `published_at` — publication
+    time is publisher-controlled and backdatable, fetch time is on our clock and monotonic with the
+    ingest. None is meaningful: the row rests on no evidence, which is the `basis='no_data'` case.
+    """
+    stamps = [a.fetched_at for a in articles if a.fetched_at is not None]
+    return int(max(stamps).timestamp() * 1000) if stamps else None
 
 
 class SymbolEvaluator:
@@ -90,7 +103,8 @@ class SymbolEvaluator:
             is_breaking=scored.urgency >= self._breaking_threshold,
             sources=[ArticleRef(article_id=a.article_id, url=a.url, title=a.title,
                                 published_at=a.published_at, fetched_at=a.fetched_at)
-                     for a in articles])
+                     for a in articles],
+            evidence_as_of=_evidence_as_of(articles))
         return SymbolEval(result=result, prompt=prompt, prompt_metadata=prompt_metadata,
                           usage=completion.usage, articles=articles,
                           stage_timings=timer.timings, raw_output=completion.data,

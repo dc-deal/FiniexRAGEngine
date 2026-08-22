@@ -261,6 +261,32 @@ class WeeklyReportConfig(BaseModel):
 class AppConfig(BaseModel):
     version: str = '0.3.2'
     schema_version: str = '1.0'
+    # Human names for the journals this engine may write into, keyed by `journal_id` — the
+    # 12-char fingerprint of the database's own `system_identifier` (ISSUE_9). Reported on
+    # /v1/health as `environment`; a fingerprint with no entry reports `unknown`.
+    #
+    # A mapping rather than a plain `environment: 'production'` string, and the difference is the
+    # whole point. A free-standing label claims something about *this process*, and nothing checks
+    # it — carry the config to another machine and it still says production. A label **keyed on the
+    # journal's identity** claims something about a *specific database*: boot against a different
+    # one and the fingerprint matches no entry, so the answer degrades to `unknown` on its own. The
+    # misconfiguration announces itself instead of being inherited.
+    #
+    # Tracked config and this default carry ONE INERT EXAMPLE, so the shape is visible without
+    # having to find the documentation. `EXAMPLE_ID` is not twelve lowercase hex characters and can
+    # therefore never match a real fingerprint — it resolves nothing and names nothing.
+    #
+    # Real entries belong in each machine's gitignored `user_configs/app_config.json`, never here: a
+    # fingerprint is a per-deployment fact, and a tracked mapping would be inherited by every fork
+    # and every second instance — which would hand them a 'production' label for a database that is
+    # not. That is the failure this whole design prevents, re-introduced through the config file.
+    # A fresh checkout therefore names nothing and claims nothing: an unmapped journal reads
+    # `unknown`, which is loud and fixable, where a wrongly inherited name would be silent.
+    #
+    # See `docs/development/diagnostics.md` — "Which instance am I looking at?" for the SQL that
+    # reads a deployment's fingerprint.
+    journal_names: Dict[str, str] = Field(
+        default_factory=lambda: {'EXAMPLE_ID': 'example-only — map real ids in user_configs'})
     api: ApiConfig = Field(default_factory=ApiConfig)
     llm: LlmConfig = Field(default_factory=LlmConfig)
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)

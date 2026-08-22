@@ -9,6 +9,13 @@ worker), and the activity stream below is *history*, filling the rest of the ter
 In live mode rich.Live owns stdout exclusively — the console log handler is suppressed
 (`configure_logging(live_mode=True)`, ISSUE_26 Slice 0) and uvicorn's own logging is routed to
 the file, so nothing else writes to the terminal and frames never tear.
+
+**That suppression is why `_header_warnings()` exists.** A condition an operator must notice cannot
+be a log line here: nothing on the console survives live mode. So instance-wide conditions —
+over the RSS ceiling, an unnamed journal — become header segments that appear while they hold and
+vanish when they stop. **Add the next one there**, as one entry in that list, not as another
+`header +=` and not as a row of its own: a row costs layout in every frame, a segment costs nothing
+once the condition clears.
 """
 import asyncio
 from datetime import datetime, timezone
@@ -32,22 +39,17 @@ from finiexragengine.core.ui.engine_stats import (
     RetrievalSnapshot,
     SourcesSnapshot,
 )
+from finiexragengine.types.worker_types import WorkerState
+from finiexragengine.utils.relative_age import format_age
 from finiexragengine.utils.windows_console import disable_quickedit
+
+# Prefix for every header warning (see `LiveDisplay._header_warnings`). Named rather than repeated
+# inline so a grep for it finds every warning site at once — including the join that renders them.
+WARNING_MARK = '⚠'
 
 # The BREAKING section reserves this many episode rows (newest first, blank-padded) so the state
 # panel stays fixed-height while listing recent episodes one per line (ISSUE_64).
 _MAX_EPISODE_ROWS = 3
-
-
-def _format_age(seconds: float) -> str:
-    """Compact relative age: `3s` · `5m` · `2h14m` — the same vocabulary as the worker logs."""
-    if seconds < 90:
-        return f'{seconds:.0f}s'
-    if seconds < 3600:
-        return f'{seconds / 60:.0f}m'
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    return f'{hours}h{minutes:02d}m'
 
 
 def _last(now: datetime, last: Optional[datetime], *, stalled: bool = False) -> Text:
@@ -60,7 +62,7 @@ def _last(now: datetime, last: Optional[datetime], *, stalled: bool = False) -> 
     """
     if last is None:
         return Text('idle', style='dim')
-    text = f'last {_format_age((now - last).total_seconds())}'
+    text = f'last {format_age((now - last).total_seconds())}'
     return Text(text, style='red bold') if stalled else Text(text)
 
 
@@ -100,11 +102,20 @@ class LiveDisplay:
                  stall_watchdog: Optional[StallWatchdog] = None,
                  resource_gauge: Optional[ResourceGauge] = None,
                  worker_count: int = 0,
+                 states_provider: Optional[Callable[[], List[WorkerState]]] = None,
                  version: str = '',
+                 journal_named: bool = True,
                  refresh_seconds: float = 1.0,
                  console: Optional[Console] = None) -> None:
         self._stats = stats
         self._budget_guard = budget_guard
+        # Whether this engine's journal has a name in `journal_names` (ISSUE_9). Surfaced here
+        # because the boot warning cannot reach a live console: `--live` runs without a console log
+        # handler, so an operator watching the dashboard would never learn that a consumer's release
+        # certificate taken against this instance will read `unknown`. Defaults to True so every
+        # other caller (tests, CLI paths) stays silent rather than warning about a question it was
+        # not asked.
+        self._journal_named = journal_named
         # The running build, shown in the header. A live console that does not say which version it
         # is showing makes "did the deploy land?" a guess — and this session had to answer exactly
         # that question from commit timestamps. Empty = omit the segment (CLI/test paths).
@@ -117,6 +128,11 @@ class LiveDisplay:
         # time costs a row and trains the eye to skip it, which is the same exception-density rule
         # the SOURCES row follows. None = nothing rendered.
         self._resource_gauge = resource_gauge
+        # Optional: the supervisor's own state list, read each frame for one thing only — a
+        # worker whose task ENDED. That is stronger than the stall next door: a stalled worker
+        # may resume on its next tick, a dead one never will, and only a restart brings it back.
+        # None = nothing rendered (CLI/test paths).
+        self._states_provider = states_provider
         self._worker_count = worker_count
         self._refresh_seconds = refresh_seconds
         self._console = console if console is not None else Console()
@@ -176,17 +192,44 @@ class LiveDisplay:
         return layout
 
     def _header(self, now: datetime) -> str:
-        uptime = _format_age((now - self._started_at).total_seconds())
+        uptime = format_age((now - self._started_at).total_seconds())
         spend = self._budget_status().get('day_spend_usd', 0.0) if self._budget_guard else 0.0
         version = f' v{self._version}' if self._version else ''
         header = (f'FiniexRAGEngine{version} — up {uptime} — {self._worker_count} workers '
                   f'— ${spend:.3f} today')
+        return header + ''.join(f' — {warning}' for warning in self._header_warnings())
+
+    def _header_warnings(self) -> List[str]:
+        """Header segments shown only *while* their condition holds, gone the moment it stops.
+
+        One list rather than a chain of `header +=`: each condition stays a single entry, the
+        separator lives in exactly one place, and the next condition added cannot get it wrong.
+        They belong in the header rather than in rows of their own because each is a property of
+        the whole instance, not of a stage — and a segment that disappears costs no layout.
+        """
+        warnings: List[str] = []
         # Only while over the ceiling, and only when one is configured (default 0 = off).
         if self._resource_gauge is not None and self._resource_gauge.over_ceiling:
             sample = self._resource_gauge.latest()
             if sample is not None:
-                header += f' — ⚠ rss {sample.rss_mb:.0f} MB'
-        return header
+                warnings.append(f'{WARNING_MARK} rss {sample.rss_mb:.0f} MB')
+        # `--live` runs without a console log handler, so the boot warning about this cannot reach
+        # an operator watching the dashboard. Without it they would learn that a consumer's release
+        # certificate reads `unknown` only when the certificate comes out.
+        if not self._journal_named:
+            warnings.append(f'{WARNING_MARK} journal unnamed (see diagnostics.md)')
+        # A worker whose task ended is the loudest thing this header can carry: everything that
+        # worker feeds is frozen, and it stays frozen until the process is restarted. It earns a
+        # segment because the log line announcing it cannot reach a live console at all.
+        dead = sorted(state.name for state in self._states()
+                      if state.stopped_at is not None)
+        if dead:
+            warnings.append(f'{WARNING_MARK} WORKER DEAD: {", ".join(dead)} — restart needed')
+        return warnings
+
+    def _states(self) -> List[WorkerState]:
+        """The supervisor's worker states, or nothing when this display was built without them."""
+        return self._states_provider() if self._states_provider is not None else []
 
     def _stage_rows(self, now: datetime) -> Table:
         # A grid (no borders): stage label + per-worker id + `last` cell + a free detail column.
@@ -253,7 +296,7 @@ class LiveDisplay:
         # (ISSUE_84): naming every blameless feed is the noise the guard exists to remove, and
         # the operator needs to be sent to the host, not to the feeds.
         if snapshot.host_backoff_until is not None:
-            left = _format_age((snapshot.host_backoff_until
+            left = format_age((snapshot.host_backoff_until
                                 - datetime.now(timezone.utc)).total_seconds())
             detail = f' — {snapshot.host_detail}' if snapshot.host_detail else ''
             head.append('    ')
@@ -332,11 +375,11 @@ class LiveDisplay:
         # report's grouping, which drives the same rule.
         since_seen = (now - record.last_seen).total_seconds()
         if since_seen <= record.gap_seconds:
-            running = _format_age((now - record.started).total_seconds())
+            running = format_age((now - record.started).total_seconds())
             # `≥` on an inherited episode: the boot replay covers a bounded window, so a story that
             # opened before it has its start clipped and the duration is a lower bound (ISSUE_82).
             return Text(f'● {"≥" if record.started_bounded else ""}{running}', style='red')
-        return Text(f'{_format_age(since_seen)} ago', style='dim')
+        return Text(f'{format_age(since_seen)} ago', style='dim')
 
     @staticmethod
     def _episode_reason(record: BreakingRecord) -> Text:
