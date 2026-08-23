@@ -370,19 +370,52 @@ whether it is still live — not just that it did:
 
 - **Live** (#26): the BREAKING section lists up to three recent episodes, one line each —
   `SYMBOL SIGNAL` · **live** (`● <running>`, a pass within the episode gap still held it open) or
-  **ended** (`<age> ago`, closed by the gap rule) · **why** (the LLM's `reasoning`).
+  **ended** (`<age> ago`, closed by the gap rule) · **why** (see below).
 - **Weekly** (`breaking_report`): a per-episode listing grouped by pipeline — `started`, `duration`
   (last pass − start), and the same reason — read from each episode's *first* confirming envelope.
 
-Phase 1 reuses the existing per-symbol `reasoning`; Phase 2 swaps in a dedicated `breaking_reason`
-field (a `prompt_version` bump) — see #64. The reason belongs to a persisted episode identity
-(`breaking_episode_id`, #65), so live/report/push/export share one authoritative event.
+**Two reason fields, and they do different jobs (ISSUE_64 Phase 2, prompt v3).**
+
+- `reasoning` justifies the *signal*. It is present on every row, breaking or not, and it is the
+  text the **story measure clusters on** (see above).
+- `breaking_reason` names the *news*: purpose-built, at most ~25 words, event first
+  (*"SEC sues Bitmine over its ETH treasury buys; desks flipping risk-off"*), and absent unless
+  something is actually breaking. The prompt asks for it explicitly as news rather than sentiment,
+  because the model's default scaffolding is what the story measure had to learn to ignore.
+
+Surfaces read `display_reason` — `breaking_reason` when the model wrote one, `reasoning`
+otherwise — so every envelope produced before prompt v3 keeps rendering. The preference is resolved
+**once**, where the episode is built, never per renderer.
+
+**`breaking_reason` must not become the story measure's input.** `story_similarity = 0.45` was
+calibrated over 1,455 real `reasoning` texts, and the new field is both differently distributed and
+empty on non-breaking rows — repointing the clustering at it would retire that calibration without
+a visible failure. `tests/test_breaking_report.py` pins this: two episodes whose `breaking_reason`
+lines share almost no vocabulary still count as one story because their `reasoning` does.
+
+The prompt change itself is a **series break** — different prompts yield different scores for the
+same news — so both families moved to **v3** together (`forex_sentiment` skips v2 deliberately, so
+one number describes the prompt generation across pipelines) and the old template files stay
+byte-identical: their `content_hash` is the `prompt_hash` recorded in every envelope they ever
+produced. A `{{ symbol }}` → `{{ query }}` rename therefore lives only in the new files, with the
+builder binding both keys; `tests/test_prompt_builder.py` pins every shipped hash.
+
+A follow-up rides on this: `story_similarity` should be re-measured on v3 reasons once enough exist
+— asking the model for one more field shifts the others' distribution slightly, even though the
+clustering field itself did not change. The sweep harness (`experiments/story_calibration/`) makes
+that a re-run, not a rebuild.
+
+The reason belongs to a persisted episode identity (`breaking_episode_id`, #65), so
+live/report/stream/export share one authoritative event.
 
 ## Live push channel (Stage C — deferred, IDE-accepted)
 
-The live low-latency wire is a one-way **SSE** push of confirmed breaking envelopes
-(`GET /v1/breaking/stream`), **accepted by the Testing IDE** for their future EVENT worker (#375).
-It is deferred and paired with the collector handshake (#9), where the full contract lives —
+The live low-latency wire is a one-way **SSE** stream (`GET /v1/stream`) carrying the **full
+cadence** — every envelope the pipeline produces, scheduled and out-of-band alike. The July design
+here was a breaking-*only*, edge-triggered push; #9 withdrew it, because such a channel announces an
+episode's start and never its all-clear, and because a quiet channel cannot be told from a dead
+producer (#73 is the proof). `is_breaking` is a field, not a channel. It is deferred and paired with
+the collector handshake (#9), where the full contract lives —
 persistence guarantee (parity anchor), full envelope + `schema_version`, edge-trigger, stable
 event-id dedupe, keep-alive heartbeats, Bearer auth. Persistence already gives the IDE's SIGNAL
 worker breaking *for free*; push is only the live path.

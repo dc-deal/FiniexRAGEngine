@@ -7,18 +7,18 @@ score with provenance into the outcome envelope.
 ## Prompt templates (versioned Jinja2 / Markdown files)
 
 Prompts live as **Jinja2 Markdown** files under `prompts/`, one folder per prompt family:
-`prompts/<name>/<name>_v<version>.md` (e.g. `prompts/crypto_sentiment/crypto_sentiment_v2.md`,
-`prompts/forex_sentiment/forex_sentiment_v1.md`) — each pipeline type owns its wording; a
+`prompts/<name>/<name>_v<version>.md` (e.g. `prompts/crypto_sentiment/crypto_sentiment_v3.md`,
+`prompts/forex_sentiment/forex_sentiment_v3.md`) — each pipeline type owns its wording; a
 forex pipeline never runs on crypto phrasing. Each **pipeline declares which prompt it uses**
 (ISSUE_33) via a `prompt` block in its constellation JSON — so prompts are swappable per
 pipeline without touching code:
 
 ```json
-"prompt": { "name": "crypto_sentiment", "version": "2" }
+"prompt": { "name": "crypto_sentiment", "version": "3" }
 ```
 
 `PromptBuilder` (`core/llm/prompt_builder.py`) resolves that to
-`prompts/crypto_sentiment/crypto_sentiment_v2.md` and renders the template with `symbol` and
+`prompts/crypto_sentiment/crypto_sentiment_v3.md` and renders the template with `query` and
 the retrieved `articles`.
 
 - The article-rendering **loop lives in the template** (`{% for a in articles %}`) and the
@@ -34,6 +34,15 @@ the retrieved `articles`.
   instruction to weigh accordingly.
 - The Jinja2 env is `autoescape=False` (raw prompt text, not HTML) with `StrictUndefined` (a typo'd
   template variable fails loudly, not silently empty).
+- **v3 (2026-08-23)** added the dedicated **`breaking_reason`** field — the LLM's purpose-built
+  line for *why it broke*, at most ~25 words, event first, returned only when something is actually
+  breaking (ISSUE_64 Phase 2). Both families moved together and `forex_sentiment` skipped v2, so one
+  number describes the prompt generation across pipelines. v3 also renamed the template slot
+  `{{ symbol }}` → `{{ query }}`: it has always been filled with the retrieval query
+  ("Bitcoin BTC"), never the ticker. **The rename lives in the new files only** — an older template
+  edited in place would change its `content_hash`, i.e. the `prompt_hash` recorded in every envelope
+  it ever produced, so the builder binds `query` *and* `symbol` to the same value and
+  `tests/test_prompt_builder.py` pins every shipped hash.
 - **Bump the version when the prompt changes** — different prompts score the same news differently,
   so the consumer must keep the series apart (replay/backfill). A bump = a new file.
 

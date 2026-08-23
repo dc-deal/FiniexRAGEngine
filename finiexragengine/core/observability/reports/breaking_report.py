@@ -63,9 +63,18 @@ class BreakingEpisodeRow:
     reason: str
     engine_s: Optional[float]
     end_to_end_s: Optional[float]
+    # The model's purpose-built breaking line (ISSUE_64 Phase 2, prompt v3), empty before it.
+    # Beside `reason`, never instead of it: `reason` is what the story measure clusters on, and
+    # its threshold was calibrated over `reasoning` texts (see `breaking_episode.BreakingEpisode`).
+    breaking_reason: str = ''
     # Which news this episode belongs to (ISSUE_96) — episodes sharing one are the same story,
     # re-derived at read time from the `reason` text. Numbered per pipeline in reading order.
     story_id: int = 0
+
+    @property
+    def display_reason(self) -> str:
+        """What the listing prints — the purpose-built line, else the signal's `reasoning`."""
+        return self.breaking_reason or self.reason
 
 
 @dataclass
@@ -205,7 +214,8 @@ def _aggregate(rows: List[Tuple[str, object]], flagged: int, since_label: str,
                     row.end_to_end_s.append(end_to_end)
                 current = BreakingEpisodeRow(pipeline_id, result['symbol'],
                                              result.get('signal', ''), t3, 0.0,
-                                             result.get('reasoning', ''), engine, end_to_end)
+                                             result.get('reasoning', ''), engine, end_to_end,
+                                             breaking_reason=result.get('breaking_reason') or '')
                 episodes.append(current)
                 open_rows[(pipeline_id, group_key)] = current
             elif decision.held:
@@ -224,6 +234,10 @@ def _aggregate(rows: List[Tuple[str, object]], flagged: int, since_label: str,
         grouping = story_rules.get(pipeline_id) or StoryGrouping()
         story_engines[pipeline_id] = grouping
         mine = [episode for episode in episodes if episode.pipeline_id == pipeline_id]
+        # Deliberately `reason` (the LLM's `reasoning`), never `breaking_reason`: `story_similarity`
+        # was measured over 1,455 real `reasoning` texts, and `breaking_reason` is empty on every
+        # envelope produced before prompt v3. Pointing this at the new field would retire that
+        # calibration without anyone noticing.
         candidates = [StoryCandidate(key=episode.symbol, started=episode.started,
                                      reason=episode.reason) for episode in mine]
         for episode, story_id in zip(mine, assign_stories(candidates, grouping)):
@@ -391,5 +405,5 @@ def format_breaking_report(report: BreakingReport, *, width: Optional[int] = Non
             # the thing the story measure exists to replace. Blank when an episode stands alone.
             lines.append(f'  {symbol_cell:8} {episode.signal:4} {started:>11}  '
                          f'{duration:>6} {_story_mark(report.episodes, index):1} '
-                         f'{_truncate(episode.reason, reason_budget)}')
+                         f'{_truncate(episode.display_reason, reason_budget)}')
     return '\n'.join(lines)

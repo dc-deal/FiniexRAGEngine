@@ -259,7 +259,7 @@ class WeeklyReportConfig(BaseModel):
 
 
 class AppConfig(BaseModel):
-    version: str = '0.3.2'
+    version: str = '0.3.3'
     schema_version: str = '1.0'
     # Human names for the journals this engine may write into, keyed by `journal_id` — the
     # 12-char fingerprint of the database's own `system_identifier` (ISSUE_9). Reported on

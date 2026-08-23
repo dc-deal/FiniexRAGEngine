@@ -112,7 +112,9 @@ class BreakingRecord:
     last_seen: datetime
     symbol: str
     signal: str
-    reason: str = ''                             # why it broke (the LLM's reasoning; ISSUE_64)
+    # Why it broke — already resolved to the line to show: the dedicated `breaking_reason`
+    # when the model wrote one, else the signal's `reasoning` (ISSUE_64 Phase 2).
+    reason: str = ''
     gap_seconds: float = 9000.0                  # this episode's close delay (ISSUE_82; 150 min)
     # Set when `started` is a LOWER BOUND rather than the observed opening: the boot replay covers
     # a bounded window (`breaking.episode_seed_hours`), so a chain reaching back further has its

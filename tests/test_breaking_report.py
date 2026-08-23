@@ -25,7 +25,7 @@ _BUG = ('Recent articles highlight significant technical issues with Solana, inc
 
 
 def _row(pipeline, t3, *, symbol='BTCUSD', is_breaking=True, published=None, fetched=None,
-         signal='SELL', reason='', urgency=None):
+         signal='SELL', reason='', urgency=None, breaking_reason=None):
     source = {}
     if published is not None:
         source['published_at'] = published.isoformat()
@@ -35,6 +35,7 @@ def _row(pipeline, t3, *, symbol='BTCUSD', is_breaking=True, published=None, fet
         'timestamp': t3.isoformat(),
         'result': [{'symbol': symbol, 'is_breaking': is_breaking, 'signal': signal,
                     'reasoning': reason, 'sources': [source] if source else [],
+                    'breaking_reason': breaking_reason,
                     'urgency': 0.9 if urgency is None and is_breaking else (urgency or 0.0)}],
     })
 
@@ -284,3 +285,39 @@ def test_a_lone_episode_carries_no_bracket():
                  signal='BUY', reason='Recent news highlights the MoneyGram expansion onto Solana.')]
     out = format_breaking_report(_aggregate(rows, flagged=0, since_label='7d'), width=140)
     assert '┐' not in out and '┘' not in out and '├' not in out
+
+
+def test_the_story_measure_clusters_on_reasoning_not_on_breaking_reason():
+    """ISSUE_64 Phase 2 must not move ISSUE_96's substrate — the guard for that.
+
+    `story_similarity = 0.45` was calibrated over 1,455 real `reasoning` texts; the shared
+    boilerplate they carry is exactly what the IDF learns to suppress. `breaking_reason` is a
+    purpose-built ≤25-word line with a different distribution, and it is empty on every envelope
+    produced before prompt v3. Repointing the clustering at it would retire the calibration
+    silently, so: `reason` measures, `breaking_reason` displays.
+
+    Here the two Pump-Token episodes are one story by their `reasoning` while their
+    `breaking_reason` lines share almost no vocabulary. They must still count as one.
+    """
+    base = datetime(2026, 8, 17, 18, 40, tzinfo=timezone.utc)
+    rows = [
+        _row('p', base, symbol='SOLUSD', signal='BUY', reason=_PUMP_A,
+             breaking_reason='Pump Token doubles in an hour; Solana desks chase the move'),
+        _row('p', base + timedelta(hours=12, minutes=30), symbol='SOLUSD', signal='BUY',
+             reason=_PUMP_B,
+             breaking_reason='Memecoin launchpad volumes hit a record; SOL bid follows through'),
+    ]
+    report = _aggregate(rows, flagged=0, since_label='7d')
+    assert report.confirmed_episodes == 2
+    assert report.total_stories == 1                    # grouped by `reasoning`, as calibrated
+    # ...while the listing shows the purpose-built line.
+    assert report.episodes[0].display_reason.startswith('Pump Token doubles')
+    assert report.episodes[0].reason.startswith('Recent news highlights')
+
+
+def test_the_listing_falls_back_to_reasoning_before_prompt_v3():
+    """Every archived episode predates v3 and carries no breaking_reason — it still renders."""
+    report = _aggregate([_row('p', _T3, symbol='SOLUSD', reason=_BUG)], flagged=0, since_label='7d')
+    episode = report.episodes[0]
+    assert episode.breaking_reason == ''
+    assert episode.display_reason == _BUG

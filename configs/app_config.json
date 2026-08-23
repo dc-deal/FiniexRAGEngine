@@ -1,5 +1,5 @@
 {
-    "version": "0.3.2",
+    "version": "0.3.3",
     "schema_version": "1.0",
     "journal_names": {
         "EXAMPLE_ID": "example-only \u2014 map real ids in user_configs"

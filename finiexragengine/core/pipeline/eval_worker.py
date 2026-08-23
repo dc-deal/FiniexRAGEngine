@@ -90,7 +90,7 @@ class EvalWorker:
             # No reaction time: the replay re-opened this episode at the window's edge, so any
             # measurement here would be re-sampled against stale evidence (see the store method).
             stats.restore_breaking_episode(running.episode.symbol, running.episode.signal,
-                                           running.episode.reason, started=running.started,
+                                           running.episode.display_reason, started=running.started,
                                            last_seen=running.last_seen, gap_seconds=gap_seconds,
                                            started_bounded=running.started_bounded)
 
@@ -193,8 +193,8 @@ class EvalWorker:
                       f'e2e {_fmt_seconds(episode.end_to_end_s)}')
             # The record carries its pipeline's gap so the renderer decides live-vs-ended against
             # the value the rule actually used (ISSUE_82) — `breaking` is per-pipeline config.
-            stats.add_breaking_episode(episode.symbol, episode.signal, episode.reason, detail,
-                                       at=now, gap_seconds=gap_seconds)
+            stats.add_breaking_episode(episode.symbol, episode.signal, episode.display_reason,
+                                       detail, at=now, gap_seconds=gap_seconds)
         # A symbol whose open episode this pass HELD is an ongoing story: advance its record's
         # last_seen so the section keeps it 'live' and grows its duration (ISSUE_64). Under
         # hysteresis this is no longer "was breaking" — a pass below the confirm gate but at or

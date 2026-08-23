@@ -383,8 +383,9 @@ class LiveDisplay:
 
     @staticmethod
     def _episode_reason(record: BreakingRecord) -> Text:
-        # The why (the LLM's reasoning), truncated by the column's ellipsis; dim so the symbol +
-        # status read first. Phase 2 (ISSUE_64) swaps in a dedicated breaking_reason field.
+        # The why, truncated by the column's ellipsis; dim so the symbol + status read first.
+        # The record already carries the preferred line: the eval worker resolves
+        # `breaking_reason or reasoning` once (ISSUE_64 Phase 2), so no renderer repeats the rule.
         if not record.reason:
             return Text('—', style='dim')
         return Text(record.reason, style='dim')
