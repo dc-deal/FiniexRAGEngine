@@ -159,8 +159,11 @@ class BreakingConfig(BaseModel):
       50–150 min, while different stories sat 4 h or more apart, and 150 reproduced a hand count of
       the week's stories (ISSUE_82). The previous 30 was the worst possible choice — exactly three
       missed passes on a 600 s grid, so a second of scheduling jitter decided whether a story split.
-      NOTE 150 is itself 15 passes on that grid, and one measured story sat on the boundary exactly;
-      a value a few minutes off the multiple (155) would remove that edge at no cost, untested.
+      NOTE 150 is itself 15 passes on that grid. Moving it a few minutes off the multiple was
+      proposed and **disproved** (ISSUE_96 planning): SOLUSD splits one story at gaps of 150 *and*
+      170 minutes in succession, so 155 catches the first and leaves the second. No nearby value
+      fixes it without merging elsewhere — that is the ceiling of a global constant, and what the
+      story measure exists to replace.
     - `episode_seed_hours` — how far back a restarting process replays persisted envelopes to
       inherit open episodes. It must span an entire episode, not just the gap: the replay can only
       *open* an episode on a recorded breaking pass, while the hold band keeps one alive long
@@ -173,6 +176,19 @@ class BreakingConfig(BaseModel):
     urgency_exit_threshold: float = 0.7  # episode hold gate — hysteresis (ISSUE_82)
     episode_gap_minutes: int = 150       # episode close delay; measured, off the grid (ISSUE_82)
     episode_seed_hours: int = 72         # how far back a restart replays to inherit episodes
+    # The last two group *episodes into stories* (ISSUE_96) — reporting only, like the two above.
+    # `story_similarity` is a TF-IDF cosine over the episodes' `reasoning` text; `story_window_hours`
+    # bounds how far apart two episodes may start and still be one story, so a recurring theme
+    # cannot fuse across months on vocabulary alone.
+    #
+    # 0.45 is measured, not picked: swept over the 2026-08-11..08-18 archive the output is IDENTICAL
+    # from 0.35 to 0.60, and at 0.30 ETHUSD fuses two genuinely different stories (SharpLink's loss
+    # with Fidelity's staking ETF). 0.45 sits mid-plateau, a full step above the only observed
+    # failure boundary. Reading the groupings it produces, all 15 are correct — which also retired
+    # the hand count of 17 that seeded this work: that was read off TRUNCATED console output and
+    # over-split SOLUSD's Pump-Token story.
+    story_similarity: float = 0.45       # cosine above which two episodes are one story (ISSUE_96)
+    story_window_hours: int = 72         # beyond this, two episodes are never the same story
 
 
 class OutputGuardConfig(BaseModel):

@@ -64,6 +64,10 @@ _PIPELINE_EXCLUDED: Dict[str, str] = {
                                     'over persisted passes, applied retroactively to the archive',
     'breaking.episode_seed_hours': 'boot-time replay depth (ISSUE_82) — decides what a restart '
                                    'can still SHOW, never what any pass produced',
+    'breaking.story_similarity': 'story grouping only (ISSUE_96) — a read-time clustering of '
+                                 'episodes already produced, one level above episode_gap_minutes',
+    'breaking.story_window_hours': 'story grouping only (ISSUE_96) — how far apart two episodes '
+                                   'may be and still count as one story; reporting, not scoring',
 }
 
 _SOURCE_SET_EXCLUDED: Dict[str, str] = {

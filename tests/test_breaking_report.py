@@ -14,6 +14,15 @@ _T0 = datetime(2026, 7, 13, 14, 0, 5, tzinfo=timezone.utc)
 _T1 = datetime(2026, 7, 13, 14, 0, 12, tzinfo=timezone.utc)
 _T3 = datetime(2026, 7, 13, 14, 0, 54, tzinfo=timezone.utc)
 
+# Verbatim from the live journal (ISSUE_96 calibration). The two Pump-Token texts are one story the
+# model restated; the routing-bug text is a different one on the same symbol.
+_PUMP_A = ("Recent news highlights a significant price increase for Solana's Pump Token and a "
+           'bullish chart pattern, indicating positive market sentiment.')
+_PUMP_B = ("The recent article highlights a significant price increase for Solana's Pump Token "
+           'and a bullish chart pattern, indicating positive sentiment and potential upside.')
+_BUG = ('Recent articles highlight significant technical issues with Solana, including a routing '
+        'bug that nearly caused a loss of finality and a near-freeze of the network.')
+
 
 def _row(pipeline, t3, *, symbol='BTCUSD', is_breaking=True, published=None, fetched=None,
          signal='SELL', reason='', urgency=None):
@@ -77,7 +86,11 @@ def test_format_renders_windows_and_funnel():
     out = format_breaking_report(report)
     assert 'Breaking Detection' in out
     assert 'window: last 7d' in out
-    assert '3 flagged → 1 confirmed' in out
+    # No arrow: flagged and confirmed are independent channels, not a yield (ISSUE_96).
+    assert '3 flagged (corpus)' in out
+    assert '1 confirmed episodes over 1 stories' in out
+    assert 'not a yield' in out
+    assert '→ 1 confirmed' not in out
 
 
 def test_episode_listing_shows_started_duration_and_reason():
@@ -127,7 +140,7 @@ def test_episode_listing_groups_by_symbol_and_adapts_width():
     report = _aggregate(rows, 0, '7d')
     assert [e.symbol for e in report.episodes] == ['ADAUSD', 'ETHUSD', 'ETHUSD']   # grouped by symbol
     out = format_breaking_report(report, width=100)
-    assert 'x' * 57 in out and 'x' * 58 not in out                  # cut to width budget (100−37−5=58 → 57 + …)
+    assert 'x' * 56 in out and 'x' * 57 not in out                  # cut to width budget (100−38−5=57 → 56 + …)
 
 
 # --- ISSUE_81: the store path anchors like the live path ------------------------------------
@@ -228,3 +241,46 @@ def test_live_and_store_agree_across_a_restart():
 
     assert store_episodes == 1
     assert boot.started == [], 'a seeded tracker must resume the story, not re-open it'
+
+
+def test_the_report_counts_stories_next_to_episodes():
+    """Two episodes of one story count once (ISSUE_96) — the number the episode count is read with.
+
+    Both texts are the real 2026-08-17/18 SOLUSD Pump-Token reasons, which the calibration sweep
+    confirmed are one story: the model restated the same headline twenty times over fourteen hours.
+    """
+    base = datetime(2026, 8, 17, 18, 40, tzinfo=timezone.utc)
+    rows = [
+        _row('p', base - timedelta(days=5), symbol='SOLUSD', signal='SELL', reason=_BUG),
+        _row('p', base, symbol='SOLUSD', signal='BUY', reason=_PUMP_A),
+        _row('p', base + timedelta(hours=12, minutes=30), symbol='SOLUSD', signal='BUY',
+             reason=_PUMP_B),
+    ]
+    report = _aggregate(rows, flagged=0, since_label='7d')
+    assert report.confirmed_episodes == 3
+    assert report.total_stories == 2                    # the two Pump-Token episodes are one story
+    assert report.rows[0].stories == 2
+    pump_ids = {episode.story_id for episode in report.episodes if 'Pump Token' in episode.reason}
+    assert len(pump_ids) == 1                           # and they carry the same id
+
+
+def test_the_listing_brackets_episodes_that_share_a_story():
+    """The grouping has to be readable, not merely counted — a re-derived number nobody can check
+    is exactly what the story measure exists to replace."""
+    base = datetime(2026, 8, 17, 18, 40, tzinfo=timezone.utc)
+    rows = [
+        _row('p', base - timedelta(days=5), symbol='SOLUSD', signal='SELL', reason=_BUG),
+        _row('p', base, symbol='SOLUSD', signal='BUY', reason=_PUMP_A),
+        _row('p', base + timedelta(hours=12, minutes=30), symbol='SOLUSD', signal='BUY',
+             reason=_PUMP_B),
+    ]
+    out = format_breaking_report(_aggregate(rows, flagged=0, since_label='7d'), width=140)
+    assert '┐' in out and '┘' in out
+    assert 'story rule (read-time)' in out              # named, like the episode rule
+
+
+def test_a_lone_episode_carries_no_bracket():
+    rows = [_row('p', datetime(2026, 8, 17, 18, 40, tzinfo=timezone.utc), symbol='SOLUSD',
+                 signal='BUY', reason='Recent news highlights the MoneyGram expansion onto Solana.')]
+    out = format_breaking_report(_aggregate(rows, flagged=0, since_label='7d'), width=140)
+    assert '┐' not in out and '┘' not in out and '├' not in out

@@ -557,6 +557,14 @@ Read it in this order:
   the time, possibly under a different threshold than today's config.
 - **A row is an analysis unit, not a ticker.** `ETHUSD/ETHEUR` is one fanned analysis (ISSUE_70) and
   therefore one episode.
+- **Then read `breaking_cli` without `--timeline` for the story count** (ISSUE_96). Episodes are what
+  the rule made; stories are the news behind them, and the summary prints both:
+  `38 flagged (corpus) · 6 confirmed episodes over 5 stories`. Near-identical counts are the healthy
+  reading — the calibrated gap already collapses most of the repetition. A gap that opens up between
+  them is the signal, and the episode listing brackets which episodes were put together (`┐ ├ ┘`) so
+  the grouping can be checked rather than believed. Its rule is named in the header for the same
+  reason the episode rule is: both re-derive the archive, and a number without its rule cannot be
+  compared against another run.
 - **`passes + mech` is the envelope count.** A row of `0 / 304` means the symbol was never scored,
   which is a different statement from "never broke" — and both are different from a missing row.
 

@@ -1,44 +1,86 @@
 {
-    "pipeline_id": "forex_macro_sentiment",
-    "outcome_type": "sentiment_fear_greed",
-    "market": "forex",
-    "symbols": [
-        { "key": "EURUSD", "base": "EUR", "quote": "USD", "query": "Euro US Dollar EUR/USD euro area ECB" },
-        { "key": "GBPUSD", "base": "GBP", "quote": "USD", "query": "British Pound Sterling GBP/USD Bank of England" },
-        { "key": "USDJPY", "base": "USD", "quote": "JPY", "query": "US Dollar Japanese Yen USD/JPY Bank of Japan BOJ" },
-        { "key": "AUDUSD", "base": "AUD", "quote": "USD", "query": "Australian Dollar AUD/USD Reserve Bank of Australia RBA" },
-        { "key": "EURGBP", "base": "EUR", "quote": "GBP", "query": "Euro British Pound EUR/GBP ECB Bank of England" },
-        { "key": "NZDUSD", "base": "NZD", "quote": "USD", "query": "New Zealand Dollar NZD/USD Reserve Bank of New Zealand RBNZ" },
-        { "key": "USDCAD", "base": "USD", "quote": "CAD", "query": "US Dollar Canadian Dollar USD/CAD Bank of Canada BOC" },
-        { "key": "USDCHF", "base": "USD", "quote": "CHF", "query": "US Dollar Swiss Franc USD/CHF Swiss National Bank SNB" }
-    ],
-    "prompt": {
-        "name": "forex_sentiment",
-        "version": "1"
+  "pipeline_id": "forex_macro_sentiment",
+  "outcome_type": "sentiment_fear_greed",
+  "market": "forex",
+  "symbols": [
+    {
+      "key": "EURUSD",
+      "base": "EUR",
+      "quote": "USD",
+      "query": "Euro US Dollar EUR/USD euro area ECB"
     },
-    "llm": {
-        "model": "gpt-4o-mini"
+    {
+      "key": "GBPUSD",
+      "base": "GBP",
+      "quote": "USD",
+      "query": "British Pound Sterling GBP/USD Bank of England"
     },
-    "trigger": {
-        "type": "interval",
-        "timeframe": "M10"
+    {
+      "key": "USDJPY",
+      "base": "USD",
+      "quote": "JPY",
+      "query": "US Dollar Japanese Yen USD/JPY Bank of Japan BOJ"
     },
-    "source_set": "forex_news",
-    "retrieval": {
-        "top_k": 12,
-        "recency_window_minutes": 2880,
-        "dedup_similarity": 0.92,
-        "floor_distance": 0.55
+    {
+      "key": "AUDUSD",
+      "base": "AUD",
+      "quote": "USD",
+      "query": "Australian Dollar AUD/USD Reserve Bank of Australia RBA"
     },
-    "breaking": {
-        "urgency_threshold": 0.8,
-        "min_importance": 2,
-        "urgency_exit_threshold": 0.7,
-        "episode_gap_minutes": 150,
-        "episode_seed_hours": 72
+    {
+      "key": "EURGBP",
+      "base": "EUR",
+      "quote": "GBP",
+      "query": "Euro British Pound EUR/GBP ECB Bank of England"
     },
-    "output_guard": {
-        "score_signal_tolerance": 0.1,
-        "hold_confidence_max": 0.9
+    {
+      "key": "NZDUSD",
+      "base": "NZD",
+      "quote": "USD",
+      "query": "New Zealand Dollar NZD/USD Reserve Bank of New Zealand RBNZ"
+    },
+    {
+      "key": "USDCAD",
+      "base": "USD",
+      "quote": "CAD",
+      "query": "US Dollar Canadian Dollar USD/CAD Bank of Canada BOC"
+    },
+    {
+      "key": "USDCHF",
+      "base": "USD",
+      "quote": "CHF",
+      "query": "US Dollar Swiss Franc USD/CHF Swiss National Bank SNB"
     }
+  ],
+  "prompt": {
+    "name": "forex_sentiment",
+    "version": "1"
+  },
+  "llm": {
+    "model": "gpt-4o-mini"
+  },
+  "trigger": {
+    "type": "interval",
+    "timeframe": "M10"
+  },
+  "source_set": "forex_news",
+  "retrieval": {
+    "top_k": 12,
+    "recency_window_minutes": 2880,
+    "dedup_similarity": 0.92,
+    "floor_distance": 0.55
+  },
+  "breaking": {
+    "urgency_threshold": 0.8,
+    "min_importance": 2,
+    "urgency_exit_threshold": 0.7,
+    "episode_gap_minutes": 150,
+    "episode_seed_hours": 72,
+    "story_similarity": 0.45,
+    "story_window_hours": 72
+  },
+  "output_guard": {
+    "score_signal_tolerance": 0.1,
+    "hold_confidence_max": 0.9
+  }
 }

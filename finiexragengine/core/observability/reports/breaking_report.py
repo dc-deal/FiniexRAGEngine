@@ -1,4 +1,4 @@
-"""Breaking-detection report — reaction time + the flagged→confirmed funnel (ISSUE_11).
+"""Breaking-detection report — reaction time, episodes and the stories behind them (ISSUE_11).
 
 Aggregated **from the store**, never from logs: the persisted envelopes are the source of truth
 (CLAUDE.md — capture at the call, report from the store). Reaction time is a live measurement that
@@ -20,6 +20,11 @@ from typing import Dict, List, Optional, Tuple
 
 import psycopg
 
+from finiexragengine.core.pipeline.breaking_story_rule import (
+    StoryCandidate,
+    StoryGrouping,
+    assign_stories,
+)
 from finiexragengine.core.pipeline.breaking_episode_rule import (
     BreakingEpisodeRule,
     EpisodeGrouping,
@@ -40,6 +45,7 @@ class PipelineBreaking:
     """One pipeline's breaking episodes + their reaction-time samples, inside the window."""
     pipeline_id: str
     confirmed: int = 0                                    # breaking episodes
+    stories: int = 0                                      # distinct news behind them (ISSUE_96)
     engine_reaction_s: List[float] = field(default_factory=list)   # t3 − freshest fetched_at
     end_to_end_s: List[float] = field(default_factory=list)        # t3 − freshest published_at
 
@@ -57,6 +63,9 @@ class BreakingEpisodeRow:
     reason: str
     engine_s: Optional[float]
     end_to_end_s: Optional[float]
+    # Which news this episode belongs to (ISSUE_96) — episodes sharing one are the same story,
+    # re-derived at read time from the `reason` text. Numbered per pipeline in reading order.
+    story_id: int = 0
 
 
 @dataclass
@@ -66,10 +75,14 @@ class BreakingReport:
     flagged_candidates: int             # corpus breaking_candidate=TRUE in the window (all sets)
     confirmed_episodes: int
     episodes: List[BreakingEpisodeRow] = field(default_factory=list)   # per-episode listing (ISSUE_64)
+    total_stories: int = 0              # distinct news across every pipeline (ISSUE_96)
     # The rule each pipeline was actually grouped with. A report that re-derives history at read
     # time has to say under which rule, or two runs of the same command over the same archive are
     # silently incomparable — the `[OVERRIDE]` startup line only shows up when an override exists.
     rules_applied: Dict[str, EpisodeGrouping] = field(default_factory=dict)
+    # The story rule each pipeline was grouped with, for the same reason as `rules_applied`:
+    # a read-time re-derivation that does not name its rule is not reproducible.
+    stories_applied: Dict[str, StoryGrouping] = field(default_factory=dict)
 
 
 def _parse_dt(value: str) -> datetime:
@@ -89,6 +102,7 @@ def _percentile(values: List[float], pct: float) -> Optional[float]:
 
 
 def build_breaking_report(database_url: str, since: datetime, *, since_label: str = '7d',
+                         stories: Optional[Dict[str, StoryGrouping]] = None,
                           outcomes_table: str = 'outcomes',
                           articles_table: str = 'articles',
                           rules: Optional[PipelineGroupings] = None) -> BreakingReport:
@@ -143,7 +157,8 @@ def _reaction(result: Dict[str, object], t3: datetime) -> Tuple[Optional[float],
 
 
 def _aggregate(rows: List[Tuple[str, object]], flagged: int, since_label: str,
-               rules: Optional[PipelineGroupings] = None) -> BreakingReport:
+               rules: Optional[PipelineGroupings] = None,
+               stories: Optional[Dict[str, StoryGrouping]] = None) -> BreakingReport:
     """Group passes into episodes + reaction samples — the DB-free core (tested).
 
     Drives `BreakingEpisodeRule` exactly as the live tracker does. Note that **every** result is
@@ -200,12 +215,29 @@ def _aggregate(rows: List[Tuple[str, object]], flagged: int, since_label: str,
                     # before the gap elapsed — otherwise a story's length would include its silence.
                     current.duration_s = (t3 - current.started).total_seconds()
 
+    # Stories are assigned AFTER every episode exists (ISSUE_96): the measure needs the whole
+    # window's reasons to learn which words are boilerplate, so it cannot run inside the pass loop.
+    # The episode rule above is untouched by it — one derivation feeds the next, never the reverse.
+    story_rules = stories or {}
+    story_engines: Dict[str, StoryGrouping] = {}
+    for pipeline_id in {episode.pipeline_id for episode in episodes}:
+        grouping = story_rules.get(pipeline_id) or StoryGrouping()
+        story_engines[pipeline_id] = grouping
+        mine = [episode for episode in episodes if episode.pipeline_id == pipeline_id]
+        candidates = [StoryCandidate(key=episode.symbol, started=episode.started,
+                                     reason=episode.reason) for episode in mine]
+        for episode, story_id in zip(mine, assign_stories(candidates, grouping)):
+            episode.story_id = story_id
+        # A pipeline that produced episodes always has a row here — it was created on the first one.
+        per_pipeline[pipeline_id].stories = len({episode.story_id for episode in mine})
+
     ordered = sorted(per_pipeline.values(), key=lambda row: row.pipeline_id)
     # Group the listing by pipeline THEN symbol (then time): a symbol's episodes cluster, so signal
     # consistency (all BUY vs a BUY→SELL flip) is scannable at a glance (ISSUE_64 feedback).
     episodes.sort(key=lambda episode: (episode.pipeline_id, episode.symbol, episode.started))
     return BreakingReport(since_label, ordered, flagged,
-                          sum(row.confirmed for row in ordered), episodes, engines)
+                          sum(row.confirmed for row in ordered), episodes,
+                          sum(row.stories for row in ordered), engines, story_engines)
 
 
 def _fmt_seconds(seconds: Optional[float]) -> str:
@@ -219,6 +251,23 @@ def _fmt_pair(values: List[float]) -> str:
     if median is None:
         return '—'
     return f'{_fmt_seconds(median)} / {_fmt_seconds(_percentile(values, 0.9))}'
+
+
+def format_story_lines(stories_applied: Dict[str, StoryGrouping]) -> List[str]:
+    """The story rule each pipeline was grouped with (ISSUE_96) — the episode rule's twin.
+
+    Same reasoning: the story count is a read-time re-derivation over the `reason` texts, so a page
+    that prints it without naming the rule cannot be compared against another run.
+    """
+    if not stories_applied:
+        return []
+    ordered = sorted(stories_applied.items())
+    if len(ordered) == 1:
+        pipeline_id, grouping = ordered[0]
+        return [f'story rule (read-time): {pipeline_id} {grouping.describe()}']
+    width = max(len(pipeline_id) for pipeline_id in stories_applied)
+    return ['story rule (read-time):'] + [
+        f'  {pipeline_id:{width}}  {grouping.describe()}' for pipeline_id, grouping in ordered]
 
 
 def format_rule_lines(rules_applied: Dict[str, EpisodeGrouping]) -> List[str]:
@@ -245,6 +294,28 @@ def format_rule_lines(rules_applied: Dict[str, EpisodeGrouping]) -> List[str]:
         f'  {pipeline_id:{width}}  {_render(grouping)}' for pipeline_id, grouping in ordered]
 
 
+def _story_mark(episodes: List[BreakingEpisodeRow], index: int) -> str:
+    """`┐ ├ ┘` for an episode that shares its story with a neighbour, blank when it stands alone.
+
+    Drawn from the neighbours rather than stored on the row: the listing is already sorted by
+    (pipeline, symbol, time), so a story's episodes are adjacent by construction and the bracket
+    only has to know whether the row above and below belong to the same one.
+    """
+    episode = episodes[index]
+    same = lambda other: (other.pipeline_id == episode.pipeline_id
+                          and other.symbol == episode.symbol
+                          and other.story_id == episode.story_id)
+    above = index > 0 and same(episodes[index - 1])
+    below = index + 1 < len(episodes) and same(episodes[index + 1])
+    if above and below:
+        return '├'
+    if below:
+        return '┐'
+    if above:
+        return '┘'
+    return ' '
+
+
 def _truncate(text: str, budget: int) -> str:
     """Cut `text` to `budget` cells, ellipsis-marked — so a long reason never overruns the console."""
     return text if len(text) <= budget else text[:budget - 1] + '…'
@@ -259,23 +330,32 @@ def format_breaking_report(report: BreakingReport, *, width: Optional[int] = Non
     term_width = width if width is not None else shutil.get_terminal_size((80, 24)).columns
     divider = '-' * 72
     lines = [
-        'Breaking Detection — reaction & funnel',
+        'Breaking Detection — reaction & stories',
         f'window: last {report.since_label}',
         *format_rule_lines(report.rules_applied),
+        *format_story_lines(report.stories_applied),
         divider,
-        f'{"pipeline":24} {"confirmed":>9}  {"engine react":>15}  {"end-to-end":>15}',
-        f'{"":24} {"episodes":>9}  {"med / p90":>15}  {"med / p90":>15}',
+        f'{"pipeline":24} {"confirmed":>9} {"stories":>7}  {"engine react":>15}  {"end-to-end":>15}',
+        f'{"":24} {"episodes":>9} {"":>7}  {"med / p90":>15}  {"med / p90":>15}',
         divider,
     ]
     for row in report.rows:
-        lines.append(f'{row.pipeline_id:24} {row.confirmed:>9}  '
+        lines.append(f'{row.pipeline_id:24} {row.confirmed:>9} {row.stories:>7}  '
                      f'{_fmt_pair(row.engine_reaction_s):>15}  {_fmt_pair(row.end_to_end_s):>15}')
     if not report.rows:
         lines.append('(no confirmed breaking in the window)')
     lines.append(divider)
-    # The funnel: flagged (corpus, LLM-free) → confirmed (LLM) → pushed (live channel, Stage C).
-    lines.append(f'funnel: {report.flagged_candidates} flagged → '
-                 f'{report.confirmed_episodes} confirmed → push (Stage C, pending)')
+    # Three counts of the same window, NOT a funnel — the arrow was removed deliberately
+    # (ISSUE_82 step 4, ISSUE_96). Detection and confirmation are near-independent channels:
+    # both XRPUSD episodes of 2026-08-17 came from articles the detector never flagged, and
+    # breaking-triggered passes carry an `is_breaking` row no more often than scheduled ones
+    # (30.8 % vs 40.5 %). Reading `flagged → confirmed` as a yield is therefore wrong, and an
+    # arrow is what invited it. `over N stories` is the number the episode count should be read with.
+    lines.append(f'{report.flagged_candidates} flagged (corpus) · '
+                 f'{report.confirmed_episodes} confirmed episodes over '
+                 f'{report.total_stories} stories · push pending (Stage C)')
+    lines.append('flagged and confirmed are independent channels, not a yield — '
+                 'a flagged article often is not confirmed, and most episodes were never flagged')
     lines.append('engine react = t3−freshest fetched_at (what we control) · '
                  'end-to-end = t3−freshest published_at (what the consumer feels)')
 
@@ -284,17 +364,18 @@ def format_breaking_report(report: BreakingReport, *, width: Optional[int] = Non
     lines.append('')
     lines.append(f'Breaking episodes — last {report.since_label}')
     lines.append(divider)
-    lines.append(f'  {"symbol":8} {"sig":4} {"started":>11}  {"dur":>6}  why')
+    lines.append(f'  {"symbol":8} {"sig":4} {"started":>11}  {"dur":>6}    why')
     if not report.episodes:
         lines.append('  (none)')
     else:
-        # The fixed prefix is 37 cells (`  {sym:8} {sig:4} {started:>11}  {dur:>6}  `); the reason
-        # fills whatever the console has left, minus a 5-cell safety margin so a slightly-miscounted
-        # width (or a console that reports one column too many) never wraps a line (ISSUE_64 feedback).
-        reason_budget = max(20, term_width - 37 - 5)
+        # The fixed prefix is 38 cells (`  {sym:8} {sig:4} {started:>11}  {dur:>6} {story:1} `) —
+        # 37 before ISSUE_96 added the story bracket. The reason fills whatever the console has
+        # left, minus a 5-cell safety margin so a slightly-miscounted width (or a console that
+        # reports one column too many) never wraps a line (ISSUE_64 feedback).
+        reason_budget = max(20, term_width - 38 - 5)
         current_pipeline: Optional[str] = None
         current_symbol: Optional[str] = None
-        for episode in report.episodes:
+        for index, episode in enumerate(report.episodes):
             if episode.pipeline_id != current_pipeline:
                 lines.append(episode.pipeline_id)          # section header per pipeline
                 current_pipeline = episode.pipeline_id
@@ -305,6 +386,10 @@ def format_breaking_report(report: BreakingReport, *, width: Optional[int] = Non
             current_symbol = episode.symbol
             started = episode.started.strftime('%m-%d %H:%M')
             duration = _fmt_seconds(episode.duration_s) if episode.duration_s else '—'
+            # One cell marking which episodes the story rule put together (ISSUE_96), so the
+            # grouping can be READ rather than trusted — a re-derived number nobody can check is
+            # the thing the story measure exists to replace. Blank when an episode stands alone.
             lines.append(f'  {symbol_cell:8} {episode.signal:4} {started:>11}  '
-                         f'{duration:>6}  {_truncate(episode.reason, reason_budget)}')
+                         f'{duration:>6} {_story_mark(report.episodes, index):1} '
+                         f'{_truncate(episode.reason, reason_budget)}')
     return '\n'.join(lines)

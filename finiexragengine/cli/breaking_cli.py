@@ -16,6 +16,9 @@ from finiexragengine.core.observability.reports.breaking_timeline_report import 
     format_breaking_timeline_report,
 )
 from finiexragengine.core.pipeline.breaking_episode_rule import groupings_from_configs
+from finiexragengine.core.pipeline.breaking_story_rule import (
+    groupings_from_configs as story_groupings_from_configs,
+)
 from finiexragengine.utils.console_encoding import use_utf8_output
 from finiexragengine.utils.report_window import parse_since
 
@@ -39,7 +42,10 @@ def main() -> None:
     # Episode boundaries are per-pipeline config (ISSUE_82), so both surfaces are told the rules.
     # Registry via the manager factory — the only load path that applies the user_configs overlay.
     registry = AppConfigManager().build_pipeline_registry()
-    rules = groupings_from_configs(p.get_config() for p in registry.list_pipelines())
+    # Materialised, not a generator: two rules are built from it (episode + story, ISSUE_96) and a
+    # generator would be empty by the second.
+    configs = [pipeline.get_config() for pipeline in registry.list_pipelines()]
+    rules = groupings_from_configs(configs)
 
     if args.timeline is not None:
         report = build_breaking_timeline_report(database_url, since, since_label=label,
@@ -48,7 +54,8 @@ def main() -> None:
         return
 
     print(format_breaking_report(
-        build_breaking_report(database_url, since, since_label=label, rules=rules)))
+        build_breaking_report(database_url, since, since_label=label, rules=rules,
+                              stories=story_groupings_from_configs(configs))))
 
 
 if __name__ == '__main__':

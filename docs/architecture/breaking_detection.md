@@ -296,9 +296,46 @@ displaying whatever the replay left open (`BreakingEpisodeTracker.seed`), so a s
 restart keeps its row; the session counters beside it are not restored, because they count what
 this process saw.
 
+### Stories — the number the episode count is read with (ISSUE_96)
+
+An **episode** is what the rule produces: a run of breaking passes held together by the hysteresis
+and closed after the gap. A **story** is the news behind it. They are not the same, because the
+model restates one headline many times: the 2026-08-17 SOLUSD Pump-Token story produced twenty
+distinct phrasings of *"a significant price increase for Solana's Pump Token and a bullish chart
+pattern"* over fourteen hours, and the gap rule cut them into three episodes.
+
+The measure is a **TF-IDF cosine over the episodes' `reasoning` text**, single-link above
+`breaking.story_similarity`, bounded by `breaking.story_window_hours` and never crossing an analysis
+unit (`core/pipeline/breaking_story_rule.py`). Like the episode rule it runs at **read time**, so
+retuning re-derives the whole archive with no migration.
+
+Three things about it are measured, not chosen, and all three surprised the design:
+
+- **Word overlap does not work.** Every reason opens with the same scaffolding, so raw Jaccard
+  scored two entirely different stories at 0.45 and two episodes of the *same* story at 0.12. TF-IDF
+  suppresses exactly those words and learns which they are from the corpus, so there is no
+  hand-maintained stop list to drift.
+- **IDF must be smoothed.** Unsmoothed separates better on a large corpus and collapses on a small
+  one: two identical reasons alone in a window give every term `df == N`, every weight zero, and a
+  cosine of **0.000** with itself.
+- **`story_similarity = 0.45` is the middle of a measured plateau.** Swept over 2026-08-11..08-18 the
+  output is identical from 0.35 to 0.60; at 0.30 ETHUSD fuses two different stories. Reading the
+  groupings it produces, all fifteen are correct — which retired the hand count of seventeen that
+  seeded this work. That count was read off *truncated* console output and over-split SOLUSD.
+
+**What it is for.** Not correcting an overcount — the calibrated gap already did that, and in the
+window above episodes and stories are near-identical (16 vs 15). It is the **guard** that makes the
+divergence visible when it returns, and the invariant that lets the gap be retuned without another
+hand count: between gap 45 and 150 the episode count moved −45 % while the story count moved −12 %.
+
 ### Is `confirmed` a subset of `flagged`? No.
 
-The funnel prints `N flagged → M confirmed`, which reads like a yield. It is not one. Detection
+The report used to print `N flagged → M confirmed`, which reads like a yield. It is not one, and
+the arrow was removed for that reason (ISSUE_96): the line now reads
+`N flagged (corpus) · M confirmed episodes over K stories`, three counts of one window rather than a
+chain. A second measurement backs the same conclusion — breaking-triggered passes carry an
+`is_breaking` row **no more often than ordinary scheduled ones** (30.8 % vs 40.5 % over 14 days), so
+the detector's verdict is indistinguishable from the base rate. Detection
 (the ingest-side flag) and confirmation (the LLM's urgency) are independent paths, and a story can
 be confirmed with **no** flagged article behind it at all: on 2026-08-17 both XRPUSD episodes came
 from articles with `importance = NULL`, `breaking_candidate = false`, `flagged_at = NULL`. The
@@ -311,16 +348,17 @@ performance footer** (a breaking report is an aggregate over many events, not on
 timings):
 
 ```
-Breaking Detection — reaction & funnel
+Breaking Detection — reaction & stories
 window: last 7d
+episode rule (read-time): crypto_sentiment hold ≥0.70 · gap 150m
+story rule (read-time):   crypto_sentiment story ≥0.45 · within 72h
 ------------------------------------------------------------------------
-pipeline                 confirmed     engine react       end-to-end
-                          episodes       med / p90          med / p90
+pipeline                 confirmed stories     engine react       end-to-end
+                          episodes                med / p90        med / p90
 ------------------------------------------------------------------------
-crypto_sentiment                9        38s / 71s          46s / 82s
-forex_macro_sentiment           2        22s / 40s          30s / 55s
+crypto_sentiment                 6       5    10.3m / 14.1m   26.7m / 104.0m
 ------------------------------------------------------------------------
-funnel: 17 flagged → 11 confirmed → push (Stage C, pending)
+38 flagged (corpus) · 6 confirmed episodes over 5 stories · push pending (Stage C)
 ```
 
 The same counts feed the live display (#26) and the weekly report (#27, a per-pipeline section).
