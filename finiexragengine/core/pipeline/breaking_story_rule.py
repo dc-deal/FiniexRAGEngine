@@ -51,7 +51,7 @@ from finiexragengine.types.config_types.pipeline_config_types import PipelineCon
 
 # Mirrors `BreakingConfig` — the config is the truth, these keep a bare `StoryGrouping()` (tests,
 # a report over an orphaned pipeline_id) meaningful.
-DEFAULT_SIMILARITY = 0.35
+DEFAULT_SIMILARITY = 0.45
 DEFAULT_STORY_WINDOW = timedelta(hours=72)
 
 # Four characters and up: shorter tokens are almost entirely function words, and IDF would have to

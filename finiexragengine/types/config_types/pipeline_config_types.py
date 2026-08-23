@@ -180,7 +180,14 @@ class BreakingConfig(BaseModel):
     # `story_similarity` is a TF-IDF cosine over the episodes' `reasoning` text; `story_window_hours`
     # bounds how far apart two episodes may start and still be one story, so a recurring theme
     # cannot fuse across months on vocabulary alone.
-    story_similarity: float = 0.35       # cosine above which two episodes are one story (ISSUE_96)
+    #
+    # 0.45 is measured, not picked: swept over the 2026-08-11..08-18 archive the output is IDENTICAL
+    # from 0.35 to 0.60, and at 0.30 ETHUSD fuses two genuinely different stories (SharpLink's loss
+    # with Fidelity's staking ETF). 0.45 sits mid-plateau, a full step above the only observed
+    # failure boundary. Reading the groupings it produces, all 15 are correct — which also retired
+    # the hand count of 17 that seeded this work: that was read off TRUNCATED console output and
+    # over-split SOLUSD's Pump-Token story.
+    story_similarity: float = 0.45       # cosine above which two episodes are one story (ISSUE_96)
     story_window_hours: int = 72         # beyond this, two episodes are never the same story
 
 

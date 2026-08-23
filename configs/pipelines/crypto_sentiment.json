@@ -94,7 +94,7 @@
     "urgency_exit_threshold": 0.7,
     "episode_gap_minutes": 150,
     "episode_seed_hours": 72,
-    "story_similarity": 0.35,
+    "story_similarity": 0.45,
     "story_window_hours": 72
   },
   "output_guard": {

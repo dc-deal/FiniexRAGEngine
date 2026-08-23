@@ -125,9 +125,9 @@ def test_single_link_chains_a_developing_story():
 
 
 def test_ids_count_from_one_in_reading_order():
-    ids = assign_stories([_at(0, _FIDELITY), _at(30, _BITMINE_A), _at(60, _BITMINE_B)],
-                         StoryGrouping())
-    assert ids == [1, 2, 2]
+    ids = assign_stories(_with_window([_at(0, _FIDELITY), _at(30, _BITMINE_A),
+                                       _at(60, _BITMINE_B)]), StoryGrouping())
+    assert ids[:3] == [1, 2, 2]
 
 
 def test_an_empty_window_is_not_an_error():
