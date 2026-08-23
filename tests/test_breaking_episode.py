@@ -29,11 +29,13 @@ def _src(published: datetime, fetched: datetime) -> ArticleRef:
 
 
 def _envelope(ts: datetime, *, symbol: str = 'ADAUSD', is_breaking: bool = True,
-              urgency: float = 0.9,
+              urgency: float = 0.9, reasoning: str = 'x',
+              breaking_reason: Optional[str] = None,
               sources: Optional[List[ArticleRef]] = None) -> SentimentEnvelope:
     result = SentimentResult(
         symbol=symbol, signal='SELL', sentiment_score=-0.5, confidence=0.8,
-        reasoning='x', urgency=urgency, is_breaking=is_breaking, sources=sources or [])
+        reasoning=reasoning, urgency=urgency, is_breaking=is_breaking,
+        breaking_reason=breaking_reason, sources=sources or [])
     return SentimentEnvelope(
         pipeline_id='crypto_sentiment', outcome_type='sentiment_fear_greed', prompt_version='2',
         timestamp=ts, status='success', metadata=RunMetadata(model='m'), result=[result])
@@ -365,3 +367,22 @@ def test_seed_reports_nothing_for_a_story_that_closed_inside_the_window():
     envelopes.append(_envelope(_T0 + DEFAULT_EPISODE_GAP + timedelta(minutes=10),
                                is_breaking=False, urgency=0.1))
     assert BreakingEpisodeTracker().seed(envelopes) == []
+
+
+def test_episode_prefers_the_dedicated_breaking_reason():
+    """ISSUE_64 Phase 2: the purpose-built line is what a surface shows."""
+    episode = BreakingEpisodeTracker().observe(_envelope(
+        _T0, reasoning='Recent news highlights significant developments in Cardano',
+        breaking_reason='Cardano halts block production for 40 minutes; exchanges pause '
+                        'withdrawals')).started[0]
+    assert episode.display_reason.startswith('Cardano halts block production')
+    # `reason` is untouched — it is the story measure's substrate (ISSUE_96), not a display slot.
+    assert episode.reason.startswith('Recent news highlights')
+
+
+def test_episode_falls_back_to_reasoning_before_prompt_v3():
+    """An envelope produced before v3 carries no breaking_reason; the surface still renders."""
+    episode = BreakingEpisodeTracker().observe(_envelope(
+        _T0, reasoning='Regulatory probe headlines cluster')).started[0]
+    assert episode.breaking_reason == ''
+    assert episode.display_reason == 'Regulatory probe headlines cluster'

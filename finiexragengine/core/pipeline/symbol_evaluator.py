@@ -101,6 +101,11 @@ class SymbolEvaluator:
             symbol=symbol, signal=scored.signal, sentiment_score=scored.sentiment_score,
             confidence=scored.confidence, reasoning=scored.reasoning, urgency=scored.urgency,
             is_breaking=scored.urgency >= self._breaking_threshold,
+            # Carried through as the model wrote it (ISSUE_64 Phase 2). Not gated on
+            # `is_breaking`: the flag is the engine's threshold verdict and the line is the
+            # model's, and dropping one because the other disagreed would hide exactly the
+            # disagreement worth seeing.
+            breaking_reason=scored.breaking_reason,
             sources=[ArticleRef(article_id=a.article_id, url=a.url, title=a.title,
                                 published_at=a.published_at, fetched_at=a.fetched_at)
                      for a in articles],

@@ -114,6 +114,10 @@ class SentimentResult(BaseModel):
     # finish after a scheduled one, carry the higher `seq` and rest on older articles. A consumer
     # discounts such an envelope with this field; without it the flip-flop is invisible.
     evidence_as_of: Optional[int] = None
+    # The LLM's purpose-built breaking line (ISSUE_64 Phase 2), mirrored from SentimentLlmOutput.
+    # Empty on non-breaking rows. Surfaces prefer it and fall back to `reasoning`, so envelopes
+    # produced before prompt v3 keep rendering. Additive with a default — schema_version unchanged.
+    breaking_reason: Optional[str] = None
     # How this row came to be (ISSUE_24/35) — machine-readable, filterable downstream:
     # 'llm' = scored by the model · 'no_data' = mechanical HOLD, retrieval empty after the
     # floor (no evaluation possible due to data shortage — no LLM call was made) ·
@@ -132,8 +136,9 @@ class SentimentLlmOutput(BaseModel):
 
     A strict subset of SentimentResult: the model scores the mood; provenance
     (`sources`), `is_breaking` and `symbol` are attached by the engine, never invented
-    by the LLM. All fields required + no extras (`forbid`), so it maps cleanly to a
-    JSON schema and rejects a malformed completion.
+    by the LLM. No extras (`forbid`), so it maps cleanly to a JSON schema and rejects a
+    malformed completion. Every field is required except `breaking_reason`, which the
+    model returns only when something is actually breaking.
     """
     model_config = ConfigDict(extra='forbid')
 
@@ -144,6 +149,12 @@ class SentimentLlmOutput(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     reasoning: str
     urgency: float = Field(ge=0.0, le=1.0)
+    # Why it broke, in the model's own words (ISSUE_64 Phase 2, prompt v3). Purpose-built for
+    # the breaking event rather than the signal: `reasoning` justifies the call, this names the
+    # news. Optional and absent on ordinary passes — a required field would force the model to
+    # invent a shock on every quiet pass. Capped at ~25 words by the prompt so a truncated
+    # console line still shows the event rather than the sentence's run-up.
+    breaking_reason: Optional[str] = None
 
 
 class RunError(BaseModel):

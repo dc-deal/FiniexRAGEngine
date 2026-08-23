@@ -30,8 +30,23 @@ class BreakingEpisode:
     end_to_end_s: Optional[float]    # envelope ts − freshest REAL published_at (estimated excluded)
     n_sources: int
     # Why it broke (ISSUE_64 Phase 1): the LLM's own per-symbol `reasoning`, carried through so the
-    # dashboard/report can show the trigger. Phase 2 replaces this with a dedicated `breaking_reason`.
+    # dashboard/report can show the trigger.
+    #
+    # Phase 2 adds `breaking_reason` BESIDE this rather than replacing it, deliberately. `reason`
+    # is also the substrate the story measure clusters on (ISSUE_96), and `story_similarity = 0.45`
+    # was calibrated over 1,455 real `reasoning` texts — the shared boilerplate those carry is
+    # exactly what the IDF learns to suppress. Swapping in a purpose-built ≤25-word line would pull
+    # the threshold's ground out from under it, and would leave the clustering nothing at all on
+    # non-breaking rows, where `breaking_reason` is empty. So: `reason` measures, `breaking_reason`
+    # displays. Read `display_reason` for any surface.
     reason: str = ''
+    breaking_reason: str = ''
+
+    @property
+    def display_reason(self) -> str:
+        """What a surface shows: the purpose-built line when the model wrote one, else the
+        signal's `reasoning`. The fallback is what keeps pre-v3 episodes rendering."""
+        return self.breaking_reason or self.reason
 
 
 @dataclass
@@ -141,7 +156,8 @@ class BreakingEpisodeTracker:
                 engine, end_to_end = reaction_times(result, ts)
                 episode = BreakingEpisode(result.symbol, result.signal, result.urgency,
                                           engine, end_to_end, len(result.sources),
-                                          reason=result.reasoning)
+                                          reason=result.reasoning,
+                                          breaking_reason=result.breaking_reason or '')
                 outcome.started.append(episode)
                 self._open[group_key] = OpenEpisode(episode, started=ts, last_seen=ts)
             elif decision.held:

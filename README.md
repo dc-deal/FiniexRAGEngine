@@ -4,11 +4,14 @@
 
 **A configurable RAG engine that turns unstructured sources into typed trading signals.**
 
-> **Status:** Alpha · `v0.3.2-alpha` · a **live-capable, cost-safe signal producer** —
+> **Status:** Alpha · `v0.3.3-alpha` · a **live-capable, cost-safe signal producer** —
 > background ingest/eval workers on independent cadences over one shared corpus
 > (`--workers`), a hard budget circuit-breaker, an output-consistency guard, and a weekly
 > Telegram report make an *unattended* run safe. `GET /latest` serves the persisted outcome
-> instantly, `POST /run` forces a fresh pass.
+> instantly, `POST /run` forces a fresh pass. v0.3.3 makes the engine's own numbers
+> trustworthy before it starts tuning itself: a graduated quarantine ladder, measured
+> breaking episodes grouped into **stories**, a dedicated `breaking_reason` from the model,
+> and a worker that says when it has died.
 
 FiniexRAGEngine fetches unstructured external content (news feeds, blogs, and later
 event/socket streams), retrieves the relevant subset via a vector store, and asks a large
@@ -214,8 +217,10 @@ today, most load-bearing first:
   store) shows the flagged→confirmed funnel. Consecutive confirmations are grouped into one
   **episode** by a Schmitt trigger (open high, hold low) rather than a bare gap — the LLM's
   urgency is quantised, so a threshold-sized wobble used to split one story into five (#82);
-  a **state timeline** (`--timeline`) shows the flips next to the episodes. The live SSE push
-  is the next slice (Stage C, IDE-accepted, paired with #9).
+  a **state timeline** (`--timeline`) shows the flips next to the episodes, and episodes are
+  clustered lexically into **stories** (TF-IDF over the reasons, #96), so *"N episodes over M
+  stories"* is a measurement rather than a hand count. The live stream is the next slice (#9) — it
+  carries the **full cadence**, not a breaking-only push: `is_breaking` is a field, not a channel.
   See [breaking_detection.md](docs/architecture/breaking_detection.md).
 - **Honest retrieval — the "squeeze" (#5, #24)**: two-tier top-k with a recency window,
   symbol-aware query expansion, semantic dedup before the token cap, and a min-similarity
@@ -294,7 +299,9 @@ today, most load-bearing first:
   (`text-embedding-3-small`, 1536 dims) with a query-vector cache; versioned **schema
   migrations** so a populated database evolves without drop-and-recreate.
 
-Next up: the **collector handshake (#9)** + the live **SSE breaking push** (#11 Stage C). See the
+Next up: **connection security (#98)** — the API has no authentication yet — then the
+**collector handshake (#9)**: the durable JSONL archive plus a live SSE stream carrying the full
+cadence. See the
 full **[Vision & Roadmap](https://github.com/dc-deal/FiniexRAGEngine/issues/1)** (issue #1).
 
 ---

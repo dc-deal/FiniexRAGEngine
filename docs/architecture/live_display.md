@@ -102,7 +102,9 @@ Notes on the rows:
   - `started` is bounded by the same window, so an inherited record is marked and the duration
     renders as **`● ≥4h47m`** — a lower bound, not a measurement. A live episode shows `● <running>` (a pass within the episode's own gap still held it
   breaking); an ended one shows `<age> ago` (closed by the gap rule). The *why* is the LLM's own
-  `reasoning` (Phase 1; Phase 2 swaps in a dedicated `breaking_reason`). Episodes are edge-triggered
+  reason — the dedicated `breaking_reason` when the model wrote one, else `reasoning`
+  (ISSUE_64 Phase 2). The eval worker resolves that preference once, so no renderer repeats
+  the rule and a pre-v3 episode still shows a line. Episodes are edge-triggered
   (see `breaking_detection.md`), so a lingering story appears once with a growing duration, not every
   pass. The row count is fixed (blank-padded), so the panel height stays exact.
 

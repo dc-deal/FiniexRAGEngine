@@ -1,5 +1,6 @@
 """Tests for the PromptBuilder (ISSUE_6) — Jinja2 .md template fill + versioning, no API."""
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -127,3 +128,47 @@ def test_template_can_sort_articles_newest_first(tmp_path):
                     language='en', published_at=_TS + timedelta(hours=3), fetched_at=_TS)
     prompt = PromptBuilder(tmp_path).build('sentiment', '1', 'BTCUSD', [older, newer])
     assert prompt.strip() == 'newer older'
+
+
+def test_query_and_symbol_are_both_bound(tmp_path):
+    """v3 reads `{{ query }}`; v1/v2 still read `{{ symbol }}`. Both must render.
+
+    The slot has always been filled with the retrieval query ("Bitcoin BTC"), never the ticker —
+    v3 renamed it to say so. The old files cannot be renamed with it: their `content_hash` is
+    recorded as `prompt_hash` in every envelope they produced.
+    """
+    (_family(tmp_path) / 'sentiment_v1.md').write_text('old: {{ symbol }}', encoding='utf-8')
+    (_family(tmp_path) / 'sentiment_v3.md').write_text('new: {{ query }}', encoding='utf-8')
+    builder = PromptBuilder(tmp_path)
+    assert builder.build('sentiment', '1', 'Bitcoin BTC', []) == 'old: Bitcoin BTC'
+    assert builder.build('sentiment', '3', 'Bitcoin BTC', []) == 'new: Bitcoin BTC'
+
+
+def test_shipped_prompt_hashes_are_pinned():
+    """A prompt is immutable per version — this is the guard, not the convention.
+
+    `content_hash` travels into every envelope as `prompt_hash`. Editing a shipped template in
+    place (a typo fix, a rename) silently invalidates the provenance of everything already
+    archived under it, and the consumer certifies against exactly that. A change here means a new
+    version file; if this test fails, the edit belongs in a new `_v<N+1>.md` instead.
+    """
+    builder = PromptBuilder(Path(__file__).resolve().parents[1] / 'prompts')
+    pinned = {
+        ('crypto_sentiment', '1'): '1f191112898f',
+        ('crypto_sentiment', '2'): '1c86eac137d8',
+        ('crypto_sentiment', '3'): '3f037f75b4b2',
+        ('forex_sentiment', '1'): 'f6e09cf6c039',
+        ('forex_sentiment', '3'): '8d23b742645a',
+    }
+    actual = {key: builder.metadata(*key).content_hash for key in pinned}
+    assert actual == pinned
+
+
+def test_shipped_v3_prompts_ask_for_breaking_reason():
+    """Both families landed on v3 together (forex skips v2), and both carry the new field."""
+    builder = PromptBuilder(Path(__file__).resolve().parents[1] / 'prompts')
+    for family in ('crypto_sentiment', 'forex_sentiment'):
+        rendered = builder.build(family, '3', 'Bitcoin BTC', [])
+        assert 'breaking_reason' in rendered
+        assert 'Bitcoin BTC' in rendered
+        assert builder.metadata(family, '3').version == '3'

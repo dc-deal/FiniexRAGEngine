@@ -110,9 +110,20 @@ class PromptBuilder:
         """The prompt's front-matter identity (id/version/hash) — for the outcome record."""
         return self._load(name, version)[0]
 
-    def build(self, name: str, prompt_version: str, symbol: str,
+    def build(self, name: str, prompt_version: str, query: str,
               articles: List[Article]) -> str:
-        """Render the `<name>_v<prompt_version>.md` body for `symbol` + its context.
+        """Render the `<name>_v<prompt_version>.md` body for `query` + its context.
+
+        The parameter is the retrieval **query** ("Bitcoin BTC"), never the ticker
+        ("BTCUSD") — `symbol_evaluator` has always passed it that way, and the old name
+        claimed otherwise on both sides of the seam.
+
+        The context binds the same value to **two** keys. `query` is what v3 templates
+        read; `symbol` stays bound because v1/v2 templates still use `{{ symbol }}` and
+        they must keep rendering byte-identically: their `content_hash` is recorded as
+        `prompt_hash` in every envelope they ever produced, so editing them would make
+        archived provenance unverifiable. A prompt is immutable per version — the rename
+        lives in the new files only.
 
         The render context also carries `now` (timezone-aware UTC wall clock), so a
         template can anchor the LLM in time — article timestamps alone are useless for
@@ -120,5 +131,5 @@ class PromptBuilder:
         (v1) are unaffected; StrictUndefined only rejects *missing* variables.
         """
         _, compiled = self._load(name, prompt_version)
-        return compiled.render(symbol=symbol, articles=articles,
+        return compiled.render(query=query, symbol=query, articles=articles,
                                now=datetime.now(timezone.utc))
