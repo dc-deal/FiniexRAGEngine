@@ -5,8 +5,12 @@
         "EXAMPLE_ID": "example-only \u2014 map real ids in user_configs"
     },
     "api": {
-        "host": "0.0.0.0",
-        "port": 8100
+        "require_auth": true,
+        "health_public": true,
+        "run_endpoint_enabled": false,
+        "tokens": {},
+        "rate_limit_per_minute": 60,
+        "auth_failures_per_minute": 10
     },
     "llm": {
         "provider": "openai",

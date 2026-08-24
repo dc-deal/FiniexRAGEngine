@@ -11,7 +11,11 @@ def main() -> None:
     # The live display and the startup override report both carry Unicode.
     use_utf8_output()
     parser = argparse.ArgumentParser(description='FiniexRAGEngine API server')
-    parser.add_argument('--host', default='0.0.0.0')
+    # ISSUE_98: loopback by default. The engine is reached through the reverse proxy that
+    # terminates TLS (INTERNAL_server_setup / venv_export), never directly — so binding wide
+    # is the deliberate exception (a container, where the port mapping controls exposure),
+    # not the default everyone inherits by saying nothing.
+    parser.add_argument('--host', default='127.0.0.1')
     parser.add_argument('--port', type=int, default=8100)
     parser.add_argument('--reload', action='store_true')
     parser.add_argument('--workers', action='store_true',

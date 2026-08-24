@@ -8,7 +8,7 @@
 > background ingest/eval workers on independent cadences over one shared corpus
 > (`--workers`), a hard budget circuit-breaker, an output-consistency guard, and a weekly
 > Telegram report make an *unattended* run safe. `GET /latest` serves the persisted outcome
-> instantly, `POST /run` forces a fresh pass. v0.3.3 makes the engine's own numbers
+> instantly and never spends. v0.3.3 makes the engine's own numbers
 > trustworthy before it starts tuning itself: a graduated quarantine ladder, measured
 > breaking episodes grouped into **stories**, a dedicated `breaking_reason` from the model,
 > and a worker that says when it has died.
@@ -116,11 +116,22 @@ stage state on top, a colour-coded activity stream below:
 ![Live terminal dashboard: per-worker SOURCES / INGEST / RETRIEVAL / LLM rows, engine-wide BUDGET and BREAKING, and a scrolling activity stream](docs/assets/live_display.png)
 
 ```bash
+# /health is the one route reachable without a token (an uptime probe needs it):
 curl localhost:8100/v1/health
-curl localhost:8100/v1/pipelines
-curl -X POST localhost:8100/v1/pipelines/crypto_sentiment/run
-curl localhost:8100/v1/pipelines/crypto_sentiment/latest
+
+# everything else takes a bearer token — set FINIEX_API_TOKENS="dev:<token>" first (#98):
+curl -H "Authorization: Bearer $TOKEN" localhost:8100/v1/pipelines
+curl -H "Authorization: Bearer $TOKEN" localhost:8100/v1/pipelines/crypto_sentiment/latest
+
+# POST /run spends money on request and is NOT registered by default. Turn it on
+# deliberately (`api.run_endpoint_enabled`) for development, or use `run_cli`:
+python -m finiexragengine.cli.run_cli --pipeline crypto_sentiment
 ```
+
+The server binds `127.0.0.1` by default and is reached through a TLS-terminating reverse proxy in
+deployment — it never speaks to the internet directly. See
+[connect_contract.md](docs/architecture/connect_contract.md) for the scheme, the token's lifetime
+and the rotation procedure.
 
 Run the tests:
 
@@ -197,7 +208,7 @@ today, most load-bearing first:
   `--workers`; every pass logs its own spend, worker states surface in `/health`. The corpus
   is **stamped with its embedding model** in the database and refuses to boot on a mismatch —
   mixed vector spaces are impossible.
-- **Pipeline orchestration & a strict output contract (#7)**: `POST /run` executes the real
+- **Pipeline orchestration & a strict output contract (#7)**: a pass executes the real
   staged flow — ingest → per-symbol eval → envelope assembly — honoring the contract on
   every response: **every symbol always present**, `partial` preferred over `error`,
   taxonomy-typed `RunError`s, and *always a parseable envelope* (the API answers `200` +

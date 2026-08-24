@@ -1,7 +1,13 @@
 # `/v1/health` — what a consumer reads, and what that obliges us to
 
 `GET /v1/health` began as an operator probe: is the process up, are the workers running. It is no
-longer only that. Since 2026-08-22 the Testing IDE's live session polls it every 30 minutes and
+longer only that.
+
+**Since ISSUE_98 it is also the single route reachable without a token** — an explicit exemption
+rather than an accident of there being no authentication at all. It sits on its own router, carries
+the rate limit (60/min per client) because it is the only surface an anonymous caller can reach, and
+`api.health_public: false` moves it behind the token like everything else. How to connect at all:
+`connect_contract.md`. Since 2026-08-22 the Testing IDE's live session polls it every 30 minutes and
 **derives behaviour** from six of its fields — a staleness threshold, an operator panel, a session
 log and a line in its release certificate.
 
@@ -20,9 +26,12 @@ A rename, a removal or a semantic change is a coordinated break; adding a field 
 
 ## Two things the fields do not do
 
-- **`soft_daily_usd` is `0.0` today, so `budget.suspended` can never fire.** The field is present and
-  correct, and structurally dead until the ceiling is set — which is part of #98. A consumer
-  displaying a value that cannot change is worse than one displaying nothing.
+- **`budget.suspended` does not depend on `soft_daily_usd`.** The two are easy to conflate and are
+  unrelated: `soft_daily_usd` is a *warn-only* day line that writes one log entry when crossed and
+  suspends nothing, while `suspended` is set only when the **provider** refuses a call for quota.
+  That split is deliberate — the engine prices calls from an estimate table, so the authoritative
+  ceiling lives at OpenAI rather than here. A consumer therefore reads `suspended` as "the provider
+  cut us off", never as "we hit our own budget".
 - **`version` is declared, not derived.** It moves when a release is tagged, so two different
   deployed states between tags answer the same string; the consumer found this when an instance
   running #96 and #97 still reported `0.3.2`. `config_fingerprint` on the envelope is the field that

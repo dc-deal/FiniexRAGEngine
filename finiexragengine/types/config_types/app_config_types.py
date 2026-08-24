@@ -8,8 +8,34 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class ApiConfig(BaseModel):
-    host: str = '0.0.0.0'
-    port: int = 8100
+    """What the HTTP surface is allowed to do (ISSUE_98).
+
+    `host`/`port` deliberately do **not** live here. They were declared and never read — the bind
+    address comes solely from `server_cli --host`, so an override here would have been a silent
+    no-op. Everything below *is* read, in `create_app`.
+    """
+    # Master switch for bearer authentication. Off only for the contract tests, which build the
+    # app in scaffold-mock mode; a deployment that turns it off has to do so deliberately.
+    require_auth: bool = True
+    # The one documented exemption: an uptime probe needs /health without a credential. Note what
+    # that publishes — journal identity, worker cadences, budget and stall state — accepted with
+    # that understood (docs/architecture/health_contract.md).
+    health_public: bool = True
+    # `POST /{pipeline_id}/run` converts an HTTP request into OpenAI spend. Off means the route is
+    # never registered — not registered and refusing, which would still exist and still be one
+    # config edit from live. The engine's own workers produce the series; an external forced pass
+    # is a development affordance.
+    run_endpoint_enabled: bool = False
+    # Consumer bearer tokens, `name -> token`. **Empty in the tracked config, always** — the real
+    # values belong in the gitignored `user_configs/app_config.json` overlay. The environment
+    # variable FINIEX_API_TOKENS still wins when set, so a container or CI keeps working unchanged;
+    # whichever source supplied them is reported at boot, so a config value shadowed by a stale
+    # environment variable can never be a silent no-op.
+    tokens: Dict[str, str] = Field(default_factory=dict)
+    # Rate limits, per client per minute. `/health` is the only route without a token, so it is the
+    # only one an anonymous caller can flood; the second line bounds credential guessing.
+    rate_limit_per_minute: int = 60
+    auth_failures_per_minute: int = 10
 
 
 class LlmConfig(BaseModel):

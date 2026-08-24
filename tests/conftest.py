@@ -5,6 +5,13 @@ import os
 # append test output — including deliberately-raised errors — to the real logs/finiex.log.
 os.environ['FINIEX_LOG_FILE'] = ''
 
+# ISSUE_98: the app now refuses to boot with `require_auth` on and no tokens configured — which is
+# the point. The suite therefore configures one and calls with it, so the *authenticated* path is
+# what every existing API test exercises. `tests/test_api_auth.py` builds its own unauthenticated
+# clients for the rejection cases; nothing here weakens the default.
+_SUITE_TOKEN = 'suite-token-not-a-real-credential'
+os.environ.setdefault('FINIEX_API_TOKENS', f'suite:{_SUITE_TOKEN}')
+
 from typing import Iterator  # noqa: E402
 
 import pytest  # noqa: E402
@@ -25,7 +32,8 @@ def client() -> TestClient:
     # never make paid API calls just because DATABASE_URL/OPENAI_API_KEY are set in
     # the developer's (or CI's) environment. Real runs are the fenced `paid` tests
     # and the 💸 CLIs — exercised deliberately, never as a suite side effect.
-    return TestClient(create_app(attach_runners=False))
+    return TestClient(create_app(attach_runners=False),
+                      headers={'Authorization': f'Bearer {_SUITE_TOKEN}'})
 
 
 @pytest.fixture(scope='session')
