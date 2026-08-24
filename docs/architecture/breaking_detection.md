@@ -325,6 +325,16 @@ episode by construction, while FX symbols that merely share a base currency do n
 **Correlation, never a dedupe key.** Two envelopes of one episode carry it by design, so it cannot
 identify a transmission unit; that is `seq`'s job (ISSUE_9).
 
+**The id therefore contains the query text, and that is accepted deliberately.** In production it
+reads `forex_macro_sentiment:US Dollar Canadian Dollar USD/CAD Bank of Canada BOC:2026-08-23T20:20:14Z`
+— long, and it carries a piece of configuration into a consumer-visible field. The consequence to be
+aware of: retuning a retrieval query (which #55/#29 aim to do) changes the key at the next boot, so
+an episode open across that boot continues under a new id. That is not an artefact of the id format
+— it is the grouping itself changing, because a different query *is* a different analysis unit, and
+the rule would treat it as one regardless. Hashing the key would buy nothing: a hash of a changed
+query changes too, and it would cost the readability that makes an id greppable in a log line.
+Decided 2026-08-24: leave it, and say so here.
+
 **Where it is assigned.** In the run, before the envelope is persisted — the journal's JSONB column
 is the exact served JSON, so a stamp applied afterwards would reach neither the archive nor the
 wire. `PipelineRunner` therefore drives the rule and `Pipeline.run` returns a `PipelineRunResult`

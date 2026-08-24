@@ -13,7 +13,14 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from finiexragengine.api.api_app import _build_protected_router, create_app
+from finiexragengine.api.api_app import (
+    _build_protected_router,
+    _build_public_router,
+    create_app,
+)
+from finiexragengine.api.endpoints.build_router import build_build_router
+from finiexragengine.api.endpoints.health_router import build_health_router
+from finiexragengine.core.observability.build_info import sample_build_info
 from finiexragengine.api.rate_limiter import RateLimiter, client_key
 from finiexragengine.api.token_registry import TokenRegistry
 from finiexragengine.configuration.app_config_manager import AppConfigManager
@@ -36,6 +43,27 @@ def _protected_app(**config: object) -> FastAPI:
     """A FastAPI app carrying only the protected router, built the way `create_app` builds it."""
     app = FastAPI()
     app.include_router(_build_protected_router(_registry(), ApiConfig(**config)))
+    return app
+
+
+def _exempt_app(**config: object) -> FastAPI:
+    """The whole surface, built the way `create_app` builds it — both exemptions in play.
+
+    Written against the *mounting decision* rather than against `create_app`, because that decision
+    is what was wrong: an exemption switched off has to move to the protected router, not simply
+    lose its rate limit.
+    """
+    manager = AppConfigManager()
+    api_config = ApiConfig(**config)
+    health = build_health_router(manager)
+    build = build_build_router(sample_build_info('0.0.0-test'))
+    exempt = ((health, api_config.health_public), (build, api_config.build_info_public))
+    app = FastAPI()
+    app.include_router(_build_public_router(
+        api_config, [router for router, is_public in exempt if is_public]))
+    app.include_router(_build_protected_router(
+        _registry(), api_config,
+        extra_routers=[router for router, is_public in exempt if not is_public]))
     return app
 
 
@@ -269,3 +297,50 @@ def test_the_schema_endpoints_are_off_unless_asked_for(tokens: str) -> None:
 
     # `/health` is unaffected — the exemption is a route, not a hole in the app.
     assert off.get('/v1/health').status_code == 200
+
+
+# --- the exemptions, in both directions (ISSUE_98 follow-up) --------------------------------
+
+def test_switching_the_health_exemption_off_moves_it_behind_the_token(tokens: str) -> None:
+    """The regression this test exists for: the flag used to do the opposite of its name.
+
+    `health_public: false` left /health mounted on the app anyway — still reachable without a
+    credential and now *unthrottled*, because the rate limiter lives on the public wrapper. So the
+    switch documented as "moves it behind the token" removed the only protection an anonymous
+    caller met. Asserted behaviourally, in both positions, because the failure was invisible in a
+    reading of either the flag or its docstring.
+    """
+    assert TestClient(_exempt_app(health_public=True)).get('/v1/health').status_code == 200
+
+    closed = TestClient(_exempt_app(health_public=False))
+    assert closed.get('/v1/health').status_code == 401
+    assert closed.get('/v1/health',
+                      headers={'Authorization': f'Bearer {_TOKEN}'}).status_code == 200
+
+
+def test_build_is_public_by_default_and_can_be_closed(tokens: str) -> None:
+    """`/v1/build` is the second exemption — and it is a switch, not a fixture of the code."""
+    open_client = TestClient(_exempt_app())
+    response = open_client.get('/v1/build')
+    assert response.status_code == 200
+    assert response.json()['version'] == '0.0.0-test'
+
+    closed = TestClient(_exempt_app(build_info_public=False))
+    assert closed.get('/v1/build').status_code == 401
+    assert closed.get('/v1/build',
+                      headers={'Authorization': f'Bearer {_TOKEN}'}).status_code == 200
+
+
+def test_the_build_payload_is_sampled_once_not_per_request(tokens: str) -> None:
+    """Two calls must return the identical process start time.
+
+    The point of the field is to describe the code this process imported; a value re-read per
+    request would describe the working tree instead, and would differ between two calls the moment
+    someone pulled without restarting — the exact case it exists to catch.
+    """
+    client = TestClient(_exempt_app())
+    first = client.get('/v1/build').json()
+    second = client.get('/v1/build').json()
+
+    assert first == second
+    assert first['started_at'] == second['started_at']

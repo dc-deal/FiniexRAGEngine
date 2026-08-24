@@ -44,3 +44,20 @@ Additive fields need no coordination — readers ignore unknown keys. Anything e
 above is announced out of band before it ships, the same rule the envelope's Tier 1–3 fields carry.
 The reason is not politeness: none of these changes would surface as an error on the consumer's
 side. They would surface as a session that quietly stops trusting its own feed.
+
+## The exemption is a switch, and it now behaves like one
+
+`api.health_public: false` moves `/health` behind the bearer token like every other route. That is
+what it always claimed and what it did **not** do until 2026-08-24: the health router was mounted on
+the app regardless of the flag, so turning the exemption "off" left the route reachable without a
+credential and additionally *unthrottled*, because the rate limit lives on the public wrapper the
+flag skipped. Nothing was exposed that was not meant to be — the deployed configuration has always
+been `true`, the documented state — but the control did not exist.
+
+Which side an exempt route is mounted on is now decided in one place in `create_app`, and each route
+is mounted exactly once; `tests/test_api_auth.py` asserts both positions behaviourally. `/v1/build`
+(see `connect_contract.md`) is the second exemption and carries the same switch.
+
+The general shape of the defect is worth keeping: **a guarantee that rests on a call site is not a
+guarantee** — the same sentence ISSUE_98 wrote about `/latest` never spending, which rested on
+`create_app` happening not to build the dangerous combination.

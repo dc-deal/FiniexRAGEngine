@@ -58,7 +58,7 @@ bind. A consumer seeing an immediate EOF on the dev port is looking at this, not
 
 ## The scheme
 
-Every route except `/v1/health` requires a bearer token:
+Every route except `/v1/health` and `/v1/build` requires a bearer token:
 
 ```http
 GET /v1/pipelines HTTP/1.1
@@ -188,6 +188,25 @@ engine's own workers produce the series, so every paid call originates inside th
 cost log accounts for it. This route was the one hole in that property.
 
 A caller who wants the latest signal uses `GET /v1/pipelines/{id}/latest`, which never spends.
+
+## `GET /v1/build` is the second open route
+
+It reports what code the process is running: `version`, the short `commit`, whether the working tree
+was `dirty` at startup, and when the process started. It exists because `version` moves only when a
+roadmap batch ships — between two tags every deploy looks identical from outside, so "is the fix I
+deployed the one that is running?" was previously answered by inference.
+
+Two properties are deliberate. The value is **sampled once, at startup**: a hash read per request
+would describe the working tree at that moment, so after a pull without a restart it would report
+the new commit while the old code serves — the field would be wrong in exactly its one real case.
+And it is **its own route rather than a field on `/health`**: health describes state and is polled
+on an interval, build identity is constant for the process's lifetime, and keeping them apart leaves
+the health payload — which a consumer reads — unchanged.
+
+Public here for a specific reason, not a general one: this repository is public, so a commit hash
+discloses nothing that is not already readable on GitHub. Behind a private repository the same field
+would fingerprint the exact version and therefore its known defects, which is why it is a switch
+(`api.build_info_public`) rather than a fixture of the code.
 
 ## `GET /v1/health` is deliberately open
 

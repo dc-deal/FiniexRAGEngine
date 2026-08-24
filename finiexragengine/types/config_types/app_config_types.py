@@ -38,6 +38,12 @@ class ApiConfig(BaseModel):
     # whichever source supplied them is reported at boot, so a config value shadowed by a stale
     # environment variable can never be a silent no-op.
     tokens: Dict[str, str] = Field(default_factory=dict)
+    # `GET /v1/build` — version, commit, dirty flag, process start time. Public by default like
+    # `/health`, and for a reason that is specific rather than general: this repository is public,
+    # so a commit hash discloses nothing that is not already readable on GitHub. Behind a private
+    # repository the same field fingerprints the exact version, and therefore its known defects —
+    # hence a switch, so closing it later is a config edit and not a code change.
+    build_info_public: bool = True
     # Rate limits, per client per minute. `/health` is the only route without a token, so it is the
     # only one an anonymous caller can flood; the second line bounds credential guessing.
     rate_limit_per_minute: int = 60

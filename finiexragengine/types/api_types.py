@@ -125,3 +125,27 @@ class PipelineInfo(BaseModel):
 
 class PipelinesResponse(BaseModel):
     pipelines: List[PipelineInfo]
+
+
+class BuildInfo(BaseModel):
+    """Which code this process is running — the `/v1/build` payload (ISSUE_65 follow-up).
+
+    Separate from `/health` on purpose: health describes **state** and changes every second, this
+    describes **identity** and is constant for the process's lifetime. Keeping them apart also
+    leaves `/health`'s documented contract untouched, which a consumer depends on.
+
+    Every field is optional because none of it may ever be worth a boot failure: a deployment
+    without git (a container image, an unpacked archive) answers `null` rather than refusing to
+    start. `null` therefore means "not determinable here", never "unknown version".
+    """
+    # The release string from app_config — moves only when a batch ships, so between two tags every
+    # deploy looks identical. That gap is the reason the fields below exist.
+    version: str
+    commit: Optional[str] = None          # short hash, sampled ONCE at startup
+    committed_at: Optional[datetime] = None
+    # True when the working tree had uncommitted changes at startup. On a server reached by RDP an
+    # in-place edit is plausible, and this is the difference between "which deploy is live" and
+    # "...and has anyone touched it".
+    dirty: Optional[bool] = None
+    # When this process started. Answers the question the hash cannot: did my restart take effect?
+    started_at: datetime

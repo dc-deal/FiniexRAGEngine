@@ -9,6 +9,7 @@ from typing import AsyncIterator, List, Optional
 from fastapi import APIRouter, Depends, FastAPI
 
 from finiexragengine.api.bearer_auth import build_bearer_dependency
+from finiexragengine.api.endpoints.build_router import build_build_router
 from finiexragengine.api.endpoints.health_router import build_health_router
 from finiexragengine.api.endpoints.pipelines_router import build_pipelines_router
 from finiexragengine.api.endpoints.sentiment_router import build_sentiment_router
@@ -21,6 +22,7 @@ from finiexragengine.core.alerts.telegram_weekly_format import render_weekly_mes
 from finiexragengine.core.alerts.weekly_scheduler import WeeklyScheduler
 from finiexragengine.core.llm.model_catalog import verify_configured_models
 from finiexragengine.core.observability.budget_guard import BudgetGuard
+from finiexragengine.core.observability.build_info import sample_build_info
 from finiexragengine.core.observability.logging_setup import configure_logging
 from finiexragengine.core.observability.reports.weekly_report import collect_weekly_report
 from finiexragengine.core.observability.resource_gauge import ResourceGauge
@@ -323,47 +325,56 @@ def create_app(attach_runners: Optional[bool] = None,
     # prevent — an endpoint shipped unprotected because someone forgot a decorator — stops being
     # a thing anyone can forget. `tests/test_api_auth.py` asserts it on a route registered inside
     # the test, so the guarantee is checked rather than described.
-    app.include_router(_build_public_router(config_manager, api_config, supervisor=supervisor,
-                                            budget_guard=budget_guard,
-                                            stall_watchdog=stall_watchdog,
-                                            resource_gauge=resource_gauge,
-                                            outcome_store=outcome_store))
-    app.include_router(_build_protected_router(registry, api_config,
-                                               outcome_store=outcome_store))
-    return app
-
-
-def _build_public_router(config_manager: AppConfigManager,
-                         api_config: ApiConfig,
-                         supervisor: Optional[WorkerSupervisor] = None,
-                         budget_guard: Optional[BudgetGuard] = None,
-                         stall_watchdog: Optional[StallWatchdog] = None,
-                         resource_gauge: Optional[ResourceGauge] = None,
-                         outcome_store: Optional[OutcomeStore] = None) -> APIRouter:
-    """`/health` — the one documented exemption from authentication.
-
-    An uptime probe needs it without a credential. What that publishes is not a bare `ok`:
-    journal identity, worker cadences, budget and stall state. The exemption is accepted with that
-    understood and written down (`docs/architecture/health_contract.md`) rather than implied.
-
-    It carries the rate limit instead, because it is the only route an anonymous caller can reach
-    at all. `health_public: false` moves it behind the token like everything else.
-    """
+    #
+    # Which side an exempt route lands on is decided here, once, and it is mounted on exactly one
+    # of the two. `health_public: false` used to leave /health on the app regardless — public, and
+    # *unthrottled*, because the rate limiter lives on the public wrapper. The flag documented as
+    # "moves it behind the token" removed the only protection an anonymous caller met.
     health = build_health_router(config_manager, supervisor=supervisor,
                                  budget_guard=budget_guard, stall_watchdog=stall_watchdog,
                                  resource_gauge=resource_gauge, outcome_store=outcome_store)
-    if not api_config.health_public:
-        return health
+    # Sampled once, here, so it describes the code THIS process imported rather than whatever the
+    # working tree holds at request time (see `build_info.sample_build_info`).
+    build = build_build_router(sample_build_info(config_manager.get_config().version))
+    exempt = ((health, api_config.health_public), (build, api_config.build_info_public))
+    app.include_router(_build_public_router(
+        api_config, [router for router, is_public in exempt if is_public]))
+    app.include_router(_build_protected_router(
+        registry, api_config, outcome_store=outcome_store,
+        extra_routers=[router for router, is_public in exempt if not is_public]))
+    return app
+
+
+def _build_public_router(api_config: ApiConfig, routers: List[APIRouter]) -> APIRouter:
+    """The documented exemptions from authentication, and nothing else.
+
+    `/health` because an uptime probe needs it without a credential — and what that publishes is not
+    a bare `ok`: journal identity, worker cadences, budget and stall state. `/v1/build` because a
+    commit hash of a public repository discloses nothing that is not already readable on GitHub.
+    Both exemptions are written down (`docs/architecture/health_contract.md`) rather than implied,
+    and both are switchable: turned off, the route moves to the protected router, which is the
+    behaviour the switches always claimed.
+
+    They carry the rate limit, because they are the only routes an anonymous caller can reach at
+    all. An empty list still yields a router — mounting nothing is the correct result when every
+    exemption is switched off.
+    """
     limiter = RateLimiter(api_config.rate_limit_per_minute)
     public = APIRouter(dependencies=[Depends(build_rate_limit_dependency(limiter))])
-    public.include_router(health)
+    for router in routers:
+        public.include_router(router)
     return public
 
 
 def _build_protected_router(registry: PipelineRegistry,
                             api_config: ApiConfig,
-                            outcome_store: Optional[OutcomeStore] = None) -> APIRouter:
-    """Everything a token is required for — and everything added here later, automatically."""
+                            outcome_store: Optional[OutcomeStore] = None,
+                            extra_routers: Optional[List[APIRouter]] = None) -> APIRouter:
+    """Everything a token is required for — and everything added here later, automatically.
+
+    `extra_routers` carries the exemptions that were switched *off*: an exemption that is disabled
+    is simply a protected route, and this is where it belongs.
+    """
     # Environment wins, the config overlay fills in — see `TokenRegistry.load`. The source is
     # announced below rather than inferred: a value in `user_configs` silently shadowed by a stale
     # environment variable is precisely the kind of no-op that costs an afternoon to find.
@@ -393,6 +404,8 @@ def _build_protected_router(registry: PipelineRegistry,
                        'open to anyone who can reach this process')
 
     protected = APIRouter(dependencies=guards)
+    for router in extra_routers or ():
+        protected.include_router(router)
     protected.include_router(build_pipelines_router(registry))
     protected.include_router(build_sentiment_router(
         registry, outcome_store=outcome_store, run_enabled=api_config.run_endpoint_enabled))
