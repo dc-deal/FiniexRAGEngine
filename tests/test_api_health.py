@@ -7,12 +7,34 @@ from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
 from finiexragengine.types.worker_types import WorkerState
 
 
-def _configured_symbols(pipeline_id: str) -> set:
-    """The pipeline's symbols as the app actually resolves them (base + any user override)."""
+def _loaded_registry() -> PipelineRegistry:
     manager = AppConfigManager()
     registry = PipelineRegistry(manager.get_pipelines_dir(), manager.get_user_pipelines_dir())
     registry.load()
-    return set(registry.get(pipeline_id).get_config().symbol_keys())
+    return registry
+
+
+def _configured_symbols(pipeline_id: str) -> set:
+    """The pipeline's symbols as the app actually resolves them (base + any user override)."""
+    return set(_loaded_registry().get(pipeline_id).get_config().symbol_keys())
+
+
+def _run_client() -> TestClient:
+    """A client for the two `/run` cases, with the route explicitly registered.
+
+    `create_app` leaves `POST /run` unregistered (ISSUE_98) — an external request must not be able
+    to cause spend. These two tests are about the *router's* behaviour (the envelope contract, and
+    the 404 for an unknown pipeline), so they ask for the route rather than relying on the app's
+    default. Without this they would still have passed: both expect a 404 somewhere, and an absent
+    route supplies one for the wrong reason. Scaffold-mock mode makes the run free.
+    """
+    from fastapi import FastAPI
+
+    from finiexragengine.api.endpoints.sentiment_router import build_sentiment_router
+
+    app = FastAPI()
+    app.include_router(build_sentiment_router(_loaded_registry(), run_enabled=True))
+    return TestClient(app)
 
 
 def test_health_ok(client: TestClient) -> None:
@@ -30,8 +52,8 @@ def test_pipelines_lists_crypto_sentiment(client: TestClient) -> None:
     assert 'crypto_sentiment' in ids
 
 
-def test_run_returns_envelope_for_all_symbols(client: TestClient) -> None:
-    response = client.post('/v1/pipelines/crypto_sentiment/run')
+def test_run_returns_envelope_for_all_symbols() -> None:
+    response = _run_client().post('/v1/pipelines/crypto_sentiment/run')
     assert response.status_code == 200
     body = response.json()
     assert body['pipeline_id'] == 'crypto_sentiment'
@@ -41,8 +63,8 @@ def test_run_returns_envelope_for_all_symbols(client: TestClient) -> None:
     assert {row['symbol'] for row in body['result']} == _configured_symbols('crypto_sentiment')
 
 
-def test_unknown_pipeline_returns_404(client: TestClient) -> None:
-    response = client.post('/v1/pipelines/does_not_exist/run')
+def test_unknown_pipeline_returns_404() -> None:
+    response = _run_client().post('/v1/pipelines/does_not_exist/run')
     assert response.status_code == 404
 
 def test_health_reports_the_pass_deadline(client: TestClient) -> None:
@@ -76,10 +98,10 @@ def test_an_unparseable_timeframe_reports_as_absent_not_as_an_error(monkeypatch)
     Raising here would make a bad timeframe surface at the wrong place — a listing endpoint failing
     for the whole registry, rather than the supervisor refusing to schedule that one worker.
     """
-    from finiexragengine.api.endpoints import health_router
-    assert health_router._cadence_seconds('M10') == 600
-    assert health_router._cadence_seconds(None) is None
-    assert health_router._cadence_seconds('M7') is None
+    from finiexragengine.api.endpoints import pipelines_router
+    assert pipelines_router._cadence_seconds('M10') == 600
+    assert pipelines_router._cadence_seconds(None) is None
+    assert pipelines_router._cadence_seconds('M7') is None
 
 
 def test_health_reports_no_journal_id_without_a_store(client: TestClient) -> None:
@@ -148,7 +170,7 @@ def test_health_says_degraded_when_a_worker_died() -> None:
 
     def _health_body() -> dict:
         app = FastAPI()
-        app.include_router(build_health_router(manager, registry, supervisor=_Supervisor()))
+        app.include_router(build_health_router(manager, supervisor=_Supervisor()))
         return TestClient(app).get('/v1/health').json()
 
     assert _health_body()['status'] == 'ok'                 # both workers fine

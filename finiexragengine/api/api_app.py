@@ -6,16 +6,21 @@ import socket
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, List, Optional
 
-from fastapi import FastAPI
+from fastapi import APIRouter, Depends, FastAPI
 
+from finiexragengine.api.bearer_auth import build_bearer_dependency
 from finiexragengine.api.endpoints.health_router import build_health_router
+from finiexragengine.api.endpoints.pipelines_router import build_pipelines_router
 from finiexragengine.api.endpoints.sentiment_router import build_sentiment_router
+from finiexragengine.api.rate_limiter import RateLimiter, build_rate_limit_dependency
+from finiexragengine.api.token_registry import TokenRegistry
 from finiexragengine.configuration.app_config_manager import AppConfigManager
 from finiexragengine.core.alerts.telegram_client import TelegramClient
 from finiexragengine.core.alerts.telegram_command_poller import TelegramCommandPoller
 from finiexragengine.core.alerts.telegram_weekly_format import render_weekly_messages
 from finiexragengine.core.alerts.weekly_scheduler import WeeklyScheduler
 from finiexragengine.core.llm.model_catalog import verify_configured_models
+from finiexragengine.core.observability.budget_guard import BudgetGuard
 from finiexragengine.core.observability.logging_setup import configure_logging
 from finiexragengine.core.observability.reports.weekly_report import collect_weekly_report
 from finiexragengine.core.observability.resource_gauge import ResourceGauge
@@ -24,9 +29,12 @@ from finiexragengine.core.observability.stall_watchdog import StallWatchdog
 from finiexragengine.core.outcome.outcome_exporter import auto_export_weekly
 from finiexragengine.core.outcome.outcome_store import OutcomeStore
 from finiexragengine.core.pipeline.pipeline_assembler import PipelineAssembler
+from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
 from finiexragengine.core.pipeline.worker_supervisor import WorkerSupervisor
 from finiexragengine.core.ui.engine_stats import EngineStats
 from finiexragengine.core.ui.live_display import LiveDisplay
+from finiexragengine.exceptions.ragengine_errors import ConfigurationError
+from finiexragengine.types.config_types.app_config_types import ApiConfig
 
 logger = logging.getLogger(__name__)
 
@@ -295,15 +303,97 @@ def create_app(attach_runners: Optional[bool] = None,
             if live_task is not None:
                 await live_task
 
+    # The interactive schema surfaces (ISSUE_98). FastAPI mounts them on the app itself, so the
+    # protected router's dependency never sees them — passing None is the only way to keep them
+    # off. They map the entire API for anyone who asks, so they are opt-in like `/run`.
+    api_config = config_manager.get_config().api
+    docs = api_config.docs_enabled
     app = FastAPI(
         title='FiniexRAGEngine',
         version=config_manager.get_config().version,
         lifespan=lifespan,
+        docs_url='/docs' if docs else None,
+        redoc_url='/redoc' if docs else None,
+        openapi_url='/openapi.json' if docs else None,
     )
-    app.include_router(build_health_router(config_manager, registry,
-                                           supervisor=supervisor, budget_guard=budget_guard,
-                                           stall_watchdog=stall_watchdog,
-                                           resource_gauge=resource_gauge,
-                                           outcome_store=outcome_store))
-    app.include_router(build_sentiment_router(registry, outcome_store=outcome_store))
+    # ISSUE_98 — the HTTP surface splits in two, and the split IS the security design.
+    #
+    # The bearer dependency sits on the protected `APIRouter` itself, never on individual routes,
+    # so a route added later inherits it *by construction*. The failure this issue exists to
+    # prevent — an endpoint shipped unprotected because someone forgot a decorator — stops being
+    # a thing anyone can forget. `tests/test_api_auth.py` asserts it on a route registered inside
+    # the test, so the guarantee is checked rather than described.
+    app.include_router(_build_public_router(config_manager, api_config, supervisor=supervisor,
+                                            budget_guard=budget_guard,
+                                            stall_watchdog=stall_watchdog,
+                                            resource_gauge=resource_gauge,
+                                            outcome_store=outcome_store))
+    app.include_router(_build_protected_router(registry, api_config,
+                                               outcome_store=outcome_store))
     return app
+
+
+def _build_public_router(config_manager: AppConfigManager,
+                         api_config: ApiConfig,
+                         supervisor: Optional[WorkerSupervisor] = None,
+                         budget_guard: Optional[BudgetGuard] = None,
+                         stall_watchdog: Optional[StallWatchdog] = None,
+                         resource_gauge: Optional[ResourceGauge] = None,
+                         outcome_store: Optional[OutcomeStore] = None) -> APIRouter:
+    """`/health` — the one documented exemption from authentication.
+
+    An uptime probe needs it without a credential. What that publishes is not a bare `ok`:
+    journal identity, worker cadences, budget and stall state. The exemption is accepted with that
+    understood and written down (`docs/architecture/health_contract.md`) rather than implied.
+
+    It carries the rate limit instead, because it is the only route an anonymous caller can reach
+    at all. `health_public: false` moves it behind the token like everything else.
+    """
+    health = build_health_router(config_manager, supervisor=supervisor,
+                                 budget_guard=budget_guard, stall_watchdog=stall_watchdog,
+                                 resource_gauge=resource_gauge, outcome_store=outcome_store)
+    if not api_config.health_public:
+        return health
+    limiter = RateLimiter(api_config.rate_limit_per_minute)
+    public = APIRouter(dependencies=[Depends(build_rate_limit_dependency(limiter))])
+    public.include_router(health)
+    return public
+
+
+def _build_protected_router(registry: PipelineRegistry,
+                            api_config: ApiConfig,
+                            outcome_store: Optional[OutcomeStore] = None) -> APIRouter:
+    """Everything a token is required for — and everything added here later, automatically."""
+    # Environment wins, the config overlay fills in — see `TokenRegistry.load`. The source is
+    # announced below rather than inferred: a value in `user_configs` silently shadowed by a stale
+    # environment variable is precisely the kind of no-op that costs an afternoon to find.
+    tokens = TokenRegistry.load(api_config.tokens)
+    if api_config.require_auth and tokens.is_empty():
+        # A hard boot failure, not a warning. Starting unprotected because an environment variable
+        # was missing is precisely the accident ISSUE_98 was written about, and a warning in a log
+        # nobody reads at 3 a.m. is not a control.
+        raise ConfigurationError(
+            'api.require_auth is on but no consumer tokens are configured — refusing to serve an '
+            'unauthenticated API. Set them in user_configs/app_config.json under api.tokens, or '
+            'out of band as FINIEX_API_TOKENS="<consumer>:<token>" (never in a pasteable startup '
+            'script) · see docs/architecture/connect_contract.md')
+
+    guards = []
+    if api_config.require_auth:
+        auth_limiter = RateLimiter(api_config.auth_failures_per_minute)
+        guards.append(Depends(build_bearer_dependency(tokens, auth_limiter)))
+        logger.info('[AUTH] %d consumer token(s): %s · /health %s · POST /run %s',
+                    len(tokens.names()), ', '.join(tokens.names()) or '—',
+                    'public' if api_config.health_public else 'protected',
+                    'enabled' if api_config.run_endpoint_enabled else 'DISABLED')
+    else:
+        # Scaffold-mock and contract tests. Loud, because an unauthenticated engine reachable from
+        # anywhere is the state this issue closed.
+        logger.warning('[AUTH] authentication is OFF (api.require_auth=false) — every route is '
+                       'open to anyone who can reach this process')
+
+    protected = APIRouter(dependencies=guards)
+    protected.include_router(build_pipelines_router(registry))
+    protected.include_router(build_sentiment_router(
+        registry, outcome_store=outcome_store, run_enabled=api_config.run_endpoint_enabled))
+    return protected

@@ -30,6 +30,10 @@ you need.**
   model, the console + Telegram renderers, the scheduler and `/report`.
 - [Output archive layout](architecture/output_archive_layout.md) — the rotated JSONL
   bucket naming shared with the collector (#9) and the Testing IDE (#141).
+- [`/v1/health` contract](architecture/health_contract.md) — the six fields a live
+  consumer derives behaviour from, and why changing them is a coordinated break.
+- [Connect contract](architecture/connect_contract.md) — how to reach the engine at all:
+  bearer scheme, one token per consumer, lifetime and the rotation procedure (#98).
 
 ## Test-data generation
 

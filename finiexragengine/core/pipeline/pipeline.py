@@ -33,6 +33,15 @@ class Pipeline:
         """Attach the real staged runner (built by the PipelineAssembler, ISSUE_7)."""
         self._runner = runner
 
+    def is_attached(self) -> bool:
+        """True once a real runner is attached — i.e. `run()` costs money.
+
+        Callers use this to decide whether running is affordable *here*, rather than inferring it
+        from something that correlates with it today. `/latest` is the one that needs it
+        (ISSUE_98): its no-store fallback is safe only in scaffold mock.
+        """
+        return self._runner is not None
+
     def run(self, reason: TriggerReason) -> AnalysisEnvelope:
         """Execute the pipeline once and return its outcome envelope.
 

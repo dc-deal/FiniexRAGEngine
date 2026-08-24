@@ -1,4 +1,4 @@
-"""Health + pipeline-listing endpoints."""
+"""The health endpoint — public by exemption (ISSUE_98); `/pipelines` moved out."""
 from typing import Optional
 
 from fastapi import APIRouter
@@ -8,44 +8,23 @@ from finiexragengine.core.observability.budget_guard import BudgetGuard
 from finiexragengine.core.observability.resource_gauge import ResourceGauge
 from finiexragengine.core.observability.stall_watchdog import StallWatchdog
 from finiexragengine.core.outcome.outcome_store import OutcomeStore
-from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
 from finiexragengine.core.pipeline.worker_supervisor import WorkerSupervisor
-from finiexragengine.utils.timeframe import timeframe_minutes
 from finiexragengine.types.api_types import (
     BudgetInfo,
     HealthResponse,
-    PipelineInfo,
-    PipelinesResponse,
     ResourceInfo,
     StallInfo,
     WorkerInfo,
 )
 
 
-def _cadence_seconds(timeframe: Optional[str]) -> Optional[int]:
-    """The trigger's timeframe as seconds — None when it carries none.
-
-    An unknown token would raise here rather than on the worker's first tick, which is the wrong
-    place to find out: the listing must stay answerable even when a pipeline is misconfigured, so
-    an unparseable timeframe reports as absent and the configuration error surfaces where it is
-    acted on (the supervisor refuses to schedule it).
-    """
-    if timeframe is None:
-        return None
-    try:
-        return timeframe_minutes(timeframe) * 60
-    except ValueError:
-        return None
-
-
 def build_health_router(config_manager: AppConfigManager,
-                        registry: PipelineRegistry,
                         supervisor: Optional[WorkerSupervisor] = None,
                         budget_guard: Optional[BudgetGuard] = None,
                         stall_watchdog: Optional[StallWatchdog] = None,
                         resource_gauge: Optional[ResourceGauge] = None,
                         outcome_store: Optional[OutcomeStore] = None) -> APIRouter:
-    """Build the health/pipelines router bound to the given config + registry.
+    """Build the health router — the one route deliberately reachable without a token.
 
     `supervisor` (ISSUE_10) adds the live worker states to /health — the first
     surface of the engine's background heartbeat (the live display #26 builds on it).
@@ -81,20 +60,5 @@ def build_health_router(config_manager: AppConfigManager,
                               environment=environment,
                               workers=workers, budget=budget, stall=stall,
                               resources=resources)
-
-    @router.get('/pipelines', response_model=PipelinesResponse)
-    def list_pipelines() -> PipelinesResponse:
-        infos = [
-            PipelineInfo(
-                pipeline_id=pipeline.get_config().pipeline_id,
-                outcome_type=pipeline.get_config().outcome_type,
-                market=pipeline.get_config().market,
-                symbols=pipeline.get_config().symbol_keys(),
-                trigger_type=pipeline.get_config().trigger.type,
-                cadence_seconds=_cadence_seconds(pipeline.get_config().trigger.timeframe),
-            )
-            for pipeline in registry.list_pipelines()
-        ]
-        return PipelinesResponse(pipelines=infos)
 
     return router

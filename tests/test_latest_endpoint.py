@@ -35,10 +35,15 @@ def _envelope(reasoning: str) -> SentimentEnvelope:
 
 class _FakePipeline:
     """run() serves a fresh envelope — or blows up like a broken stage."""
-    def __init__(self, exc=None):
+    def __init__(self, exc=None, attached=False):
         self.runs = 0
         self.reasons = []          # why the endpoint asked for a pass (ISSUE_87)
         self._exc = exc
+        # Whether a real runner is wired, i.e. whether run() would cost money (ISSUE_98).
+        self._attached = attached
+
+    def is_attached(self) -> bool:
+        return self._attached
 
     def get_config(self) -> PipelineConfig:
         return PipelineConfig(
@@ -81,7 +86,10 @@ class _FakeStore:
 
 def _client(pipeline, store) -> TestClient:
     app = FastAPI()
-    app.include_router(build_sentiment_router(_FakeRegistry(pipeline), outcome_store=store))
+    # run_enabled=True: this suite covers the run path itself. Production leaves it off
+    # (ISSUE_98) — `test_api_auth.py` asserts the route is then absent entirely.
+    app.include_router(build_sentiment_router(_FakeRegistry(pipeline), outcome_store=store,
+                                              run_enabled=True))
     return TestClient(app)
 
 
@@ -121,11 +129,30 @@ def test_a_cold_miss_is_not_persisted():
     assert store.saved == []
 
 
-def test_latest_without_store_stays_a_fresh_run():
-    pipeline = _FakePipeline()
+def test_latest_without_store_runs_only_when_running_is_free():
+    """Scaffold mock has no store and no LLM — a run there costs nothing, so it still runs."""
+    pipeline = _FakePipeline(attached=False)
     client = _client(pipeline, store=None)
     assert client.get('/v1/pipelines/p/latest').status_code == 200
     assert pipeline.runs == 1
+
+
+def test_latest_without_store_never_spends_when_a_real_runner_is_attached():
+    """The audit case from ISSUE_98: a real runner and no store must not make a GET pay.
+
+    `create_app` does not build that combination today — `outcome_store` is set exactly when the
+    runners are attached. But that is a property of one call site, not of this router, and the
+    router is what a future caller assembles. Until this gate existed, such a router would have
+    turned every poll into a paid pass: the same failure the store-failure path already had, one
+    branch further down.
+    """
+    pipeline = _FakePipeline(attached=True)
+    response = _client(pipeline, store=None).get('/v1/pipelines/p/latest')
+    assert response.status_code == 200            # still a parseable envelope, never a 500
+    assert pipeline.runs == 0                     # and it cost nothing
+    body = response.json()
+    assert body['status'] == 'error'
+    assert body['errors'][0]['type'] == 'VECTOR_STORE_ERROR'
 
 
 def test_broken_store_answers_without_spending_and_never_500s():

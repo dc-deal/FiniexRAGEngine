@@ -68,11 +68,17 @@ def _store_silent_envelope(pipeline: Pipeline, detail: str) -> SentimentEnvelope
 
 
 def build_sentiment_router(registry: PipelineRegistry,
-                           outcome_store: Optional[OutcomeStore] = None) -> APIRouter:
+                           outcome_store: Optional[OutcomeStore] = None,
+                           run_enabled: bool = False) -> APIRouter:
     """Build the pipeline run/latest router bound to the given registry.
 
     `outcome_store` (ISSUE_8) backs `/latest` with persisted envelopes; without one
-    (scaffold-mock mode, no DB) both endpoints fall back to a fresh run.
+    (scaffold-mock mode, no DB) `/latest` falls back to a fresh run — free there, because
+    scaffold mock makes no LLM call.
+
+    `run_enabled` (ISSUE_98) decides whether `POST /{pipeline_id}/run` exists **at all**.
+    Defaults to False: the route converts an HTTP request into OpenAI spend, so it has to be
+    switched on deliberately rather than inherited by default.
     """
     router = APIRouter(prefix='/v1/pipelines', tags=['pipelines'])
 
@@ -87,27 +93,35 @@ def build_sentiment_router(registry: PipelineRegistry,
         except Exception:   # noqa: BLE001
             logger.exception('error envelope for %s not persisted', envelope.pipeline_id)
 
-    @router.post('/{pipeline_id}/run', response_model=SentimentEnvelope)
-    def run_pipeline(pipeline_id: str) -> SentimentEnvelope:
-        """Force a fresh run and return its outcome envelope (ISSUE_7 staged flow).
+    # ISSUE_98: the route is REGISTERED conditionally, never defined-then-refused. An endpoint
+    # that exists and answers 403 is still in the OpenAPI schema, still discoverable, and one
+    # config edit from live. One that was never registered cannot be reached at all.
+    #
+    # Off in production by decision: an external consumer must not be able to cause spend at
+    # all. The engine's own workers produce the series, so every paid call originates inside
+    # the engine, where the cost log accounts for it. This route was the one hole in that.
+    if run_enabled:
+        @router.post('/{pipeline_id}/run', response_model=SentimentEnvelope)
+        def run_pipeline(pipeline_id: str) -> SentimentEnvelope:
+            """Force a fresh run and return its outcome envelope (ISSUE_7 staged flow).
 
-        The runner persists its own envelope (ISSUE_8) — only the catch-all error
-        envelope is persisted here.
-        """
-        try:
-            pipeline = registry.get(pipeline_id)
-        except PipelineNotFoundError as exc:
-            # An unknown pipeline is a caller error, not a run failure — plain 404.
-            raise HTTPException(status_code=404, detail=str(exc))
-        try:
-            # A caller outside the engine asked for this pass (ISSUE_87) — not the engine's own
-            # clock. The envelope says so, so a consumer can tell it from the bar-close series.
-            return pipeline.run('external')
-        except Exception as exc:   # noqa: BLE001 — the contract demands a parseable envelope
-            logger.exception('pipeline %s run failed', pipeline_id)
-            envelope = _error_envelope(pipeline, exc)
-            _persist_error(envelope)
-            return envelope
+            The runner persists its own envelope (ISSUE_8) — only the catch-all error
+            envelope is persisted here.
+            """
+            try:
+                pipeline = registry.get(pipeline_id)
+            except PipelineNotFoundError as exc:
+                # An unknown pipeline is a caller error, not a run failure — plain 404.
+                raise HTTPException(status_code=404, detail=str(exc))
+            try:
+                # A caller outside the engine asked for this pass (ISSUE_87) — not the engine's own
+                # clock. The envelope says so, so a consumer can tell it from the bar-close series.
+                return pipeline.run('external')
+            except Exception as exc:   # noqa: BLE001 — the contract demands a parseable envelope
+                logger.exception('pipeline %s run failed', pipeline_id)
+                envelope = _error_envelope(pipeline, exc)
+                _persist_error(envelope)
+                return envelope
 
     @router.get('/{pipeline_id}/latest', response_model=SentimentEnvelope)
     def latest(pipeline_id: str) -> SentimentEnvelope:
@@ -115,7 +129,9 @@ def build_sentiment_router(registry: PipelineRegistry,
 
         **This GET never spends.** It reads the store; when the store cannot supply an envelope —
         a read failure, or nothing persisted yet — it returns the contract's error envelope rather
-        than running the pipeline. A caller who wants a fresh pass has `POST /run`.
+        than running the pipeline. A caller who wants a fresh pass has `POST /run` — where it is
+        registered at all (ISSUE_98: off in production, because an external request must not be
+        able to cause spend).
 
         The previous fallback ran a paid pass on both of those paths, which is the wrong trade for
         the caller this endpoint exists for. A polling consumer cannot tell a served envelope from a
@@ -146,6 +162,15 @@ def build_sentiment_router(registry: PipelineRegistry,
                         pipeline_id)
             return _store_silent_envelope(
                 pipeline, 'no outcome persisted yet for this pipeline')
+        # No store configured. Running here is free **only** in scaffold-mock mode, where no LLM
+        # is involved — so ask the pipeline instead of assuming (ISSUE_98). Until now this held
+        # because `create_app` never builds a real runner without a store; that is a coincidence
+        # of one call site, not a property of this router, and a router assembled the other way
+        # would have turned every GET into a paid pass. Same failure shape the store-failure path
+        # above already had removed.
+        if pipeline.is_attached():
+            return _store_silent_envelope(
+                pipeline, 'no outcome store configured — refusing to run a paid pass on a GET')
         try:
             # A caller outside the engine asked for this pass (ISSUE_87) — not the engine's own
             # clock. The envelope says so, so a consumer can tell it from the bar-close series.
