@@ -5,12 +5,20 @@
         // ====================================================
         // 🚀 SERVICE (run the engine)
         // ====================================================
+        // All three pass --host 0.0.0.0: the container exception to ISSUE_98's loopback default.
+        // Inside a container that default binds the CONTAINER's loopback, which leaves the compose
+        // publish (127.0.0.1:8100:8100) without an upstream — Docker's forwarder accepts the
+        // connection and closes it immediately, so host.docker.internal:8100 is dead for a consumer
+        // container while the port still looks open. Exposure stays bounded by that publish, not by
+        // the bind; the deployed engine keeps the loopback default because it is not launched here.
         {
             "name": "🚀 RAGEngine: API Server (reload)",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/finiexragengine/cli/server_cli.py",
             "args": [
+                "--host",
+                "0.0.0.0",
                 "--reload",
                 "--port",
                 "8100"
@@ -30,6 +38,8 @@
             "request": "launch",
             "program": "${workspaceFolder}/finiexragengine/cli/server_cli.py",
             "args": [
+                "--host",
+                "0.0.0.0",
                 "--workers",
                 "--port",
                 "8100"
@@ -49,6 +59,8 @@
             "request": "launch",
             "program": "${workspaceFolder}/finiexragengine/cli/server_cli.py",
             "args": [
+                "--host",
+                "0.0.0.0",
                 "--workers",
                 "--live",
                 "--port",

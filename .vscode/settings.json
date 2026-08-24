@@ -2,6 +2,11 @@
     // format on save/paste
     "editor.formatOnSave": true,
     "editor.formatOnPaste": true,
+    // The debugger must use the IMAGE interpreter: only /usr/local carries the
+    // requirements.txt site-packages. The uv-managed python3.14 in the /root volume reports the
+    // same 3.14.7, so a mismatch surfaces as ModuleNotFoundError rather than as a version error.
+    // Note this is the fallback for a fresh container — an explicitly selected interpreter wins.
+    "python.defaultInterpreterPath": "/usr/local/bin/python",
     // Python: autopep8 as formatter — line length pinned to the codebase style (~100),
     // otherwise the default (79) would rewrap half the repo on first save
     "[python]": {
@@ -27,5 +32,6 @@
     // download if missing: https://github.com/microsoft/cascadia-code/releases
     "terminal.integrated.fontFamily": "Cascadia Code PL",
     "debug.console.fontFamily": "Cascadia Code PL",
-    "editor.fontFamily": "Cascadia Code PL"
+    "editor.fontFamily": "Cascadia Code PL",
+    "python-envs.defaultEnvManager": "ms-python.python:system"
 }

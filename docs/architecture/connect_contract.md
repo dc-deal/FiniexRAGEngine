@@ -27,6 +27,35 @@ TLS terminates in a reverse proxy (Caddy, Let's Encrypt certificate, renewed aut
 forwards to `127.0.0.1:8100`. The engine binds loopback and never speaks to the internet directly;
 port 8100 has no firewall rule and does not get one.
 
+## The development endpoint
+
+A second instance runs in the dev container on the producer's machine, so consumer work can be
+pointed at a rebuildable engine instead of the live series.
+
+```
+http://host.docker.internal:8100    from a container on the same machine
+http://127.0.0.1:8100               from that machine directly
+```
+
+**It is not public, and it is not the same engine behind a different name.** The container
+publishes the port on the host's *loopback* (`127.0.0.1:8100:8100`), so nothing outside that machine
+can reach it — which is also why it speaks plain HTTP: no traffic leaves the host, so there is no
+transport to terminate. There is no DNS name and no proxy in front of it, deliberately: giving dev a
+public address would mean giving it a certificate, a rate limit and a second thing to keep patched.
+
+**It carries its own token.** A dev instance is restarted, rebuilt and pointed at test data; a
+credential shared with production would make revoking either one revoke both. Everything else is
+identical by design — bearer on every route except `/v1/health`, `/run` not registered, `/docs` off
+— so switching endpoints changes the address and the credential, never the shape of the contract.
+
+**One failure mode is worth recognising, because it does not look like one.** The engine binds
+loopback by default, which is correct on the deployed host and wrong inside a container: there it
+binds the *container's* loopback and leaves the publish above without an upstream. Docker's port
+forwarder still accepts the TCP connection and then closes it immediately, so the port appears open
+and answers nothing — no HTTP, no TLS, an EOF before either can begin. The dev launch entries pass
+`--host 0.0.0.0` for exactly that reason; exposure stays bounded by the loopback publish, not by the
+bind. A consumer seeing an immediate EOF on the dev port is looking at this, not at a network fault.
+
 ## The scheme
 
 Every route except `/v1/health` requires a bearer token:
