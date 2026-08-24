@@ -1,6 +1,7 @@
 """Pipeline assembler — builds the per-pipeline object graph behind a PipelineRunner (ISSUE_7)."""
 import logging
 from datetime import datetime, timedelta, timezone
+from typing import Dict
 
 from finiexragengine.configuration.app_config_manager import AppConfigManager
 from finiexragengine.configuration.config_fingerprint import compute_config_fingerprint
@@ -69,6 +70,8 @@ class PipelineAssembler:
         # One store for all pipelines (ISSUE_8): every runner persists into it, the
         # API's /latest reads from it — the shared source of truth, like the recorder.
         self._outcome_store = OutcomeStore(database_url)
+        # pipeline_id -> the one episode tracker that pipeline's runner and worker share (ISSUE_65)
+        self._episode_trackers: Dict[str, BreakingEpisodeTracker] = {}
         # Shared feed groups (ISSUE_10): constellations reference a source-set by id;
         # an unresolved reference fails here at assembly — before any spend.
         self._source_sets = app.build_source_set_registry()
@@ -145,8 +148,27 @@ class PipelineAssembler:
                                prompt_version=config.prompt.version,
                                breaking_threshold=config.breaking.urgency_threshold)
 
+    def get_episode_tracker(self, config: PipelineConfig) -> BreakingEpisodeTracker:
+        """This pipeline's episode tracker — built and seeded once, then handed to both users.
+
+        Cached deliberately (ISSUE_65). The runner drives the rule during the pass, because the
+        episode id has to be stamped before the envelope is persisted; the eval worker reads the
+        same object at boot to resume the dashboard's open episodes and to render the gap. Two
+        instances would mean two rule states over one stream — precisely the divergence ISSUE_82
+        removed from the report paths, reintroduced one layer down.
+        """
+        cached = self._episode_trackers.get(config.pipeline_id)
+        if cached is not None:
+            return cached
+        tracker = self.build_episode_tracker(config)
+        self._episode_trackers[config.pipeline_id] = tracker
+        return tracker
+
     def build_episode_tracker(self, config: PipelineConfig) -> BreakingEpisodeTracker:
         """The live breaking tracker for one pipeline, seeded from the store (ISSUE_82).
+
+        Builds a FRESH tracker on every call — `get_episode_tracker` is the shared-instance path
+        that every wiring site should use.
 
         Two things happen here that cannot happen inside the worker: the episode rule is built
         from this pipeline's `breaking` config, and its state is warmed from the persisted
@@ -281,7 +303,8 @@ class PipelineAssembler:
                               llm_model=config.llm.model, cost_recorder=self._recorder,
                               outcome_store=self._outcome_store,
                               source_reach=source_reach,
-                              config_fingerprint=fingerprint.value)
+                              config_fingerprint=fingerprint.value,
+                              episode_tracker=self.get_episode_tracker(config))
 
     def attach_all(self, registry: PipelineRegistry, include_ingest: bool = True) -> None:
         """Give every registered pipeline its real runner (replaces the scaffold mock).

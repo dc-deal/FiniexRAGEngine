@@ -149,11 +149,20 @@ wake only makes eval run *sooner*, not differently, so the envelope stays model/
 consistent. Everything is persisted regardless; the gate governs only what would *push* (Stage C).
 Two knobs, two stages (wake vs confirm) — see `../breaking_detection.md`.
 
-A hot story stays `is_breaking` across many passes, so the confirmation is **edge-triggered**: the
-eval worker counts/logs a breaking *episode* once, on the transition into breaking
+A hot story stays `is_breaking` across many passes, so the confirmation is **edge-triggered**: a
+breaking *episode* is counted and logged once, on the transition into breaking
 (`core/pipeline/breaking_episode.py`), not every pass it lingers — matching the store-based
 `breaking_report`'s grouping (both drive the shared `BreakingEpisodeRule`, ISSUE_82) and laying the edge-trigger groundwork ISSUE_9's
 SSE push needs.
+
+**Where that happens moved with ISSUE_65.** The rule runs inside the pass, in `PipelineRunner`,
+*before* `_persist` — episode identity (`breaking_episode_id` / `breaking_episode_start`) has to be
+stamped on the results before they are serialized, because the journal's JSONB column is the exact
+served JSON. The pass therefore returns a `PipelineRunResult` (envelope + `BreakingPass`), and the
+eval worker renders and logs that decision rather than re-deriving it after the save. The registry
+rows travel into `OutcomeStore.save` and are written in the envelope's own transaction. One rule
+instance per pipeline serves both the run and the worker's dashboard state — the assembler's
+`get_episode_tracker` hands out the same seeded object.
 
 **Bar-close cadence (ISSUE_timeframe, built).** The eval worker's scheduled tick is aligned to a
 trading **timeframe**, not a relative interval: the pipeline declares `trigger.timeframe`, and the

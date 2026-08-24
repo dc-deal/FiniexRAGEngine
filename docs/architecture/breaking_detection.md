@@ -270,11 +270,14 @@ Consequently the two episode knobs are **excluded from the `config_fingerprint`*
 exclusions in `_PIPELINE_EXCLUDED`): they regroup a report at read time, and two runs either side
 of a retune emit byte-identical envelopes — hashing them would fork a series that did not fork.
 Giving the *consumer* a debounced regime is a contract change, and belongs to `breaking_episode_id`
-(#65), which is sequenced after this.
+(#65) — see *Episode identity on the envelope* below.
 
 **Restart robustness.** The live tracker's state is seeded at boot from the persisted envelopes
-(`pipeline_assembler.build_episode_tracker` replays the last `2 × gap` through the same `observe`),
-so a restart mid-story resumes the episode instead of re-opening it. Before that, two of one week's
+(`pipeline_assembler.build_episode_tracker` replays `max(2 × gap, episode_seed_hours)` through the
+same `observe`), so a restart mid-story resumes the episode instead of re-opening it. The replayed
+envelopes also carry their episode id, and the tracker **adopts** it rather than minting a new one:
+the window is finite, so a story that opened before it has its start clipped, and minting from that
+clipped start would give the consumer a second identity for a story it is already tracking. Before that, two of one week's
 66 episodes were boot artefacts — re-confirmed 3 and 11 minutes after the previous breaking pass,
 i.e. well inside any gap, which only an empty tracker can produce. Seeding is best-effort: an
 unreadable store costs episode continuity across one restart and never stops the engine.
@@ -295,6 +298,51 @@ while an episode whose opening was observed shows its real duration. The live da
 displaying whatever the replay left open (`BreakingEpisodeTracker.seed`), so a story spanning a
 restart keeps its row; the session counters beside it are not restored, because they count what
 this process saw.
+
+### Episode identity on the envelope (ISSUE_65)
+
+The rule above decides *where* an episode begins and ends. This is what a consumer receives of it.
+
+Two additive fields on every `SentimentResult`:
+
+| Field | Meaning |
+|---|---|
+| `breaking_episode_id` | `<pipeline_id>:<episode_key>:<started_at>` — anchored on the episode's **start**, so every pass of one story carries the same value |
+| `breaking_episode_start` | `true` on the pass that **opened** the episode, `false` on every pass that continued it |
+
+**Which rows carry the id, and why it is not "the breaking ones".** The id is stamped on every pass
+the rule counts as *inside* the episode: the opener, a pass in the hold band (`is_breaking` false,
+`urgency` at or above the exit threshold) and a dip that arrives before the gap elapses. Since the
+Schmitt trigger above, an episode outlives its own boolean — and an id present only where
+`is_breaking` is true would flicker exactly as often as the edge it exists to replace. The consumer
+gates on episode identity precisely because that edge flips **19-21 times per episode**; an id with
+holes would hand them the same problem under a new name. Rows outside any episode carry `null`.
+
+**The key is the retrieval query, not the symbol.** It is `EpisodeGrouping.key_for` — the same
+grouping the reports use. So the symbols of one fanned analysis (ETHUSD/ETHEUR, ISSUE_70) share one
+episode by construction, while FX symbols that merely share a base currency do not.
+
+**Correlation, never a dedupe key.** Two envelopes of one episode carry it by design, so it cannot
+identify a transmission unit; that is `seq`'s job (ISSUE_9).
+
+**Where it is assigned.** In the run, before the envelope is persisted — the journal's JSONB column
+is the exact served JSON, so a stamp applied afterwards would reach neither the archive nor the
+wire. `PipelineRunner` therefore drives the rule and `Pipeline.run` returns a `PipelineRunResult`
+(envelope + what the pass did to the episode state); the eval worker renders that result instead of
+running the rule a second time.
+
+**The registry** (`breaking_episodes`, migration 010) is written in the envelope's own transaction,
+so a journal row can never reference an episode the registry never received. The opening pass
+inserts; every later pass advances `last_seen_at` and `n_passes`. The descriptive fields — signal,
+urgency, reason, and both reaction times — are frozen at the opening pass, because they describe the
+edge: re-sampling a reaction against ageing evidence is the defect ISSUE_81 removed from that
+metric. There is deliberately **no `ended` column**: it is `last_seen_at + gap < now()`, and the gap
+is per-pipeline config, so storing it would freeze one policy value into history.
+
+What the table is *not* for: it is not what makes assignment restart-safe. Seeding already does that
+(below). What it adds is episode-level aggregates as plain SQL — count, mean reaction, duration,
+passes per episode — which otherwise cost a full JSONB scan of `outcomes` and a re-grouping in
+Python.
 
 ### Stories — the number the episode count is read with (ISSUE_96)
 
@@ -406,7 +454,8 @@ clustering field itself did not change. The sweep harness (`experiments/story_ca
 that a re-run, not a rebuild.
 
 The reason belongs to a persisted episode identity (`breaking_episode_id`, #65), so
-live/report/stream/export share one authoritative event.
+live/report/stream/export share one authoritative event — shipped; see *Episode identity on the
+envelope*.
 
 ## Live push channel (Stage C — deferred, IDE-accepted)
 

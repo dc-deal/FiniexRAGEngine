@@ -111,8 +111,8 @@ class EvalWorker:
             # queueing behind them. The deadline abandons the await, not the thread, so the worker
             # recovers on its next bar close rather than staying dead until a restart. The run's
             # own cost scope lives in `PipelineRunner.run`, where the envelope is assembled.
-            envelope = await asyncio.wait_for(asyncio.to_thread(self._pipeline.run, reason),
-                                              timeout=self._pass_timeout_seconds)
+            result = await asyncio.wait_for(asyncio.to_thread(self._pipeline.run, reason),
+                                            timeout=self._pass_timeout_seconds)
         # Every branch opens its detail with the pass's reason (ISSUE_87) — `last_detail` is the one
         # string the log line, the live activity stream and /health all render, so writing it here
         # (rather than only into the envelope) puts the reason into the visible history too.
@@ -128,6 +128,9 @@ class EvalWorker:
             logger.exception('[%s] %s pass failed — next tick continues',
                              self._state.name, reason)
         else:
+            # Episode identity was assigned during the run and is already in the journal
+            # (ISSUE_65); what arrives here is what that assignment decided.
+            envelope, breaking = result.envelope, result.breaking
             m = envelope.metadata
             llm_rows = sum(1 for r in envelope.result if r.basis == 'llm')
             self._state.last_status = 'ok' if envelope.status != 'error' else 'error'
@@ -145,11 +148,14 @@ class EvalWorker:
             # identical lines/day and inflated the count). Cross-checks the store `breaking`
             # report, which groups the same episodes.
             #
+            # The rule itself no longer runs here: it runs inside the pass, before the envelope is
+            # persisted, because the id has to reach the journal (ISSUE_65). This block renders
+            # that decision — one derivation, not two.
+            #
             # Guarded like the ingest twin: the envelope is persisted by now, so nothing here can
             # be worth losing the worker over. This block used to sit outside every handler, which
             # is how one unexercised code path cost 37 hours of crypto ingest on 2026-08-20.
             try:
-                breaking = self._episodes.observe(envelope)
                 for episode in breaking.started:
                     logger.info(_breaking_line(envelope.pipeline_id, episode))
                 # Feed the live dashboard from the same envelope (ISSUE_26); no-op without one.

@@ -58,3 +58,36 @@ class BreakingPassDecision:
     held: bool
     in_episode: bool
     started_at: Optional[datetime] = None   # the open episode's start; None when none is open
+
+
+@dataclass
+class EpisodeUpsert:
+    """One episode's registry row as of this pass (ISSUE_65) — runner -> outcome store.
+
+    Crosses the persist seam: the decision is made where the rule lives (`core/pipeline/`) and the
+    write happens inside the envelope's own transaction (`core/outcome/`), so the shape belongs
+    here rather than to either side.
+
+    Carries the whole row, not a delta, because the write is an `INSERT ... ON CONFLICT DO UPDATE`:
+    the opening pass inserts it, every later pass of the same episode updates `last_seen_at` and
+    bumps `n_passes`. Which of the two happens is the registry's business — `opened` says which
+    pass this was, it does not select a statement.
+
+    The reaction times are sampled once, on the opening pass (`reaction_times`), and are None on a
+    continuation: re-sampling them later would measure the age of the evidence rather than any
+    reaction, which is exactly the defect ISSUE_81 removed from this metric.
+    """
+    episode_id: str
+    pipeline_id: str
+    episode_key: str          # the retrieval query the episode is grouped by (ISSUE_82)
+    symbol: str
+    signal: str
+    started_at: datetime
+    last_seen_at: datetime
+    opened: bool
+    urgency: float
+    reason: str
+    breaking_reason: str
+    prompt_version: str
+    engine_s: Optional[float] = None       # envelope ts - freshest source fetched_at (ISSUE_81)
+    end_to_end_s: Optional[float] = None   # envelope ts - freshest REAL published_at

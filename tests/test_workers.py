@@ -12,9 +12,10 @@ from typing import List
 
 import pytest
 
-from finiexragengine.core.pipeline.breaking_episode import BreakingEpisodeTracker
+from finiexragengine.core.pipeline.breaking_episode import BreakingEpisodeTracker, BreakingPass
 from finiexragengine.core.pipeline.eval_worker import EvalWorker
 from finiexragengine.core.pipeline.ingest_worker import IngestWorker
+from finiexragengine.core.pipeline.pipeline_runner import PipelineRunResult
 from finiexragengine.core.triggers.interval_trigger import IntervalTrigger
 from finiexragengine.exceptions.ragengine_errors import ConfigurationError
 from finiexragengine.types.config_types.source_set_types import SourceSetConfig
@@ -206,13 +207,14 @@ class _FakePipeline:
             llm={'model': 'gpt-4o-mini'}, source_set='crypto_news',
             trigger={'type': 'interval', 'timeframe': 'M10'})
 
-    def run(self, reason) -> SentimentEnvelope:
+    def run(self, reason) -> PipelineRunResult:
         self.runs += 1
         self.reasons.append(reason)
-        return SentimentEnvelope(
+        return PipelineRunResult(envelope=SentimentEnvelope(
             pipeline_id='p', outcome_type='sentiment_fear_greed', prompt_version='2',
             timestamp=datetime.now(timezone.utc), status='success', result=[],
-            metadata=RunMetadata(model='gpt-4o-mini', trigger_reason=reason))
+            metadata=RunMetadata(model='gpt-4o-mini', trigger_reason=reason)),
+            breaking=BreakingPass())
 
 
 def test_eval_worker_runs_pipeline_and_tracks_state():
@@ -277,7 +279,7 @@ def test_supervisor_builds_one_ingest_per_referenced_set_and_one_eval_per_stream
         def get_cost_recorder(self):
             return None
 
-        def build_episode_tracker(self, config):
+        def get_episode_tracker(self, config):
             # The real one seeds from the outcome store (ISSUE_82); the supervisor only has to
             # hand whatever it gets to the worker, so an unseeded tracker is the honest stand-in.
             return BreakingEpisodeTracker()

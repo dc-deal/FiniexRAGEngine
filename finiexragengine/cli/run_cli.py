@@ -39,7 +39,7 @@ def main() -> None:
     runner = PipelineAssembler(app, database_url).build_runner(config)
     # The operator at the console (ISSUE_87): persisted and exported like any other pass, but
     # marked, so a debug run never reads as a point on the scheduled bar-close series.
-    envelope = runner.run('manual')
+    envelope = runner.run('manual').envelope
     print(format_envelope_run(envelope))
     if args.json:
         print('\n' + envelope.model_dump_json(indent=2))

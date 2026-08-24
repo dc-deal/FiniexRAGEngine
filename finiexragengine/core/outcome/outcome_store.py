@@ -8,7 +8,9 @@ from typing import Any, Dict, List, Optional
 import psycopg
 
 from finiexragengine.exceptions.ragengine_errors import FiniexRagError, VectorStoreError
+from finiexragengine.core.outcome.episode_registry import EpisodeRegistry
 from finiexragengine.core.outcome.stream_sequencer import StreamSequencer
+from finiexragengine.types.eval_types import EpisodeUpsert
 from finiexragengine.types.outcome_types import AnalysisEnvelope, SentimentEnvelope
 
 logger = logging.getLogger(__name__)
@@ -49,6 +51,9 @@ class OutcomeStore:
         # picks. The sequencer holds no state of its own — `reconcile()` at boot may use its own
         # instance without coordination.
         self._sequencer = StreamSequencer(database_url, outcomes_table=table)
+        # Same reasoning as the sequencer: recording an episode is part of how this store
+        # writes, and it has to share the envelope's transaction (ISSUE_65).
+        self._episodes = EpisodeRegistry()
         self._journal_id: Any = _UNRESOLVED     # resolved on first read, then cached
 
     def get_sequencer(self) -> StreamSequencer:
@@ -94,7 +99,8 @@ class OutcomeStore:
             raise VectorStoreError(f'cannot connect to the outcome store: {exc}') from exc
 
     def save(self, envelope: AnalysisEnvelope,
-             raw_output: Optional[Dict[str, Any]] = None) -> None:
+             raw_output: Optional[Dict[str, Any]] = None,
+             episodes: Optional[List[EpisodeUpsert]] = None) -> None:
         """Stamp the envelope with its stream position, then persist it (+ the raw LLM output).
 
         The stamp is minted **inside this transaction** and written **into the envelope** before it
@@ -104,6 +110,11 @@ class OutcomeStore:
           is held to COMMIT, so a rollback returns the number instead of burning it;
         * into the envelope, because the JSONB column is the exact served JSON. A `seq` living only
           in a table column would never reach the archive: `OutcomeExporter` reads the envelope.
+
+        `episodes` are the breaking-episode rows this pass touched (ISSUE_65). They are written in
+        the same transaction for the same reason the stamp is: the envelope already carries
+        `breaking_episode_id`, and a journal row referencing an episode the registry never received
+        would be a dangling identity — the one shape a correlation key must not have.
 
         `available_msc` is sampled here rather than at assembly on purpose — it means "the instant
         this became fetchable via /latest and pushable on the stream", which is the store write, not
@@ -127,6 +138,8 @@ class OutcomeStore:
                     (envelope.pipeline_id, envelope.timestamp, envelope.status,
                      envelope.model_dump_json(),
                      json.dumps(raw_output) if raw_output else None))
+                for episode in episodes or ():
+                    self._episodes.upsert(cur, episode)
         except psycopg.Error as exc:
             raise VectorStoreError(f'outcome save failed: {exc}') from exc
 

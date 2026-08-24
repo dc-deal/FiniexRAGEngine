@@ -33,11 +33,10 @@ ENVELOPE_FIELDS: Tuple[str, ...] = (
 SCHEMA_VERSION = '2.0'          # major: trigger_reason left metadata, a Tier 3 relocation
 ROW_FIELDS: Tuple[str, ...] = (
     'symbol', 'signal', 'sentiment_score', 'confidence', 'reasoning', 'urgency', 'is_breaking',
-    'basis')
-# Announced but not built: ISSUE_65's episode identity. The sample shows them empty so a consumer
-# meets the shape it will get, but the engine is not held to them yet. When ISSUE_65 ships, move
-# these two names into ROW_FIELDS above and this check starts enforcing them.
-ROW_FIELDS_PENDING: Tuple[str, ...] = ('breaking_episode_id', 'breaking_episode_start')
+    'basis',
+    # ISSUE_65 shipped: episode identity is enforced here now, not merely announced. The engine
+    # emits both on every row; the fill-in below only covers envelopes archived before it.
+    'breaking_episode_id', 'breaking_episode_start')
 # Fields that must NOT appear at a stale location — R16 promoted trigger_reason out of metadata,
 # and the previous reissue still carried it there while the prose said otherwise.
 MISPLACED: Tuple[Tuple[str, str], ...] = (('metadata', 'trigger_reason'),)
@@ -102,7 +101,9 @@ def _renumber(env: Dict[str, Any], seq: int) -> Dict[str, Any]:
     """
     env['seq'] = seq
     for row in env['result']:
-        # ISSUE_65 is not built; the fields are shown empty so a parser meets the shape it will get.
+        # The source envelopes are real production output, and the archive reaches back before
+        # ISSUE_65 — those rows carry no episode identity and never will. Filled in empty so the
+        # sample shows the shape the engine emits today on every row.
         row.setdefault('breaking_episode_id', '')
         row.setdefault('breaking_episode_start', False)
     return {k: env[k] for k in ENVELOPE_FIELDS if k in env}
@@ -236,11 +237,16 @@ def _header(a: Dict[str, Any], b: Dict[str, Any], real_gap_ms: int) -> str:
 : that were measured.
 :
 : NOT INJECTED any more - see REISSUE 5 above. The only fields this script writes are
-: `breaking_episode_id` / `breaking_episode_start`, shown EMPTY because ISSUE_65 is not built; they
-: are always present once it ships, and empty on a non-breaking row by definition. `breaking_episode_id` and
-: `breaking_episode_start` are shown EMPTY: ISSUE_65 is not built; they are always present once it
-: ships, and empty on a non-breaking row by definition. Everything else is untouched production
-: content.
+: `breaking_episode_id` / `breaking_episode_start`, and only where the source envelope predates
+: ISSUE_65: those rows carry no episode identity and are filled in empty. Both fields are always
+: PRESENT on a row the engine produces today.
+:
+: Note what carries a value, because it is not "the breaking rows". The id is set on every pass
+: INSIDE an episode - the opening pass, a pass in the hold band (`is_breaking` false, urgency at or
+: above the exit threshold) and a dip that arrives before the gap elapses. An episode outlives its
+: own boolean, and an id with holes would flicker exactly as often as the `is_breaking` edge a
+: consumer gating on episode identity is trying to stop reacting to. `breaking_episode_start` is
+: true on the opening pass only. Everything else is untouched production content.
 :
 : Frames: one `data:` line of compact JSON, no `id:` line, named events throughout.
 """

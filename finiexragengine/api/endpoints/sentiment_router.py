@@ -116,7 +116,9 @@ def build_sentiment_router(registry: PipelineRegistry,
             try:
                 # A caller outside the engine asked for this pass (ISSUE_87) — not the engine's own
                 # clock. The envelope says so, so a consumer can tell it from the bar-close series.
-                return pipeline.run('external')
+                # `.envelope`: the pass also reports what it did to the episode state (ISSUE_65),
+                # which only the live surfaces consume — the HTTP response is the served JSON.
+                return pipeline.run('external').envelope
             except Exception as exc:   # noqa: BLE001 — the contract demands a parseable envelope
                 logger.exception('pipeline %s run failed', pipeline_id)
                 envelope = _error_envelope(pipeline, exc)
@@ -174,7 +176,7 @@ def build_sentiment_router(registry: PipelineRegistry,
         try:
             # A caller outside the engine asked for this pass (ISSUE_87) — not the engine's own
             # clock. The envelope says so, so a consumer can tell it from the bar-close series.
-            return pipeline.run('external')
+            return pipeline.run('external').envelope
         except Exception as exc:   # noqa: BLE001
             logger.exception('pipeline %s latest failed', pipeline_id)
             envelope = _error_envelope(pipeline, exc)

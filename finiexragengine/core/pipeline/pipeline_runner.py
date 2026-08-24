@@ -1,5 +1,6 @@
 """Pipeline runner — one pipeline pass, top-down: ingest -> per-symbol eval -> assemble (ISSUE_7)."""
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from time import perf_counter
 from typing import Dict, List, Optional, Tuple
@@ -7,13 +8,14 @@ from typing import Dict, List, Optional, Tuple
 from finiexragengine.core.observability.cost_recorder import CostRecorder, PassSpend
 from finiexragengine.core.observability.source_reach import SourceReach
 from finiexragengine.core.outcome.outcome_store import OutcomeStore
+from finiexragengine.core.pipeline.breaking_episode import BreakingEpisodeTracker, BreakingPass
 from finiexragengine.core.pipeline.envelope_contract import hold_result, taxonomy_type
 from finiexragengine.core.pipeline.ingestor import Ingestor
 from finiexragengine.core.pipeline.output_guard import OutputGuard
 from finiexragengine.core.pipeline.symbol_evaluator import SymbolEvaluator
 from finiexragengine.exceptions.ragengine_errors import FiniexRagError
 from finiexragengine.types.config_types.pipeline_config_types import PipelineConfig, SymbolSpec
-from finiexragengine.types.eval_types import SymbolEval
+from finiexragengine.types.eval_types import EpisodeUpsert, SymbolEval
 from finiexragengine.types.ingest_types import IngestResult, ReachCensus
 from finiexragengine.types.outcome_types import (
     AnalysisEnvelope,
@@ -26,6 +28,23 @@ from finiexragengine.types.prompt_metadata import PromptMetadata
 from finiexragengine.types.trigger_types import TriggerReason
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class PipelineRunResult:
+    """What one pass produced: the envelope, and what it did to the episode state (ISSUE_65).
+
+    A result object rather than the bare envelope this seam used to return. Episode identity has to
+    be stamped BEFORE the envelope is persisted — the JSONB column is the exact served JSON, so a
+    stamp applied afterwards reaches neither the archive nor the wire. That moved the episode rule
+    from the eval worker (which observed the envelope *after* the save) into the run itself, and the
+    worker still needs what the pass decided in order to render and log it.
+
+    Lives here rather than in `types/`, with `BreakingPass` and `BreakingEpisode`: it is this unit's
+    own shape, and `types/` may not import from `core/`.
+    """
+    envelope: AnalysisEnvelope
+    breaking: BreakingPass
 
 
 class PipelineRunner:
@@ -50,7 +69,8 @@ class PipelineRunner:
                  llm_model: str, cost_recorder: Optional[CostRecorder] = None,
                  outcome_store: Optional[OutcomeStore] = None,
                  source_reach: Optional[SourceReach] = None,
-                 config_fingerprint: str = '') -> None:
+                 config_fingerprint: str = '',
+                 episode_tracker: Optional[BreakingEpisodeTracker] = None) -> None:
         self._config = config
         # Output consistency guard (ISSUE_35): deterministic coherence check over each
         # scored row, built from the constellation's tolerances, applied in phase B+C below.
@@ -78,8 +98,13 @@ class PipelineRunner:
         # Optional (ISSUE_8): every produced envelope is persisted before it is served —
         # the store is the source of truth; /latest reads it instead of re-running.
         self._outcome_store = outcome_store
+        # Episode identity (ISSUE_65). Seeded from the store by the assembler, so a restart rejoins
+        # an open story instead of re-opening it. It lives HERE, not on the eval worker, because the
+        # id has to be stamped on the results before they are serialized into the journal — a bare
+        # fallback keeps a hand-built runner (tests, the scaffold) meaningful.
+        self._episodes = episode_tracker if episode_tracker is not None else BreakingEpisodeTracker()
 
-    def run(self, reason: TriggerReason) -> AnalysisEnvelope:
+    def run(self, reason: TriggerReason) -> PipelineRunResult:
         """Produce one envelope, with this run's spend accounted in its own scope (ISSUE_74).
 
         `reason` (ISSUE_87) travels two ways from here: onto the envelope, and into the cost scope
@@ -96,7 +121,7 @@ class PipelineRunner:
         with self._cost_recorder.pass_scope(reason) as spend:
             return self._run(spend, reason)
 
-    def _run(self, spend: PassSpend, reason: TriggerReason) -> AnalysisEnvelope:
+    def _run(self, spend: PassSpend, reason: TriggerReason) -> PipelineRunResult:
         run_start = perf_counter()
         errors: List[RunError] = []
 
@@ -210,10 +235,17 @@ class PipelineRunner:
             metadata=metadata,
             errors=errors,
         )
-        self._persist(envelope, evals)
-        return envelope
+        # --- E: episode identity (ISSUE_65) ---
+        # Before persisting, never after: the journal column is the exact served JSON, so a stamp
+        # applied later would exist only in memory. `observe` writes `breaking_episode_id` /
+        # `breaking_episode_start` onto the results and returns what the pass did — which the eval
+        # worker renders instead of running the rule a second time.
+        breaking = self._episodes.observe(envelope)
+        self._persist(envelope, evals, breaking.episodes)
+        return PipelineRunResult(envelope=envelope, breaking=breaking)
 
-    def _persist(self, envelope: AnalysisEnvelope, evals: List[SymbolEval]) -> None:
+    def _persist(self, envelope: AnalysisEnvelope, evals: List[SymbolEval],
+                 episodes: Optional[List[EpisodeUpsert]] = None) -> None:
         """Persist the envelope + per-symbol raw LLM output (ISSUE_8/36) — never fatal.
 
         The raw scored JSON is irreconstructable after the call, so it is stored next to
@@ -225,7 +257,7 @@ class PipelineRunner:
             return
         raw_output = {ev.result.symbol: ev.raw_output for ev in evals if ev.raw_output}
         try:
-            self._outcome_store.save(envelope, raw_output or None)
+            self._outcome_store.save(envelope, raw_output or None, episodes)
         except FiniexRagError as exc:
             envelope.errors.append(self._error('VECTOR_STORE_ERROR',
                                                f'outcome not persisted: {exc}'))
