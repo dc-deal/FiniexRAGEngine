@@ -303,10 +303,18 @@ def create_app(attach_runners: Optional[bool] = None,
             if live_task is not None:
                 await live_task
 
+    # The interactive schema surfaces (ISSUE_98). FastAPI mounts them on the app itself, so the
+    # protected router's dependency never sees them — passing None is the only way to keep them
+    # off. They map the entire API for anyone who asks, so they are opt-in like `/run`.
+    api_config = config_manager.get_config().api
+    docs = api_config.docs_enabled
     app = FastAPI(
         title='FiniexRAGEngine',
         version=config_manager.get_config().version,
         lifespan=lifespan,
+        docs_url='/docs' if docs else None,
+        redoc_url='/redoc' if docs else None,
+        openapi_url='/openapi.json' if docs else None,
     )
     # ISSUE_98 — the HTTP surface splits in two, and the split IS the security design.
     #
@@ -315,7 +323,6 @@ def create_app(attach_runners: Optional[bool] = None,
     # prevent — an endpoint shipped unprotected because someone forgot a decorator — stops being
     # a thing anyone can forget. `tests/test_api_auth.py` asserts it on a route registered inside
     # the test, so the guarantee is checked rather than described.
-    api_config = config_manager.get_config().api
     app.include_router(_build_public_router(config_manager, api_config, supervisor=supervisor,
                                             budget_guard=budget_guard,
                                             stall_watchdog=stall_watchdog,

@@ -26,6 +26,12 @@ class ApiConfig(BaseModel):
     # config edit from live. The engine's own workers produce the series; an external forced pass
     # is a development affordance.
     run_endpoint_enabled: bool = False
+    # FastAPI's own `/docs`, `/redoc` and `/openapi.json`. They are mounted on the *app*, not on a
+    # router, so no router-level dependency can reach them — an easy thing to assume is covered and
+    # is not. They publish the full surface map: every route, every model, and any endpoint added
+    # later. Off by default for the same reason `/run` is: a development affordance has to be
+    # switched on deliberately, never inherited.
+    docs_enabled: bool = False
     # Consumer bearer tokens, `name -> token`. **Empty in the tracked config, always** — the real
     # values belong in the gitignored `user_configs/app_config.json` overlay. The environment
     # variable FINIEX_API_TOKENS still wins when set, so a container or CI keeps working unchanged;

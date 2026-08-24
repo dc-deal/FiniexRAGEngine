@@ -253,3 +253,19 @@ def test_the_tracked_config_never_ships_a_token() -> None:
                          .read_text(encoding='utf-8'))
     assert tracked['api']['tokens'] == {}
     assert ApiConfig().tokens == {}
+
+
+def test_the_schema_endpoints_are_off_unless_asked_for(tokens: str) -> None:
+    """FastAPI mounts `/docs`, `/redoc` and `/openapi.json` on the **app**, not on a router.
+
+    So no router-level dependency can protect them — which is exactly the kind of coverage that
+    gets assumed. Found while preparing to open the reverse proxy: with a catch-all proxy they
+    would have published the full API surface map, unauthenticated, the moment the edge opened.
+    Off by default, opt-in like `POST /run`.
+    """
+    off = TestClient(create_app(attach_runners=False))
+    for path in ('/docs', '/redoc', '/openapi.json'):
+        assert off.get(path).status_code == 404, path
+
+    # `/health` is unaffected — the exemption is a route, not a hole in the app.
+    assert off.get('/v1/health').status_code == 200

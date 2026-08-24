@@ -8,6 +8,7 @@
         "require_auth": true,
         "health_public": true,
         "run_endpoint_enabled": false,
+        "docs_enabled": false,
         "tokens": {},
         "rate_limit_per_minute": 60,
         "auth_failures_per_minute": 10
