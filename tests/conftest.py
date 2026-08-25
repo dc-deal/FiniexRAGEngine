@@ -77,7 +77,9 @@ def clean_db(db_dsn: str) -> Iterator[str]:
     Truncate rather than re-migrate: the schema is the expensive part and it does not change
     between tests; the rows do. `corpus_meta` is included so the corpus guard (ISSUE_16) starts
     unstamped, as it would on a fresh corpus, and `stream_seq` so each test mints from 1 —
-    a leaked counter would make sequence assertions depend on test order.
+    a leaked counter would make sequence assertions depend on test order. `breaking_episodes`
+    likewise (ISSUE_65): the registry upserts by episode id, so a row surviving from an earlier
+    test would turn an insert into a continuation and quietly change what `n_passes` proves.
     """
     import psycopg
 
@@ -85,6 +87,6 @@ def clean_db(db_dsn: str) -> Iterator[str]:
         conn.execute('TRUNCATE articles, corpus_meta, outcomes, cost_log, query_vectors, '
                      'source_health, source_poll_log, source_quarantine_log, '
                      'resource_samples, archive_export_log, config_fingerprints, '
-                     'stream_seq')
+                     'stream_seq, breaking_episodes')
         conn.commit()
     yield db_dsn

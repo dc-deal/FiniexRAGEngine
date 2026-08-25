@@ -1,0 +1,65 @@
+{
+    "_comment": [
+        "TEMPLATE — copy to user_configs/app_config.json and fill in. This file is tracked so the",
+        "shape of the override layer is visible to a fresh clone; the real file next to it is not.",
+        "",
+        "Every key here is OPTIONAL and deep-merges leaf by leaf onto configs/app_config.json:",
+        "what you omit keeps the tracked default, and every applied override is reported at boot",
+        "([OVERRIDE] lines). See docs/development/user_configs_overrides.md.",
+        "",
+        "The tokens below carry \"active\": false, so this template cannot authenticate anything even",
+        "if it is loaded by accident. Set it to true once you have replaced the values — and note",
+        "that a copy with every token inactive refuses to boot, which is the intended, actionable",
+        "failure rather than an engine serving with no credentials.",
+        "",
+        "The journal_names keys below are deliberately NOT twelve lowercase hex characters, so they",
+        "can never match a real journal fingerprint: a mapping copied without editing then resolves",
+        "nothing and reports 'unknown' rather than labelling some database 'production'."
+    ],
+
+    "api": {
+        "tokens": {
+            "ide": {
+                "token": "<generate: python -c \"import secrets; print(secrets.token_urlsafe(32))\">",
+                "grants": ["pipelines:*"],
+                "active": false,
+                "note": "who holds this token — answered here, not remembered at rotation time"
+            },
+            "diagnostics": {
+                "token": "<a second token, revocable on its own>",
+                "grants": ["reports:source_health", "reports:breaking"],
+                "active": false,
+                "note": "example of a narrow grant: two reports, no signals, no spend"
+            }
+        }
+    },
+
+    "journal_names": {
+        "EXAMPLE_PROD_ID": "production",
+        "EXAMPLE_DEV_ID": "dev container"
+    },
+
+    "cost": {
+        "account_credit_usd": 0.0,
+        "circuit_breaker": {
+            "soft_daily_usd": 0.0
+        }
+    },
+
+    "llm": {
+        "allowed_models": ["gpt-4o-mini", "gpt-4o"],
+        "base_url": null
+    },
+
+    "reports": {
+        "breaking": { "window": "7d" },
+        "source_quarantine": { "window": "30d" },
+        "cost": { "windows": ["7d", "30d", "all"] }
+    },
+
+    "telegram": {
+        "enabled": false,
+        "bot_token": "<from @BotFather>",
+        "chat_id": "<your chat id>"
+    }
+}

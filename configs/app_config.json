@@ -1,128 +1,158 @@
 {
-    "version": "0.3.3",
-    "schema_version": "1.0",
-    "journal_names": {
-        "EXAMPLE_ID": "example-only \u2014 map real ids in user_configs"
+  "version": "0.3.3",
+  "schema_version": "1.0",
+  "journal_names": {
+    "EXAMPLE_ID": "example-only — map real ids in user_configs"
+  },
+  "api": {
+    "require_auth": true,
+    "health_public": true,
+    "run_endpoint_enabled": false,
+    "docs_enabled": false,
+    "build_info_public": true,
+    "reports_max_window_days": 90,
+    "tokens": {},
+    "rate_limit_per_minute": 60,
+    "auth_failures_per_minute": 10
+  },
+  "llm": {
+    "provider": "openai",
+    "temperature": 0.1,
+    "timeout_seconds": 30,
+    "allowed_models": [
+      "gpt-4o-mini",
+      "gpt-4o"
+    ],
+    "base_url": null
+  },
+  "embedding": {
+    "provider": "openai",
+    "model": "text-embedding-3-small",
+    "dimensions": 1536,
+    "max_input_tokens": 8192,
+    "encoding": null,
+    "timeout_seconds": 60
+  },
+  "vector_store": {
+    "backend": "pgvector",
+    "retrieval_top_k": 12,
+    "recency_window_minutes": 1440
+  },
+  "pricing": {
+    "currency": "USD",
+    "models": {
+      "text-embedding-3-small": {
+        "input_per_1k": 2e-05,
+        "output_per_1k": 0.0
+      },
+      "text-embedding-3-large": {
+        "input_per_1k": 0.00013,
+        "output_per_1k": 0.0
+      },
+      "gpt-4o-mini": {
+        "input_per_1k": 0.00015,
+        "output_per_1k": 0.0006
+      },
+      "gpt-4o": {
+        "input_per_1k": 0.0025,
+        "output_per_1k": 0.01
+      }
+    }
+  },
+  "cost": {
+    "account_credit_usd": 0.0,
+    "budget_usd": 0.0,
+    "circuit_breaker": {
+      "enabled": true,
+      "reprobe_interval_seconds": 120,
+      "soft_daily_usd": 0.0
+    }
+  },
+  "log_level": "INFO",
+  "logging": {
+    "file": "logs/finiex.log",
+    "rotation": "daily",
+    "backup_count": 14,
+    "max_bytes": 10000000,
+    "quiet_loggers": [
+      "httpx",
+      "httpcore"
+    ],
+    "warn_on_override": true
+  },
+  "socket_default_timeout_seconds": 30,
+  "pass_timeout_seconds": 300,
+  "source_health": {
+    "flag_after_consecutive_failures": 5,
+    "quarantine_hours": [
+      1,
+      6,
+      24
+    ],
+    "recent_events_kept": 10,
+    "ladder_reset_hours": 168,
+    "deadline_ratio": 0.7,
+    "correlated_failure_ratio": 0.85,
+    "correlated_min_pollable": 3,
+    "correlated_backoff_minutes": 5
+  },
+  "diagnostics": {
+    "poll_log_enabled": true,
+    "poll_log_retention_days": 14,
+    "timeout_warn_ratio": 0.7,
+    "resource_gauge_enabled": true,
+    "resource_retention_days": 14,
+    "resource_rss_warn_mb": 0
+  },
+  "stall_watchdog": {
+    "enabled": true,
+    "factor": 3,
+    "floor_minutes": 15,
+    "check_interval_seconds": 60
+  },
+  "telegram": {
+    "enabled": false,
+    "bot_token": "",
+    "chat_id": "",
+    "poll_interval_seconds": 30,
+    "commands_enabled": false,
+    "report_command": "/report"
+  },
+  "weekly_report": {
+    "enabled": false,
+    "day_of_week": "sun",
+    "hour": 18,
+    "minute": 0,
+    "timezone": "UTC",
+    "export_outcomes": true,
+    "export_dir": "data/signal_export"
+  },
+  "reports": {
+    "source_health": {
+      "recent_problems": 10
     },
-    "api": {
-        "require_auth": true,
-        "health_public": true,
-        "run_endpoint_enabled": false,
-        "docs_enabled": false,
-        "tokens": {},
-        "rate_limit_per_minute": 60,
-        "auth_failures_per_minute": 10
+    "source_latency": {
+      "window": "7d"
     },
-    "llm": {
-        "provider": "openai",
-        "temperature": 0.1,
-        "timeout_seconds": 30,
-        "allowed_models": [
-            "gpt-4o-mini",
-            "gpt-4o"
-        ],
-        "base_url": null
+    "source_quarantine": {
+      "window": "30d"
     },
-    "embedding": {
-        "provider": "openai",
-        "model": "text-embedding-3-small",
-        "dimensions": 1536,
-        "max_input_tokens": 8192,
-        "encoding": null,
-        "timeout_seconds": 60
+    "breaking": {
+      "window": "7d"
     },
-    "vector_store": {
-        "backend": "pgvector",
-        "retrieval_top_k": 12,
-        "recency_window_minutes": 1440
+    "breaking_timeline": {
+      "window": "7d"
     },
-    "pricing": {
-        "currency": "USD",
-        "models": {
-            "text-embedding-3-small": {
-                "input_per_1k": 2e-05,
-                "output_per_1k": 0.0
-            },
-            "text-embedding-3-large": {
-                "input_per_1k": 0.00013,
-                "output_per_1k": 0.0
-            },
-            "gpt-4o-mini": {
-                "input_per_1k": 0.00015,
-                "output_per_1k": 0.0006
-            },
-            "gpt-4o": {
-                "input_per_1k": 0.0025,
-                "output_per_1k": 0.01
-            }
-        }
+    "perf": {
+      "window": "7d"
     },
     "cost": {
-        "account_credit_usd": 0.0,
-        "budget_usd": 0.0,
-        "circuit_breaker": {
-            "enabled": true,
-            "reprobe_interval_seconds": 120,
-            "soft_daily_usd": 0.0
-        }
-    },
-    "log_level": "INFO",
-    "logging": {
-        "file": "logs/finiex.log",
-        "rotation": "daily",
-        "backup_count": 14,
-        "max_bytes": 10000000,
-        "quiet_loggers": [
-            "httpx",
-            "httpcore"
-        ],
-        "warn_on_override": true
-    },
-    "socket_default_timeout_seconds": 30,
-    "pass_timeout_seconds": 300,
-    "source_health": {
-        "flag_after_consecutive_failures": 5,
-        "quarantine_hours": [
-            1,
-            6,
-            24
-        ],
-        "recent_events_kept": 10,
-        "ladder_reset_hours": 168,
-        "deadline_ratio": 0.7,
-        "correlated_failure_ratio": 0.85,
-        "correlated_min_pollable": 3,
-        "correlated_backoff_minutes": 5
-    },
-    "diagnostics": {
-        "poll_log_enabled": true,
-        "poll_log_retention_days": 14,
-        "timeout_warn_ratio": 0.7,
-        "resource_gauge_enabled": true,
-        "resource_retention_days": 14,
-        "resource_rss_warn_mb": 0
-    },
-    "stall_watchdog": {
-        "enabled": true,
-        "factor": 3,
-        "floor_minutes": 15,
-        "check_interval_seconds": 60
-    },
-    "telegram": {
-        "enabled": false,
-        "bot_token": "",
-        "chat_id": "",
-        "poll_interval_seconds": 30,
-        "commands_enabled": false,
-        "report_command": "/report"
-    },
-    "weekly_report": {
-        "enabled": false,
-        "day_of_week": "sun",
-        "hour": 18,
-        "minute": 0,
-        "timezone": "UTC",
-        "export_outcomes": true,
-        "export_dir": "data/signal_export"
+      "windows": [
+        "7d",
+        "30d",
+        "all"
+      ],
+      "recent_passes": 20
     }
+  }
 }

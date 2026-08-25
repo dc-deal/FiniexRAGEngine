@@ -80,13 +80,13 @@ Before committing to a design for a non-trivial feature or change:
 - **Roadmap #1** ticks a batch's checkbox only when it merges; the version's 🏷️ line is the
   batch's Definition of Done.
 
-## Two environments — and you only ever see one of them
+## Two environments — and you only ever see one of them fully
 
-**Everything the assistant can reach is the local dev container. The live engine runs elsewhere and
-is not reachable from here.** This is the assumption most likely to produce a confident wrong answer,
-because the dev container holds a database with the same schema, the same table names and a handful
-of real-looking envelopes — a query against it returns a plausible number for a question that was
-about production.
+**The assistant works in the local dev container. The live engine runs elsewhere and is reachable
+only as a read-only HTTP surface — never its database, never a shell.** That is the assumption
+most likely to produce a confident wrong answer, because the dev container holds a database with
+the same schema, the same table names and a handful of real-looking envelopes — a query against it
+returns a plausible number for a question that was about production.
 
 | | dev container (what you see) | live server (where the engine runs) |
 |---|---|---|
@@ -94,6 +94,31 @@ about production.
 | `outcomes` journal | a few hundred envelopes from test runs | the real series, weeks of continuous operation |
 | RAM | the laptop's | **16 GB** |
 | Disk | hundreds of GB free | **~149 GB total, and treated as scarce** |
+| Reachable from here | yes, directly | **read-only over HTTPS** (`/v1/*` with a token; `/health` + `/build` public) — no database, no shell |
+
+**Since 2026-08-24 there is one exception, and it is narrow.** The live engine has a public TLS edge
+and per-consumer tokens (ISSUE_98), and the assistant holds its own (`claude-dev`, revocable without
+touching the Testing IDE's). So a handful of production questions are now answerable *from
+production*: is the engine alive, what do its workers report, what did the last pass actually
+produce, what does a served envelope contain field by field. Those may be answered directly.
+
+**Everything else is unchanged, and the two consequences below still govern.** PostgreSQL is not
+exposed and will not be: every aggregate, every historical count, every "how often since X" is still
+a question the dev journal answers with real, small, irrelevant numbers. Reaching for the API does
+not make a SQL question answerable — it makes exactly the read-only HTTP surface answerable.
+
+**The environments are now distinguishable mechanically**, which is the part worth keeping:
+`/v1/health` reports `journal_id` — production `138c68e48b15`, the dev container `9c3fa4c80d95` —
+and `/v1/build` reports the commit the live process actually imported. Where a number's origin used
+to be an assumption, it can be checked.
+
+The engine cannot be made to spend money this way: `POST /run` is not registered in production, so
+every route the assistant can reach is a read.
+
+**A developer with a live engine of their own** puts their client-side bearer token in `.env` under
+`FINIEX_LIVE_CLIENT_TOKEN` — deliberately not `FINIEX_API_TOKENS`, which is the server side (the
+tokens an engine *accepts*). The two are one character apart and mean opposite things. `.env` is
+gitignored; `.env.example` carries the key with an empty value.
 
 Two consequences, both learned the hard way:
 
@@ -105,8 +130,10 @@ Two consequences, both learned the hard way:
   significant fraction of the server. The operator moves artifacts to the server deliberately; a
   process or a file that only fits here is not finished.
 
-The operator bridges the two by hand (RDP, file copy, `export_cli` run on the server). There is no
-tunnel, and asking for one has costs the operator has already weighed.
+Everything the HTTP surface does not cover, the operator still bridges by hand (RDP, file copy,
+`export_cli` and any SQL run on the server). There is no tunnel and no exposed database, and asking
+for either has costs the operator has already weighed — the edge that exists was built deliberately,
+route by route, and is not an opening to widen casually.
 
 ## Session start
 
@@ -202,6 +229,45 @@ Read first, in order:
   (`[OVERRIDE] …`, gated by `logging.warn_on_override`).
   Details: `docs/development/user_configs_overrides.md`.
 - **CLI entry points** in `finiexragengine/cli/` — parameter reception only, no logic.
+- **One report, one command, one route.** A parameter must never decide *which* report you get.
+  If it is its own report — its own question, its own shape — it gets its own CLI entry point and
+  its own address under `/v1/reports/<name>`. A flag may **narrow** a report (window, symbol,
+  source id); it may not **replace** it. A fixed composite is fine and is something else entirely:
+  `sources_cli` prints health next to latency because the operator's question spans both, and no
+  flag selects between them. What is not fine is `--timeline` turning a funnel report into a series
+  report — a second program wearing the first one's name, invisible until you read the flags.
+  ISSUE_104 split five such modes out; the API had already been forced into the right shape,
+  because an address has to name one thing.
+- **Access is granted by name, never by omission.** Every consumer token declares `grants` — a
+  list of `<surface>:<name>` (`reports:source_health`, `pipelines:crypto_sentiment`), with
+  `<surface>:*` and a bare `*` — and the field is **mandatory**: a token without it fails at boot
+  instead of defaulting to everything. So a surface added later is unreachable by a consumer until
+  someone writes its name into their token. Granting is an act; it is never inherited from a
+  default nobody chose.
+  - **A grant names a thing, not a route.** `reports:source_health` keeps meaning what it means
+    across a rename or a `/v2`; a path-shaped rule would silently stop matching and answer a
+    consumer who did nothing wrong with a 403. Comparison is exact — no wildcard matching against
+    caller-supplied paths, which is where authorization defects live.
+  - **Bound to the route by FastAPI's own mechanism.** The *surface* is declared once per domain
+    router (`Security(dependency, scopes=['reports'])` — `SecurityScopes`), the *name* is the
+    route's first path parameter. A collection route has no identity segment and is therefore
+    filtered in its handler rather than gated, so a caller entitled to some of what it lists still
+    gets an answer.
+  - **Know the one weakness: this half is NOT inherited.** Authentication sits on the single shared
+    protected router, so every route inherits it and nobody can forget it. Authorization cannot work
+    that way — the surface is per-router information — so a **new domain router that omits
+    `Security(..., scopes=[...])` would be authenticated but ungated**, reachable by any valid
+    token. That is the failure mode to watch when adding a router, and it is the reason
+    `tests/test_report_scopes.py` walks every registered identity route and asserts a token holding
+    nothing is refused: the declaration is not trusted, it is checked. **A new router means a new
+    surface in `GRANT_SURFACES` and a `Security` declaration — or the suite says so.**
+  - **`active: false` is a kill switch**, not documentation: a consumer can be switched off without
+    deleting their token, and an inactive entry never enters the registry.
+  - Each token carries a `note` saying who holds it, and the boot log prints both
+    (`[AUTH] token ide · grants: reports:source_health, pipelines:* · Testing IDE`) plus any
+    inactive entry — a grant that lives only in a config file is a grant nobody checks.
+  - The environment form (`FINIEX_API_TOKENS="name:token"`) has nowhere to put grants and therefore
+    means `*`; it exists for a container or CI, which are ours, never for a consumer.
 - Early-exit pattern preferred. Keep diffs minimal; no changelog/version comments in code.
 - **Comment the flow generously as you build.** Comment each meaningful step —
   when in doubt, one comment too many beats one too few — giving the mechanics and

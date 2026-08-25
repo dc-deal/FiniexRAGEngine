@@ -10,13 +10,14 @@ streaming tracker and the store report drive. This file keeps what is specific t
 turning an opened episode into a `BreakingEpisode` with its frozen reaction time and reason.
 """
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
 from finiexragengine.core.pipeline.breaking_episode_rule import (
     BreakingEpisodeRule,
     EpisodeGrouping,
 )
+from finiexragengine.types.eval_types import EpisodeUpsert
 from finiexragengine.types.outcome_types import AnalysisEnvelope, SentimentResult
 
 
@@ -61,6 +62,11 @@ class BreakingPass:
     """
     started: List[BreakingEpisode] = field(default_factory=list)
     held: List[str] = field(default_factory=list)     # symbols whose open episode this pass held
+    # One row per episode this pass touched (ISSUE_65), written inside the envelope's own persist
+    # transaction. Deduplicated per episode id, NOT per result: a fanned analysis (ETHUSD/ETHEUR
+    # under one query, ISSUE_70) is several rows of one episode, and one upsert each would bump
+    # `n_passes` once per symbol instead of once per pass.
+    episodes: List[EpisodeUpsert] = field(default_factory=list)
 
 
 @dataclass
@@ -117,6 +123,18 @@ def reaction_times(result: SentimentResult, ts: datetime) -> Tuple[Optional[floa
     return engine, end_to_end
 
 
+def episode_id(pipeline_id: str, episode_key: str, started_at: datetime) -> str:
+    """The stable identity of one episode (ISSUE_65) — `<pipeline>:<key>:<start>`.
+
+    Anchored on the episode's START, never on the current pass, which is what makes every pass of
+    one story carry the same value. Seconds precision is deliberate: two episodes of one key cannot
+    start within the same second (they are separated by `EPISODE_GAP`, 150 minutes today), so the
+    extra digits would buy nothing and cost readability in a log line and on the wire.
+    """
+    stamp = started_at.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    return f'{pipeline_id}:{episode_key}:{stamp}'
+
+
 class BreakingEpisodeTracker:
     """Streaming driver of `BreakingEpisodeRule`: which results START an episode this pass.
 
@@ -128,6 +146,11 @@ class BreakingEpisodeTracker:
 
     def __init__(self, grouping: Optional[EpisodeGrouping] = None) -> None:
         self._grouping = grouping if grouping is not None else EpisodeGrouping(BreakingEpisodeRule())
+        # The id currently in force per open episode key (ISSUE_65). Held rather than recomputed so
+        # a REPLAYED episode keeps the identity it was persisted with: the seed window is finite,
+        # so a story that opened before it has its start clipped, and minting from that clipped
+        # start would hand the consumer a second id for a story already running under the first.
+        self._ids: Dict[str, str] = {}
         # Per open episode key: what it is and how long it has been running. Kept so a process that
         # inherits state by replay can hand the display something to show (see `open_episodes`).
         self._open: Dict[str, OpenEpisode] = {}
@@ -146,14 +169,18 @@ class BreakingEpisodeTracker:
         """
         ts = envelope.timestamp
         outcome = BreakingPass()
+        # Episode ids already given a registry row in THIS pass. A fanned analysis produces one
+        # result per symbol over one episode (ISSUE_70), and each would otherwise upsert the same
+        # row — counting one pass as several.
+        rows_written: Dict[str, None] = {}
         for result in envelope.result:
             # The episode key is the retrieval query — the analysis unit, not the ticker and not the
             # base currency (see `EpisodeGrouping.key_for`). One derivation, shared with the store
             # reports, so the live and batch views cannot group differently.
             group_key = self._grouping.key_for(result.symbol, result.base_currency)
             decision = self._grouping.rule.observe(group_key, ts, result.is_breaking, result.urgency)
+            engine, end_to_end = (reaction_times(result, ts) if decision.opened else (None, None))
             if decision.opened:
-                engine, end_to_end = reaction_times(result, ts)
                 episode = BreakingEpisode(result.symbol, result.signal, result.urgency,
                                           engine, end_to_end, len(result.sources),
                                           reason=result.reasoning,
@@ -165,10 +192,47 @@ class BreakingEpisodeTracker:
                 running = self._open.get(group_key)
                 if running is not None:
                     running.last_seen = ts
-            if not decision.in_episode:
+            # Identity (ISSUE_65). Stamped on every pass the rule counts as INSIDE the episode —
+            # opener, hold-band pass and a dip that arrived before the gap elapsed — because the
+            # episode outlives its own `is_breaking` boolean and an id with holes would flicker
+            # exactly as often as the edge the consumer is trying to stop reacting to.
+            if decision.in_episode and decision.started_at is not None:
+                if decision.opened:
+                    # A replayed envelope already carries the id its own pass minted — adopt it.
+                    # A live opening pass never does (the evaluator cannot invent one), so this
+                    # reads "seeding" without needing a flag to say so.
+                    stamped_id = (result.breaking_episode_id
+                                  or episode_id(envelope.pipeline_id, group_key,
+                                                decision.started_at))
+                    self._ids[group_key] = stamped_id
+                else:
+                    stamped_id = self._ids.get(group_key) or episode_id(
+                        envelope.pipeline_id, group_key, decision.started_at)
+                result.breaking_episode_id = stamped_id
+                result.breaking_episode_start = decision.opened
+                if stamped_id not in rows_written:
+                    rows_written[stamped_id] = None
+                    outcome.episodes.append(EpisodeUpsert(
+                        episode_id=stamped_id,
+                        pipeline_id=envelope.pipeline_id,
+                        episode_key=group_key,
+                        symbol=result.symbol,
+                        signal=result.signal,
+                        started_at=decision.started_at,
+                        last_seen_at=ts,
+                        opened=decision.opened,
+                        urgency=result.urgency,
+                        reason=result.reasoning,
+                        breaking_reason=result.breaking_reason or '',
+                        prompt_version=envelope.prompt_version,
+                        engine_s=engine,
+                        end_to_end_s=end_to_end))
+            else:
                 # The gap closed it (or it never opened) — drop it so `open_episodes` only ever
-                # reports what the rule still holds.
+                # reports what the rule still holds, and so the next episode on this key mints a
+                # fresh id instead of inheriting the closed one.
                 self._open.pop(group_key, None)
+                self._ids.pop(group_key, None)
         return outcome
 
     def seed(self, envelopes: List[AnalysisEnvelope]) -> List[OpenEpisode]:

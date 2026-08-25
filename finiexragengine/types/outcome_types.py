@@ -129,6 +129,27 @@ class SentimentResult(BaseModel):
     # (e.g. USD). Additive with default: old envelopes stay parseable, schema_version unchanged.
     base_currency: Optional[str] = None
     quote_currency: Optional[str] = None
+    # Episode identity (ISSUE_65). `<pipeline_id>:<episode_key>:<started_at ISO>`, anchored on the
+    # episode's START, so every pass of one story carries the SAME id — that is the whole point:
+    # the raw `is_breaking` edge flips 19-21x within a single episode, so a consumer gating on it
+    # reacts that many times to one story.
+    #
+    # Set on every pass the rule considers INSIDE the episode — the opener, a pass in the hold band
+    # (`is_breaking` false, urgency >= exit threshold) and a dip that arrives before the gap
+    # elapses. Deliberately NOT limited to `is_breaking` rows: since ISSUE_82's hysteresis an
+    # episode outlives its own boolean, and an id with holes would re-create the flicker it exists
+    # to remove. Empty on rows outside any episode and on every envelope produced before ISSUE_65.
+    #
+    # The episode KEY is the retrieval query, not the symbol (`EpisodeGrouping.key_for`) — so the
+    # symbols of one fanned analysis (ETHUSD/ETHEUR, ISSUE_70) share one episode by construction,
+    # and the FX symbols that merely share a base currency do not.
+    #
+    # Correlation, never a dedupe key (ISSUE_9): two envelopes of one episode carry it by design,
+    # so it cannot identify a transmission unit. Additive with defaults — schema_version unchanged.
+    breaking_episode_id: Optional[str] = None
+    # True on THE pass that opened the episode, false on every pass that continued it. Lets a
+    # consumer separate "episode opened" from "episode continued" without re-deriving the edge.
+    breaking_episode_start: bool = False
 
 
 class SentimentLlmOutput(BaseModel):

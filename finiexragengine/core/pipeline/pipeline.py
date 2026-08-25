@@ -2,7 +2,8 @@
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from finiexragengine.core.pipeline.pipeline_runner import PipelineRunner
+from finiexragengine.core.pipeline.breaking_episode import BreakingPass
+from finiexragengine.core.pipeline.pipeline_runner import PipelineRunner, PipelineRunResult
 from finiexragengine.types.config_types.pipeline_config_types import PipelineConfig
 from finiexragengine.types.outcome_types import (
     AnalysisEnvelope,
@@ -42,16 +43,21 @@ class Pipeline:
         """
         return self._runner is not None
 
-    def run(self, reason: TriggerReason) -> AnalysisEnvelope:
-        """Execute the pipeline once and return its outcome envelope.
+    def run(self, reason: TriggerReason) -> PipelineRunResult:
+        """Execute the pipeline once and return its outcome (envelope + episode state).
 
         `reason` says why this pass runs (ISSUE_87) and is stamped on the envelope. Required, not
         defaulted: every caller knows its own reason, and a default would quietly reintroduce the
         blind spot — a scheduled tick, a restart and a breaking wake looking identical downstream.
+
+        A caller that only wants the served JSON reads `.envelope`; the second member exists because
+        episode identity is now assigned during the run (ISSUE_65), not after it.
         """
         if self._runner is not None:
             return self._runner.run(reason)
-        return self._mock_envelope(reason)
+        # The scaffold has no episode rule and must not invent one: an empty pass is the honest
+        # answer, and it keeps every caller's shape identical with and without a runner.
+        return PipelineRunResult(envelope=self._mock_envelope(reason), breaking=BreakingPass())
 
     def _mock_envelope(self, reason: TriggerReason) -> AnalysisEnvelope:
         """Scaffold fallback: a valid, deterministic envelope without any wiring.

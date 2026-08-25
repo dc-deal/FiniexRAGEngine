@@ -360,11 +360,27 @@ class LiveDisplay:
             shown = 1
         else:
             for record in records:
-                table.add_row('', Text(f'{record.symbol} {record.signal}'),
+                table.add_row('', self._episode_identity(record),
                               self._episode_status(now, record), self._episode_reason(record))
             shown = len(records)
         for _ in range(_MAX_EPISODE_ROWS - shown):
             table.add_row('', '', '', '')
+
+    @staticmethod
+    def _episode_identity(record: BreakingRecord) -> Text:
+        """`SYMBOL SIGNAL · HH:MM` — the row's identity, ending in the episode's start (ISSUE_65).
+
+        Not the full `breaking_episode_id`: at ~50 characters it cannot earn its width here, and its
+        first two segments are already implied by the row (this worker's pipeline, the symbol shown).
+        What is left is the part that actually varies, and it is the correlation handle — an operator
+        reading `16:51` off this panel and a consumer reading `...:2026-08-24T16:51:03Z` off the wire
+        are pointing at the same episode.
+
+        It is the same clipped start the id carries after a seeded restart, because both come from
+        the one rule — so the panel cannot show a start the wire disagrees with.
+        """
+        return Text.assemble((f'{record.symbol} {record.signal}', ''),
+                             (f' · {record.started.strftime("%H:%M")}', 'dim'))
 
     @staticmethod
     def _episode_status(now: datetime, record: BreakingRecord) -> Text:

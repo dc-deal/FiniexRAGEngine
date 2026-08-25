@@ -1,9 +1,10 @@
 """Consumer bearer tokens: what the engine knows about who may call it (ISSUE_98)."""
 import hashlib
 import hmac
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence, Union
 
 from finiexragengine.configuration.setting_resolver import SettingResolver
+from finiexragengine.types.config_types.app_config_types import ConsumerToken
 from finiexragengine.exceptions.ragengine_errors import ConfigurationError
 from finiexragengine.types.setting_types import SettingSource
 
@@ -56,18 +57,75 @@ class TokenRegistry:
     reason the provider shows an API key once and never again.
     """
 
-    def __init__(self, tokens: Optional[Dict[str, str]] = None,
+    def __init__(self, tokens: Optional[Dict[str, Union[str, ConsumerToken]]] = None,
                  source: SettingSource = 'none') -> None:
-        """`tokens` maps consumer name → plaintext token; only digests are retained.
+        """`tokens` maps consumer name → a `ConsumerToken`, or a plaintext token string.
 
-        `source` records where they came from, so boot can say it out loud.
+        Both shapes are accepted here on purpose, and they mean different things:
+
+        - a **`ConsumerToken`** comes from `user_configs`, where a scope is mandatory (ISSUE_104);
+        - a **plain string** comes from the environment (`FINIEX_API_TOKENS="name:token"`), whose
+          flat syntax has nowhere to put one. That path exists for a container or CI — environments
+          this project owns rather than hands to a consumer — so it resolves to `'*'`, and the boot
+          line says so rather than leaving it to be discovered.
+
+        `source` records where they came from, so boot can say that out loud too.
         """
-        self._digests: Dict[str, str] = {name: _digest(token)
-                                         for name, token in (tokens or {}).items()}
+        self._digests: Dict[str, str] = {}
+        self._grants: Dict[str, List[str]] = {}
+        self._notes: Dict[str, str] = {}
+        self._inactive: List[str] = []
+        for name, entry in (tokens or {}).items():
+            if isinstance(entry, ConsumerToken):
+                if not entry.active:
+                    # Never enters the registry: an inactive token cannot authenticate, so a
+                    # switched-off consumer is off at the door rather than at each route — and an
+                    # example entry carried in a template file cannot be live by accident.
+                    self._inactive.append(name)
+                    continue
+                self._digests[name] = _digest(entry.token)
+                self._grants[name] = list(entry.grants)
+                self._notes[name] = entry.note
+            else:
+                self._digests[name] = _digest(entry)
+                self._grants[name] = ['*']
+                self._notes[name] = ''
         self._source: SettingSource = source
 
+    def may(self, consumer: str, grant: str) -> bool:
+        """Whether `consumer` holds `grant` (`"reports:source_health"`, `"pipelines:crypto"`).
+
+        Exact comparison over a closed vocabulary, widened only by the two wildcards a grant may
+        declare: `<surface>:*` and `*`. No pattern matching against anything the caller supplies —
+        the surface and the name are the engine's own words, not the request's.
+
+        An unknown consumer holds nothing. Reaching this with a name the registry does not carry is
+        a bug, and a bug must not grant.
+        """
+        held = self._grants.get(consumer)
+        if not held:
+            return False
+        surface, _, _name = grant.partition(':')
+        return '*' in held or grant in held or f'{surface}:*' in held
+
+    def permitted(self, consumer: str, surface: str, names: Sequence[str]) -> List[str]:
+        """The subset of `names` on `surface` this consumer holds — what a listing shows."""
+        return [name for name in names if self.may(consumer, f'{surface}:{name}')]
+
+    def grants_of(self, consumer: str) -> str:
+        """A one-line rendering of what a consumer holds, for the boot report and a 403."""
+        held = self._grants.get(consumer)
+        return ', '.join(held) if held else 'nothing'
+
+    def note_of(self, consumer: str) -> str:
+        return self._notes.get(consumer, '')
+
+    def inactive_names(self) -> List[str]:
+        """Entries present in the configuration but switched off — announced at boot."""
+        return sorted(self._inactive)
+
     @classmethod
-    def load(cls, config_tokens: Optional[Dict[str, str]] = None,
+    def load(cls, config_tokens: Optional[Dict[str, ConsumerToken]] = None,
              resolver: Optional[SettingResolver] = None) -> 'TokenRegistry':
         """The tokens this engine accepts — environment first, `user_configs` second.
 

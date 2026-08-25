@@ -1,6 +1,7 @@
 """AppConfigManager base <- user_configs override (ISSUE_23; groundwork for #27 secrets)."""
 import json
 import logging
+import re
 from pathlib import Path
 
 from finiexragengine.configuration import override_report
@@ -102,3 +103,46 @@ def test_source_set_factory_applies_user_override(tmp_path, monkeypatch):
     sources = {s.source_id: s for s in registry.get('s').sources}
     assert sources['f1'].enabled is True                   # untouched sibling kept
     assert sources['f2'].enabled is False                  # patched by source_id
+
+
+def test_the_overlay_template_still_loads(): 
+    """`user_configs/app_config.example.json` is the only visible trace of the override layer for a
+    fresh clone — so it has to stay loadable as the schema moves.
+
+    Without this, the file rots quietly: a renamed key or a new mandatory field would first be
+    discovered by someone following the README on their first day.
+    """
+    template = json.loads((Path(__file__).resolve().parents[1] / 'user_configs'
+                           / 'app_config.example.json').read_text(encoding='utf-8'))
+
+    config = AppConfig(**template)
+
+    assert config.api.tokens, 'the template should demonstrate the token shape'
+
+
+def test_the_template_cannot_authenticate_anything():
+    """Every token in it carries `active: false`, so loading it by accident grants nothing.
+
+    That is what makes a credential-shaped example safe to track at all — unlike a bare token
+    string, which would be a working credential the moment the file was read.
+    """
+    template = json.loads((Path(__file__).resolve().parents[1] / 'user_configs'
+                           / 'app_config.example.json').read_text(encoding='utf-8'))
+
+    config = AppConfig(**template)
+
+    assert all(not token.active for token in config.api.tokens.values())
+
+
+def test_the_templates_journal_ids_can_never_match_a_real_one():
+    """A journal fingerprint is twelve lowercase hex characters; these deliberately are not.
+
+    A mapping copied without editing then resolves nothing and reports `unknown`, rather than
+    labelling whichever database it meets as 'production' — the same reasoning the tracked config's
+    own `EXAMPLE_ID` follows.
+    """
+    template = json.loads((Path(__file__).resolve().parents[1] / 'user_configs'
+                           / 'app_config.example.json').read_text(encoding='utf-8'))
+
+    for journal_id in template['journal_names']:
+        assert not re.fullmatch(r'[0-9a-f]{12}', journal_id), journal_id

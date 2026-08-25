@@ -78,6 +78,12 @@ archive).
 > `base`/`quote` are the output labels, not the grouping trigger.** One derivation now serves every
 > surface — `EpisodeGrouping.key_for` in `core/pipeline/breaking_episode_rule.py`.
 
+Since ISSUE_65 this key is **consumer-visible**: `breaking_episode_id` is
+`<pipeline_id>:<episode_key>:<started_at>`, so the fanned rows of one analysis carry the *same*
+episode id on the wire, and same-base/different-query symbols carry different ones. The collapse is
+therefore no longer an internal counting decision a consumer has to reproduce — it is the identity
+they receive. See `breaking_detection.md`, *Episode identity on the envelope*.
+
 ## Verifying the grouping (from a live run)
 
 The persisted envelope carries the proof — `/latest` or the outcome store:

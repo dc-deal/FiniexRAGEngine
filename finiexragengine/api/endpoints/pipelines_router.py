@@ -1,9 +1,10 @@
 """The pipeline-listing endpoint (ISSUE_98 split it off `health_router`)."""
-from typing import Optional
+from typing import Callable, Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request, Security
 
 from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
+from finiexragengine.api.token_registry import TokenRegistry
 from finiexragengine.types.api_types import PipelineInfo, PipelinesResponse
 from finiexragengine.utils.timeframe import timeframe_minutes
 
@@ -24,7 +25,9 @@ def _cadence_seconds(timeframe: Optional[str]) -> Optional[int]:
         return None
 
 
-def build_pipelines_router(registry: PipelineRegistry) -> APIRouter:
+def build_pipelines_router(registry: PipelineRegistry,
+                           tokens: Optional[TokenRegistry] = None,
+                           grant: Optional[Callable[..., None]] = None) -> APIRouter:
     """`GET /v1/pipelines` — what this engine produces.
 
     It lives here rather than beside `/health` because the two sit on opposite sides of the
@@ -32,10 +35,25 @@ def build_pipelines_router(registry: PipelineRegistry) -> APIRouter:
     not. Leaving it in a file named `health_router` would have made the file's name disagree with
     its contents, and would have made the split easy to undo by accident.
     """
-    router = APIRouter(prefix='/v1', tags=['pipelines'])
+    # The listing has no identity segment, so nothing to gate — it is filtered below. The surface
+    # is declared anyway, so a route added to this router later is gated by construction.
+    guards = [Security(grant, scopes=['pipelines'])] if grant is not None else []
+    router = APIRouter(prefix='/v1', tags=['pipelines'], dependencies=guards)
+
+    def _permitted(request: Request, pipeline_id: str) -> bool:
+        """For FILTERING this listing; the gate on `/latest` is `grant_auth` at the router."""
+        consumer = getattr(request.state, 'consumer', None)
+        return (consumer is None or tokens is None
+                or tokens.may(consumer, f'pipelines:{pipeline_id}'))
 
     @router.get('/pipelines', response_model=PipelinesResponse)
-    def list_pipelines() -> PipelinesResponse:
+    def list_pipelines(request: Request) -> PipelinesResponse:
+        """The pipelines **this caller** may read (ISSUE_104).
+
+        Filtered rather than complete: a consumer holding `pipelines:crypto_sentiment` has no
+        business learning that a second stream exists, and a listing that showed it would turn
+        every grant into a discovery of a 403.
+        """
         infos = [
             PipelineInfo(
                 pipeline_id=pipeline.get_config().pipeline_id,
@@ -46,6 +64,7 @@ def build_pipelines_router(registry: PipelineRegistry) -> APIRouter:
                 cadence_seconds=_cadence_seconds(pipeline.get_config().trigger.timeframe),
             )
             for pipeline in registry.list_pipelines()
+            if _permitted(request, pipeline.get_config().pipeline_id)
         ]
         return PipelinesResponse(pipelines=infos)
 

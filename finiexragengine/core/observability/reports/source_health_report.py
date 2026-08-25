@@ -14,7 +14,10 @@ import psycopg
 
 from finiexragengine.exceptions.ragengine_errors import VectorStoreError
 
-# The debugging-ready problem log is capped for overview (operator: "max 10").
+# The debugging-ready problem log is capped for overview (operator: "max 10"). A default rather than
+# a constant since ISSUE_104: `reports.source_health.recent_problems` sets it, and a call may raise
+# it for one look without editing config. It caps the CONSOLE only — the payload carries what the
+# store holds.
 _RECENT_PROBLEMS = 10
 
 
@@ -138,7 +141,8 @@ def _status_cell(row: SourceHealthRow) -> str:
     return f'ok{marker}'
 
 
-def _recent_problems(rows: Sequence[SourceHealthRow]) -> List[str]:
+def _recent_problems(rows: Sequence[SourceHealthRow],
+                     recent_problems: int = _RECENT_PROBLEMS) -> List[str]:
     """Newest warnings/errors across all feeds, capped for overview."""
     events = []
     for row in rows:
@@ -146,7 +150,7 @@ def _recent_problems(rows: Sequence[SourceHealthRow]) -> List[str]:
             events.append((event.get('ts', ''), row.source_id, event))
     events.sort(key=lambda item: item[0], reverse=True)
     lines = []
-    for ts, source_id, event in events[:_RECENT_PROBLEMS]:
+    for ts, source_id, event in events[:recent_problems]:
         when = ts.replace('T', ' ')[5:16] if ts else '—'          # MM-DD HH:MM
         status = f"({event.get('status')})" if event.get('status') is not None else ''
         lines.append(f"  [{source_id}] {when} {event.get('level', '?')} "
@@ -154,7 +158,8 @@ def _recent_problems(rows: Sequence[SourceHealthRow]) -> List[str]:
     return lines
 
 
-def format_source_health_report(report: SourceHealthReport) -> str:
+def format_source_health_report(report: SourceHealthReport,
+                                recent_problems: int = _RECENT_PROBLEMS) -> str:
     """Render the report as the shared console pattern (title + window line + dividers)."""
     divider = '-' * 88
     quarantined = sum(1 for row in report.rows if row.quarantined)
@@ -177,8 +182,8 @@ def format_source_health_report(report: SourceHealthReport) -> str:
         lines.append('(no source health captured yet — run the ingest workers)')
     lines.append(divider)
 
-    problems = _recent_problems(report.rows)
-    lines.append(f'recent problems (last {_RECENT_PROBLEMS}):')
+    problems = _recent_problems(report.rows, recent_problems)
+    lines.append(f'recent problems (last {recent_problems}):')
     lines.extend(problems if problems else ['  (none)'])
     lines.append(divider)
     lines.append('orphaned (in the health store, not in any current config — may be deleted):')

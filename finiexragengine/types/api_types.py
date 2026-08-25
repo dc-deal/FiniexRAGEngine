@@ -1,8 +1,8 @@
 """API-facing response models (Pydantic — required for FastAPI serialization)."""
 from datetime import datetime
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class WorkerInfo(BaseModel):
@@ -125,3 +125,71 @@ class PipelineInfo(BaseModel):
 
 class PipelinesResponse(BaseModel):
     pipelines: List[PipelineInfo]
+
+
+class BuildInfo(BaseModel):
+    """Which code this process is running — the `/v1/build` payload (ISSUE_65 follow-up).
+
+    Separate from `/health` on purpose: health describes **state** and changes every second, this
+    describes **identity** and is constant for the process's lifetime. Keeping them apart also
+    leaves `/health`'s documented contract untouched, which a consumer depends on.
+
+    Every field is optional because none of it may ever be worth a boot failure: a deployment
+    without git (a container image, an unpacked archive) answers `null` rather than refusing to
+    start. `null` therefore means "not determinable here", never "unknown version".
+    """
+    # The release string from app_config — moves only when a batch ships, so between two tags every
+    # deploy looks identical. That gap is the reason the fields below exist.
+    version: str
+    commit: Optional[str] = None          # short hash, sampled ONCE at startup
+    committed_at: Optional[datetime] = None
+    # True when the working tree had uncommitted changes at startup. On a server reached by RDP an
+    # in-place edit is plausible, and this is the difference between "which deploy is live" and
+    # "...and has anyone touched it".
+    dirty: Optional[bool] = None
+    # When this process started. Answers the question the hash cannot: did my restart take effect?
+    started_at: datetime
+
+
+class AppliedParamInfo(BaseModel):
+    """One parameter as it was applied, and where it came from (ISSUE_104).
+
+    Echoed rather than assumed. Two people comparing two answers can then see *why* they differ,
+    instead of inferring it — the same lesson `SettingResolver` wrote down for boot settings, and
+    the one this codebase has now relearned from a warn-only line that read as a spend cap, an
+    exemption switch that removed a rate limit, and a day accumulator that resets on restart.
+    """
+    value: Any
+    source: str                 # 'config' | 'request'
+    clamped: bool = False       # true when a bound shortened what was asked for
+
+
+class ReportEnvelope(BaseModel):
+    """One report's payload plus what produced it."""
+    report: str
+    generated_at: datetime
+    # Every parameter this report accepted, its applied value and its origin. Empty for a report
+    # that takes none.
+    params: Dict[str, AppliedParamInfo] = Field(default_factory=dict)
+    # The window actually used, resolved from `params` — a convenience for the common case, never
+    # a second source of truth.
+    since: Optional[datetime] = None
+    # The report's own shape, serialized by `utils.dataclass_json` — deliberately untyped here.
+    # These are internal diagnostic shapes and must stay free to change; typing them would turn
+    # every report row into an API contract, which is what the doc says this surface is not.
+    data: Any
+
+
+class ReportCatalogEntry(BaseModel):
+    """One report as the catalog listing presents it."""
+    name: str
+    summary: str
+    params: List[str]
+    required: List[str]
+    # The CONFIGURED defaults, so the listing and a call can never advertise different values.
+    defaults: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ReportCatalog(BaseModel):
+    reports: List[ReportCatalogEntry]
+    max_window_days: int

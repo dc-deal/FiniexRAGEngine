@@ -13,7 +13,15 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from finiexragengine.api.api_app import _build_protected_router, create_app
+from finiexragengine.api.api_app import (
+    _build_protected_router,
+    _build_public_router,
+    create_app,
+)
+from finiexragengine.api.endpoints.build_router import build_build_router
+from finiexragengine.api.endpoints.health_router import build_health_router
+from finiexragengine.api.token_registry import TokenRegistry
+from finiexragengine.core.observability.build_info import sample_build_info
 from finiexragengine.api.rate_limiter import RateLimiter, client_key
 from finiexragengine.api.token_registry import TokenRegistry
 from finiexragengine.configuration.app_config_manager import AppConfigManager
@@ -32,10 +40,37 @@ def _registry() -> PipelineRegistry:
     return registry
 
 
+def _tokens(api_config: ApiConfig) -> TokenRegistry:
+    """The registry `create_app` builds and hands to both the guard and the report surface."""
+    return TokenRegistry.load(api_config.tokens)
+
+
 def _protected_app(**config: object) -> FastAPI:
     """A FastAPI app carrying only the protected router, built the way `create_app` builds it."""
+    api_config = ApiConfig(**config)
     app = FastAPI()
-    app.include_router(_build_protected_router(_registry(), ApiConfig(**config)))
+    app.include_router(_build_protected_router(_registry(), api_config, _tokens(api_config)))
+    return app
+
+
+def _exempt_app(**config: object) -> FastAPI:
+    """The whole surface, built the way `create_app` builds it — both exemptions in play.
+
+    Written against the *mounting decision* rather than against `create_app`, because that decision
+    is what was wrong: an exemption switched off has to move to the protected router, not simply
+    lose its rate limit.
+    """
+    manager = AppConfigManager()
+    api_config = ApiConfig(**config)
+    health = build_health_router(manager)
+    build = build_build_router(sample_build_info('0.0.0-test'))
+    exempt = ((health, api_config.health_public), (build, api_config.build_info_public))
+    app = FastAPI()
+    app.include_router(_build_public_router(
+        api_config, [router for router, is_public in exempt if is_public]))
+    app.include_router(_build_protected_router(
+        _registry(), api_config, _tokens(api_config),
+        extra_routers=[router for router, is_public in exempt if not is_public]))
     return app
 
 
@@ -62,7 +97,7 @@ def test_a_route_added_later_inherits_the_dependency(tokens: str) -> None:
     Nothing in this test touches authentication — it registers an ordinary endpoint on the
     protected router, exactly as a future feature would, and it comes out guarded.
     """
-    router = _build_protected_router(_registry(), ApiConfig())
+    router = _build_protected_router(_registry(), ApiConfig(), _tokens(ApiConfig()))
 
     @router.get('/v1/a-future-endpoint-nobody-thought-about')
     def future_endpoint() -> dict:
@@ -135,9 +170,11 @@ def test_boot_refuses_to_serve_an_unauthenticated_api(monkeypatch: pytest.Monkey
     """Missing tokens is a hard failure, never a warning that starts the engine wide open."""
     monkeypatch.delenv('FINIEX_API_TOKENS', raising=False)
     with pytest.raises(ConfigurationError, match='FINIEX_API_TOKENS'):
-        _build_protected_router(_registry(), ApiConfig(require_auth=True))
+        _build_protected_router(_registry(), ApiConfig(require_auth=True),
+                                _tokens(ApiConfig(require_auth=True)))
     # ...and with auth deliberately off it builds, because the contract tests need that path.
-    _build_protected_router(_registry(), ApiConfig(require_auth=False))
+    _build_protected_router(_registry(), ApiConfig(require_auth=False),
+                            _tokens(ApiConfig(require_auth=False)))
 
 
 # --- the token registry ---------------------------------------------------------------------
@@ -233,7 +270,8 @@ def test_config_tokens_reach_the_protected_router(monkeypatch: pytest.MonkeyPatc
     monkeypatch.delenv('FINIEX_API_TOKENS', raising=False)
     app = FastAPI()
     app.include_router(_build_protected_router(
-        _registry(), ApiConfig(tokens={'ide': _TOKEN})))
+        _registry(), ApiConfig(tokens={'ide': {'token': _TOKEN, 'grants': ['*']}}),
+        _tokens(ApiConfig(tokens={'ide': {'token': _TOKEN, 'grants': ['*']}}))))
     client = TestClient(app)
     assert client.get('/v1/pipelines').status_code == 401
     assert client.get('/v1/pipelines',
@@ -269,3 +307,68 @@ def test_the_schema_endpoints_are_off_unless_asked_for(tokens: str) -> None:
 
     # `/health` is unaffected — the exemption is a route, not a hole in the app.
     assert off.get('/v1/health').status_code == 200
+
+
+# --- the exemptions, in both directions (ISSUE_98 follow-up) --------------------------------
+
+def test_switching_the_health_exemption_off_moves_it_behind_the_token(tokens: str) -> None:
+    """The regression this test exists for: the flag used to do the opposite of its name.
+
+    `health_public: false` left /health mounted on the app anyway — still reachable without a
+    credential and now *unthrottled*, because the rate limiter lives on the public wrapper. So the
+    switch documented as "moves it behind the token" removed the only protection an anonymous
+    caller met. Asserted behaviourally, in both positions, because the failure was invisible in a
+    reading of either the flag or its docstring.
+    """
+    assert TestClient(_exempt_app(health_public=True)).get('/v1/health').status_code == 200
+
+    closed = TestClient(_exempt_app(health_public=False))
+    assert closed.get('/v1/health').status_code == 401
+    assert closed.get('/v1/health',
+                      headers={'Authorization': f'Bearer {_TOKEN}'}).status_code == 200
+
+
+def test_build_is_public_by_default_and_can_be_closed(tokens: str) -> None:
+    """`/v1/build` is the second exemption — and it is a switch, not a fixture of the code."""
+    open_client = TestClient(_exempt_app())
+    response = open_client.get('/v1/build')
+    assert response.status_code == 200
+    assert response.json()['version'] == '0.0.0-test'
+
+    closed = TestClient(_exempt_app(build_info_public=False))
+    assert closed.get('/v1/build').status_code == 401
+    assert closed.get('/v1/build',
+                      headers={'Authorization': f'Bearer {_TOKEN}'}).status_code == 200
+
+
+def test_the_build_payload_is_sampled_once_not_per_request(tokens: str) -> None:
+    """Two calls must return the identical process start time.
+
+    The point of the field is to describe the code this process imported; a value re-read per
+    request would describe the working tree instead, and would differ between two calls the moment
+    someone pulled without restarting — the exact case it exists to catch.
+    """
+    client = TestClient(_exempt_app())
+    first = client.get('/v1/build').json()
+    second = client.get('/v1/build').json()
+
+    assert first == second
+    assert first['started_at'] == second['started_at']
+
+
+def test_the_report_surface_requires_a_token_on_the_real_app(tokens: str) -> None:
+    """ISSUE_104's routes are mounted on the protected router, so they inherit the guard.
+
+    Asserted against `create_app` rather than a hand-built router: the mounting decision is what
+    could go wrong here, and it lives there. `/v1/reports` publishes source health, quarantine
+    history and the breaking funnel — operational detail that has no business being anonymous.
+    """
+    app = create_app(attach_runners=False)
+    if '/v1/reports' not in app.openapi()['paths']:
+        pytest.skip('no DATABASE_URL — the report surface is not mounted without a store')
+    client = TestClient(app)
+
+    assert client.get('/v1/reports').status_code == 401
+    assert client.get('/v1/reports/source_health').status_code == 401
+    assert client.get('/v1/reports',
+                      headers={'Authorization': f'Bearer {_TOKEN}'}).status_code == 200

@@ -10,11 +10,12 @@ Two clearly separated parts, so real and estimated numbers are never confused:
 """
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import psycopg
 
 from finiexragengine.exceptions.ragengine_errors import VectorStoreError
+from finiexragengine.utils.report_window import parse_since
 
 _DAY_SECONDS = 86400.0
 
@@ -87,6 +88,18 @@ class CostReport:
         return self.credit_usd - self.spent_all_usd
 
 
+def _window_bound(expression: str, now: datetime) -> Tuple[str, Optional[datetime]]:
+    """`'7d'` -> `('this week', <since>)`; `'all'` -> `('all-time', None)` (ISSUE_104).
+
+    The labels keep the report's established wording for the historical triple, so a console reader
+    sees no change; an unfamiliar window is labelled by its own expression.
+    """
+    if expression == 'all':
+        return 'all-time', None
+    since, label = parse_since(expression)
+    return {'7d': 'this week', '30d': 'this month'}.get(label, f'last {label}'), since
+
+
 def _table_exists(cur: psycopg.Cursor, table: str) -> bool:
     cur.execute('SELECT count(*) FROM information_schema.tables WHERE table_name = %s', (table,))
     return cur.fetchone()[0] > 0
@@ -150,13 +163,20 @@ def _build_prediction(cur: psycopg.Cursor, outcomes_table: str,
 def build_cost_report(database_url: str, *,
                       eval_pipelines: Optional[Dict[str, EvalPipelineInfo]] = None,
                       credit_usd: float = 0.0, recent_passes: int = 20,
+                      windows: Optional[List[str]] = None,
                       cost_table: str = 'cost_log',
                       outcomes_table: str = 'outcomes') -> CostReport:
-    """Assemble the real-spend windows + the config-driven prediction."""
+    """Assemble the real-spend windows + the config-driven prediction.
+
+    `windows` declares the set to compare — the comparison across windows *is* this report's
+    statement, which is why it takes a set where every other report takes one window (ISSUE_104).
+    The values are the usual expressions (`7d`, `30`, `all`); omitted, the historical
+    week/month/all-time triple stands, so a caller that passes nothing sees exactly what it always
+    saw.
+    """
     now = datetime.now(timezone.utc)
-    windows = [('this week', now - timedelta(days=7)),
-               ('this month', now - timedelta(days=30)),
-               ('all-time', None)]
+    windows = [_window_bound(expression, now)
+               for expression in (windows or ['7d', '30d', 'all'])]
     try:
         with psycopg.connect(database_url) as conn, conn.cursor() as cur:
             # A fresh DB where no CostRecorder ever created the table = 'nothing spent yet'.
@@ -164,7 +184,11 @@ def build_cost_report(database_url: str, *,
                 empty = [RealWindow(label, 0, 0, 0.0) for label, _ in windows]
                 return CostReport(empty, None, 0.0, credit_usd)
             real = [_window(cur, cost_table, label, since) for label, since in windows]
-            spent_all = next(w.usd for w in real if w.label == 'all-time')
+            # All-time spend is read on its own rather than picked out of the displayed set:
+            # `remaining_usd` is credit minus everything ever spent, which stays true whichever
+            # windows the caller asked to compare (ISSUE_104). Reading it from the set worked only
+            # while the set was hard-coded to contain 'all-time'.
+            spent_all = _window(cur, cost_table, 'all-time', None).usd
             prediction = _build_prediction(cur, outcomes_table, eval_pipelines or {},
                                            recent_passes)
     except psycopg.Error as exc:

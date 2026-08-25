@@ -4,6 +4,8 @@ import os
 import sys
 
 import uvicorn
+
+from finiexragengine.exceptions.ragengine_errors import ConfigurationError
 from finiexragengine.utils.console_encoding import use_utf8_output
 
 
@@ -49,23 +51,33 @@ def main() -> None:
               file=sys.stderr)
         live = False
 
-    if live:
-        os.environ['FINIEX_LIVE'] = '1'
-        # rich.Live owns stdout in live mode, so uvicorn must not write its own access/error
-        # lines there. log_config=None → uvicorn installs no handlers of its own; its loggers
-        # propagate to the root logger, which in live mode carries only the file handler
-        # (configure_logging(live_mode=True), ISSUE_26). Result: one sink (the file), a clean
-        # terminal for the dashboard.
-        uvicorn.run(
-            'finiexragengine.api.api_app:create_app',
-            host=args.host, port=args.port, factory=True,
-            access_log=False, log_config=None,
-        )
-    else:
-        uvicorn.run(
-            'finiexragengine.api.api_app:create_app',
-            host=args.host, port=args.port, reload=args.reload, factory=True,
-        )
+    # A configuration problem is not a crash, and it must not read like one. `create_app` is a
+    # *factory* that uvicorn calls from inside `config.load()`, so a `ConfigurationError` raised
+    # there arrives wrapped in twenty lines of uvicorn internals — with the one line a human can
+    # act on at the very bottom. The guard stays in `create_app`, where it protects every entry
+    # point rather than this one; the CLI is simply where the result is read (ISSUE_98).
+    try:
+        if live:
+            os.environ['FINIEX_LIVE'] = '1'
+            # rich.Live owns stdout in live mode, so uvicorn must not write its own access/error
+            # lines there. log_config=None → uvicorn installs no handlers of its own; its loggers
+            # propagate to the root logger, which in live mode carries only the file handler
+            # (configure_logging(live_mode=True), ISSUE_26). Result: one sink (the file), a clean
+            # terminal for the dashboard.
+            uvicorn.run(
+                'finiexragengine.api.api_app:create_app',
+                host=args.host, port=args.port, factory=True,
+                access_log=False, log_config=None,
+            )
+        else:
+            uvicorn.run(
+                'finiexragengine.api.api_app:create_app',
+                host=args.host, port=args.port, reload=args.reload, factory=True,
+            )
+    except ConfigurationError as exc:
+        print(f'\nConfiguration error — the server did not start:\n\n  {exc}\n',
+              file=sys.stderr)
+        raise SystemExit(1) from None
 
 
 if __name__ == '__main__':

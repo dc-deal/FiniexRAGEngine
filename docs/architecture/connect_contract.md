@@ -27,9 +27,38 @@ TLS terminates in a reverse proxy (Caddy, Let's Encrypt certificate, renewed aut
 forwards to `127.0.0.1:8100`. The engine binds loopback and never speaks to the internet directly;
 port 8100 has no firewall rule and does not get one.
 
+## The development endpoint
+
+A second instance runs in the dev container on the producer's machine, so consumer work can be
+pointed at a rebuildable engine instead of the live series.
+
+```
+http://host.docker.internal:8100    from a container on the same machine
+http://127.0.0.1:8100               from that machine directly
+```
+
+**It is not public, and it is not the same engine behind a different name.** The container
+publishes the port on the host's *loopback* (`127.0.0.1:8100:8100`), so nothing outside that machine
+can reach it — which is also why it speaks plain HTTP: no traffic leaves the host, so there is no
+transport to terminate. There is no DNS name and no proxy in front of it, deliberately: giving dev a
+public address would mean giving it a certificate, a rate limit and a second thing to keep patched.
+
+**It carries its own token.** A dev instance is restarted, rebuilt and pointed at test data; a
+credential shared with production would make revoking either one revoke both. Everything else is
+identical by design — bearer on every route except `/v1/health`, `/run` not registered, `/docs` off
+— so switching endpoints changes the address and the credential, never the shape of the contract.
+
+**One failure mode is worth recognising, because it does not look like one.** The engine binds
+loopback by default, which is correct on the deployed host and wrong inside a container: there it
+binds the *container's* loopback and leaves the publish above without an upstream. Docker's port
+forwarder still accepts the TCP connection and then closes it immediately, so the port appears open
+and answers nothing — no HTTP, no TLS, an EOF before either can begin. The dev launch entries pass
+`--host 0.0.0.0` for exactly that reason; exposure stays bounded by the loopback publish, not by the
+bind. A consumer seeing an immediate EOF on the dev port is looking at this, not at a network fault.
+
 ## The scheme
 
-Every route except `/v1/health` requires a bearer token:
+Every route except `/v1/health` and `/v1/build` requires a bearer token:
 
 ```http
 GET /v1/pipelines HTTP/1.1
@@ -42,6 +71,7 @@ Authorization: Bearer <token>
 | `200` | authenticated |
 | `401` + `WWW-Authenticate: Bearer` | absent, malformed or unknown credential |
 | `429` + `Retry-After` | rate limited — see below |
+| `403` | authenticated, but this token's `reports` scope does not include that report |
 | `404` | the route does not exist (see `POST /run`) |
 
 The `401` body is the same for every cause. Distinguishing "no header" from "unknown token" would
@@ -72,8 +102,30 @@ the overlay and shadowed by a forgotten variable can never be a silent no-op.
 **Preferred: the gitignored overlay**, `user_configs/app_config.json`:
 
 ```json
-{ "api": { "tokens": { "ide": "<token>" } } }
+{ "api": { "tokens": {
+    "ide": { "token": "<token>",
+             "grants": ["pipelines:crypto_sentiment", "reports:source_health"],
+             "active": true,
+             "note": "Testing IDE, issued 2026-08-23" } } } }
 ```
+
+`grants` is **mandatory** and lists what this consumer may reach, as `<surface>:<name>` —
+`pipelines:crypto_sentiment`, `reports:source_health` — with `<surface>:*` for a whole surface and
+a bare `*` for everything. A token without it fails at boot rather than defaulting, so access is
+granted by writing a name down and never by omission: a surface added later stays out of reach
+until someone puts it in a token.
+
+A grant names a **thing**, not a route. `reports:source_health` keeps meaning what it means if the
+route is renamed or a `/v2` appears; the alternative — a list of paths — would silently stop
+matching and answer you with a `403` for something you were entitled to.
+
+Reaching something outside the grants answers `403`, naming what the token *does* hold. Listing
+endpoints (`GET /v1/pipelines`, `GET /v1/reports`) are **filtered** rather than refused, so they
+always show exactly what that token can fetch.
+
+`active: false` switches a consumer off without deleting the token — for an incident, or to keep a
+superseded token in place through a rotation. `note` records who holds it: the question that
+otherwise arrives during a rotation months later.
 
 **Or the environment**, for a container or CI, which have no overlay (`user_configs/` is gitignored,
 so a fresh clone has none):
@@ -159,6 +211,33 @@ engine's own workers produce the series, so every paid call originates inside th
 cost log accounts for it. This route was the one hole in that property.
 
 A caller who wants the latest signal uses `GET /v1/pipelines/{id}/latest`, which never spends.
+
+## Diagnostics: `GET /v1/reports`
+
+Token-gated like everything else. It serves the engine's own metrics surfaces — source health and
+quarantine history, fetch latency, the breaking funnel — as JSON, so a question about the live
+engine's behaviour no longer needs a session on the host. Deliberately **not** part of the frame
+contract a collector builds against: the shapes are diagnostic and stay free to change. Details in
+`report_api.md`.
+
+## `GET /v1/build` is the second open route
+
+It reports what code the process is running: `version`, the short `commit`, whether the working tree
+was `dirty` at startup, and when the process started. It exists because `version` moves only when a
+roadmap batch ships — between two tags every deploy looks identical from outside, so "is the fix I
+deployed the one that is running?" was previously answered by inference.
+
+Two properties are deliberate. The value is **sampled once, at startup**: a hash read per request
+would describe the working tree at that moment, so after a pull without a restart it would report
+the new commit while the old code serves — the field would be wrong in exactly its one real case.
+And it is **its own route rather than a field on `/health`**: health describes state and is polled
+on an interval, build identity is constant for the process's lifetime, and keeping them apart leaves
+the health payload — which a consumer reads — unchanged.
+
+Public here for a specific reason, not a general one: this repository is public, so a commit hash
+discloses nothing that is not already readable on GitHub. Behind a private repository the same field
+would fingerprint the exact version and therefore its known defects, which is why it is a switch
+(`api.build_info_public`) rather than a fixture of the code.
 
 ## `GET /v1/health` is deliberately open
 

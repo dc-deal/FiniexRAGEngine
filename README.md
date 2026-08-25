@@ -94,12 +94,14 @@ same shell regardless of the signal type:
 ## Quickstart
 
 ```bash
-cp .env.example .env                # then set OPENAI_API_KEY
+cp .env.example .env                # then set OPENAI_API_KEY and FINIEX_API_TOKENS
 docker compose up -d                # pgvector PostgreSQL + pgAdmin + the engine container
 
 docker compose exec ragengine bash  # enter the container, then build the schema:
 python -m finiexragengine.cli.migrate_cli          # applies migrations/ (re-run = no-op)
 
+# The server refuses to start without a consumer token (#98) — deliberate, so an
+# unauthenticated engine can never be what a forgotten variable produces.
 python finiexragengine/cli/server_cli.py --reload --port 8100
 
 # live mode: + background ingest/eval workers on their own cadences (continuous,
@@ -119,7 +121,7 @@ stage state on top, a colour-coded activity stream below:
 # /health is the one route reachable without a token (an uptime probe needs it):
 curl localhost:8100/v1/health
 
-# everything else takes a bearer token — set FINIEX_API_TOKENS="dev:<token>" first (#98):
+# everything else takes a bearer token — the one you set in .env (#98):
 curl -H "Authorization: Bearer $TOKEN" localhost:8100/v1/pipelines
 curl -H "Authorization: Bearer $TOKEN" localhost:8100/v1/pipelines/crypto_sentiment/latest
 
