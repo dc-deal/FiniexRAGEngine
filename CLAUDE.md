@@ -298,6 +298,16 @@ every response, success or failure.
   `PARTIAL_RESPONSE` — each maps to a `FiniexRagError` subclass.
 - **Bump `prompt_version` whenever the internal prompt changes** — different prompts yield
   different scores for the same news; the consumer must keep the series apart (replay/backfill).
+  **Versions only move forward.** A prompt is never edited in place and never reverted — a
+  correction is the next version, and the superseded file stays in `prompts/<name>/` as the record
+  of what produced the archived series. A version that turned out wrong keeps its number and gains
+  a note saying so, in its own front matter and in the issue that supersedes it. Deleting or
+  rewriting a version orphans every envelope carrying it.
+  **And a bump reports its effect, not merely its existence.** `prompt_version` says which prompt
+  ran; it cannot say the new one answers differently. v2→v3 (2026-08-23) cut the crypto confirm rate
+  8.43% → 0.47% because a display-field instruction quietly added a qualification test to breaking,
+  and nothing compared the distributions for three days (#110). A prompt change records its
+  before/after score distribution in the issue that makes it.
 
 ## Ingest & retrieval principles
 

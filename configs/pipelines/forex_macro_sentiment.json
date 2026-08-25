@@ -54,7 +54,7 @@
   ],
   "prompt": {
     "name": "forex_sentiment",
-    "version": "3"
+    "version": "4"
   },
   "llm": {
     "model": "gpt-4o-mini"
