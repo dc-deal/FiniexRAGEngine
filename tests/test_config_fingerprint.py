@@ -204,6 +204,11 @@ def test_acquisition_pace_and_timeouts_do_not_change_it(baseline):
     source_set['sources'][0]['poll_interval_seconds'] = 120
     source_set['sources'][0]['timeout_seconds'] = 30
     source_set['sources'][0]['comment'] = 'rewritten editorial note about this feed'
+    # ISSUE_107 added two more of the same kind: fetch concurrency reads the same feeds in the
+    # same pass, only faster, and a feed's staleness expectation decides what a REPORT calls
+    # stale — neither touches what is fetched or stored.
+    source_set['fetch_workers'] = 8
+    source_set['sources'][0]['expected_max_age_hours'] = 1440
     assert _fingerprint(source_set=source_set) == baseline
 
 

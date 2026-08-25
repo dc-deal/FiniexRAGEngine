@@ -129,7 +129,8 @@
   },
   "reports": {
     "source_health": {
-      "recent_problems": 10
+      "recent_problems": 10,
+      "silence_days": 7
     },
     "source_latency": {
       "window": "7d"

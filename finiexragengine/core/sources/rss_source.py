@@ -91,6 +91,16 @@ class RssSource(AbstractSource):
             return True
         return (datetime.now(timezone.utc) - self._last_polled_at).total_seconds() >= floor
 
+    def reset_conditional_get(self) -> None:
+        """Drop the remembered validators so the next poll transfers a body again (ISSUE_107).
+
+        Called when a pass fetched this feed and then abandoned it un-stored (budget suspend).
+        Without it the next poll answers `304` and the articles this pass dropped would never be
+        offered again — the feed window slides and they are gone.
+        """
+        self._etag = None
+        self._modified = None
+
     def fetch(self) -> List[Article]:
         now = datetime.now(timezone.utc)
         # Stamp the attempt time — the poll floor in `due_for_fetch` measures from here. The

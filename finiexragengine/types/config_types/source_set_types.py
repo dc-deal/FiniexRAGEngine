@@ -41,6 +41,14 @@ class SourceConfig(BaseModel):
     # `fetch_timeout_seconds`. Raise it only for a feed with a demonstrated slow-but-alive
     # profile — #76 will supply the per-source latency evidence to decide that from data.
     timeout_seconds: Optional[int] = None
+    # What "fresh" means for THIS feed, in hours (ISSUE_107). Opt-in and deliberately so: the
+    # staleness verdict is the only feed check that needs a policy, and a single global age would
+    # be wrong for half the catalogue — `boc_press` at 25 days is a healthy press-release feed
+    # while a news feed at 25 days is dead. A feed that declares nothing is judged against the
+    # doctor's default; a feed that declares is judged against its own number, and the report
+    # says which of the two applied. The threshold-free checks (no entries at all, no stored
+    # article while polling fine) need none of this and run regardless.
+    expected_max_age_hours: Optional[int] = None
 
 
 class DetectionConfig(BaseModel):
@@ -82,6 +90,21 @@ class SourceSetConfig(BaseModel):
     # socket operation, not the whole fetch: a slow-dripping feed needs a wall-clock deadline
     # (ISSUE_74). Per-source override: `SourceConfig.timeout_seconds`.
     fetch_timeout_seconds: int = 10
+    # How many feeds a pass fetches at once (ISSUE_107) — an acquisition knob, so it sits next to
+    # the deadline it interacts with. `1` is the historical sequential pass and stays the default.
+    #
+    # Why it matters is the *worst* case, not the median: fetching sequentially, a pass costs up to
+    # `len(active_sources()) × fetch_timeout_seconds` — 11 feeds × 10s = 110s, and at the feed
+    # counts ISSUE_107 introduces it crosses the 300s pass deadline. Pooled it is
+    # `ceil(n / workers) × fetch_timeout_seconds`. Measured 2026-08-25 on the live forex set:
+    # 11 feeds, 3,294ms sequential → 445ms at 8 workers (7.4x), and the trigger is overlap-free,
+    # so the pass duration is added to the poll cadence one-for-one.
+    #
+    # ONLY the fetch is pooled. Embedding, upsert and detection stay sequential and in declared
+    # order — they are paid, they mutate shared accumulators, and the budget-suspend path
+    # deliberately stops the whole pass at the first refusal. Parallelising them would make all
+    # three undefined for a saving the network already gave us.
+    fetch_workers: int = 1
     sources: List[SourceConfig]
 
     def active_sources(self) -> List[SourceConfig]:

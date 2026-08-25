@@ -44,6 +44,17 @@ class AbstractSource(ABC):
         pass is a local no-op — not a health event (a floor skip must not reset a failure streak)."""
         return True
 
+    def reset_conditional_get(self) -> None:
+        """Forget any "I have already seen this" state, so the next fetch re-pulls in full.
+
+        Exists for one caller and one situation (ISSUE_107): a pass that fetched a source and then
+        abandoned it without storing its articles. A source that remembers validators across polls
+        (`RssSource`'s ETag / Last-Modified) would answer the next poll with `304` and those
+        articles would be lost for good — the ingest contract is that anything a pass did not store
+        is seen again. A stateless source has nothing to rewind, hence the no-op default.
+        """
+        return None
+
     @abstractmethod
     def fetch(self) -> List[Article]:
         """Fetch the current set of articles from this source.

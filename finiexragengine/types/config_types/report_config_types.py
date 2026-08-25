@@ -38,6 +38,12 @@ class SourceHealthReportConfig(BaseModel):
     # Caps the CONSOLE's problem list only. The JSON payload carries the events the store holds;
     # this is how many of them a terminal renders before it stops being an overview.
     recent_problems: int = 10
+    # The silence rule's span (ISSUE_107): a feed that polls successfully and has put NOTHING in
+    # the corpus for this long is reported SILENT. A **verdict threshold** by the rule above, so
+    # config-only and not a per-call parameter — two operators reading the same report must not
+    # see different verdicts. Note what it is not: a window on the health rows, which stay
+    # lifetime. It spans only the contribution half, and the report says so.
+    silence_days: int = 7
 
 
 class SourceLatencyReportConfig(BaseModel):

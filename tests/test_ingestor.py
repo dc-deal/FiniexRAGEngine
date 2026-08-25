@@ -416,3 +416,115 @@ def test_a_quarantined_source_carries_its_rung_to_the_surfaces():
     poll, = result.polls
     assert poll.rung == (1, 3)
     assert 'rung 2/3' in poll.detail                        # 0-based stored, 1-based displayed
+
+
+# --- parallel fetch (ISSUE_107) -----------------------------------------------------------
+
+class _SlowSource(_FakeSource):
+    """Blocks for `delay` seconds inside fetch, and records which thread pulled it.
+
+    The delay is what makes the concurrency observable at all: with instant fetches a pooled and
+    a sequential pass finish in the same unmeasurable time, and the test would pass either way.
+    """
+
+    def __init__(self, source_id: str, articles=None, delay: float = 0.05) -> None:
+        super().__init__(source_id, articles)
+        self._delay = delay
+        self.thread_name = ''
+
+    def fetch(self) -> List[Article]:
+        import threading
+        self.thread_name = threading.current_thread().name
+        sleep(self._delay)
+        return super().fetch()
+
+
+def _pass_shape(result) -> list:
+    return [(poll.source_id, poll.status,
+             poll.ingest.stored if poll.ingest is not None else None)
+            for poll in result.polls]
+
+
+def test_pooled_fetch_produces_the_same_result_object_as_the_sequential_pass():
+    # The whole safety argument for ISSUE_107's parallel fetch in one assertion: pooling changes
+    # WHEN feeds are pulled, never what the pass concluded. Same polls, same statuses, same
+    # per-source counters, same order — including the skip and the failure.
+    def build():
+        return [_FakeSource('quarantined', [_article('a1')]),
+                _FakeSource('floored', [_article('a2')], due=False),
+                _FakeSource('failing', fail=True),
+                _FakeSource('healthy', [_article('a3')]),
+                _FakeSource('second', [_article('a4')])]
+
+    sequential = Ingestor(build(), _CountingEmbedder(), _FakeStore(),
+                          health_store=_FakeHealth(quarantined={'quarantined'}, until=_NOW),
+                          source_set_id='crypto_news', fetch_workers=1).run()
+    pooled = Ingestor(build(), _CountingEmbedder(), _FakeStore(),
+                      health_store=_FakeHealth(quarantined={'quarantined'}, until=_NOW),
+                      source_set_id='crypto_news', fetch_workers=4).run()
+
+    assert _pass_shape(pooled) == _pass_shape(sequential)
+    assert (pooled.fetched, pooled.embedded, pooled.stored) == \
+           (sequential.fetched, sequential.embedded, sequential.stored)
+    assert pooled.failed_sources == sequential.failed_sources
+
+
+def test_pooled_fetch_actually_overlaps_and_is_faster():
+    sources = [_SlowSource(f's{index}', [_article(f'a{index}')], delay=0.05)
+               for index in range(6)]
+    start = datetime.now(timezone.utc)
+    result = Ingestor(sources, _CountingEmbedder(), _FakeStore(), fetch_workers=6).run()
+    elapsed = (datetime.now(timezone.utc) - start).total_seconds()
+
+    assert result.stored == 6
+    # Six 50ms fetches: ≥0.3s serialized, well under that overlapped. Generous bound — the claim
+    # is "they overlap", not a latency budget.
+    assert elapsed < 0.2, f'pooled fetch did not overlap ({elapsed:.3f}s)'
+    assert len({source.thread_name for source in sources}) > 1
+
+
+def test_a_pooled_pass_times_the_fetch_phase_once_not_once_per_feed():
+    # Pooled fetches overlap, so per-source records would sum to several times the pass's own wall
+    # clock and the perf report would claim a pass spent longer fetching than it existed. One
+    # wall-clock record for the phase is the honest shape; sequential records stay additive.
+    sources = [_SlowSource(f's{index}', [_article(f'a{index}')], delay=0.05)
+               for index in range(4)]
+    pooled = Ingestor(sources, _CountingEmbedder(), _FakeStore(), fetch_workers=4).run()
+    fetch_records = [timing for timing in pooled.stage_timings if timing.stage == 'fetch']
+    assert len(fetch_records) == 1
+    assert fetch_records[0].duration_ms < 4 * 50
+
+    sequential = Ingestor([_FakeSource(f'q{index}', [_article(f'b{index}')])
+                           for index in range(4)],
+                          _CountingEmbedder(), _FakeStore(), fetch_workers=1).run()
+    assert len([t for t in sequential.stage_timings if t.stage == 'fetch']) == 4
+
+
+class _RewindableSource(_FakeSource):
+    """Counts how often the pass asked it to forget its conditional-GET validators."""
+
+    def __init__(self, source_id: str, articles=None) -> None:
+        super().__init__(source_id, articles)
+        self.rewinds = 0
+
+    def reset_conditional_get(self) -> None:
+        self.rewinds += 1
+
+
+def test_a_budget_suspend_rewinds_the_feeds_it_fetched_but_never_stored():
+    # The hazard pre-fetching introduces, and the reason `reset_conditional_get` exists: a
+    # successful fetch advances the feed's ETag/Last-Modified, so a source pulled by the fetch
+    # phase and then abandoned by the suspend would answer 304 next pass and lose its articles for
+    # good. The sequential form could not produce that loss — it never reached those feeds.
+    first = _RewindableSource('first', [_article('a1')])
+    second = _RewindableSource('second', [_article('a2')])
+    third = _RewindableSource('third', [_article('a3')])
+    result = Ingestor([first, second, third], _SuspendedEmbedder(), _FakeStore(),
+                      fetch_workers=3).run()
+
+    assert result.suspended is True
+    # The source that suspended is accounted for and keeps its own validators — its poll entry
+    # records what happened. The two after it have no entry at all, so they must be re-pulled.
+    assert first.rewinds == 0
+    assert (second.rewinds, third.rewinds) == (1, 1)
+    assert [poll.source_id for poll in result.polls] == ['first']

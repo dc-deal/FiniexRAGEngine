@@ -129,7 +129,19 @@ def _pipeline_configs(manager: AppConfigManager) -> List[Any]:
 def _build_source_health(database_url: str, manager: AppConfigManager,
                          params: ReportParams) -> Any:
     configured, disabled = _source_ids(manager)
-    return build_source_health_report(database_url, configured, disabled_ids=disabled)
+    # `silence_days` is read from config, not from `params` (ISSUE_107): it is a verdict threshold,
+    # and those are config-only by the rule in `report_config_types` — a caller must not be able to
+    # make the same feed look delivering or silent.
+    # A feed's declared quiet-time allowance is read from the source sets, not from `reports.`:
+    # it is a fact about the feed's rhythm, and the live probe (`feed_doctor`) judges staleness
+    # against the very same number. Two surfaces, one declaration.
+    allowances = {source.source_id: source.expected_max_age_hours
+                  for source_set in manager.build_source_set_registry().list_sets()
+                  for source in source_set.sources
+                  if source.expected_max_age_hours is not None}
+    return build_source_health_report(
+        database_url, configured, disabled_ids=disabled, allowances=allowances,
+        silence_days=manager.get_config().reports.source_health.silence_days)
 
 
 def _build_perf(database_url: str, manager: AppConfigManager, params: ReportParams) -> Any:

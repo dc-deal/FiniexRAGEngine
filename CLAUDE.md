@@ -311,6 +311,26 @@ every response, success or failure.
 
 ## Ingest & retrieval principles
 
+- **The ingest pass is three phases, and only the middle one is concurrent.** `plan` (who is
+  polled at all — reads the shared quarantine state and hands out the half-open probe), `fetch`
+  (pooled per `SourceSetConfig.fetch_workers`), `account` (health, journal, embed, upsert,
+  detection — everything that costs money or mutates state, in declared order). `fetch_workers`
+  therefore changes *when* feeds are pulled and never what a pass concluded; a test asserts the
+  pooled and sequential result objects are identical. Widening that boundary is an architecture
+  decision, not a tuning one — the paid stages are sequential on purpose, and the budget-suspend
+  path depends on it.
+- **`SourceHealthStore` is safe under concurrent per-source calls — settled, not an open
+  question.** It has been re-derived in more than one session, so the answer lives here. The
+  reasons are structural, not luck: `_connect()` opens a psycopg connection **per call** (no
+  shared cursor); `_PassState` accumulates into `Set[str]` rather than integer counters (atomic
+  under the GIL *and* idempotent per `source_id`, which is what keeps the correlated-failure
+  denominator honest); the policy decision is deferred to `_resolve_pass`, which runs
+  single-threaded after `pass_scope` closes; and one thread only ever touches one `source_id`.
+  Verified against Postgres on cloned tables, 2026-08-25 — 25 rounds × 12 concurrent recorders
+  with no accumulator mismatch, and both policy paths (correlated-failure guard, flag ladder)
+  behaving as designed. Method and numbers:
+  `docs/architecture/application_flow/01_ingest_and_retrieval.md`. Do not re-derive it — extend
+  that record if the shape changes.
 - **Store the full raw corpus; never discard at ingest.** Acquisition fetches → embeds →
   upserts *every* article (idempotent). Relevance is contextual and per-query, so it is a
   retrieval-time decision, not an ingest-time one. Discarding at ingest would break

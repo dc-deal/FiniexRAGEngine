@@ -76,12 +76,16 @@ _SOURCE_SET_EXCLUDED: Dict[str, str] = {
                'series-defining. Same key name, two different clocks',
     'fetch_timeout_seconds': 'operational deadline (ISSUE_73) — retuning it must never fork a '
                              'comparable series',
+    'fetch_workers': 'acquisition concurrency (ISSUE_107) — pace, not corpus content: the same '
+                     'feeds are read in the same pass, only faster',
 }
 
 _SOURCE_EXCLUDED: Dict[str, str] = {
     'poll_interval_seconds': 'per-feed pace',
     'timeout_seconds': 'per-feed operational deadline (ISSUE_73)',
     'comment': 'editorial note about the feed; no effect on what is ingested',
+    'expected_max_age_hours': 'diagnostic expectation about the feed (ISSUE_107) — it decides '
+                              'what a REPORT calls stale, never what is fetched or stored',
 }
 
 # --- what comes IN from app_config, and why ----------------------------------------------

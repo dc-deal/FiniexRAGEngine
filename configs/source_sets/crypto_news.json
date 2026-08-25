@@ -149,7 +149,8 @@
             "url": "https://www.sec.gov/news/pressreleases.rss",
             "weight": 0.8,
             "enabled": false,
-            "comment": "Tier B candidate (ISSUE_107) — the primary source for half this set's vocabulary ('SEC', 'lawsuit'), which reaches us today only through third-party reporting. Probed 2026-08-25: 200, 25 entries, newest 162h. HELD AT 0.8 DELIBERATELY: the keyword list contains the bare token 'SEC' and every SEC press-release title begins with it, so the fast-path would fire on 25 of 25 current items — 6x the busiest incumbent (cointelegraph, 16.7%). At 0.8 it feeds the corpus and the cluster path without ever self-flagging. Promoting it to 1.0 depends on ISSUE_46 narrowing 'SEC' to phrases ('SEC charges', 'SEC sues')."
+            "comment": "Tier B candidate (ISSUE_107) — the primary source for half this set's vocabulary ('SEC', 'lawsuit'), which reaches us today only through third-party reporting. Probed 2026-08-25: 200, 25 entries, newest 162h. HELD AT 0.8 DELIBERATELY: the keyword list contains the bare token 'SEC' and every SEC press-release title begins with it, so the fast-path would fire on 25 of 25 current items — 6x the busiest incumbent (cointelegraph, 16.7%). At 0.8 it feeds the corpus and the cluster path without ever self-flagging. Promoting it to 1.0 depends on ISSUE_46 narrowing 'SEC' to phrases ('SEC charges', 'SEC sues'). Publishes on a schedule, not a news cycle: observed 7d (2026-08-25) — right at the 168h default, which would flap. The 720h allowance is what both delivery checks judge it by (ISSUE_107) — without it the 168h default calls a healthy press feed STALE and SILENT.",
+            "expected_max_age_hours": 720
         },
         {
             "source_id": "cftc_press",
@@ -157,7 +158,8 @@
             "url": "https://www.cftc.gov/RSS/RSSGP/rssgp.xml",
             "weight": 0.8,
             "enabled": false,
-            "comment": "Tier B candidate (ISSUE_107) — the derivatives-regulator twin of sec_press. Probed 2026-08-25: 200, 10 entries, newest 93.3h, 0 of 10 matching this set's keywords (its house style does not use the bare token, unlike the SEC's). Kept at the same weight as sec_press so the two regulators are one comparable tier rather than two hand-set values."
+            "comment": "Tier B candidate (ISSUE_107) — the derivatives-regulator twin of sec_press. Probed 2026-08-25: 200, 10 entries, newest 93.3h, 0 of 10 matching this set's keywords (its house style does not use the bare token, unlike the SEC's). Kept at the same weight as sec_press so the two regulators are one comparable tier rather than two hand-set values. Publishes on a schedule, not a news cycle: observed 4d (2026-08-25). The 720h allowance is what both delivery checks judge it by (ISSUE_107) — without it the 168h default calls a healthy press feed STALE and SILENT.",
+            "expected_max_age_hours": 720
         },
         {
             "source_id": "kraken_blog",
@@ -177,5 +179,6 @@
             "poll_interval_seconds": 300,
             "comment": "Tier B candidate (ISSUE_107) — the only other exchange announcement feed that exists at all: binance answers 202 with an empty body, coinbase and bybit 403, and bitfinex, okx, gemini, gate, bitget, mexc and htx all 404. Probed 2026-08-25: 200, 50 entries, newest 2.7h, 0 matching — heavily promotional (mining campaigns, reward programmes). Lowest weight in the set and a poll floor: it is admitted for listing and delisting notices, and it is the first candidate source_contribution_cli should be asked to justify."
         }
-    ]
+    ],
+    "fetch_workers": 8
 }
