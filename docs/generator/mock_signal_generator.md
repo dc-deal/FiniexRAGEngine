@@ -57,8 +57,8 @@ prompt really *is* the same one, and the dataset should say so. One field per fa
 
 > **Why a regeneration is nonetheless cheap today, and what would end that.** The consumer absorbed
 > the 2026-08-25 realization change with **zero test failures across 2,347 passes** (one deliberate
-> skip), on days where
-> every single row had changed. That was not luck: their consumers of those days assert *invariants*
+> skip), on days where every single row had changed. That was not luck: their consumers of those days
+> assert *invariants*
 > rather than values — a partition identity, a directional threshold their cadence always crosses, a
 > carved-versus-clean comparison. The one case that could have flipped had 11 minutes of margin
 > against our largest inter-envelope gap, which moved 16.7 → 19.0 minutes.
@@ -66,6 +66,13 @@ prompt really *is* the same one, and the dataset should say so. One field per fa
 > So the property to preserve is theirs, not ours: **the day one of those assertions pins a sentiment
 > value, a regeneration stops being free.** Worth knowing before planning one — and it is why the
 > ISSUE_108 archive re-export is expected to be cheap on their side too.
+>
+> **And there is now a signal for when it has stopped being true.** The consumer has written their
+> own rule — tests reading our fixture pin invariants, not values — and told us how to read a breach
+> of it: *"treat a request from us to keep a realization as a signal that we broke our own rule."*
+> So a request to preserve a realization is **diagnostic information, not just a request**. Answer it,
+> and ask which assertion started depending on a value; that is cheaper to fix on their side than a
+> preserved realization is on ours.
 
 
 ```bash

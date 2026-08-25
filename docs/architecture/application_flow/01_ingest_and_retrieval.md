@@ -66,6 +66,40 @@ Top-down, each new article flows through these units in order:
    dressed as a live verdict. (Downstream is the exception: the envelope never sees a disabled
    source at all. Operators get the truth; consumers get the contract.)
 
+   **Weight is a tiered portfolio, not a free scalar (ISSUE_107).** `SourceConfig.weight` is read
+   by the detector's keyword fast-path (`keyword_source_weight`, default `0.9`), so the bands are a
+   policy rather than a preference:
+
+   | band | what belongs in it | what the band buys |
+   |---|---|---|
+   | **1.0** — primary / established desk | central-bank press feeds; the trusted market desks | the fast-path fires from here: a keyword hit alone reaches HIGH without waiting for a cluster to build |
+   | **0.8** — secondary press | general business press, independent second-tier desks, regulator feeds whose house style trips the vocabulary | corroboration volume and corpus depth, deliberately *below* the fast-path gate |
+   | **0.5–0.6** — high-volume or promotional | syndication feeds, exchange announcement channels, price commentary | recall only, normally with a `poll_interval_seconds` floor so the fast loop does not pay for them every pass |
+
+   Two consequences worth stating, because both were measured rather than assumed. A weight is
+   also a statement about *duplicates*: two feeds from the same publisher corroborate nothing —
+   their near-duplicates are intra-publisher — which is why `cnbc_economy` sits at 0.6 next to
+   `cnbc_forex` at 1.0. And a primary source can be *unusable* at its own tier: `sec_press` is the
+   origin of half the crypto vocabulary, but the list contains the bare token `SEC` and every SEC
+   press-release title opens with it, so at ≥ 0.9 the fast-path would fire on every item it ever
+   publishes (25 of 25, measured 2026-08-25). It is held at 0.8 until ISSUE_46 narrows the keyword
+   to phrases. The band is chosen against the vocabulary, not against the institution's prestige.
+
+   **`enabled: false` has a second, deliberate use: a parked candidate (ISSUE_107).** The first is
+   the per-machine switch-off above. The second is a feed that has been probed and is *not yet*
+   trusted to run: it lives in the tracked catalogue with its weight, its `comment` carrying the
+   probe evidence, and `enabled: false`. That is what makes a candidate reviewable in a diff and
+   probeable on the machine that has to reach it — `feed_doctor_cli` diagnoses it there in the same
+   command as everything else — while `active_sources()` keeps it out of every count, every health
+   event and every envelope until someone flips one word. Promotion is that flip; nothing else
+   changes.
+
+   **The fingerprint hashes what runs, not what is declared.** `configuration/config_fingerprint.py`
+   takes its feed list from `active_sources()`. So parking a candidate adds no provenance noise —
+   a feed the engine never built cannot have changed what was ingested — while switching a
+   *running* feed off still moves the hash, which is the case the field exists for. The asymmetry
+   is the point; see `docs/development/user_configs_overrides.md`.
+
    **Every source is accounted for — the pass reports all of them.** A pass records exactly one
    `SourcePoll` per source it considers (`ok`, `failed`, `quarantined`, `floor_skipped`,
    `suspended`, `host_backoff`), appended in config order; `IngestResult.polls` is the single record and the

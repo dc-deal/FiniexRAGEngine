@@ -144,6 +144,24 @@ def test_feed_added_disabled_or_reweighted_changes_it(baseline):
         assert _fingerprint(source_set=edit) != baseline, f'a {label} feed must be visible'
 
 
+def test_declaring_an_already_disabled_candidate_does_not_change_it(baseline):
+    # The other direction of the test above, and the one that makes ISSUE_107's staging possible:
+    # a candidate parked in the tracked catalogue with `enabled: false` is never built and never
+    # polled, so it cannot have contributed an article — forking the series for it would put a
+    # provenance change on the envelopes for a provable no-op. The asymmetry is deliberate:
+    # switching a *running* feed off still moves the hash (asserted above), because that one
+    # changes what was ingested.
+    candidate = _edited(_SOURCE_SET)
+    candidate['sources'].append({'source_id': 'sec_press', 'type': 'rss', 'weight': 0.8,
+                                 'url': 'https://www.sec.gov/news/pressreleases.rss',
+                                 'enabled': False, 'comment': 'probed 2026-08-25, not yet live'})
+    assert _fingerprint(source_set=candidate) == baseline
+    # And it starts counting the moment it is switched on — the flip is the series marker.
+    promoted = _edited(candidate)
+    promoted['sources'][-1]['enabled'] = True
+    assert _fingerprint(source_set=promoted) != baseline
+
+
 def test_detection_thresholds_and_vocabulary_change_it(baseline):
     # Detection decides which stories wake an out-of-band eval, so it shapes the series.
     # ISSUE_46 will refresh `keywords` by LLM — that write is meant to move the fingerprint.

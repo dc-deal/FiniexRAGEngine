@@ -22,7 +22,7 @@
             "type": "rss",
             "url": "https://www.fxstreet.com/rss/news",
             "weight": 1.0,
-            "comment": "High-trust FX source. Behind Cloudflare Bot-Management. Measured 2026-07-16: 200 from a clean egress IP, 403 (Cf-Mitigated: challenge) from a datacenter IP — a JS browser challenge no feed reader can pass, and no User-Agent changes that. Switch off per machine via user_configs/source_sets/ when the egress IP is challenged."
+            "comment": "High-trust FX source. Behind Cloudflare Bot-Management. Measured 2026-07-16: 200 from a clean egress IP, 403 (Cf-Mitigated: challenge) from a datacenter IP — a JS browser challenge no feed reader can pass, and no User-Agent changes that. Switch off per machine via user_configs/source_sets/ when the egress IP is challenged. Re-measured 2026-08-25 (ISSUE_107): 200 with 30 entries from the dev container — the wall did not reproduce, so re-probe with feed_doctor_cli before assuming it is still there."
         },
         {
             "source_id": "forexlive",
@@ -65,6 +65,83 @@
             "type": "rss",
             "url": "https://www.bankofengland.co.uk/rss/news",
             "weight": 1.0
+        },
+        {
+            "source_id": "boj_press",
+            "type": "rss",
+            "url": "https://www.boj.or.jp/en/rss/whatsnew.xml",
+            "weight": 1.0,
+            "comment": "Primary source for USDJPY — the pipeline's retrieval query names 'Bank of Japan BOJ' and had no primary feed for it (ISSUE_107). Probed 2026-08-25: 200, 46 entries, newest 9h. Carries statistical releases (CPI indicators, JGB holdings) next to policy, so volume is not all policy signal. Fires 0 of this set's keywords on current contents — the vocabulary is crisis language, and this is where it would first appear."
+        },
+        {
+            "source_id": "rba_press",
+            "type": "rss",
+            "url": "https://www.rba.gov.au/rss/rss-cb-media-releases.xml",
+            "weight": 1.0,
+            "comment": "Primary source for AUDUSD ('Reserve Bank of Australia RBA' in the retrieval query, ISSUE_107). Probed 2026-08-25: 200, newest 149h. Media releases only and a THIN feed — 1 entry in the window, so it carries the latest release rather than a history; the 15s cadence is what makes that safe."
+        },
+        {
+            "source_id": "boc_press",
+            "type": "rss",
+            "url": "https://www.bankofcanada.ca/content_type/press-releases/feed/",
+            "weight": 1.0,
+            "comment": "Primary source for USDCAD ('Bank of Canada BOC' in the retrieval query, ISSUE_107). The episode open since 2026-08-23 over BoC / US-Canada trade policy was evaluated entirely from secondary coverage. Probed 2026-08-25: 200, 10 entries, newest 25d — low volume is correct for a press-release feed, not a stale feed."
+        },
+        {
+            "source_id": "snb_press",
+            "type": "rss",
+            "url": "https://www.snb.ch/public/en/rss/news",
+            "weight": 1.0,
+            "comment": "Primary source for USDCHF ('Swiss National Bank SNB' in the retrieval query, ISSUE_107). Probed 2026-08-25: 200, 20 entries, newest 0.1h. This is the institution's general news feed: working papers and data-portal notices arrive alongside policy. A press-release-only variant was looked for and does not exist (/public/en/rss/pressReleases answers 404)."
+        },
+        {
+            "source_id": "rbnz_press",
+            "type": "rss",
+            "url": "https://www.rbnz.govt.nz/rss/news",
+            "weight": 1.0,
+            "enabled": false,
+            "comment": "Primary source for NZDUSD ('Reserve Bank of New Zealand RBNZ' in the retrieval query) — NOT REACHABLE, and the URL is unconfirmed (ISSUE_107). Measured 2026-08-25: 403 with Cf-Mitigated: challenge on every rbnz.govt.nz path from the dev container AND from a second, unrelated egress; this path itself answers 404 behind the wall. RBNZ documents no RSS endpoint anywhere, so a feed may not exist at all. Declared disabled rather than dropped so feed_doctor_cli retries it from the server; if it stays walled, NZDUSD has no primary feed and that is the honest state."
+        },
+        {
+            "source_id": "marketwatch",
+            "type": "rss",
+            "url": "https://feeds.content.dowjones.io/public/rss/mw_topstories",
+            "weight": 0.8,
+            "enabled": false,
+            "comment": "Tier B candidate (ISSUE_107) — established business press, admitted for recall and cross-feed corroboration, not for the keyword fast-path (0.8 sits below keyword_source_weight 0.9). Probed 2026-08-25: 200, 10 entries, newest 0.1h. Switch on only once ISSUE_106 records the detection trigger: this set's cluster thresholds were calibrated against 7 active feeds."
+        },
+        {
+            "source_id": "bbc_business",
+            "type": "rss",
+            "url": "https://feeds.bbci.co.uk/news/business/rss.xml",
+            "weight": 0.8,
+            "enabled": false,
+            "comment": "Tier B candidate (ISSUE_107) — established business press, general rather than FX-specific, hence 0.8 and no fast-path. Probed 2026-08-25: 200, 52 entries, newest 2.1h."
+        },
+        {
+            "source_id": "guardian_biz",
+            "type": "rss",
+            "url": "https://www.theguardian.com/uk/business/rss",
+            "weight": 0.8,
+            "enabled": false,
+            "comment": "Tier B candidate (ISSUE_107) — established business press. Probed 2026-08-25: 200, 39 entries, newest 0.2h, and 3 of those 39 already match this set's crisis keywords, which is why it stays below the 0.9 fast-path gate until ISSUE_106 can show which path fired."
+        },
+        {
+            "source_id": "yahoo_finance",
+            "type": "rss",
+            "url": "https://finance.yahoo.com/news/rssindex",
+            "weight": 0.6,
+            "enabled": false,
+            "poll_interval_seconds": 120,
+            "comment": "Tier B candidate (ISSUE_107) — high-volume syndication rather than an editorial desk: 50 entries at 0.2h old, much of it re-published from elsewhere. Weighted 0.6 and given a poll floor because duplicate-heavy volume is exactly what shifts the cluster-size distribution without adding corroboration. The instrument for the verdict is source_contribution_cli: produced vs actually cited."
+        },
+        {
+            "source_id": "cnbc_economy",
+            "type": "rss",
+            "url": "https://www.cnbc.com/id/20910258/device/rss/rss.html",
+            "weight": 0.6,
+            "enabled": false,
+            "comment": "Tier B candidate (ISSUE_107). Probed 2026-08-25: 200, 30 entries, newest 1.5h. Same publisher as cnbc_forex, so its near-duplicates are INTRA-publisher — they raise cluster_size without being the cross-feed corroboration the cluster tier is meant to measure. Weighted 0.6 for that reason alone."
         }
     ]
 }
