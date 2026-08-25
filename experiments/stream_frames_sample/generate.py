@@ -75,6 +75,69 @@ def _shift(node: Any, delta: timedelta) -> Any:
     return node
 
 
+def _fetch_episode_trio(database_url: str) -> List[Dict[str, Any]]:
+    """Three passes of ONE breaking episode: its opener, a continuation, and a hold-band pass.
+
+    Curated rather than "the last two passes" (reissue-6). The consumer asked for a sample that
+    shows the fields **populated**, and named the case their reader is most likely to get wrong:
+    a pass where `is_breaking` is false while `breaking_episode_id` persists. Two consecutive
+    passes cannot be relied on to contain that, so the query looks for an episode that does.
+
+    Selection is by episode, not by recency: the newest episode that carries all three shapes wins.
+    Everything else stays as it was — one `pipeline_id`, `status: success`, `seq` present.
+
+    Raises with a readable message when no episode qualifies. A sample that quietly showed two
+    ordinary passes would be worse than none: it would answer the consumer's question with the
+    shape they already had.
+    """
+    with psycopg.connect(database_url, connect_timeout=5) as conn, conn.cursor() as cur:
+        cur.execute("""
+            WITH stamped AS (
+                SELECT o.id, o.pipeline_id, o.ts, o.envelope, row_value AS row
+                FROM outcomes o, LATERAL jsonb_array_elements(o.envelope->'result') row_value
+                WHERE o.envelope->>'status' = 'success'
+                  AND o.envelope->>'seq' IS NOT NULL
+                  AND row_value->>'breaking_episode_id' IS NOT NULL
+            )
+            SELECT row->>'breaking_episode_id'
+            FROM stamped
+            GROUP BY 1, pipeline_id
+            HAVING bool_or((row->>'breaking_episode_start')::boolean)
+               AND bool_or(NOT (row->>'breaking_episode_start')::boolean
+                           AND (row->>'is_breaking')::boolean)
+               AND bool_or(NOT (row->>'is_breaking')::boolean)
+            ORDER BY max(ts) DESC
+            LIMIT 1""")
+        found = cur.fetchone()
+        if not found:
+            raise SystemExit(
+                'no episode carries all three shapes (opener, continuation, hold-band pass) — '
+                'the sample the consumer asked for cannot be built from this journal yet. '
+                'A pipeline whose passes are `partial` is excluded by design; check that the '
+                'stream you want is healthy.')
+        episode_id = found[0]
+        roles = [
+            ('opener', "(row->>'breaking_episode_start')::boolean", 'ASC'),
+            ('continuation', "NOT (row->>'breaking_episode_start')::boolean "
+                             "AND (row->>'is_breaking')::boolean", 'ASC'),
+            ('hold band', "NOT (row->>'is_breaking')::boolean", 'ASC'),
+        ]
+        picked: List[Dict[str, Any]] = []
+        for label, condition, order in roles:
+            cur.execute(f"""
+                SELECT o.envelope, o.ts
+                FROM outcomes o, LATERAL jsonb_array_elements(o.envelope->'result') row
+                WHERE row->>'breaking_episode_id' = %s AND {condition}
+                ORDER BY o.ts {order} LIMIT 1""", (episode_id,))
+            found = cur.fetchone()
+            if not found:
+                raise SystemExit(f'episode {episode_id} lost its {label} pass between two queries')
+            envelope = found[0]
+            picked.append(envelope if isinstance(envelope, dict) else json.loads(envelope))
+    print(f'sample built from episode {episode_id} — opener, continuation, hold-band pass')
+    return picked
+
+
 def _fetch_pair(database_url: str) -> List[Dict[str, Any]]:
     """The two most recent successful passes of one stream — one pipeline_id, never two variants.
     The reissue-1 defect was exactly this query without the pipeline filter."""
@@ -143,43 +206,61 @@ def _frame(event: str, payload: Dict[str, Any]) -> str:
 
 
 def build(database_url: str) -> str:
-    first, second = _fetch_pair(database_url)
+    trio = _fetch_episode_trio(database_url)
     # The contract check runs on the RAW rows: what the engine actually wrote, before this script
     # touches anything. That is what makes the sample evidence instead of illustration.
-    for env in (first, second):
+    for env in trio:
         _check_envelope(env)
 
-    real_gap = _ms(second['timestamp']) - _ms(first['timestamp'])
-    delta_ms = CADENCE_MS - real_gap
-    second = _shift(second, timedelta(milliseconds=delta_ms))
-    _shift_epoch_ms(second, delta_ms)
+    real_gap = _ms(trio[1]['timestamp']) - _ms(trio[0]['timestamp'])
+    # The three passes are drawn from one episode and are not adjacent in the journal — a hold-band
+    # pass can sit hours from the opener. Placed one cadence apart so the sample reads as a stream
+    # while every within-envelope relationship (timestamp -> available_msc -> fetched_at ->
+    # evidence_as_of) survives the move unchanged.
+    placed = [trio[0]]
+    for index, env in enumerate(trio[1:], start=1):
+        delta_ms = (_ms(trio[0]['timestamp']) + index * CADENCE_MS) - _ms(env['timestamp'])
+        moved = _shift(env, timedelta(milliseconds=delta_ms))
+        _shift_epoch_ms(moved, delta_ms)
+        placed.append(moved)
 
-    a, b = _renumber(first, 1041), _renumber(second, 1042)
-    if b['seq'] != a['seq'] + 1:
+    a, b, c = (_renumber(env, 1041 + index) for index, env in enumerate(placed))
+    if not (b['seq'] == a['seq'] + 1 and c['seq'] == b['seq'] + 1):
         raise AssertionError('seq not contiguous')
-    if a['pipeline_id'] != b['pipeline_id']:
-        raise AssertionError('two pipeline_ids in one series — the reissue-1 defect')
+    if len({a['pipeline_id'], b['pipeline_id'], c['pipeline_id']}) != 1:
+        raise AssertionError('several pipeline_ids in one series — the reissue-1 defect')
+    episode_ids = {row.get('breaking_episode_id')
+                   for env in (a, b, c) for row in env['result']
+                   if row.get('breaking_episode_id')}
+    if len(episode_ids) != 1:
+        raise AssertionError(f'the three passes are not one episode: {episode_ids}')
 
-    now_msc = b['available_msc'] + 41_883
+    now_msc = c['available_msc'] + 41_883
     frames = [
         ': --- 1. connect: GET /v1/stream?pipeline=crypto_sentiment  (history defaults to 1) ---\n',
         'retry: 5000\n',
         _frame('signal', a),
         ': --- 2. replay/history done; everything after this frame is live ---\n',
         _frame('control', {'code': 'live', 'stream_epoch': 1, 'head_seq': 1041}),
-        ': --- 3. the next scheduled pass of the same stream ---\n',
+        ': --- 3. a later pass of the SAME breaking episode: `breaking_episode_id` unchanged,\n'
+        ':        `breaking_episode_start` false. The id is minted at the edge and never moves. ---\n',
         _frame('signal', b),
+        ': --- 3b. and the case a reader is most likely to get wrong: `is_breaking` is FALSE while\n'
+        ':        the episode id PERSISTS. An episode outlives its own boolean (hysteresis), so the\n'
+        ':        id is set on every pass inside it — the opener, the hold band, and a dip that\n'
+        ':        arrives before the gap elapses. Gate on the id, not on the flag. ---\n',
+        _frame('signal', c),
         ': --- 4. keep-alive, every 20 s on every view. now_msc is server time at emission (R17),\n'
         ':        so a consumer can measure clock skew; a stalled seq is a stalled producer. ---\n',
-        _frame('heartbeat', {'stream_epoch': 1, 'seq': 1042,
-                             'available_msc': b['available_msc'], 'now_msc': now_msc}),
+        _frame('heartbeat', {'stream_epoch': 1, 'seq': 1043,
+                             'available_msc': c['available_msc'], 'now_msc': now_msc}),
         ': --- 5. control codes, shown together; each occurs on its own ---\n',
         ': 5a  &since=900 - older than replay_window_hours\n',
         _frame('control', {'code': 'replay_truncated', 'stream_epoch': 1, 'requested_since': 900,
                            'oldest_available_seq': 1038, 'window_hours': 24}),
         ': 5b  &since=9001 - ahead of our head (consumer-side store restore)\n',
         _frame('control', {'code': 'cursor_ahead', 'stream_epoch': 1,
-                           'requested_since': 9001, 'head_seq': 1042}),
+                           'requested_since': 9001, 'head_seq': 1043}),
         ': 5c  token revoked mid-stream; the server closes after this frame\n',
         _frame('control', {'code': 'auth_revoked', 'stream_epoch': 1, 'detail': 'token expired'}),
         ': --- 6. cold start (R18): a stream that exists but has never produced an envelope.\n'
@@ -191,17 +272,23 @@ def build(database_url: str) -> str:
         _frame('control', {'code': 'live', 'stream_epoch': 1, 'head_seq': 0}),
         _frame('heartbeat', {'stream_epoch': 1, 'seq': 0, 'now_msc': now_msc}),
     ]
-    header = _header(a, b, real_gap)
+    header = _header(a, c, real_gap)
     return header + '\n' + '\n'.join(frames)
 
 
 def _header(a: Dict[str, Any], b: Dict[str, Any], real_gap_ms: int) -> str:
     gap_min = (_ms(b['timestamp']) - _ms(a['timestamp'])) / 60_000
-    return f""": FiniexRAGEngine - GET /v1/stream - sample frames (ISSUE_9)   [reissue 5, 2026-08-21]
+    return f""": FiniexRAGEngine - GET /v1/stream - sample frames (ISSUE_9)   [reissue 6, 2026-08-25]
 :
-: TWO CONSECUTIVE PASSES OF ONE STREAM (`{a['pipeline_id']}`), {gap_min:.0f} min apart, taken from the
-: outcomes journal and rendered against the specified frame format. NOT recorded from a running
-: stream - none exists yet.
+: THREE PASSES OF ONE BREAKING EPISODE on one stream (`{a['pipeline_id']}`), placed {gap_min:.0f} min apart,
+: taken from the outcomes journal and rendered against the specified frame format. NOT recorded
+: from a running stream - none exists yet.
+:
+: REISSUE 6 - the passes are CURATED rather than consecutive, at the consumer's request: an opener
+: (`breaking_episode_start: true`), a continuation carrying the same id, and a hold-band pass where
+: `is_breaking` is FALSE while the id PERSISTS. The last is the case a reader is most likely to get
+: wrong, and a sample without it cannot catch the mistake. They are real journal rows, drawn from
+: one episode and moved onto a regular cadence; nothing about an envelope's contents is invented.
 :
 : This file is generated by experiments/stream_frames_sample/generate.py, which asserts the Tier
 : 1-3 field set AND each field's location before writing. Two earlier reissues disagreed with the

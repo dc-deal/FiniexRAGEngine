@@ -63,6 +63,11 @@ from typing import Dict, Set
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from finiexragengine.core.pipeline.breaking_episode import BreakingEpisodeTracker
+from finiexragengine.core.pipeline.breaking_episode_rule import (
+    BreakingEpisodeRule,
+    EpisodeGrouping,
+)
 from finiexragengine.types.outcome_types import (
     AnalysisEnvelope,
     ArticleRef,
@@ -637,10 +642,22 @@ def main() -> None:
     statuses = {}
     for stream_id, envelopes in pending.items():
         envelopes.sort(key=lambda e: e.timestamp)
+        # Episode identity (ISSUE_65) comes from the ENGINE'S OWN rule, driven here in timestamp
+        # order exactly as `PipelineRunner` drives it. Not a reimplementation: a fixture that
+        # taught different episode boundaries than the engine applies would be worse than one
+        # without the fields, because a consumer would tune against it and then meet the real thing.
+        #
+        # No query map, so the rule falls back to keying on `base_currency` — its documented
+        # degradation path, and the honest choice for a fixture that has no retrieval layer.
+        tracker = BreakingEpisodeTracker(EpisodeGrouping(BreakingEpisodeRule()))
         previous_evidence = None
         for seq, envelope in enumerate(envelopes, start=1):
             envelope.seq = seq
             envelope.stream_epoch = 1              # a generated week is never rewound
+            # Stamps `breaking_episode_id` / `breaking_episode_start` on every row the rule counts
+            # as inside an episode — including passes where `is_breaking` is false, which is the
+            # case a consumer gating on episode identity has to get right.
+            tracker.observe(envelope)
             statuses[envelope.status] = statuses.get(envelope.status, 0) + 1
             # The store write follows assembly by the persist call — tens of ms in production.
             envelope.available_msc = int(envelope.timestamp.timestamp() * 1000) + 76
