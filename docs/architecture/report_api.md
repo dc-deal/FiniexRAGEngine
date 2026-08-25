@@ -158,7 +158,7 @@ things.
 
 ## Timestamps
 
-Every datetime in a report payload is **UTC, rendered with a trailing `Z`**.
+Every **typed** timestamp in a report payload is **UTC, rendered with a trailing `Z`**.
 
 Both halves are deliberate, and both were bugs first. The reports read `TIMESTAMPTZ` columns, and
 psycopg returns those in the *session's* timezone — on a host running Europe/Berlin that meant
@@ -170,6 +170,13 @@ arrived as `… 02:00` and answered 422).
 
 Normalising in the serializer fixes both at the one point every payload passes through, and it means
 **a timestamp a report prints is a timestamp a caller can use** — no encoding step in between.
+
+**The exception, stated rather than hidden:** timestamps *inside* a nested JSONB blob —
+`source_health.rows[].recent_events[].ts`, `source_quarantine.rows[].timeline[].ts` — were written
+as strings by the ingest path and were never Python datetimes, so the serializer does not see them.
+They are already UTC and render as `+00:00`. The instant is right; only the spelling differs. They
+are left alone deliberately: rewriting strings that *look* like timestamps would eventually rewrite
+a date inside an error message, and a serializer that guesses is worse than one that is uneven.
 
 ## Boundaries
 
