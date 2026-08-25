@@ -80,7 +80,7 @@ living only in the operator's head. Two of the overrides this project actually r
 feeds, which is precisely the kind of change that shifts scores while every other provenance
 field stays byte-identical.
 
-Three consequences worth knowing before someone "fixes" one of them:
+Four consequences worth knowing before someone "fixes" one of them:
 
 - **A fingerprint is machine-specific, and that is correct.** The server and a dev container
   carry different overlays, so they produce different fingerprints for the same tracked config.
@@ -89,6 +89,11 @@ Three consequences worth knowing before someone "fixes" one of them:
   diagnostics are excluded on purpose — otherwise tuning a timeout would fork a comparable
   series and the marker would be ignored within a week. What is in and what is out (with the
   reason for each) lives in `configuration/config_fingerprint.py`.
+- **A feed the engine never builds does not move it (ISSUE_107).** The hashed feed list comes
+  from `active_sources()`, so a candidate parked in the tracked catalogue with `enabled: false`
+  is provenance-neutral — it cannot have contributed an article. Switching a *running* feed off
+  still moves it, which is the asymmetry that makes both halves correct: what changed is what
+  was ingested, not what was written down.
 - **A config edit only takes effect at the next boot** — for the engine and for the
   fingerprint alike. The fingerprint describes the configuration the process *loaded*, so a
   running engine keeps stamping the truth until it is restarted.

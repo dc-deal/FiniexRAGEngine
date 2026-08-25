@@ -17,6 +17,7 @@ The generator is invoked as a subprocess, the way an operator runs it — not im
 import json
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -115,3 +116,38 @@ def test_the_archive_line_declares_its_time_base(week):
     """Mirrors `outcome_exporter`: the archiver's two keys, prepended, nothing inferred."""
     assert list(week[0])[:2] == list(_ARCHIVER_KEYS)
     assert week[0]['collected_msc_timebase'] == 'utc'
+
+
+def test_a_rotated_run_puts_the_stream_directory_at_the_root(tmp_path):
+    """A bare `--rotate daily` writes `data/<stream_id>/<bucket>.jsonl` — the handover shape.
+
+    Invoked with `cwd=tmp_path` so the **default** `--out` resolves inside the temporary tree
+    rather than the repository's own `data/`. That is the point of the test: the layout a consumer
+    binds its multi-file range read to is the one an operator gets without passing a path.
+
+    Guarded because this exact class of drift shipped a bad delivery once (2026-08-25). The
+    recorded invocation had grown a wrapper directory and lost half the symbol set, the regenerated
+    week went out in that shape, and nothing compared the shipped files against the commands that
+    supposedly produced them.
+    """
+    subprocess.run(
+        [sys.executable, str(Path.cwd() / _SCRIPT), '--cycles', '20', '--rotate', 'daily',
+         '--symbols', 'BTCUSD,ETHUSD'],
+        cwd=tmp_path, capture_output=True, text=True, check=True)
+
+    root = tmp_path / 'data'
+    assert root.is_dir(), 'a rotated run with no --out must write into data/'
+    # The root carries stream directories and nothing else — a loose file here would mean a
+    # non-rotated mode had claimed the root, which is what data/mock_signals/ exists to prevent.
+    entries = sorted(root.iterdir())
+    assert entries and all(entry.is_dir() for entry in entries), \
+        f'data/ must hold stream directories only, found: {[e.name for e in entries]}'
+
+    stream = root / 'crypto_sentiment_mock'
+    assert stream.is_dir(), f'expected the stream id at the root, found: {[e.name for e in entries]}'
+    buckets = sorted(stream.glob('*.jsonl'))
+    assert buckets, 'a rotated run must write at least one daily bucket'
+    # Bucket names are the collector's own daily naming contract, not a free-form label.
+    for bucket in buckets:
+        datetime.strptime(bucket.stem, '%Y-%m-%d')
+    assert json.loads(buckets[0].read_text().splitlines()[0])['pipeline_id'] == 'crypto_sentiment_mock'

@@ -66,6 +66,79 @@ Top-down, each new article flows through these units in order:
    dressed as a live verdict. (Downstream is the exception: the envelope never sees a disabled
    source at all. Operators get the truth; consumers get the contract.)
 
+   **Weight is a tiered portfolio, not a free scalar (ISSUE_107).** `SourceConfig.weight` is read
+   by the detector's keyword fast-path (`keyword_source_weight`, default `0.9`), so the bands are a
+   policy rather than a preference:
+
+   | band | what belongs in it | what the band buys |
+   |---|---|---|
+   | **1.0** — primary / established desk | central-bank press feeds; the trusted market desks | the fast-path fires from here: a keyword hit alone reaches HIGH without waiting for a cluster to build |
+   | **0.8** — secondary press | general business press, independent second-tier desks, regulator feeds whose house style trips the vocabulary | corroboration volume and corpus depth, deliberately *below* the fast-path gate |
+   | **0.5–0.6** — high-volume or promotional | syndication feeds, exchange announcement channels, price commentary | recall only, normally with a `poll_interval_seconds` floor so the fast loop does not pay for them every pass |
+
+   Two consequences worth stating, because both were measured rather than assumed. A weight is
+   also a statement about *duplicates*: two feeds from the same publisher corroborate nothing —
+   their near-duplicates are intra-publisher — which is why `cnbc_economy` sits at 0.6 next to
+   `cnbc_forex` at 1.0. And a primary source can be *unusable* at its own tier: `sec_press` is the
+   origin of half the crypto vocabulary, but the list contains the bare token `SEC` and every SEC
+   press-release title opens with it, so at ≥ 0.9 the fast-path would fire on every item it ever
+   publishes (25 of 25, measured 2026-08-25). It is held at 0.8 until ISSUE_46 narrows the keyword
+   to phrases. The band is chosen against the vocabulary, not against the institution's prestige.
+
+   **`enabled: false` has a second, deliberate use: a parked candidate (ISSUE_107).** The first is
+   the per-machine switch-off above. The second is a feed that has been probed and is *not yet*
+   trusted to run: it lives in the tracked catalogue with its weight, its `comment` carrying the
+   probe evidence, and `enabled: false`. That is what makes a candidate reviewable in a diff and
+   probeable on the machine that has to reach it — `feed_doctor_cli` diagnoses it there in the same
+   command as everything else — while `active_sources()` keeps it out of every count, every health
+   event and every envelope until someone flips one word. Promotion is that flip; nothing else
+   changes.
+
+   **The fingerprint hashes what runs, not what is declared.** `configuration/config_fingerprint.py`
+   takes its feed list from `active_sources()`. So parking a candidate adds no provenance noise —
+   a feed the engine never built cannot have changed what was ingested — while switching a
+   *running* feed off still moves the hash, which is the case the field exists for. The asymmetry
+   is the point; see `docs/development/user_configs_overrides.md`.
+
+   **Parsing is not delivering — the two delivery checks (ISSUE_107).** Every number the health
+   surfaces carried until now measured the *poll*. A feed can answer `200` on all 102,136 of them,
+   parse without a complaint, and put nothing in the corpus — measured on real candidates while
+   every surface called them healthy: `blockworks` (50 entries, newest 5,520 h old),
+   `dlnews` (2,637 h), and binance's announcement RSS (`202` with an empty body). Two checks close
+   that, on two surfaces, answering two different questions:
+
+   | verdict | surface | rule | needs a threshold? |
+   |---|---|---|---|
+   | `EMPTY` | `feed_doctor` (live probe) | a 2xx that parses to zero entries | no |
+   | `STALE` | `feed_doctor` (live probe) | newest item older than the feed is allowed to be | **yes** — 168 h default, or the feed's own `expected_max_age_hours` |
+   | `SILENT` | `source_health` (store) | polls succeed, 0 articles stored in `reports.source_health.silence_days` | no |
+
+   `feed_doctor` probes the feed *now* and needs the network; `source_health` reads what the feed
+   *delivered* and needs only the corpus (`articles.source_id` is the same config id, which is why
+   the join exists). Neither replaces the other, and the report says which one answered.
+
+   **Three design rules these follow, because a barrier nobody can check is not a barrier:**
+
+   - **Threshold-free where possible.** `EMPTY` and `SILENT` need no policy, and between them they
+     catch every case measured above. `STALE` is the only one that needs a number — a single global
+     age would be wrong for half the catalogue, since `boc_press` at 25 days is a healthy
+     press-release feed while a news feed at 25 days is dead. So a feed *declares* its own
+     expectation and is judged against it; a feed that declares nothing gets the default. The report
+     names which of the two applied (`STALE (> 168h · default)` vs `· declared`).
+   - **The census always renders.** `39 probed · 35 OK · 1 EMPTY · 1 STALE · 12 disabled` plus the
+     gate line, whether or not anything tripped — otherwise "nothing was reported" is
+     indistinguishable from "nothing was checked".
+   - **A legend for the states present, not for all of them.** The console explains exactly the
+     verdicts a run produced; a healthy fleet gets no legend at all. The full taxonomy is this
+     table, which is why it lives here rather than in every render.
+
+   **`SILENT` never stacks.** A disabled, quarantined or currently-failing feed delivers nothing
+   *for a known reason* and keeps that reason as its verdict — reporting silence as well would
+   report one fault twice and bury the cause. And where the corpus cannot be read at all the rule
+   reports `NOT APPLIED` with a `?` in the delivery column, never `0`: on a fresh database
+   "not measured" and "delivered nothing" are different answers, and treating them alike would flag
+   the entire fleet at once.
+
    **Every source is accounted for — the pass reports all of them.** A pass records exactly one
    `SourcePoll` per source it considers (`ok`, `failed`, `quarantined`, `floor_skipped`,
    `suspended`, `host_backoff`), appended in config order; `IngestResult.polls` is the single record and the
@@ -264,6 +337,60 @@ Top-down, each new article flows through these units in order:
    full cool-off (the run *is* continuously incomplete), and a cold start whose eval fires before
    the first ingest reports every source as `never polled` — honest, and it heals on the next
    ingest pass.
+
+   **The pass has three phases, and only the middle one is concurrent (ISSUE_107).**
+   `Ingestor._run_pass` is a plan, a fetch and an accounting phase rather than one loop:
+
+   1. **plan** (`_plan_pass`) — walks the declared catalogue and decides who is polled at all,
+      recording the `SourcePoll` of everyone who is not. Sequential by necessity: it reads the
+      shared quarantine state and hands out at most one half-open probe per source.
+   2. **fetch** (`_fetch_all`) — pulls every due source, pooled when `fetch_workers > 1`. The only
+      phase that runs concurrently, and the split is drawn here for a reason: a fetch touches the
+      network and its own source object, and nothing else.
+   3. **account** — walks the plan again in declared order and does everything that costs money or
+      mutates state: health, journal, embed, upsert, detection, timings.
+
+   So `fetch_workers` changes *when* feeds are pulled and never what the pass concluded — the
+   result object is identical either way, asserted directly
+   (`test_pooled_fetch_produces_the_same_result_object_as_the_sequential_pass`).
+
+   **Why breadth needs this.** Fetching sequentially, a pass costs up to
+   `len(active_sources()) × fetch_timeout_seconds` in the worst case — 11 feeds × 10s = 110s — and
+   `IntervalTrigger` is overlap-free, so the pass duration is added to the poll cadence one for
+   one. Pooled it is `ceil(n / workers) × fetch_timeout_seconds`. Measured 2026-08-25 on the live
+   forex set: **11 feeds, 3,294 ms sequential → 445 ms at 8 workers (7.4×)**, p50 219 ms per feed.
+   The gain scales with the feed count, which is exactly what ISSUE_107 moves.
+
+   **The worker core is thread-safe, and this is the record of it — it has been re-derived more
+   than once.** `SourceHealthStore` may be called concurrently by one pass, and that is a property
+   of how it is built, not luck:
+
+   - **`_connect()` opens a fresh psycopg connection per call.** No shared cursor, so the usual
+     "psycopg connections are not thread-safe" blocker does not apply.
+   - **`_PassState` accumulates into `Set[str]`, not integer counters** (`failed`, `succeeded`) —
+     `set.add()` is atomic under the GIL *and* idempotent per `source_id`, so a lost update is not
+     possible in either direction. This is what keeps the correlated-failure denominator honest.
+   - **The policy decision is deferred to `_resolve_pass`**, which runs single-threaded after
+     `pass_scope` closes. Quarantine, ladder rung and host back-off are decided there, never inside
+     the loop.
+   - **Per-source keys are disjoint** — one thread only ever touches one `source_id`.
+
+   Verified rather than reasoned about, 2026-08-25, against Postgres on cloned tables: 25 rounds ×
+   12 concurrent recorders inside one `pass_scope` produced no accumulator mismatch and persisted
+   counters that summed correctly; the **correlated-failure guard** (all 12 feeds failing at once →
+   0 quarantined, one `correlated` episode, host back-off engaged) and the **flag ladder** (one feed
+   failing while 11 answer → 1 quarantined, next pass skips exactly it) both behaved as designed.
+   Nothing in the accounting phase depends on this today — it is sequential on purpose — but the
+   next person who wants to widen the concurrency should not have to re-establish it.
+
+   **One hazard pre-fetching introduces, and it is not obvious.** A successful fetch advances the
+   feed's `ETag` / `Last-Modified`. The budget-suspend branch abandons every source after the one
+   that ran out of quota, and the invariant it rests on is *"the un-embedded articles reappear next
+   pass"* — which pre-fetching would silently break: an abandoned source would answer `304` next
+   pass and its articles would be gone for good, a loss the sequential form could not produce
+   because it never reached them. Hence `AbstractSource.reset_conditional_get()`: the suspend path
+   rewinds the validators of every source it fetched but never accounted for, so the next pass
+   re-pulls them for real.
 
 2. **Fetch — `core/sources/rss_source.py` (`RssSource.fetch`).**
    Actively pulls the RSS feed, maps each entry to an `Article` (title + summary only),

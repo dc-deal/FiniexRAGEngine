@@ -43,10 +43,10 @@ Run from the repo root:
     python experiments/mock_signal_data/generate.py --cycles 1008 \
         --variants "mini=gpt-4o-mini,4o_enhanced=gpt-4o" --out data/mock_signals/variant_week
     python experiments/mock_signal_data/generate.py --cycles 1008 --rotate daily \
-        --out data/mock_signals/rotated_week
+        --out data
     python experiments/mock_signal_data/generate.py --cycles 1008 --rotate daily \
-        --prompt forex --pipeline-id forex_macro_sentiment_mock --symbols EURUSD,GBPUSD \
-        --out data/mock_signals/forex_mock_week
+        --prompt forex --pipeline-id forex_macro_sentiment_mock \
+        --symbols EURUSD,GBPUSD,USDJPY,AUDUSD,EURGBP,NZDUSD,USDCAD,USDCHF --out data
 """
 import argparse
 import json
@@ -63,6 +63,11 @@ from typing import Dict, Set
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from finiexragengine.core.pipeline.breaking_episode import BreakingEpisodeTracker
+from finiexragengine.core.pipeline.breaking_episode_rule import (
+    BreakingEpisodeRule,
+    EpisodeGrouping,
+)
 from finiexragengine.types.outcome_types import (
     AnalysisEnvelope,
     ArticleRef,
@@ -567,12 +572,21 @@ def main() -> None:
     # with one JSONL per stream — mirroring the collector's per-stream archives.
     # --rotate (ISSUE_13) switches either mode to the bucketed layout
     # <out>/<stream_id>/<bucket>.jsonl, buckets named from each line's collected_msc.
+    #
+    # The rotated default is `data` itself, so a bare `--rotate daily` lands where the delivered
+    # weeks land: data/<stream_id>/<bucket>.jsonl, the two stream directories side by side at the
+    # root. A default that wrote somewhere else would mean the handover shape only ever appears
+    # when someone passes the right --out by hand — which is how the shipped invocations drifted
+    # from the shipped files in the first place (2026-08-25).
+    #
+    # Only the ROTATED modes claim the root, because only they name a directory per stream. A
+    # non-rotated run emits loose <stream_id>.jsonl files and stays under data/mock_signals/, so
+    # the root holds stream directories and nothing else.
     paths = {}
     handles = {}
     counts = {}
     if args.rotate:
-        out_root = Path(f'data/mock_signals/rotated_{args.rotate}'
-                        if args.out == DEFAULT_OUT else args.out)
+        out_root = Path('data' if args.out == DEFAULT_OUT else args.out)
     elif multi:
         out_dir = Path('data/mock_signals/variant_week' if args.out == DEFAULT_OUT else args.out)
         for variant in variants:
@@ -637,10 +651,22 @@ def main() -> None:
     statuses = {}
     for stream_id, envelopes in pending.items():
         envelopes.sort(key=lambda e: e.timestamp)
+        # Episode identity (ISSUE_65) comes from the ENGINE'S OWN rule, driven here in timestamp
+        # order exactly as `PipelineRunner` drives it. Not a reimplementation: a fixture that
+        # taught different episode boundaries than the engine applies would be worse than one
+        # without the fields, because a consumer would tune against it and then meet the real thing.
+        #
+        # No query map, so the rule falls back to keying on `base_currency` — its documented
+        # degradation path, and the honest choice for a fixture that has no retrieval layer.
+        tracker = BreakingEpisodeTracker(EpisodeGrouping(BreakingEpisodeRule()))
         previous_evidence = None
         for seq, envelope in enumerate(envelopes, start=1):
             envelope.seq = seq
             envelope.stream_epoch = 1              # a generated week is never rewound
+            # Stamps `breaking_episode_id` / `breaking_episode_start` on every row the rule counts
+            # as inside an episode — including passes where `is_breaking` is false, which is the
+            # case a consumer gating on episode identity has to get right.
+            tracker.observe(envelope)
             statuses[envelope.status] = statuses.get(envelope.status, 0) + 1
             # The store write follows assembly by the persist call — tens of ms in production.
             envelope.available_msc = int(envelope.timestamp.timestamp() * 1000) + 76

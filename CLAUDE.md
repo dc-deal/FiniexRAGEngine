@@ -30,6 +30,9 @@ every change is committed manually after review.
   English. **The language of the conversation never sets the language of a file**, and a doc
   written *for* the operator, about their own workflow, is still an artifact: a German chat about
   a runbook produces an English runbook. That is where it slipped once.
+  **Gitignored is not an exemption.** `ISSUE_*.md`, `INTERNAL_*.md` and `HANDOFF_*.md` are
+  artifacts too — private, not exempt. Neither a file's audience nor its visibility changes its
+  language; only chat is German.
 
 ## Architecture planning
 
@@ -295,9 +298,39 @@ every response, success or failure.
   `PARTIAL_RESPONSE` — each maps to a `FiniexRagError` subclass.
 - **Bump `prompt_version` whenever the internal prompt changes** — different prompts yield
   different scores for the same news; the consumer must keep the series apart (replay/backfill).
+  **Versions only move forward.** A prompt is never edited in place and never reverted — a
+  correction is the next version, and the superseded file stays in `prompts/<name>/` as the record
+  of what produced the archived series. A version that turned out wrong keeps its number and gains
+  a note saying so, in its own front matter and in the issue that supersedes it. Deleting or
+  rewriting a version orphans every envelope carrying it.
+  **And a bump reports its effect, not merely its existence.** `prompt_version` says which prompt
+  ran; it cannot say the new one answers differently. v2→v3 (2026-08-23) cut the crypto confirm rate
+  8.43% → 0.47% because a display-field instruction quietly added a qualification test to breaking,
+  and nothing compared the distributions for three days (#110). A prompt change records its
+  before/after score distribution in the issue that makes it.
 
 ## Ingest & retrieval principles
 
+- **The ingest pass is three phases, and only the middle one is concurrent.** `plan` (who is
+  polled at all — reads the shared quarantine state and hands out the half-open probe), `fetch`
+  (pooled per `SourceSetConfig.fetch_workers`), `account` (health, journal, embed, upsert,
+  detection — everything that costs money or mutates state, in declared order). `fetch_workers`
+  therefore changes *when* feeds are pulled and never what a pass concluded; a test asserts the
+  pooled and sequential result objects are identical. Widening that boundary is an architecture
+  decision, not a tuning one — the paid stages are sequential on purpose, and the budget-suspend
+  path depends on it.
+- **`SourceHealthStore` is safe under concurrent per-source calls — settled, not an open
+  question.** It has been re-derived in more than one session, so the answer lives here. The
+  reasons are structural, not luck: `_connect()` opens a psycopg connection **per call** (no
+  shared cursor); `_PassState` accumulates into `Set[str]` rather than integer counters (atomic
+  under the GIL *and* idempotent per `source_id`, which is what keeps the correlated-failure
+  denominator honest); the policy decision is deferred to `_resolve_pass`, which runs
+  single-threaded after `pass_scope` closes; and one thread only ever touches one `source_id`.
+  Verified against Postgres on cloned tables, 2026-08-25 — 25 rounds × 12 concurrent recorders
+  with no accumulator mismatch, and both policy paths (correlated-failure guard, flag ladder)
+  behaving as designed. Method and numbers:
+  `docs/architecture/application_flow/01_ingest_and_retrieval.md`. Do not re-derive it — extend
+  that record if the shape changes.
 - **Store the full raw corpus; never discard at ingest.** Acquisition fetches → embeds →
   upserts *every* article (idempotent). Relevance is contextual and per-query, so it is a
   retrieval-time decision, not an ingest-time one. Discarding at ingest would break

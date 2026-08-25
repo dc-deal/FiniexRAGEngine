@@ -46,6 +46,35 @@ prompt really *is* the same one, and the dataset should say so. One field per fa
 
 ## Running it
 
+> **The symbol lists below are load-bearing — do not shorten them to save time.** `--symbols` sets
+> how many random draws each cycle consumes, so changing the *count* produces a different
+> realization: different signals, different scores, different pass timings, a different envelope
+> count per day. It is not a subset of the longer run, and a consumer holding an earlier week cannot
+> merge the two. They mirror the symbol sets of `configs/pipelines/*.json`; check them against those
+> before regenerating. (2026-08-25: a regeneration went out with 8 crypto and 2 forex symbols
+> because these commands had drifted from what was actually shipped. The consumer could not import
+> it.)
+
+> **Why a regeneration is nonetheless cheap today, and what would end that.** The consumer absorbed
+> the 2026-08-25 realization change with **zero test failures across 2,347 passes** (one deliberate
+> skip), on days where every single row had changed. That was not luck: their consumers of those days
+> assert *invariants*
+> rather than values — a partition identity, a directional threshold their cadence always crosses, a
+> carved-versus-clean comparison. The one case that could have flipped had 11 minutes of margin
+> against our largest inter-envelope gap, which moved 16.7 → 19.0 minutes.
+>
+> So the property to preserve is theirs, not ours: **the day one of those assertions pins a sentiment
+> value, a regeneration stops being free.** Worth knowing before planning one — and it is why the
+> ISSUE_108 archive re-export is expected to be cheap on their side too.
+>
+> **And there is now a signal for when it has stopped being true.** The consumer has written their
+> own rule — tests reading our fixture pin invariants, not values — and told us how to read a breach
+> of it: *"treat a request from us to keep a realization as a signal that we broke our own rule."*
+> So a request to preserve a realization is **diagnostic information, not just a request**. Answer it,
+> and ask which assertion started depending on a value; that is cheaper to fix on their side than a
+> preserved realization is on ours.
+
+
 ```bash
 # 5-cycle fixture sample → tests/fixtures/signals/ (tracked; the IDE's contract sample)
 python experiments/mock_signal_data/generate.py
@@ -54,15 +83,15 @@ python experiments/mock_signal_data/generate.py
 python experiments/mock_signal_data/generate.py \
     --pipeline-id crypto_sentiment_mock --prompt crypto \
     --start 2026-04-27T00:00:00Z --cycles 1008 --rotate daily \
-    --symbols BTCUSD,ETHUSD,SOLUSD,ADAUSD,XRPUSD,DASHUSD,LTCUSD,ETHEUR \
-    --out data/mock_signals/crypto_mock_week
+    --symbols BTCUSD,ETHUSD,ETHEUR,SOLUSD,ADAUSD,XRPUSD,DASHUSD,LTCUSD,DOTUSD \
+    --out data
 
 # the forex week
 python experiments/mock_signal_data/generate.py \
     --pipeline-id forex_macro_sentiment_mock --prompt forex \
     --start 2026-04-27T00:00:00Z --cycles 1008 --rotate daily \
-    --symbols EURUSD,GBPUSD \
-    --out data/mock_signals/forex_mock_week
+    --symbols EURUSD,GBPUSD,USDJPY,AUDUSD,EURGBP,NZDUSD,USDCAD,USDCHF \
+    --out data
 ```
 
 Both weeks also exist as a `launch.json` entry (**🧪 Mock Data**, in the `06_output` group next to
@@ -76,12 +105,12 @@ looks for it).
 | `--cycles` | 5 | number of **bars**, not envelopes — see mechanism B below. 1008 = 7 days at M10 |
 | `--start` | `2026-04-27T00:00:00Z` | ISO8601 UTC |
 | `--seed` | 42 | deterministic output |
-| `--symbols` | the 8 backtestable crypto pairs | `DOTUSD` is excluded on purpose: no tick data on the consumer side, so it could never be backtested |
+| `--symbols` | the 8 backtestable crypto pairs | **Pass the full pipeline symbol set for anything delivered** — the count drives the rng draws, so a shortened list is a *different realization*, not a smaller one. The default's older rationale (`DOTUSD` has no tick data on the consumer side) states a true fact and draws the wrong conclusion from it: the consumer's signal symbols are a superset of their price symbols **by design**, so a symbol they cannot backtest is still one they run live, import and assert against. Settled with them 2026-08-25. |
 | `--pipeline-id` | `crypto_sentiment_mock` | **keep the `_mock` suffix** when overriding |
 | `--prompt` | `crypto` | `crypto` \| `forex` — which real prompt this batch mocks |
 | `--variants` | — | fan-out (#42): `"mini=gpt-4o-mini,4o_enhanced=gpt-4o"` |
 | `--rotate` | — | `daily` \| `weekly` — the collector's bucketed layout (#13) |
-| `--out` | the tracked fixture path | a file, or a directory root with `--rotate`/`--variants` |
+| `--out` | `data` when `--rotate` is set, else the tracked fixture path | a file, or a directory root with `--rotate`/`--variants`. **A rotated run defaults to the repo's `data/`**, so the handover shape is what you get without passing a path — see the layout section. |
 
 **`--prompt` is explicit on purpose — never inferred from `--pipeline-id`.** That id is free text;
 a substring guess would be a silent wrong answer for any id that does not match the guess, and
@@ -102,8 +131,21 @@ IDE's merge key (nearest snapshot with `collected_msc <= tick.collected_msc`; no
 ### File layout with `--rotate daily`
 
 ```
-<out>/<stream_id>/<bucket>.jsonl        e.g. crypto_mock_week/crypto_sentiment_mock/2026-04-27.jsonl
+<out>/<stream_id>/<bucket>.jsonl
 ```
+
+**A rotated run writes into `data/` by default**, so the stream directory sits at the root and the
+tree is the handover shape — the two pipeline ids side by side, nothing wrapping them:
+
+```
+data/crypto_sentiment_mock/2026-04-27.jsonl … 2026-05-03.jsonl
+data/forex_macro_sentiment_mock/2026-04-27.jsonl … 2026-05-03.jsonl
+```
+
+Anything **not** in this layout — a single-file run, a variant fan-out — stays under
+`data/mock_signals/` beside them, so the root holds streams and only streams. `data/signal_export/`
+is the real exporter's tree and is never a `--out` target: keep the `_mock` suffix on
+`--pipeline-id` and a generated stream can never be mistaken for a produced one.
 
 Buckets are named from each line's `collected_msc` via `finiexragengine.utils.archive_layout` —
 the same naming contract the real exporter uses (#13), so a consumer's multi-file range read can be

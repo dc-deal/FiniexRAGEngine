@@ -256,7 +256,7 @@ class PipelineAssembler:
                          for source in source_set.active_sources()],
                         news_embedder, store, breaking_detector=detector,
                         health_store=health_store, source_set_id=source_set_id,
-                        poll_log=poll_log)
+                        poll_log=poll_log, fetch_workers=source_set.fetch_workers)
 
     def build_runner(self, config: PipelineConfig,
                      include_ingest: bool = True) -> PipelineRunner:

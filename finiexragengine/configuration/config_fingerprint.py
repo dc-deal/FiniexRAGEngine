@@ -76,12 +76,16 @@ _SOURCE_SET_EXCLUDED: Dict[str, str] = {
                'series-defining. Same key name, two different clocks',
     'fetch_timeout_seconds': 'operational deadline (ISSUE_73) — retuning it must never fork a '
                              'comparable series',
+    'fetch_workers': 'acquisition concurrency (ISSUE_107) — pace, not corpus content: the same '
+                     'feeds are read in the same pass, only faster',
 }
 
 _SOURCE_EXCLUDED: Dict[str, str] = {
     'poll_interval_seconds': 'per-feed pace',
     'timeout_seconds': 'per-feed operational deadline (ISSUE_73)',
     'comment': 'editorial note about the feed; no effect on what is ingested',
+    'expected_max_age_hours': 'diagnostic expectation about the feed (ISSUE_107) — it decides '
+                              'what a REPORT calls stale, never what is fetched or stored',
 }
 
 # --- what comes IN from app_config, and why ----------------------------------------------
@@ -131,9 +135,19 @@ def _app_slice(app: AppConfig) -> Dict[str, Any]:
 
 
 def _source_set_half(source_set: SourceSetConfig) -> Dict[str, Any]:
-    """The resolved set minus its acquisition knobs, and each feed minus its own pace knobs."""
+    """The resolved set minus its acquisition knobs, and each feed minus its own pace knobs.
+
+    Hashes what *runs*, not what is declared (ISSUE_107): the feed list comes from
+    `active_sources()`, the same one definition the ingestor and `SourceReach` read. Both
+    directions matter and they are not symmetric — disabling a *running* feed still moves the
+    fingerprint (it leaves the active set, which is the documented case this field exists for),
+    while *declaring* a candidate that is already switched off does not, because a feed the
+    engine never builds cannot change what was ingested. Without that, adding a disabled
+    candidate to the catalogue forked the signal series for a provable no-op.
+    """
     data = _prune(source_set.model_dump(mode='json'), _SOURCE_SET_EXCLUDED)
-    data['sources'] = [_prune(source, _SOURCE_EXCLUDED) for source in data['sources']]
+    data['sources'] = [_prune(source.model_dump(mode='json'), _SOURCE_EXCLUDED)
+                       for source in source_set.active_sources()]
     return data
 
 

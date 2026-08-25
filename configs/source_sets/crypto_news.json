@@ -44,7 +44,8 @@
             "source_id": "theblock",
             "type": "rss",
             "url": "https://www.theblock.co/rss.xml",
-            "weight": 1.0
+            "weight": 1.0,
+            "comment": "Disabled on the live server 2026-08-25 after five dead days and three escalating quarantines — every trigger a read timeout at the ~20.7s deadline, which is a SLOW-BUT-ALIVE profile, not a bot-wall. Re-measured 2026-08-25 (ISSUE_107): 200 with 20 entries from the dev container. Try timeout_seconds before treating it as gone."
         },
         {
             "source_id": "cryptoslate",
@@ -52,7 +53,132 @@
             "url": "https://cryptoslate.com/feed/",
             "weight": 0.8,
             "poll_interval_seconds": 120,
-            "comment": "Behind Cloudflare Bot-Management. Measured 2026-07-16: 200 from a clean egress IP, 403 (Cf-Mitigated: challenge) from a datacenter IP — a JS browser challenge no feed reader can pass, and no User-Agent changes that. Where it is reachable it still needs the identified UA. Switch off per machine via user_configs/source_sets/ when the egress IP is challenged."
+            "comment": "Behind Cloudflare Bot-Management. Measured 2026-07-16: 200 from a clean egress IP, 403 (Cf-Mitigated: challenge) from a datacenter IP — a JS browser challenge no feed reader can pass, and no User-Agent changes that. Where it is reachable it still needs the identified UA. Switch off per machine via user_configs/source_sets/ when the egress IP is challenged. Re-measured 2026-08-25 (ISSUE_107): 200 with 10 entries from the dev container — the wall did not reproduce, so re-probe with feed_doctor_cli before assuming it is still there."
+        },
+        {
+            "source_id": "beincrypto",
+            "type": "rss",
+            "url": "https://beincrypto.com/feed/",
+            "weight": 1.0,
+            "comment": "Replaces theblock's tier (ISSUE_107) — established, editorially independent crypto desk. Probed 2026-08-25: 200, 12 entries, newest 1.1h; fires 0 of this set's keywords on current contents, so it enters as corroboration volume rather than as a fast-path source."
+        },
+        {
+            "source_id": "cryptopolitan",
+            "type": "rss",
+            "url": "https://www.cryptopolitan.com/feed/",
+            "weight": 0.8,
+            "comment": "Replaces cryptoslate's tier (ISSUE_107). Probed 2026-08-25: 200, 22 entries, newest 0.1h, 1 of 22 matching this set's keywords. Independent of the four incumbents, which is what makes its duplicates count as cross-feed corroboration."
+        },
+        {
+            "source_id": "bitcoinmagazine",
+            "type": "rss",
+            "url": "https://bitcoinmagazine.com/feed",
+            "weight": 0.8,
+            "enabled": false,
+            "comment": "Tier B candidate (ISSUE_107) — BTC-focused desk, independent of the incumbents. Probed 2026-08-25: 200, 10 entries, newest 12.1h. Switch on only once ISSUE_106 records the detection trigger: high_cluster_size 5 was calibrated on the July feed mix and becomes a routine story once this set runs many feeds."
+        },
+        {
+            "source_id": "ambcrypto",
+            "type": "rss",
+            "url": "https://ambcrypto.com/feed/",
+            "weight": 0.8,
+            "enabled": false,
+            "comment": "Tier B candidate (ISSUE_107). Probed 2026-08-25: 200, 16 entries, newest 1.1h, 2 of 16 matching this set's keywords (a chain halt and a delisting) — a useful hit rate, which is precisely why it must not enter above the 0.9 fast-path gate before the trigger is observable."
+        },
+        {
+            "source_id": "protos",
+            "type": "rss",
+            "url": "https://protos.com/feed/",
+            "weight": 0.8,
+            "enabled": false,
+            "comment": "Tier B candidate (ISSUE_107) — investigative desk whose beat IS this set's vocabulary: 3 of 10 current items match (30%, the highest of any candidate). Probed 2026-08-25: 200, newest 19.7h. Low volume, high keyword density; the pairing to watch when deciding whether keyword_source_weight discriminates at all (ISSUE_82 / ISSUE_106)."
+        },
+        {
+            "source_id": "thedefiant",
+            "type": "rss",
+            "url": "https://thedefiant.io/feed",
+            "weight": 0.8,
+            "enabled": false,
+            "poll_interval_seconds": 60,
+            "comment": "Tier B candidate (ISSUE_107) — DeFi desk, exploits and governance attacks are its beat: 10 of 100 current items match this set's keywords. Probed 2026-08-25: 200, newest 16.8h. A poll floor because 100 entries per fetch is the largest of any candidate and the fast loop pays for it every pass."
+        },
+        {
+            "source_id": "cryptobriefing",
+            "type": "rss",
+            "url": "https://cryptobriefing.com/feed/",
+            "weight": 0.8,
+            "enabled": false,
+            "comment": "Tier B candidate (ISSUE_107). Probed 2026-08-25: 200, 30 entries, newest 0.1h. Broader than crypto — general AI and geopolitics items arrive with it, one of which matched 'collapse' on US-Canada trade talks. Cross-market bleed is worth knowing about: the article corpus is shared, so forex_news's detector counts these neighbours too (ISSUE_106)."
+        },
+        {
+            "source_id": "newsbtc",
+            "type": "rss",
+            "url": "https://www.newsbtc.com/feed/",
+            "weight": 0.6,
+            "enabled": false,
+            "comment": "Tier B candidate (ISSUE_107). Probed 2026-08-25: 200, 10 entries, newest 13.8h. Weighted 0.6 rather than 0.8 because bitcoinist — a working feed, deliberately NOT declared — belongs to the same publisher network: whichever of the two runs, its duplicates are intra-network and inflate cluster_size without adding an independent voice."
+        },
+        {
+            "source_id": "coingape",
+            "type": "rss",
+            "url": "https://coingape.com/feed/",
+            "weight": 0.6,
+            "enabled": false,
+            "comment": "Tier B candidate (ISSUE_107) — recall tier. Probed 2026-08-25: 200, 20 entries, newest 0.6h, 0 keyword matches."
+        },
+        {
+            "source_id": "bitcoincom",
+            "type": "rss",
+            "url": "https://news.bitcoin.com/feed/",
+            "weight": 0.6,
+            "enabled": false,
+            "comment": "Tier B candidate (ISSUE_107) — recall tier. Probed 2026-08-25: 200, 10 entries, newest 0.0h, 1 of 10 matching."
+        },
+        {
+            "source_id": "utoday",
+            "type": "rss",
+            "url": "https://u.today/rss",
+            "weight": 0.6,
+            "enabled": false,
+            "poll_interval_seconds": 300,
+            "comment": "Tier B candidate (ISSUE_107) — highest-volume candidate at 95 entries per fetch and predominantly price commentary ('BTC Reclaims $81K'), which is duplicate-heavy by nature. Probed 2026-08-25: 200, newest 0.9h, 3 of 95 matching. Weight 0.6 plus a 5-minute poll floor: recall without paying for it on the fast loop, and without letting it dominate the cluster-size distribution."
+        },
+        {
+            "source_id": "sec_press",
+            "type": "rss",
+            "url": "https://www.sec.gov/news/pressreleases.rss",
+            "weight": 0.8,
+            "enabled": false,
+            "comment": "Tier B candidate (ISSUE_107) — the primary source for half this set's vocabulary ('SEC', 'lawsuit'), which reaches us today only through third-party reporting. Probed 2026-08-25: 200, 25 entries, newest 162h. HELD AT 0.8 DELIBERATELY: the keyword list contains the bare token 'SEC' and every SEC press-release title begins with it, so the fast-path would fire on 25 of 25 current items — 6x the busiest incumbent (cointelegraph, 16.7%). At 0.8 it feeds the corpus and the cluster path without ever self-flagging. Promoting it to 1.0 depends on ISSUE_46 narrowing 'SEC' to phrases ('SEC charges', 'SEC sues'). Publishes on a schedule, not a news cycle: observed 7d (2026-08-25) — right at the 168h default, which would flap. The 720h allowance is what both delivery checks judge it by (ISSUE_107) — without it the 168h default calls a healthy press feed STALE and SILENT.",
+            "expected_max_age_hours": 720
+        },
+        {
+            "source_id": "cftc_press",
+            "type": "rss",
+            "url": "https://www.cftc.gov/RSS/RSSGP/rssgp.xml",
+            "weight": 0.8,
+            "enabled": false,
+            "comment": "Tier B candidate (ISSUE_107) — the derivatives-regulator twin of sec_press. Probed 2026-08-25: 200, 10 entries, newest 93.3h, 0 of 10 matching this set's keywords (its house style does not use the bare token, unlike the SEC's). Kept at the same weight as sec_press so the two regulators are one comparable tier rather than two hand-set values. Publishes on a schedule, not a news cycle: observed 4d (2026-08-25). The 720h allowance is what both delivery checks judge it by (ISSUE_107) — without it the 168h default calls a healthy press feed STALE and SILENT.",
+            "expected_max_age_hours": 720
+        },
+        {
+            "source_id": "kraken_blog",
+            "type": "rss",
+            "url": "https://blog.kraken.com/feed",
+            "weight": 0.6,
+            "enabled": false,
+            "poll_interval_seconds": 300,
+            "comment": "Tier B candidate (ISSUE_107) — exchange announcements, where a halt or a delisting ORIGINATES before news feeds carry it. Probed 2026-08-25: 200, 10 entries, newest 0.6h, 0 of 10 matching: the current contents are marketing ('Kraken Pro on TradingView'), so the precision argument is about the rare item, not the average one. Weight 0.6 and a poll floor until source_contribution_cli says whether the rare item is worth the average one."
+        },
+        {
+            "source_id": "kucoin_ann",
+            "type": "rss",
+            "url": "https://www.kucoin.com/rss/news",
+            "weight": 0.5,
+            "enabled": false,
+            "poll_interval_seconds": 300,
+            "comment": "Tier B candidate (ISSUE_107) — the only other exchange announcement feed that exists at all: binance answers 202 with an empty body, coinbase and bybit 403, and bitfinex, okx, gemini, gate, bitget, mexc and htx all 404. Probed 2026-08-25: 200, 50 entries, newest 2.7h, 0 matching — heavily promotional (mining campaigns, reward programmes). Lowest weight in the set and a poll floor: it is admitted for listing and delisting notices, and it is the first candidate source_contribution_cli should be asked to justify."
         }
-    ]
+    ],
+    "fetch_workers": 8
 }

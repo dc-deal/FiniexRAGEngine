@@ -471,10 +471,19 @@
                 "forex",
                 "--pipeline-id",
                 "forex_macro_sentiment_mock",
+                // Mirrors the SYMBOL SET of configs/pipelines/forex_macro_sentiment.json, and has
+                // to keep mirroring it: the symbol COUNT drives the generator's rng draws, so a
+                // shortened list is not a smaller fixture but a different realization — every
+                // signal, score and pass timing changes. A consumer holding an earlier week cannot
+                // merge the two. Check this list against the pipeline config before regenerating.
                 "--symbols",
-                "EURUSD,GBPUSD",
+                "EURUSD,GBPUSD,USDJPY,AUDUSD,EURGBP,NZDUSD,USDCAD,USDCHF",
+                // `--rotate` writes <out>/<stream_id>/<bucket>.jsonl, so pointing --out at `data`
+                // puts the stream directory at the root: data/forex_macro_sentiment_mock/<day>.jsonl
+                // — the handover shape. Everything NOT in this layout (single-file runs, variant
+                // fan-outs) stays under data/mock_signals/ beside it.
                 "--out",
-                "data/mock_signals/forex_mock_week"
+                "data"
             ],
             "console": "integratedTerminal",
             "justMyCode": false,
