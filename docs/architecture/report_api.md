@@ -156,6 +156,21 @@ reading its flags, and every report reachable from the console is reachable at a
 the same parameters and the same provenance — the two surfaces cannot drift into offering different
 things.
 
+## Timestamps
+
+Every datetime in a report payload is **UTC, rendered with a trailing `Z`**.
+
+Both halves are deliberate, and both were bugs first. The reports read `TIMESTAMPTZ` columns, and
+psycopg returns those in the *session's* timezone — on a host running Europe/Berlin that meant
+report payloads carried `+02:00` while every envelope carried UTC: the same instant in two
+renderings, one of them silently dependent on the server's clock settings. And the offset form
+cannot survive a query string, because `+` decodes as a space: a `started_at` copied out of the
+quarantine history could not be pasted into the episode drill-down (`?episode_start=…+02:00`
+arrived as `… 02:00` and answered 422).
+
+Normalising in the serializer fixes both at the one point every payload passes through, and it means
+**a timestamp a report prints is a timestamp a caller can use** — no encoding step in between.
+
 ## Boundaries
 
 - **Read-only, and it cannot spend.** Every entry reads the journal, the cost log or the health

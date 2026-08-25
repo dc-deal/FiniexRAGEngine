@@ -76,11 +76,27 @@ def test_nested_dataclasses_lists_and_dicts_are_walked() -> None:
     assert result['labels'] == {'x': 1}
 
 
-def test_datetimes_pass_through_untouched() -> None:
-    """Rendering them is the transport's job; choosing a format here would be guessing."""
-    moment = datetime(2026, 8, 25, 6, 30, tzinfo=timezone.utc)
+def test_a_datetime_is_normalised_to_utc_and_rendered_with_z() -> None:
+    """Two bugs, one fix (measured on the live engine 2026-08-25).
 
-    assert to_jsonable(_Row('a', 1, 1, when=moment))['when'] == moment
+    The reports read `TIMESTAMPTZ`, and psycopg returns those in the session's timezone — on a
+    Europe/Berlin host that is `+02:00`, so report payloads carried local time while every envelope
+    carried UTC. And the offset form cannot survive a query string: `+` decodes as a space, so a
+    timestamp printed by one report could not be pasted into another.
+    """
+    berlin = timezone(timedelta(hours=2))
+
+    assert to_jsonable(datetime(2026, 8, 24, 20, 10, 44, tzinfo=berlin)) == '2026-08-24T18:10:44Z'
+    assert to_jsonable(datetime(2026, 8, 24, 18, 10, 44, tzinfo=timezone.utc)) == \
+        '2026-08-24T18:10:44Z'
+    assert '+' not in to_jsonable(_Row('a', 1, 1, when=datetime(2026, 8, 24, tzinfo=berlin)))['when']
+
+
+def test_a_naive_datetime_is_left_alone_rather_than_assumed_to_be_utc() -> None:
+    """Stamping a zone on it here would hide a defect at its source."""
+    naive = datetime(2026, 8, 24, 18, 10, 44)
+
+    assert to_jsonable(naive) == naive
 
 
 def test_a_duration_becomes_seconds() -> None:

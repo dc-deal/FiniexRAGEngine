@@ -16,8 +16,16 @@ A property that raises is left to raise. It would be a defect in a report, and a
 partial payload would hide it while making the API disagree with the console — the two failure modes
 this module exists to prevent.
 
-Datetimes are passed through untouched: FastAPI's encoder renders them as ISO-8601, and converting
-here would mean deciding a format in a place that cannot know the transport.
+**Datetimes are normalised to UTC and rendered with a `Z`.** Not cosmetics, twice over. The reports
+read `TIMESTAMPTZ` columns, and psycopg hands those back in the *session's* timezone — on a server
+running Europe/Berlin that is `+02:00`, so a report payload carried local time while every envelope
+carried UTC. Same instant, two renderings, one of them silently dependent on the host's clock
+settings, and CLAUDE.md says every datetime in this codebase is timezone-aware UTC.
+
+The `Z` matters for a second reason: a `+` in a query string decodes as a space, so an offset-form
+timestamp taken from one report could not be fed back into another (`?episode_start=...+02:00`
+arrives as `... 02:00` and fails to parse). With `Z` there is no `+` to lose, and the value a report
+prints is a value a caller can use.
 
 **Anything else raises.** A report's fields are not all data: `BreakingReport.rules_applied` carries
 the `BreakingEpisodeRule` objects the console renderer prints its policy line from. FastAPI's encoder
@@ -31,7 +39,7 @@ and returns a **console line** (`story >=0.45 - within 72h`). One name for "rend
 me" would put a display string where a number belongs, and nothing would complain.
 """
 import dataclasses
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Tuple, Type
 
@@ -73,6 +81,13 @@ def to_jsonable(value: Any) -> Any:
             return [to_jsonable(item) for item in value]
     if isinstance(value, (list, tuple)):
         return [to_jsonable(item) for item in value]
+    if isinstance(value, datetime):
+        # `date`/`time` fall through to the passthrough below — only a full instant has a zone to
+        # normalise. A naive datetime is left alone: it is a defect at its source, and quietly
+        # stamping it UTC here would hide that.
+        if value.tzinfo is None:
+            return value
+        return value.astimezone(timezone.utc).isoformat().replace('+00:00', 'Z')
     if isinstance(value, _PASSTHROUGH):
         return value
     if isinstance(value, timedelta):
