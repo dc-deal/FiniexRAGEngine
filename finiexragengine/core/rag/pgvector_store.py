@@ -142,9 +142,14 @@ class PgVectorStore(AbstractVectorStore):
                         max_distance: float) -> int:
         """Count corpus articles within `max_distance` of `vector`, published at/after `since`.
 
-        The breaking detector's cluster-size probe (ISSUE_11): a burst of near-duplicate stories
-        across feeds is a `COUNT(*)` over the recency window with a cosine-distance filter — pure
-        vector math in the DB, no rows materialized, no LLM. `max_distance` = 1 − cluster_similarity.
+        The breaking detector's cluster-size probe (ISSUE_11): a `COUNT(*)` over the recency window
+        with a cosine-distance filter — pure vector math in the DB, no rows materialized, no LLM.
+        `max_distance` = 1 − cluster_similarity.
+
+        **Read the count for what it is (ISSUE_106):** articles, not distinct feeds, and the whole
+        `articles` table, not one source-set's slice. So a single feed's live-blog reaches a cluster
+        of three by itself, and a macro story carried by two source-sets accumulates neighbours from
+        both. `DetectionConfig` carries the full note and the open decision.
         """
         table = _TABLE
         try:

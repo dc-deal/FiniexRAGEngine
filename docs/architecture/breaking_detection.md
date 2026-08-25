@@ -46,8 +46,11 @@ cross-feed copies count):
 - **Byproduct:** flagged MID+/HIGH articles populate `importance`, so the previously-dead
   `retrieval.deep_tier` becomes live — detection feeds retention for free.
 
-Config lives on the **source-set** (`detection` block) — clustering is across a set's feeds, and
-the keyword vocabulary is market-specific:
+Config lives on the **source-set** (`detection` block) because the keyword vocabulary is
+market-specific and the thresholds are read next to the feeds they are judged against — but note
+what the cluster size counts: **near-duplicate articles, corpus-wide**, not distinct feeds and not
+one set's slice. See *The detection trigger* and `DetectionConfig` for why that distinction matters
+and which half of it is still open.
 
 ```json
 "detection": {
