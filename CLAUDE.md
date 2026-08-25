@@ -229,6 +229,15 @@ Read first, in order:
   (`[OVERRIDE] …`, gated by `logging.warn_on_override`).
   Details: `docs/development/user_configs_overrides.md`.
 - **CLI entry points** in `finiexragengine/cli/` — parameter reception only, no logic.
+- **One report, one command, one route.** A parameter must never decide *which* report you get.
+  If it is its own report — its own question, its own shape — it gets its own CLI entry point and
+  its own address under `/v1/reports/<name>`. A flag may **narrow** a report (window, symbol,
+  source id); it may not **replace** it. A fixed composite is fine and is something else entirely:
+  `sources_cli` prints health next to latency because the operator's question spans both, and no
+  flag selects between them. What is not fine is `--timeline` turning a funnel report into a series
+  report — a second program wearing the first one's name, invisible until you read the flags.
+  ISSUE_104 split five such modes out; the API had already been forced into the right shape,
+  because an address has to name one thing.
 - Early-exit pattern preferred. Keep diffs minimal; no changelog/version comments in code.
 - **Comment the flow generously as you build.** Comment each meaningful step —
   when in doubt, one comment too many beats one too few — giving the mechanics and

@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, FastAPI
 from finiexragengine.api.bearer_auth import build_bearer_dependency
 from finiexragengine.api.endpoints.build_router import build_build_router
 from finiexragengine.api.endpoints.health_router import build_health_router
+from finiexragengine.api.endpoints.report_router import build_report_router
 from finiexragengine.api.endpoints.pipelines_router import build_pipelines_router
 from finiexragengine.api.endpoints.sentiment_router import build_sentiment_router
 from finiexragengine.api.rate_limiter import RateLimiter, build_rate_limit_dependency
@@ -339,9 +340,16 @@ def create_app(attach_runners: Optional[bool] = None,
     exempt = ((health, api_config.health_public), (build, api_config.build_info_public))
     app.include_router(_build_public_router(
         api_config, [router for router, is_public in exempt if is_public]))
+    # Diagnostic reports (ISSUE_104) — protected like everything else, and only where there is a
+    # store to read: without a database the catalog has nothing to answer from, and a route that
+    # can only 503 is worse than one that is honestly absent.
+    protected_extra = [router for router, is_public in exempt if not is_public]
+    if database_url:
+        protected_extra.append(build_report_router(
+            database_url, config_manager,
+            max_window_days=api_config.reports_max_window_days))
     app.include_router(_build_protected_router(
-        registry, api_config, outcome_store=outcome_store,
-        extra_routers=[router for router, is_public in exempt if not is_public]))
+        registry, api_config, outcome_store=outcome_store, extra_routers=protected_extra))
     return app
 
 
@@ -372,8 +380,9 @@ def _build_protected_router(registry: PipelineRegistry,
                             extra_routers: Optional[List[APIRouter]] = None) -> APIRouter:
     """Everything a token is required for — and everything added here later, automatically.
 
-    `extra_routers` carries the exemptions that were switched *off*: an exemption that is disabled
-    is simply a protected route, and this is where it belongs.
+    `extra_routers` carries routers assembled by the caller: the exemptions that were switched
+    *off* (a disabled exemption is simply a protected route) and the report surface, which exists
+    only when a database is configured.
     """
     # Environment wins, the config overlay fills in — see `TokenRegistry.load`. The source is
     # announced below rather than inferred: a value in `user_configs` silently shadowed by a stale

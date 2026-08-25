@@ -189,6 +189,14 @@ cost log accounts for it. This route was the one hole in that property.
 
 A caller who wants the latest signal uses `GET /v1/pipelines/{id}/latest`, which never spends.
 
+## Diagnostics: `GET /v1/reports`
+
+Token-gated like everything else. It serves the engine's own metrics surfaces — source health and
+quarantine history, fetch latency, the breaking funnel — as JSON, so a question about the live
+engine's behaviour no longer needs a session on the host. Deliberately **not** part of the frame
+contract a collector builds against: the shapes are diagnostic and stay free to change. Details in
+`report_api.md`.
+
 ## `GET /v1/build` is the second open route
 
 It reports what code the process is running: `version`, the short `commit`, whether the working tree

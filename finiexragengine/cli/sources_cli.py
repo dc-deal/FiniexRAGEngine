@@ -1,45 +1,38 @@
-"""CLI entry point: everything the engine knows about its feeds.
+"""CLI entry point: the source overview — feed reliability next to the poll journal.
 
-Two reports, deliberately in one place because the operator's question spans both: the health rows
-(ISSUE_11 — reliability, flags/quarantine, the problem log) and the poll journal (ISSUE_76 —
-latency percentiles, the slow-vs-dead verdict, and the outages measured as gaps in the poll
-series). Health says *whether* a feed is delivering; the journal says *how* it has been behaving.
+Two reports in one view, deliberately and without a switch: health says *whether* a feed is
+delivering (ISSUE_11 — reliability, flags/quarantine, the problem log) and the journal says *how* it
+has been behaving (ISSUE_76 — latency percentiles, the slow-vs-dead verdict, outages as gaps in the
+series). The operator's question spans both, so both print together.
 
-`--history <source_id>` switches to the third question (ISSUE_84): *what did we do about it, and
-was that proportionate* — one feed's quarantine episodes, the rung each reached, and the polls the
-policy cost kept apart from the polls an outage cost.
-
-`--contribution [source_set_id]` switches to the fourth (ISSUE_82 finding 9): *is a feed worth the
-weight it was given* — articles produced against articles that actually reached a prompt. Health
-and latency describe the pipe; this describes what came through it.
+What used to hide behind flags here now has its own command, because a parameter that decides
+*which* report you get is a second program wearing this one's name (ISSUE_104):
+`source_quarantine_cli`, `quarantine_episode_cli`, `source_contribution_cli`.
 """
 import argparse
 import os
-from datetime import datetime, timezone
-from typing import Dict
 
 from finiexragengine.configuration.app_config_manager import AppConfigManager
 from finiexragengine.core.observability.reports.source_contribution_report import (
     build_source_contribution_report,
     format_source_contribution_report,
 )
+from finiexragengine.core.observability.reports.report_catalog import (
+    build_report,
+    format_parameter_line,
+    resolve,
+)
 from finiexragengine.core.observability.reports.source_health_report import (
-    build_source_health_report,
     format_source_health_report,
 )
 from finiexragengine.core.observability.reports.source_latency_report import (
-    build_source_latency_report,
     format_source_latency_report,
 )
 from finiexragengine.core.observability.reports.source_quarantine_report import (
-    build_quarantine_episode,
-    build_source_quarantine_report,
     format_quarantine_episode,
     format_source_quarantine_report,
 )
-from finiexragengine.exceptions.ragengine_errors import ConfigurationError
 from finiexragengine.utils.console_encoding import use_utf8_output
-from finiexragengine.utils.report_window import parse_since
 
 
 def main() -> None:
@@ -48,118 +41,40 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description='Source report: feed reliability, flags/quarantine, problems, and the '
                     'poll journal (latency, slow-vs-dead verdict, outages)')
-    parser.add_argument('--since', default='7d',
-                        help='poll-journal window: 7d, 30d, or all (health rows are lifetime)')
-    parser.add_argument('--history', metavar='SOURCE_ID',
-                        help='quarantine history for one feed instead of the fleet overview: '
-                             'every episode, the rung it reached, and what it cost (ISSUE_84)')
-    parser.add_argument('--episode', metavar='UTC_TIMESTAMP',
-                        help='with --history: the poll-by-poll run-up to one episode, by its '
-                             'start time (e.g. 2026-08-15T05:04:04)')
-    parser.add_argument('--contribution', metavar='SOURCE_SET_ID', nargs='?', const='',
-                        help='what each feed of a source-set actually contributed: articles '
-                             'produced vs articles that reached a prompt, next to the weight '
-                             'assigned by hand (ISSUE_82 finding 9). Omit the id for every set')
+    # No argparse default (ISSUE_104): the configured window is the default, and a flag that always
+    # carries a value would make `reports.*.window` unreadable — a config value nothing can reach.
+    parser.add_argument('--since', default=None,
+                        help='poll-journal window: 7d, 30d, or all (health rows are lifetime); '
+                             'omitted, reports.source_latency.window applies')
+    parser.add_argument('--recent-problems', type=int, default=None,
+                        help='how many recent problems to list; omitted, '
+                             'reports.source_health.recent_problems applies')
     args = parser.parse_args()
 
     database_url = os.environ.get('DATABASE_URL')
     if not database_url:
         parser.error('DATABASE_URL is not set (point it at the pgvector Postgres)')
 
-    if args.history:
-        _print_history(parser, database_url, args)
-        return
-
-    if args.contribution is not None:
-        _print_contribution(parser, database_url, args)
-        return
-
-    # Currently-configured source ids across every set — anything in the store but not here is
-    # an orphan (a removed feed) the report flags as safe-to-delete.
+    # Both reports need inputs only the config can answer — the configured and disabled source ids,
+    # and each feed's own fetch deadline. That resolution lives in the report catalog (ISSUE_104),
+    # so the console and the API build the identical report from the identical inputs; this CLI is
+    # back to what CLAUDE.md says it is, parameter reception.
     manager = AppConfigManager()
-    registry = manager.build_source_set_registry()
-    configured_ids = {source.source_id
-                      for source_set in registry.list_sets()
-                      for source in source_set.sources}
-    # Which of them are switched off on this machine — the store cannot know (health is what a
-    # poll did; `enabled` is what the config says), so the report is told, and marks them rather
-    # than presenting a disabled feed's frozen last poll as a current verdict.
-    disabled_ids = {source.source_id
-                    for source_set in registry.list_sets()
-                    for source in source_set.sources
-                    if not source.enabled}
+    reports_config = manager.get_config().reports
 
-    report = build_source_health_report(database_url, configured_ids,
-                                        disabled_ids=disabled_ids)
-    print(format_source_health_report(report))
+    # Config declares, the flag overrides, and the operator is told which of the two applied
+    # (ISSUE_104) — the same resolution the API runs, through a different door.
+    health = resolve('source_health', reports_config, {'recent_problems': args.recent_problems})
+    print(format_parameter_line(health.applied))
+    print(format_source_health_report(
+        build_report('source_health', database_url, manager, health.params),
+        recent_problems=health.params.options['recent_problems']))
 
-    # The deadline each feed is actually judged against (ISSUE_76): its own override if it has one,
-    # otherwise its set's default. The journal cannot know this — it records what happened, not what
-    # was allowed — so without the map a p99 has nothing to be measured against.
-    timeouts: Dict[str, int] = {
-        source.source_id: source.timeout_seconds or source_set.fetch_timeout_seconds
-        for source_set in registry.list_sets()
-        for source in source_set.sources}
-
-    since, since_label = parse_since(args.since)
-    latency = build_source_latency_report(
-        database_url, since, since_label=since_label, timeouts=timeouts,
-        warn_ratio=manager.get_config().diagnostics.timeout_warn_ratio)
+    latency = resolve('source_latency', reports_config, {'window': args.since})
     print()
-    print(format_source_latency_report(latency))
-
-
-def _print_contribution(parser: argparse.ArgumentParser, database_url: str,
-                        args: argparse.Namespace) -> None:
-    """Per-feed contribution for one source-set (ISSUE_82 #9) — reception only, no logic here."""
-    manager = AppConfigManager()
-    sets = manager.build_source_set_registry()
-    pipelines = manager.build_pipeline_registry()
-    since, since_label = parse_since(args.since)
-    wanted = [args.contribution] if args.contribution else [
-        source_set.source_set_id for source_set in sets.list_sets()]
-    for index, source_set_id in enumerate(wanted):
-        try:
-            source_set = sets.get(source_set_id)
-        except ConfigurationError as exc:
-            parser.error(str(exc))    # an unknown id is a usage error, not a crash
-        # Only pipelines reading this set can cite its articles; envelopes from another set
-        # would count nothing and cost the walk.
-        pipeline_ids = {pipeline.get_config().pipeline_id
-                        for pipeline in pipelines.list_pipelines()
-                        if pipeline.get_config().source_set == source_set_id}
-        report = build_source_contribution_report(
-            database_url, since, source_set_id=source_set_id, pipeline_ids=pipeline_ids,
-            weights={source.source_id: source.weight for source in source_set.sources},
-            disabled_ids={source.source_id for source in source_set.sources
-                          if not source.enabled},
-            since_label=since_label)
-        if index:
-            print()
-        print(format_source_contribution_report(report))
-
-
-def _print_history(parser: argparse.ArgumentParser, database_url: str,
-                   args: argparse.Namespace) -> None:
-    """The per-feed quarantine history (ISSUE_84) — parameter reception only, no logic here."""
-    manager = AppConfigManager()
-    since, since_label = parse_since(args.since if args.since != '7d' else '30d')
-    if args.episode:
-        try:
-            started_at = datetime.fromisoformat(args.episode)
-        except ValueError:
-            parser.error(f'--episode expects an ISO timestamp, got {args.episode!r}')
-        if started_at.tzinfo is None:
-            started_at = started_at.replace(tzinfo=timezone.utc)
-        episode = build_quarantine_episode(database_url, args.history, started_at)
-        if episode is None:
-            parser.error(f'no episode for {args.history} starting at {args.episode}')
-        print(format_quarantine_episode(episode, args.history))
-        return
-    report = build_source_quarantine_report(
-        database_url, args.history, since, since_label=since_label,
-        ladder_reset_hours=manager.get_config().source_health.ladder_reset_hours)
-    print(format_source_quarantine_report(report))
+    print(format_parameter_line(latency.applied))
+    print(format_source_latency_report(
+        build_report('source_latency', database_url, manager, latency.params)))
 
 
 if __name__ == '__main__':

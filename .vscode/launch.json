@@ -173,9 +173,8 @@
             "name": "📊 RAGEngine: Retrieval Floor Profile (is the cut discriminating?)",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/finiexragengine/cli/coverage_cli.py",
+            "program": "${workspaceFolder}/finiexragengine/cli/floor_profile_cli.py",
             "args": [
-                "--floor-profile",
                 "--pipeline",
                 "${input:pipeline}"
             ],
@@ -234,15 +233,14 @@
         {
             // "Do I believe that episode count?" The per-pass on/off series behind it: verdict
             // flips (the model's noise, unchanged by any grouping rule) next to episodes (what
-            // the hysteresis rule made of them). Add a symbol for one series: --timeline XRPUSD.
+            // the hysteresis rule made of them). Add a symbol for one series: --symbol XRPUSD.
             "name": "📊 RAGEngine: Breaking Timeline (flips vs episodes)",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/finiexragengine/cli/breaking_cli.py",
+            "program": "${workspaceFolder}/finiexragengine/cli/breaking_timeline_cli.py",
             "args": [
                 "--since",
-                "7d",
-                "--timeline"
+                "7d"
             ],
             "console": "integratedTerminal",
             "justMyCode": false,
@@ -284,14 +282,13 @@
         {
             // "This feed keeps dropping out — was our reaction proportionate?" One feed's
             // quarantine episodes with the ladder rung each reached, and the polls the policy
-            // cost kept apart from the polls an outage cost. Add --episode <ISO ts> for the
+            // cost kept apart from the polls an outage cost. Use quarantine_episode_cli for the
             // poll-by-poll run-up to a single decision.
             "name": "📊 RAGEngine: Source History (quarantine episodes)",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/finiexragengine/cli/sources_cli.py",
+            "program": "${workspaceFolder}/finiexragengine/cli/source_quarantine_cli.py",
             "args": [
-                "--history",
                 "ecb_press",
                 "--since",
                 "30d"
@@ -311,9 +308,8 @@
             "name": "📊 RAGEngine: Source Contribution (what each feed delivered)",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/finiexragengine/cli/sources_cli.py",
+            "program": "${workspaceFolder}/finiexragengine/cli/source_contribution_cli.py",
             "args": [
-                "--contribution",
                 "${input:source_set}",
                 "--since",
                 "7d"

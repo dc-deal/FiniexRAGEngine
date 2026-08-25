@@ -104,6 +104,16 @@ class BreakingEpisodeRule:
     def get_exit_threshold(self) -> float:
         return self._exit_threshold
 
+    def report_values(self) -> Dict[str, float]:
+        """The policy this rule applied, for a serialized report (ISSUE_104).
+
+        A grouping is only comparable within the thresholds that produced it — the same reason
+        `prompt_version` travels with a score. Values only: the open-episode state this object also
+        holds is a running detail, not a property of the measurement.
+        """
+        return {'exit_threshold': self._exit_threshold,
+                'episode_gap_minutes': self._gap.total_seconds() / 60.0}
+
 
 @dataclass
 class EpisodeGrouping:

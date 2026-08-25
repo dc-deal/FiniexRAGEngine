@@ -6,6 +6,8 @@ from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
+from finiexragengine.types.config_types.report_config_types import ReportsConfig
+
 
 class ApiConfig(BaseModel):
     """What the HTTP surface is allowed to do (ISSUE_98).
@@ -44,6 +46,11 @@ class ApiConfig(BaseModel):
     # repository the same field fingerprints the exact version, and therefore its known defects —
     # hence a switch, so closing it later is a config edit and not a code change.
     build_info_public: bool = True
+    # `GET /v1/reports/{name}` (ISSUE_104): the hard ceiling on a report's window, in days. A
+    # report over an unbounded window is a full scan of the journal, and the caller is a diagnostic
+    # tool that will ask for `all` on a table meant to grow for years. A request above this is
+    # clamped rather than refused, and the response says which window it actually used.
+    reports_max_window_days: int = 90
     # Rate limits, per client per minute. `/health` is the only route without a token, so it is the
     # only one an anonymous caller can flood; the second line bounds credential guessing.
     rate_limit_per_minute: int = 60
@@ -350,3 +357,5 @@ class AppConfig(BaseModel):
     stall_watchdog: StallWatchdogConfig = Field(default_factory=StallWatchdogConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     weekly_report: WeeklyReportConfig = Field(default_factory=WeeklyReportConfig)
+    # Per-report defaults a call may override (ISSUE_104) — see report_config_types.
+    reports: ReportsConfig = Field(default_factory=ReportsConfig)

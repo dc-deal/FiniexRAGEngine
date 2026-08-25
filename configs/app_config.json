@@ -10,6 +10,7 @@
     "run_endpoint_enabled": false,
     "docs_enabled": false,
     "build_info_public": true,
+    "reports_max_window_days": 90,
     "tokens": {},
     "rate_limit_per_minute": 60,
     "auth_failures_per_minute": 10
@@ -125,5 +126,33 @@
     "timezone": "UTC",
     "export_outcomes": true,
     "export_dir": "data/signal_export"
+  },
+  "reports": {
+    "source_health": {
+      "recent_problems": 10
+    },
+    "source_latency": {
+      "window": "7d"
+    },
+    "source_quarantine": {
+      "window": "30d"
+    },
+    "breaking": {
+      "window": "7d"
+    },
+    "breaking_timeline": {
+      "window": "7d"
+    },
+    "perf": {
+      "window": "7d"
+    },
+    "cost": {
+      "windows": [
+        "7d",
+        "30d",
+        "all"
+      ],
+      "recent_passes": 20
+    }
   }
 }

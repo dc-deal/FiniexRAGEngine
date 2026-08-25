@@ -344,3 +344,21 @@ def test_the_build_payload_is_sampled_once_not_per_request(tokens: str) -> None:
 
     assert first == second
     assert first['started_at'] == second['started_at']
+
+
+def test_the_report_surface_requires_a_token_on_the_real_app(tokens: str) -> None:
+    """ISSUE_104's routes are mounted on the protected router, so they inherit the guard.
+
+    Asserted against `create_app` rather than a hand-built router: the mounting decision is what
+    could go wrong here, and it lives there. `/v1/reports` publishes source health, quarantine
+    history and the breaking funnel — operational detail that has no business being anonymous.
+    """
+    app = create_app(attach_runners=False)
+    if '/v1/reports' not in app.openapi()['paths']:
+        pytest.skip('no DATABASE_URL — the report surface is not mounted without a store')
+    client = TestClient(app)
+
+    assert client.get('/v1/reports').status_code == 401
+    assert client.get('/v1/reports/source_health').status_code == 401
+    assert client.get('/v1/reports',
+                      headers={'Authorization': f'Bearer {_TOKEN}'}).status_code == 200

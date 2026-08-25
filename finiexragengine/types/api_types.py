@@ -1,8 +1,8 @@
 """API-facing response models (Pydantic — required for FastAPI serialization)."""
 from datetime import datetime
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class WorkerInfo(BaseModel):
@@ -149,3 +149,47 @@ class BuildInfo(BaseModel):
     dirty: Optional[bool] = None
     # When this process started. Answers the question the hash cannot: did my restart take effect?
     started_at: datetime
+
+
+class AppliedParamInfo(BaseModel):
+    """One parameter as it was applied, and where it came from (ISSUE_104).
+
+    Echoed rather than assumed. Two people comparing two answers can then see *why* they differ,
+    instead of inferring it — the same lesson `SettingResolver` wrote down for boot settings, and
+    the one this codebase has now relearned from a warn-only line that read as a spend cap, an
+    exemption switch that removed a rate limit, and a day accumulator that resets on restart.
+    """
+    value: Any
+    source: str                 # 'config' | 'request'
+    clamped: bool = False       # true when a bound shortened what was asked for
+
+
+class ReportEnvelope(BaseModel):
+    """One report's payload plus what produced it."""
+    report: str
+    generated_at: datetime
+    # Every parameter this report accepted, its applied value and its origin. Empty for a report
+    # that takes none.
+    params: Dict[str, AppliedParamInfo] = Field(default_factory=dict)
+    # The window actually used, resolved from `params` — a convenience for the common case, never
+    # a second source of truth.
+    since: Optional[datetime] = None
+    # The report's own shape, serialized by `utils.dataclass_json` — deliberately untyped here.
+    # These are internal diagnostic shapes and must stay free to change; typing them would turn
+    # every report row into an API contract, which is what the doc says this surface is not.
+    data: Any
+
+
+class ReportCatalogEntry(BaseModel):
+    """One report as the catalog listing presents it."""
+    name: str
+    summary: str
+    params: List[str]
+    required: List[str]
+    # The CONFIGURED defaults, so the listing and a call can never advertise different values.
+    defaults: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ReportCatalog(BaseModel):
+    reports: List[ReportCatalogEntry]
+    max_window_days: int
