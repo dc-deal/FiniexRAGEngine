@@ -238,6 +238,36 @@ Read first, in order:
   report — a second program wearing the first one's name, invisible until you read the flags.
   ISSUE_104 split five such modes out; the API had already been forced into the right shape,
   because an address has to name one thing.
+- **Access is granted by name, never by omission.** Every consumer token declares `grants` — a
+  list of `<surface>:<name>` (`reports:source_health`, `pipelines:crypto_sentiment`), with
+  `<surface>:*` and a bare `*` — and the field is **mandatory**: a token without it fails at boot
+  instead of defaulting to everything. So a surface added later is unreachable by a consumer until
+  someone writes its name into their token. Granting is an act; it is never inherited from a
+  default nobody chose.
+  - **A grant names a thing, not a route.** `reports:source_health` keeps meaning what it means
+    across a rename or a `/v2`; a path-shaped rule would silently stop matching and answer a
+    consumer who did nothing wrong with a 403. Comparison is exact — no wildcard matching against
+    caller-supplied paths, which is where authorization defects live.
+  - **Bound to the route by FastAPI's own mechanism.** The *surface* is declared once per domain
+    router (`Security(dependency, scopes=['reports'])` — `SecurityScopes`), the *name* is the
+    route's first path parameter. A collection route has no identity segment and is therefore
+    filtered in its handler rather than gated, so a caller entitled to some of what it lists still
+    gets an answer.
+  - **Know the one weakness: this half is NOT inherited.** Authentication sits on the single shared
+    protected router, so every route inherits it and nobody can forget it. Authorization cannot work
+    that way — the surface is per-router information — so a **new domain router that omits
+    `Security(..., scopes=[...])` would be authenticated but ungated**, reachable by any valid
+    token. That is the failure mode to watch when adding a router, and it is the reason
+    `tests/test_report_scopes.py` walks every registered identity route and asserts a token holding
+    nothing is refused: the declaration is not trusted, it is checked. **A new router means a new
+    surface in `GRANT_SURFACES` and a `Security` declaration — or the suite says so.**
+  - **`active: false` is a kill switch**, not documentation: a consumer can be switched off without
+    deleting their token, and an inactive entry never enters the registry.
+  - Each token carries a `note` saying who holds it, and the boot log prints both
+    (`[AUTH] token ide · grants: reports:source_health, pipelines:* · Testing IDE`) plus any
+    inactive entry — a grant that lives only in a config file is a grant nobody checks.
+  - The environment form (`FINIEX_API_TOKENS="name:token"`) has nowhere to put grants and therefore
+    means `*`; it exists for a container or CI, which are ours, never for a consumer.
 - Early-exit pattern preferred. Keep diffs minimal; no changelog/version comments in code.
 - **Comment the flow generously as you build.** Comment each meaningful step —
   when in doubt, one comment too many beats one too few — giving the mechanics and

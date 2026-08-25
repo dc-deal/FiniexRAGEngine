@@ -9,6 +9,7 @@ from typing import AsyncIterator, List, Optional
 from fastapi import APIRouter, Depends, FastAPI
 
 from finiexragengine.api.bearer_auth import build_bearer_dependency
+from finiexragengine.api.grant_auth import build_grant_dependency
 from finiexragengine.api.endpoints.build_router import build_build_router
 from finiexragengine.api.endpoints.health_router import build_health_router
 from finiexragengine.api.endpoints.report_router import build_report_router
@@ -343,13 +344,19 @@ def create_app(attach_runners: Optional[bool] = None,
     # Diagnostic reports (ISSUE_104) — protected like everything else, and only where there is a
     # store to read: without a database the catalog has nothing to answer from, and a route that
     # can only 503 is worse than one that is honestly absent.
+    # One registry, two users: the bearer dependency verifies against it, and the report surface
+    # asks it what a verified consumer may read (ISSUE_104). Built here rather than inside the
+    # protected router so both see the identical object — a second load could disagree with the
+    # first about who exists.
+    tokens = TokenRegistry.load(api_config.tokens)
     protected_extra = [router for router, is_public in exempt if not is_public]
     if database_url:
         protected_extra.append(build_report_router(
-            database_url, config_manager,
+            database_url, config_manager, tokens,
             max_window_days=api_config.reports_max_window_days))
     app.include_router(_build_protected_router(
-        registry, api_config, outcome_store=outcome_store, extra_routers=protected_extra))
+        registry, api_config, tokens, outcome_store=outcome_store,
+        extra_routers=protected_extra))
     return app
 
 
@@ -376,6 +383,7 @@ def _build_public_router(api_config: ApiConfig, routers: List[APIRouter]) -> API
 
 def _build_protected_router(registry: PipelineRegistry,
                             api_config: ApiConfig,
+                            tokens: TokenRegistry,
                             outcome_store: Optional[OutcomeStore] = None,
                             extra_routers: Optional[List[APIRouter]] = None) -> APIRouter:
     """Everything a token is required for — and everything added here later, automatically.
@@ -387,7 +395,6 @@ def _build_protected_router(registry: PipelineRegistry,
     # Environment wins, the config overlay fills in — see `TokenRegistry.load`. The source is
     # announced below rather than inferred: a value in `user_configs` silently shadowed by a stale
     # environment variable is precisely the kind of no-op that costs an afternoon to find.
-    tokens = TokenRegistry.load(api_config.tokens)
     if api_config.require_auth and tokens.is_empty():
         # A hard boot failure, not a warning. Starting unprotected because an environment variable
         # was missing is precisely the accident ISSUE_98 was written about, and a warning in a log
@@ -402,8 +409,19 @@ def _build_protected_router(registry: PipelineRegistry,
     if api_config.require_auth:
         auth_limiter = RateLimiter(api_config.auth_failures_per_minute)
         guards.append(Depends(build_bearer_dependency(tokens, auth_limiter)))
-        logger.info('[AUTH] %d consumer token(s): %s · /health %s · POST /run %s',
-                    len(tokens.names()), ', '.join(tokens.names()) or '—',
+        # Each consumer with what it may read and who holds it. A scope that is only in a config
+        # file is a scope nobody checks; announced at boot it is one line in the log an operator
+        # already reads (the same reasoning as SettingResolver's [SETTING] lines).
+        for name in tokens.names():
+            note = tokens.note_of(name)
+            logger.info('[AUTH] token %s · grants: %s%s', name, tokens.grants_of(name),
+                        f' · {note}' if note else '')
+        for name in tokens.inactive_names():
+            # A switched-off token is not an absent one, and the difference is exactly what an
+            # operator needs when a consumer reports that nothing works.
+            logger.warning('[AUTH] token %s · INACTIVE (configured but switched off)', name)
+        logger.info('[AUTH] %d consumer token(s) · /health %s · POST /run %s',
+                    len(tokens.names()),
                     'public' if api_config.health_public else 'protected',
                     'enabled' if api_config.run_endpoint_enabled else 'DISABLED')
     else:
@@ -415,7 +433,12 @@ def _build_protected_router(registry: PipelineRegistry,
     protected = APIRouter(dependencies=guards)
     for router in extra_routers or ():
         protected.include_router(router)
-    protected.include_router(build_pipelines_router(registry))
+    # Each domain router declares its own surface with `Security(..., scopes=[...])`; the bearer
+    # dependency above runs first (outer router before inner), so `request.state.consumer` is set
+    # by the time a grant is checked.
+    grant = build_grant_dependency(tokens)
+    protected.include_router(build_pipelines_router(registry, tokens, grant))
     protected.include_router(build_sentiment_router(
-        registry, outcome_store=outcome_store, run_enabled=api_config.run_endpoint_enabled))
+        registry, grant, outcome_store=outcome_store,
+        run_enabled=api_config.run_endpoint_enabled))
     return protected

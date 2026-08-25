@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from finiexragengine.api.endpoints.report_router import build_report_router
+from finiexragengine.api.token_registry import TokenRegistry
 from finiexragengine.configuration.app_config_manager import AppConfigManager
 from finiexragengine.core.observability.reports import report_catalog
 from finiexragengine.types.report_types import ReportParams
@@ -21,7 +22,10 @@ _TOKEN = 'report-suite-token'
 @pytest.fixture
 def client(clean_db: str) -> TestClient:
     app = FastAPI()
-    app.include_router(build_report_router(clean_db, AppConfigManager(), max_window_days=90))
+    # No consumer on the request (authentication is not mounted here), so every report is
+    # readable — the scope is exercised in `test_report_scopes.py`.
+    app.include_router(build_report_router(clean_db, AppConfigManager(), TokenRegistry(),
+                                           max_window_days=90))
     return TestClient(app)
 
 
@@ -72,7 +76,8 @@ def test_a_window_beyond_the_ceiling_is_clamped_and_says_so(clean_db: str) -> No
     for. It is clamped rather than refused — and the response states which window it really used,
     so a caller never has to infer whether it got what it asked for."""
     app = FastAPI()
-    app.include_router(build_report_router(clean_db, AppConfigManager(), max_window_days=30))
+    app.include_router(build_report_router(clean_db, AppConfigManager(), TokenRegistry(),
+                                           max_window_days=30))
     body = TestClient(app).get('/v1/reports/breaking?window=all').json()
 
     assert body['params']['window']['clamped'] is True

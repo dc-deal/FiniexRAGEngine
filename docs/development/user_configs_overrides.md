@@ -16,6 +16,30 @@ at load, per machine, and is never committed.
 **Prompts are deliberately not overridable** — a prompt is series-defining
 (`prompt_version`); a silent per-machine prompt would fork the score series invisibly.
 
+## Start from the template
+
+`user_configs/app_config.example.json` is tracked — the one file in this directory that is. Copy it
+to `user_configs/app_config.json` and edit; everything you leave out keeps the tracked default.
+
+It exists because this layer is otherwise **invisible to a fresh clone**: `user_configs/` is
+gitignored, so someone who has just cloned the repository sees no evidence that it is where tokens,
+`journal_names`, budgets and per-report windows belong. The template is that evidence, and a test
+keeps it loadable as the schema moves, so it cannot rot into something a newcomer discovers on their
+first boot.
+
+Two properties make a credential-shaped example safe to track:
+
+- **every token carries `"active": false`**, so the file grants nothing even if it is loaded by
+  accident. A copy in which every token is still inactive refuses to boot — the intended, actionable
+  failure rather than an engine serving with no credentials;
+- **the `journal_names` keys are deliberately not twelve lowercase hex characters**, so they cannot
+  match a real journal fingerprint. A mapping copied without editing resolves nothing and reports
+  `unknown`, instead of labelling whichever database it meets as `production`.
+
+Note what the template does *not* carry: the `pipelines/` and `source_sets/` overlays. Those are
+per-file copies of a tracked constellation or source set, so the thing to start from is the tracked
+file itself.
+
 ## Merge semantics
 
 One merge, one place: `configuration/config_merge.py`. An override file states **only

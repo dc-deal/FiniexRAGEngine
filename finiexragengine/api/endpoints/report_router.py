@@ -12,8 +12,10 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request, Security
 
+from finiexragengine.api.grant_auth import build_grant_dependency
+from finiexragengine.api.token_registry import TokenRegistry
 from finiexragengine.configuration.app_config_manager import AppConfigManager
 from finiexragengine.core.observability.reports import report_catalog
 from finiexragengine.exceptions.ragengine_errors import FiniexRagError
@@ -30,13 +32,33 @@ logger = logging.getLogger(__name__)
 
 
 def build_report_router(database_url: str, config_manager: AppConfigManager,
-                        max_window_days: int = 90) -> APIRouter:
+                        tokens: TokenRegistry, max_window_days: int = 90) -> APIRouter:
     """Serve the catalog and one report at a time.
 
     `max_window_days` bounds every window: an unbounded one is a full scan of the journal, and the
     caller is a diagnostic tool that will happily ask for `all` on a table that grows for years.
+
+    `tokens` answers the second question this surface raises: a verified consumer is not
+    automatically entitled to *every* report. Spend belongs to the operator, feed diagnostics may
+    belong to a collector — so each token declares what it reads, and both the listing and the
+    fetch honour it (ISSUE_104).
     """
-    router = APIRouter(prefix='/v1/reports', tags=['reports'])
+
+    def _permitted(request: Request, name: str) -> bool:
+        """Whether this caller may read `name` — for FILTERING the listing only.
+
+        The *gate* is `grant_auth`, mounted on the router: it derives `reports:<name>` from the
+        matched route and answers 403. This exists because a collection route has no identity
+        segment and therefore cannot be gated — it is filtered instead, so a caller entitled to
+        some reports still gets a useful answer rather than a refusal.
+        """
+        consumer = getattr(request.state, 'consumer', None)
+        return consumer is None or tokens.may(consumer, f'reports:{name}')
+    # `scopes=['reports']` is the SURFACE half of every grant on this router; the name half is the
+    # route's path parameter. Declared here, once, so a report added to the catalog is gated
+    # without touching a route (ISSUE_104).
+    router = APIRouter(prefix='/v1/reports', tags=['reports'],
+                       dependencies=[Security(build_grant_dependency(tokens), scopes=['reports'])])
 
     def _clamp(resolved: ResolvedReport) -> None:
         """Shorten a window that reaches past the ceiling, and say so.
@@ -59,16 +81,21 @@ def build_report_router(database_url: str, config_manager: AppConfigManager,
             window.clamped = True
 
     @router.get('', response_model=ReportCatalog)
-    def catalog() -> ReportCatalog:
-        """Every report this engine can produce, with the parameters each one accepts."""
+    def catalog(request: Request) -> ReportCatalog:
+        """The reports **this caller** can produce, with the parameters each one accepts.
+
+        Filtered rather than complete: a listing that advertised reports the caller cannot fetch
+        would turn every scope into a discovery of a 403.
+        """
         return ReportCatalog(
             reports=[ReportCatalogEntry(**vars(entry))
                      for entry in report_catalog.list_reports(
-                         config_manager.get_config().reports)],
+                         config_manager.get_config().reports)
+                     if _permitted(request, entry.name)],
             max_window_days=max_window_days)
 
     @router.get('/{name}', response_model=ReportEnvelope)
-    def report(name: str,
+    def report(request: Request, name: str,
                window: Optional[str] = Query(None, description="e.g. '7d', '30', 'all'"),
                source_id: Optional[str] = Query(None),
                episode_start: Optional[datetime] = Query(None),

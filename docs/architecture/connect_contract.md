@@ -71,6 +71,7 @@ Authorization: Bearer <token>
 | `200` | authenticated |
 | `401` + `WWW-Authenticate: Bearer` | absent, malformed or unknown credential |
 | `429` + `Retry-After` | rate limited — see below |
+| `403` | authenticated, but this token's `reports` scope does not include that report |
 | `404` | the route does not exist (see `POST /run`) |
 
 The `401` body is the same for every cause. Distinguishing "no header" from "unknown token" would
@@ -101,8 +102,30 @@ the overlay and shadowed by a forgotten variable can never be a silent no-op.
 **Preferred: the gitignored overlay**, `user_configs/app_config.json`:
 
 ```json
-{ "api": { "tokens": { "ide": "<token>" } } }
+{ "api": { "tokens": {
+    "ide": { "token": "<token>",
+             "grants": ["pipelines:crypto_sentiment", "reports:source_health"],
+             "active": true,
+             "note": "Testing IDE, issued 2026-08-23" } } } }
 ```
+
+`grants` is **mandatory** and lists what this consumer may reach, as `<surface>:<name>` —
+`pipelines:crypto_sentiment`, `reports:source_health` — with `<surface>:*` for a whole surface and
+a bare `*` for everything. A token without it fails at boot rather than defaulting, so access is
+granted by writing a name down and never by omission: a surface added later stays out of reach
+until someone puts it in a token.
+
+A grant names a **thing**, not a route. `reports:source_health` keeps meaning what it means if the
+route is renamed or a `/v2` appears; the alternative — a list of paths — would silently stop
+matching and answer you with a `403` for something you were entitled to.
+
+Reaching something outside the grants answers `403`, naming what the token *does* hold. Listing
+endpoints (`GET /v1/pipelines`, `GET /v1/reports`) are **filtered** rather than refused, so they
+always show exactly what that token can fetch.
+
+`active: false` switches a consumer off without deleting the token — for an incident, or to keep a
+superseded token in place through a rotation. `note` records who holds it: the question that
+otherwise arrives during a rotation months later.
 
 **Or the environment**, for a container or CI, which have no overlay (`user_configs/` is gitignored,
 so a fresh clone has none):

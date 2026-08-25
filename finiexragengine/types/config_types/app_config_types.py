@@ -2,11 +2,59 @@
 
 Defaults mirror configs/app_config.json exactly (operator-visible, tunable).
 """
-from typing import Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 from pydantic import BaseModel, Field, field_validator
 
 from finiexragengine.types.config_types.report_config_types import ReportsConfig
+
+
+# The surfaces a grant can name. A closed vocabulary on purpose: this is the *producing* seam —
+# an operator writing the config — so a typo like `report:source_health` must fail at boot rather
+# than turn into a silent denial nobody can see (CLAUDE.md, closed vocabularies).
+GRANT_SURFACES: Tuple[str, ...] = ('reports', 'pipelines')
+
+
+class ConsumerToken(BaseModel):
+    """One consumer's credential: who holds it, what it may reach, and whether it is in force.
+
+    `grants` is **required**, and that is the point. A token without declared rights would have to
+    default to something, and every safe-by-omission default is a default someone eventually relies
+    on without noticing. Declaring it makes granting an act rather than an oversight: a surface
+    added later is reachable by a consumer only once someone writes its name here.
+
+    A grant is `<surface>:<name>` — `reports:source_health`, `pipelines:crypto_sentiment` — with
+    `<surface>:*` for a whole surface and a bare `*` for everything. **Domain names, not routes.**
+    `source_health` is a stable concept; `/v1/reports/source_health` is merely its current address,
+    and binding a grant to an address means a later `/v2` or a rename silently stops matching — a
+    403 for a consumer who did nothing wrong. Names also compare exactly: no wildcard matching
+    against paths, which is where authorization defects live.
+
+    `active` is a kill switch, not documentation. A consumer can be switched off without deleting
+    their token — during an incident, or to keep a superseded token in place through a rotation.
+    An inactive entry never enters the registry, so an example one cannot authenticate.
+
+    `note` records who holds this token. It costs one line and answers the question that otherwise
+    arrives during a rotation, months later: *who is `ide2`, and may I revoke it?*
+    """
+    token: str
+    grants: List[str]
+    active: bool = True
+    note: str = ''
+
+    @field_validator('grants')
+    @classmethod
+    def _grants_name_a_known_surface(cls, value: List[str]) -> List[str]:
+        for grant in value:
+            if grant == '*':
+                continue
+            surface, separator, name = grant.partition(':')
+            if not separator or not name or surface not in GRANT_SURFACES:
+                raise ValueError(
+                    f'grant {grant!r} is not "<surface>:<name>" over a known surface. '
+                    f'Surfaces: {", ".join(GRANT_SURFACES)}. Use e.g. "reports:source_health", '
+                    f'"reports:*", "pipelines:crypto_sentiment", or "*" for everything')
+        return value
 
 
 class ApiConfig(BaseModel):
@@ -39,7 +87,28 @@ class ApiConfig(BaseModel):
     # variable FINIEX_API_TOKENS still wins when set, so a container or CI keeps working unchanged;
     # whichever source supplied them is reported at boot, so a config value shadowed by a stale
     # environment variable can never be a silent no-op.
-    tokens: Dict[str, str] = Field(default_factory=dict)
+    tokens: Dict[str, ConsumerToken] = Field(default_factory=dict)
+
+    @field_validator('tokens', mode='before')
+    @classmethod
+    def _reject_the_bare_token_form(cls, value: Any) -> Any:
+        """A plain `"name": "token"` used to be the whole entry. It is no longer enough.
+
+        Rejected with a message rather than absorbed: silently reading it as "everything" would
+        reinstate exactly the by-omission access this shape was introduced to end, and it would do
+        so for the entries most likely to be old — the ones nobody has looked at in a while.
+        """
+        if not isinstance(value, dict):
+            return value
+        bare = sorted(name for name, entry in value.items() if isinstance(entry, str))
+        if bare:
+            raise ValueError(
+                f'api.tokens entries must declare what they may reach: {", ".join(bare)} '
+                f'still use the bare "name": "<token>" form. Write '
+                f'{{"token": "<token>", "grants": ["*"], "note": "<who holds it>"}} instead — '
+                f'["*"] for everything, or a list such as '
+                f'["reports:source_health", "pipelines:crypto_sentiment"]')
+        return value
     # `GET /v1/build` — version, commit, dirty flag, process start time. Public by default like
     # `/health`, and for a reason that is specific rather than general: this repository is public,
     # so a commit hash discloses nothing that is not already readable on GitHub. Behind a private

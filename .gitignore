@@ -42,7 +42,12 @@ github_issues/
 
 # Operator/secret config overrides (account credit, telegram token, …) — deep-merged
 # onto configs/app_config.json at load; never committed.
-user_configs/
+#
+# The CONTENTS are ignored rather than the directory, because git cannot re-include a file whose
+# parent directory is excluded — and one file has to be tracked: the template below. It is the only
+# thing a fresh clone can see of this layer, which is otherwise invisible to it.
+user_configs/*
+!user_configs/app_config.example.json
 
 # Local dev-home seed (personal state, restored after container rebuilds)
 .devcontainer/local/

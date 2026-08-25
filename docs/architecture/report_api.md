@@ -178,6 +178,38 @@ They are already UTC and render as `+00:00`. The instant is right; only the spel
 are left alone deliberately: rewriting strings that *look* like timestamps would eventually rewrite
 a date inside an error message, and a serializer that guesses is worse than one that is uneven.
 
+## Who may read what
+
+A verified consumer is not automatically entitled to every report. Spend is the operator's business;
+feed diagnostics may legitimately belong to a collector. So each token declares `grants` — see
+`connect_contract.md` — and this surface honours them in both directions:
+
+- **`GET /v1/reports` lists only what the caller can fetch** — a listing that advertised the rest
+  would turn every scope into a discovery of a `403`;
+- **`GET /v1/reports/{name}` answers `403`** for a report outside the scope, naming what the token
+  *may* read. Deliberately not a `404`: the report exists, a partner can read this document anyway,
+  and a denial they can debug saves a round of questions.
+
+The order matters and is tested: an unknown name is a `404` whatever the scope, so a typo never
+sends someone hunting for a permission that was never the problem.
+
+`grants` is mandatory on every token — the point being that access is granted by writing a name
+down, not by a default nobody chose. When a report is added to the catalog it is reachable by a
+token holding `reports:*` immediately, and by a scoped consumer only once their token names it.
+
+**How the check is bound to the route.** The surface is declared once, where this router is built
+(`Security(dependency, scopes=['reports'])` — FastAPI's own `SecurityScopes`), and the name is the
+route's path parameter. So the gate is `reports:<name>` derived from the request FastAPI already
+matched, and a report added to the catalog is gated without a route being touched. A test walks
+every registered identity route and asserts a token holding nothing is refused, so a router mounted
+without a declared surface fails in the suite rather than in production.
+
+One consequence worth knowing: **authorisation runs before resolution**, so a scoped caller receives
+`403` for an unknown report name as well as a forbidden one. That is deliberate — answering `404`
+for a name they are not entitled to anyway would make the endpoint an existence oracle. A caller
+holding `reports:*` still gets `404` for a typo, because absence is only informative to someone
+entitled to the thing that is absent.
+
 ## Boundaries
 
 - **Read-only, and it cannot spend.** Every entry reads the journal, the cost log or the health

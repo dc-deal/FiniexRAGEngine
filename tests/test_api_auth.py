@@ -20,6 +20,7 @@ from finiexragengine.api.api_app import (
 )
 from finiexragengine.api.endpoints.build_router import build_build_router
 from finiexragengine.api.endpoints.health_router import build_health_router
+from finiexragengine.api.token_registry import TokenRegistry
 from finiexragengine.core.observability.build_info import sample_build_info
 from finiexragengine.api.rate_limiter import RateLimiter, client_key
 from finiexragengine.api.token_registry import TokenRegistry
@@ -39,10 +40,16 @@ def _registry() -> PipelineRegistry:
     return registry
 
 
+def _tokens(api_config: ApiConfig) -> TokenRegistry:
+    """The registry `create_app` builds and hands to both the guard and the report surface."""
+    return TokenRegistry.load(api_config.tokens)
+
+
 def _protected_app(**config: object) -> FastAPI:
     """A FastAPI app carrying only the protected router, built the way `create_app` builds it."""
+    api_config = ApiConfig(**config)
     app = FastAPI()
-    app.include_router(_build_protected_router(_registry(), ApiConfig(**config)))
+    app.include_router(_build_protected_router(_registry(), api_config, _tokens(api_config)))
     return app
 
 
@@ -62,7 +69,7 @@ def _exempt_app(**config: object) -> FastAPI:
     app.include_router(_build_public_router(
         api_config, [router for router, is_public in exempt if is_public]))
     app.include_router(_build_protected_router(
-        _registry(), api_config,
+        _registry(), api_config, _tokens(api_config),
         extra_routers=[router for router, is_public in exempt if not is_public]))
     return app
 
@@ -90,7 +97,7 @@ def test_a_route_added_later_inherits_the_dependency(tokens: str) -> None:
     Nothing in this test touches authentication — it registers an ordinary endpoint on the
     protected router, exactly as a future feature would, and it comes out guarded.
     """
-    router = _build_protected_router(_registry(), ApiConfig())
+    router = _build_protected_router(_registry(), ApiConfig(), _tokens(ApiConfig()))
 
     @router.get('/v1/a-future-endpoint-nobody-thought-about')
     def future_endpoint() -> dict:
@@ -163,9 +170,11 @@ def test_boot_refuses_to_serve_an_unauthenticated_api(monkeypatch: pytest.Monkey
     """Missing tokens is a hard failure, never a warning that starts the engine wide open."""
     monkeypatch.delenv('FINIEX_API_TOKENS', raising=False)
     with pytest.raises(ConfigurationError, match='FINIEX_API_TOKENS'):
-        _build_protected_router(_registry(), ApiConfig(require_auth=True))
+        _build_protected_router(_registry(), ApiConfig(require_auth=True),
+                                _tokens(ApiConfig(require_auth=True)))
     # ...and with auth deliberately off it builds, because the contract tests need that path.
-    _build_protected_router(_registry(), ApiConfig(require_auth=False))
+    _build_protected_router(_registry(), ApiConfig(require_auth=False),
+                            _tokens(ApiConfig(require_auth=False)))
 
 
 # --- the token registry ---------------------------------------------------------------------
@@ -261,7 +270,8 @@ def test_config_tokens_reach_the_protected_router(monkeypatch: pytest.MonkeyPatc
     monkeypatch.delenv('FINIEX_API_TOKENS', raising=False)
     app = FastAPI()
     app.include_router(_build_protected_router(
-        _registry(), ApiConfig(tokens={'ide': _TOKEN})))
+        _registry(), ApiConfig(tokens={'ide': {'token': _TOKEN, 'grants': ['*']}}),
+        _tokens(ApiConfig(tokens={'ide': {'token': _TOKEN, 'grants': ['*']}}))))
     client = TestClient(app)
     assert client.get('/v1/pipelines').status_code == 401
     assert client.get('/v1/pipelines',

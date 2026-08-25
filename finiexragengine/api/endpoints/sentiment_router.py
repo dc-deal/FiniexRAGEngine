@@ -1,9 +1,9 @@
 """Pipeline run + latest-outcome endpoints."""
 import logging
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Callable, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Security
 
 from finiexragengine.core.outcome.outcome_store import OutcomeStore
 from finiexragengine.core.pipeline.envelope_contract import hold_result, taxonomy_type
@@ -68,6 +68,7 @@ def _store_silent_envelope(pipeline: Pipeline, detail: str) -> SentimentEnvelope
 
 
 def build_sentiment_router(registry: PipelineRegistry,
+                          grant: Optional[Callable[..., None]] = None,
                            outcome_store: Optional[OutcomeStore] = None,
                            run_enabled: bool = False) -> APIRouter:
     """Build the pipeline run/latest router bound to the given registry.
@@ -80,7 +81,10 @@ def build_sentiment_router(registry: PipelineRegistry,
     Defaults to False: the route converts an HTTP request into OpenAI spend, so it has to be
     switched on deliberately rather than inherited by default.
     """
-    router = APIRouter(prefix='/v1/pipelines', tags=['pipelines'])
+    # `scopes=['pipelines']` + the route's `{pipeline_id}` = the grant checked on `/latest` and
+    # `/run`. Declared once on the router, so both routes — and any added later — are gated.
+    guards = [Security(grant, scopes=['pipelines'])] if grant is not None else []
+    router = APIRouter(prefix='/v1/pipelines', tags=['pipelines'], dependencies=guards)
 
     def _persist_error(envelope: SentimentEnvelope) -> None:
         # Best effort: error statistics aggregate from *persisted* envelopes, so even
