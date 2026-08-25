@@ -40,6 +40,21 @@ ROW_FIELDS: Tuple[str, ...] = (
 # Fields that must NOT appear at a stale location — R16 promoted trigger_reason out of metadata,
 # and the previous reissue still carried it there while the prose said otherwise.
 MISPLACED: Tuple[Tuple[str, str], ...] = (('metadata', 'trigger_reason'),)
+# **Presence is not shape.** The check below asserted that every Tier 1-3 field EXISTED and sat at
+# the right location — which a `''` placeholder satisfies. So reissue 5 shipped
+# `"breaking_episode_id": ""` eighteen times, three days before production began emitting `null`,
+# and the consumer typed their field from it. The gate has to know the field's TYPE, not just its
+# name (their correction, 2026-08-25).
+ROW_SHAPES: Dict[str, Tuple[type, ...]] = {
+    'symbol': (str,), 'signal': (str,), 'reasoning': (str,), 'basis': (str,),
+    'sentiment_score': (int, float), 'confidence': (int, float), 'urgency': (int, float),
+    'is_breaking': (bool,), 'breaking_episode_start': (bool,),
+    'breaking_episode_id': (str, type(None)),
+}
+# Where an empty string is NOT a permitted stand-in for absence. `Optional[str] = None` has exactly
+# two states on the wire — a non-empty id, or null — and `''` is a third that the engine never
+# produces. A fixture inventing it is worse than one omitting the field, because it looks valid.
+NEVER_EMPTY_STRING: Tuple[str, ...] = ('breaking_episode_id',)
 # Every frame carrying state carries the epoch (R19), with no per-frame-type exception: the
 # consumer's cursor is (stream_epoch, seq), and an exception in a rule is what R16 just deleted.
 EPOCH_ON_EVERY_FRAME = True
@@ -165,9 +180,11 @@ def _renumber(env: Dict[str, Any], seq: int) -> Dict[str, Any]:
     env['seq'] = seq
     for row in env['result']:
         # The source envelopes are real production output, and the archive reaches back before
-        # ISSUE_65 — those rows carry no episode identity and never will. Filled in empty so the
-        # sample shows the shape the engine emits today on every row.
-        row.setdefault('breaking_episode_id', '')
+        # ISSUE_65 — those rows carry no episode identity and never will. Filled in with the shape
+        # the engine actually emits outside an episode, which is `None` -> JSON `null`, NOT `''`.
+        # It was `''` until 2026-08-25 and the consumer typed their field from the sample: one
+        # state must not arrive in two empty forms, or every reader downstream has to ask twice.
+        row.setdefault('breaking_episode_id', None)
         row.setdefault('breaking_episode_start', False)
     return {k: env[k] for k in ENVELOPE_FIELDS if k in env}
 
@@ -184,6 +201,16 @@ def _check_envelope(env: Dict[str, Any]) -> None:
         row_missing = [f for f in ROW_FIELDS if f not in row]
         if row_missing:
             raise AssertionError(f'{row["symbol"]}: row missing {row_missing}')
+        for field, permitted in ROW_SHAPES.items():
+            if field in row and not isinstance(row[field], permitted):
+                raise AssertionError(
+                    f'{row["symbol"]}: {field} is {type(row[field]).__name__} '
+                    f'({row[field]!r}), expected {"/".join(t.__name__ for t in permitted)}')
+        for field in NEVER_EMPTY_STRING:
+            if row.get(field) == '':
+                raise AssertionError(
+                    f'{row["symbol"]}: {field} is an empty string — the engine emits null outside '
+                    f'an episode, and two empty forms for one state is the defect this catches')
         # evidence_as_of is the one conditional field: present exactly when evidence exists
         stamps = [_ms(s['fetched_at']) for s in row.get('sources', []) if s.get('fetched_at')]
         if stamps and row.get('evidence_as_of') != max(stamps):

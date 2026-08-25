@@ -43,10 +43,10 @@ Run from the repo root:
     python experiments/mock_signal_data/generate.py --cycles 1008 \
         --variants "mini=gpt-4o-mini,4o_enhanced=gpt-4o" --out data/mock_signals/variant_week
     python experiments/mock_signal_data/generate.py --cycles 1008 --rotate daily \
-        --out data/mock_signals/rotated_week
+        --out data
     python experiments/mock_signal_data/generate.py --cycles 1008 --rotate daily \
-        --prompt forex --pipeline-id forex_macro_sentiment_mock --symbols EURUSD,GBPUSD \
-        --out data/mock_signals/forex_mock_week
+        --prompt forex --pipeline-id forex_macro_sentiment_mock \
+        --symbols EURUSD,GBPUSD,USDJPY,AUDUSD,EURGBP,NZDUSD,USDCAD,USDCHF --out data
 """
 import argparse
 import json
@@ -572,12 +572,21 @@ def main() -> None:
     # with one JSONL per stream — mirroring the collector's per-stream archives.
     # --rotate (ISSUE_13) switches either mode to the bucketed layout
     # <out>/<stream_id>/<bucket>.jsonl, buckets named from each line's collected_msc.
+    #
+    # The rotated default is `data` itself, so a bare `--rotate daily` lands where the delivered
+    # weeks land: data/<stream_id>/<bucket>.jsonl, the two stream directories side by side at the
+    # root. A default that wrote somewhere else would mean the handover shape only ever appears
+    # when someone passes the right --out by hand — which is how the shipped invocations drifted
+    # from the shipped files in the first place (2026-08-25).
+    #
+    # Only the ROTATED modes claim the root, because only they name a directory per stream. A
+    # non-rotated run emits loose <stream_id>.jsonl files and stays under data/mock_signals/, so
+    # the root holds stream directories and nothing else.
     paths = {}
     handles = {}
     counts = {}
     if args.rotate:
-        out_root = Path(f'data/mock_signals/rotated_{args.rotate}'
-                        if args.out == DEFAULT_OUT else args.out)
+        out_root = Path('data' if args.out == DEFAULT_OUT else args.out)
     elif multi:
         out_dir = Path('data/mock_signals/variant_week' if args.out == DEFAULT_OUT else args.out)
         for variant in variants:

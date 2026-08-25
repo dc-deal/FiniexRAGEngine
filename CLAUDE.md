@@ -30,6 +30,9 @@ every change is committed manually after review.
   English. **The language of the conversation never sets the language of a file**, and a doc
   written *for* the operator, about their own workflow, is still an artifact: a German chat about
   a runbook produces an English runbook. That is where it slipped once.
+  **Gitignored is not an exemption.** `ISSUE_*.md`, `INTERNAL_*.md` and `HANDOFF_*.md` are
+  artifacts too — private, not exempt. Neither a file's audience nor its visibility changes its
+  language; only chat is German.
 
 ## Architecture planning
 
