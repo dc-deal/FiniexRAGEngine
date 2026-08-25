@@ -60,6 +60,126 @@ the keyword vocabulary is market-specific:
 > The static `keywords` list is the **seam** an LLM-refreshed buzzword flow (ISSUE_46) later fills
 > automatically — the detector reads the same field, so hand-seeding now is zero rework.
 
+## The detection trigger — which path fired (ISSUE_106, migration 011)
+
+`flag_candidates` wrote `importance`, `breaking_candidate` and `flagged_at`, but never *which of the
+two paths* raised the tier. The decision was known inside `_tier` and discarded one line later, so
+the one number the report offered — `flagged_candidates` — has only ever been the **sum of two
+near-independent channels**. "Is the cluster path still alive?" could not be answered by any query,
+report or log line after the fact, only by re-deriving it from the vectors and the window. **A
+threshold whose effect nobody can observe is a threshold nobody can tune.**
+
+`articles.detection_trigger` closes it. Closed vocabulary (`types/ingest_types.py`):
+
+| value | meaning |
+|---|---|
+| `cluster` | `cluster_size` crossed `mid_` / `high_cluster_size` |
+| `keyword` | a keyword on a source at/above `keyword_source_weight` — the fast path |
+| `NULL` | flagged before the column existed. **Not a category**, and never backfilled: the decision depended on the corpus state at that instant and is irreconstructable |
+
+Three properties worth knowing before someone changes one of them:
+
+- **An overlap is attributed to the cluster.** When a real burst also contains a keyword, both
+  branches would fire. The burst wins, for two reasons: it is the tier's primary meaning and the
+  value `high_cluster_size` is calibrated on, and the fast path's entire justification is that it
+  fires *before* a cluster exists — crediting it with bursts would flatter its hit rate and make the
+  measurement useless for the question it was built to answer.
+- **An empty trigger writes nothing.** `flag_candidates(..., trigger='')` leaves the column
+  untouched rather than storing `''`, so NULL keeps meaning "not recorded". A caller that does not
+  know must not erase what another pass recorded.
+- **Surfaces report NULL as its own bucket.** The `breaking` report renders
+  `flagged by path: 31 cluster · 15 keyword` — and where old rows are in the window,
+  `42 unrecorded` beside them with the reason. Folding them into either path would invent evidence.
+
+The pass log carries the same split at the call (`[breaking] flagged 3 HIGH + 1 MID via cluster 3 ·
+keyword 1`), the persisted column is the durable warehouse — the same division of labour as spend.
+
+## The reachability preflight — a threshold only means something relative to the feeds (ISSUE_106)
+
+All three thresholds above are **relative to the feeds that actually run**, and nothing validated
+them against the source set. The set is declared once and then erodes at runtime, in two ways the
+config never learns about: `enabled: false` (usually per machine — reachability is an environment
+fact) and the quarantine ladder switching a failing feed out dynamically. Measured on the live
+engine 2026-08-25: `crypto_news` asked for a cluster of **5** while running **4** feeds, and had
+done for weeks without a single surface saying so.
+
+`core/pipeline/detection_preflight.py` checks it. Reported at boot as `[DETECTION]` lines — the same
+idiom as `[OVERRIDE]` and `[AUTH]` — and again in the `breaking` report, from **one** formatting
+function, so the two surfaces cannot describe the same state differently.
+
+**Warn, never refuse.** A pending migration is corruption and rightly blocks boot; an
+over-ambitious threshold is a *degraded feature*, and blocking on it would take the engine down over
+a quarantined feed. Warning it is the whole point — the failure mode was silence.
+
+### The two checks are not equally strong, and the wording keeps them apart
+
+| check | strength | why |
+|---|---|---|
+| `keyword_source_weight` > every active feed's weight | **proof** | `source_weight` comes from the config and nothing else can raise it. The fast-path cannot fire, period. |
+| `high/mid_cluster_size` > active feed count | **indicator** | `count_neighbors` is a `COUNT(*)` over corpus *articles* with no notion of which feed each came from, so four feeds reach a cluster of five whenever one publishes near-duplicates of its own (live-blog, follow-up, syndicated re-post). |
+
+So the cluster line says *"the cross-feed path cannot be reached by these feeds alone; only a feed
+duplicating itself, or the keyword path, can still fire"* — never "unreachable", which would be
+false and, worse, reassuring. Reporting an indicator as a proof is how a report loses its
+credibility.
+
+### What each state looks like, with the numbers that produced it
+
+```
+# the case that filed the issue — crypto_news as it actually ran, 2026-08-25
+[DETECTION] crypto_news · 4 active feeds (6 declared, 2 out: theblock, cryptoslate)
+[DETECTION] crypto_news · high_cluster_size=5 exceeds the active feed count (4) — the cross-feed
+            path to HIGH cannot be reached by these feeds alone; only a feed duplicating itself,
+            or the keyword path, can still fire
+[DETECTION] crypto_news · keyword gate 0.9 · 3 of 4 active feeds at or above (highest 1.0)
+
+# after ISSUE_107
+[DETECTION] crypto_news · 7 active feeds (21 declared, 14 out: cryptoslate, bitcoinmagazine, +12 more)
+[DETECTION] crypto_news · keyword gate 0.9 · 5 of 7 active feeds at or above (highest 1.0)
+[DETECTION] crypto_news · cluster thresholds 3/5 satisfiable by 7 feeds
+
+# the SILENT failure — every 1.0 feed walled, only the 0.8 tier survives
+[DETECTION] crypto_news · keyword_source_weight=0.9 is above every active feed (highest 0.8) —
+            the keyword fast-path CANNOT fire; detection is cluster-only
+```
+
+The last one is the case worth building this for: a keyword hit that never fires writes nothing,
+logs nothing and flags nothing. Half the detection system switches off and every existing surface
+keeps reporting a healthy fleet — because the feeds *are* healthy. Two Cloudflare walls have already
+landed on this catalogue in 2026 (`cryptoslate` in July, `ambcrypto` in August), so it is not a
+thought experiment.
+
+### The gate distribution, not a boolean
+
+The line reports `keyword gate 0.9 · N of M active feeds at or above` rather than a yes/no.
+ISSUE_82 measured `keyword_source_weight: 0.9` as *"a binary switch separating 10 feeds from 4"* and
+shelved the question as **observation, no lever** for want of an instrument. This is the instrument:
+a gate that every feed clears is a constant with extra steps, and one that 5 of 20 clear is a
+different lever than the config suggests.
+
+### What it deliberately does not do
+
+- **Quarantine is not part of the boot check.** It is dynamic — a boot-time verdict would be stale
+  within the hour. So the two surfaces report two different populations, and each names its own:
+
+  ```
+  # boot, from config alone
+  [DETECTION] crypto_news · 7 active feeds (21 declared, …) · quarantine not included
+              (it is dynamic — the breaking report reads it live)
+  # the breaking report, at read time
+  crypto_news · 5 of 7 enabled feeds pollable (21 declared, …) · 2 quarantined right now:
+              coindesk, theblock
+  crypto_news · high_cluster_size=5 exceeds the pollable feed count (5) — …
+  ```
+
+  `with_quarantine()` recomputes the verdict against `effective` (enabled minus currently
+  quarantined) and stamps `quarantine_known`, so "none are quarantined" stays distinguishable from
+  "nobody looked". Only ids belonging to the set are counted — the health store is engine-wide, and
+  charging another set's cool-off to this one would invent a warning nobody can act on.
+- **It does not retune anything.** Whether `high_cluster_size: 5` is *right* for the current feed
+  count is a calibration question that needs the detection trigger on the row first (ISSUE_106
+  part A) — the preflight makes the mismatch visible, it does not decide the value.
+
 ## Stage 2 — the two-parameter split (the wake vs the confirm)
 
 Sensitivity is **per-pipeline** (`BreakingConfig`), because detection flagging is *one shared

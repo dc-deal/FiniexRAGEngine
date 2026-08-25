@@ -32,6 +32,7 @@ from finiexragengine.core.observability.resource_sample_store import ResourceSam
 from finiexragengine.core.observability.stall_watchdog import StallWatchdog
 from finiexragengine.core.outcome.outcome_exporter import auto_export_weekly
 from finiexragengine.core.outcome.outcome_store import OutcomeStore
+from finiexragengine.core.pipeline.detection_preflight import log_detection_preflight
 from finiexragengine.core.pipeline.pipeline_assembler import PipelineAssembler
 from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
 from finiexragengine.core.pipeline.worker_supervisor import WorkerSupervisor
@@ -169,6 +170,14 @@ def create_app(attach_runners: Optional[bool] = None,
         # loudly here instead of failing a paid run later; an unreachable provider only
         # logs (the allowlist stays the hard gate).
         verify_configured_models(config_manager.get_config())
+        # Detection-threshold preflight (ISSUE_106) — the same idiom one domain over: the three
+        # `DetectionConfig` thresholds only mean something relative to the feeds that actually run,
+        # and nothing checked them until now. Warns, never refuses: an over-ambitious threshold is
+        # a degraded feature, and blocking boot on it would take the engine down over a quarantined
+        # feed. Read through the registry factory, so the `user_configs/` overlay is honoured — a
+        # per-machine `enabled: false` is precisely what moves these counts.
+        log_detection_preflight(
+            config_manager.build_source_set_registry().list_sets())
         if start_workers:
             supervisor = WorkerSupervisor(
                 assembler, registry,

@@ -30,6 +30,11 @@ from finiexragengine.core.pipeline.breaking_episode_rule import (
     EpisodeGrouping,
 )
 from finiexragengine.exceptions.ragengine_errors import VectorStoreError
+from finiexragengine.core.pipeline.detection_preflight import (
+    format_reachability_lines,
+    with_quarantine,
+)
+from finiexragengine.types.ingest_types import DetectionReachability
 
 # Where an episode begins and ends, and what it is keyed by, is `EpisodeGrouping`'s decision —
 # driven here exactly as the live tracker drives it. One implementation, two callers, so the
@@ -92,6 +97,20 @@ class BreakingReport:
     # The story rule each pipeline was grouped with, for the same reason as `rules_applied`:
     # a read-time re-derivation that does not name its rule is not reproducible.
     stories_applied: Dict[str, StoryGrouping] = field(default_factory=dict)
+    # Whether each source-set's detection thresholds can still fire (ISSUE_106). This is the report
+    # an operator opens when asking "why is nothing flagging", so the answer "because the threshold
+    # is out of reach for the feeds that are running" belongs here rather than only in a boot line
+    # nobody scrolls back to. Resolved by the caller from the registry factory — the only load path
+    # that honours the `user_configs/` overlay, which is what moves these counts per machine.
+    reachability: List[DetectionReachability] = field(default_factory=list)
+    # `flagged_candidates` split by the path that raised the tier (ISSUE_106) — the number that
+    # makes either threshold tunable, where the total never could. An `unrecorded` key means those
+    # rows were flagged before the column existed; it is deliberately not folded into either path.
+    by_trigger: Dict[str, int] = field(default_factory=dict)
+
+
+# What a NULL `detection_trigger` renders as: flagged before the column existed.
+_UNRECORDED = 'unrecorded'
 
 
 def _parse_dt(value: str) -> datetime:
@@ -114,7 +133,10 @@ def build_breaking_report(database_url: str, since: datetime, *, since_label: st
                          stories: Optional[Dict[str, StoryGrouping]] = None,
                           outcomes_table: str = 'outcomes',
                           articles_table: str = 'articles',
-                          rules: Optional[PipelineGroupings] = None) -> BreakingReport:
+                          health_table: str = 'source_health',
+                          rules: Optional[PipelineGroupings] = None,
+                          reachability: Optional[List[DetectionReachability]] = None
+                          ) -> BreakingReport:
     """Aggregate confirmed breaking episodes + reaction times + the corpus flag count.
 
     `rules` carries each pipeline's episode rule, resolved by the caller from the registry
@@ -127,7 +149,9 @@ def build_breaking_report(database_url: str, since: datetime, *, since_label: st
             cur.execute('SELECT count(*) FROM information_schema.tables WHERE table_name = %s',
                         (outcomes_table,))
             if cur.fetchone()[0] == 0:
-                return BreakingReport(since_label, [], 0, 0)
+                return BreakingReport(since_label, [], 0, 0,
+                                      reachability=list(reachability or []),
+                          by_trigger=dict(by_trigger or {}))
             cur.execute(
                 f'SELECT pipeline_id, envelope FROM {outcomes_table} '
                 "WHERE ts >= %s AND status <> 'error' ORDER BY pipeline_id, ts",
@@ -135,17 +159,48 @@ def build_breaking_report(database_url: str, since: datetime, *, since_label: st
             rows = cur.fetchall()
             # Flagged candidates in the corpus within the window (shared across a set's pipelines).
             flagged = 0
+            by_trigger: Dict[str, int] = {}
             cur.execute('SELECT count(*) FROM information_schema.tables WHERE table_name = %s',
                         (articles_table,))
             if cur.fetchone()[0]:
-                cur.execute(
-                    f'SELECT count(*) FROM {articles_table} '
-                    'WHERE breaking_candidate = TRUE AND flagged_at >= %s', (since,))
-                flagged = int(cur.fetchone()[0])
+                # Split by the path that raised the tier (ISSUE_106). The column is guarded rather
+                # than assumed: a database where migration 011 has not run must still produce a
+                # report, and the honest answer there is that the split is unavailable — not that
+                # both paths fired zero times.
+                cur.execute('SELECT count(*) FROM information_schema.columns '
+                            'WHERE table_name = %s AND column_name = %s',
+                            (articles_table, 'detection_trigger'))
+                if cur.fetchone()[0]:
+                    cur.execute(
+                        f'SELECT coalesce(detection_trigger, %s), count(*) FROM {articles_table} '
+                        'WHERE breaking_candidate = TRUE AND flagged_at >= %s '
+                        'GROUP BY 1', (_UNRECORDED, since))
+                    by_trigger = {trigger: int(count) for trigger, count in cur.fetchall()}
+                    flagged = sum(by_trigger.values())
+                else:
+                    cur.execute(
+                        f'SELECT count(*) FROM {articles_table} '
+                        'WHERE breaking_candidate = TRUE AND flagged_at >= %s', (since,))
+                    flagged = int(cur.fetchone()[0])
+            # Re-state each set's threshold verdict against the feeds that are pollable RIGHT NOW
+            # (ISSUE_106). Quarantine is dynamic, so the boot preflight cannot know it and this
+            # report must not inherit its number — the two are honestly different, and each says
+            # which it is. Guarded: a database without the health table yields the config-time
+            # verdict, marked as such, rather than a live-looking claim nobody measured.
+            live: List[DetectionReachability] = list(reachability or [])
+            if live:
+                cur.execute('SELECT count(*) FROM information_schema.tables WHERE table_name = %s',
+                            (health_table,))
+                if cur.fetchone()[0]:
+                    cur.execute(f'SELECT source_id FROM {health_table} '
+                                'WHERE quarantined_until > now()')
+                    quarantined = {row[0] for row in cur.fetchall()}
+                    live = [with_quarantine(reach, quarantined) for reach in live]
     except psycopg.Error as exc:
         raise VectorStoreError(f'breaking report failed: {exc}') from exc
 
-    return _aggregate(rows, flagged, since_label, rules or {})
+    return _aggregate(rows, flagged, since_label, rules or {}, stories=stories,
+                      reachability=live, by_trigger=by_trigger)
 
 
 def _reaction(result: Dict[str, object], t3: datetime) -> Tuple[Optional[float], Optional[float]]:
@@ -167,7 +222,9 @@ def _reaction(result: Dict[str, object], t3: datetime) -> Tuple[Optional[float],
 
 def _aggregate(rows: List[Tuple[str, object]], flagged: int, since_label: str,
                rules: Optional[PipelineGroupings] = None,
-               stories: Optional[Dict[str, StoryGrouping]] = None) -> BreakingReport:
+               stories: Optional[Dict[str, StoryGrouping]] = None,
+               reachability: Optional[List[DetectionReachability]] = None,
+               by_trigger: Optional[Dict[str, int]] = None) -> BreakingReport:
     """Group passes into episodes + reaction samples — the DB-free core (tested).
 
     Drives `BreakingEpisodeRule` exactly as the live tracker does. Note that **every** result is
@@ -251,7 +308,9 @@ def _aggregate(rows: List[Tuple[str, object]], flagged: int, since_label: str,
     episodes.sort(key=lambda episode: (episode.pipeline_id, episode.symbol, episode.started))
     return BreakingReport(since_label, ordered, flagged,
                           sum(row.confirmed for row in ordered), episodes,
-                          sum(row.stories for row in ordered), engines, story_engines)
+                          sum(row.stories for row in ordered), engines, story_engines,
+                          reachability=list(reachability or []),
+                          by_trigger=dict(by_trigger or {}))
 
 
 def _fmt_seconds(seconds: Optional[float]) -> str:
@@ -370,8 +429,36 @@ def format_breaking_report(report: BreakingReport, *, width: Optional[int] = Non
                  f'{report.total_stories} stories · push pending (Stage C)')
     lines.append('flagged and confirmed are independent channels, not a yield — '
                  'a flagged article often is not confirmed, and most episodes were never flagged')
+    # WHICH path did the flagging (ISSUE_106). The total above cannot tune either threshold; this
+    # can. `unrecorded` is shown as its own bucket, never folded into a path — those rows were
+    # flagged before the column existed and their decision is irreconstructable.
+    if report.by_trigger:
+        split = ' · '.join(f'{count} {trigger}'
+                           for trigger, count in sorted(report.by_trigger.items()))
+        lines.append(f'flagged by path: {split}')
+        if _UNRECORDED in report.by_trigger:
+            lines.append(f'  {_UNRECORDED} = flagged before the detection trigger was persisted '
+                         '(migration 011) — not attributable to either path, and never backfilled')
     lines.append('engine react = t3−freshest fetched_at (what we control) · '
                  'end-to-end = t3−freshest published_at (what the consumer feels)')
+
+    # Can the thresholds behind that flagged count still fire? (ISSUE_106) The census renders
+    # whether or not anything is wrong — "nothing was reported" has to be distinguishable from
+    # "nothing was checked" — and the wording is the boot preflight's own function, so the two
+    # surfaces cannot describe the same state differently. NOTE the numbers here are the *enabled*
+    # counts: quarantine is dynamic and belongs to `source_health`, which reads it at read time.
+    if report.reachability:
+        lines.append(divider)
+        unsatisfiable = [r for r in report.reachability if not r.satisfiable]
+        lines.append(f'detection reachability: {len(report.reachability)} source-set(s) checked · '
+                     + (f'{len(unsatisfiable)} with a path out of reach'
+                        if unsatisfiable else 'all thresholds satisfiable'))
+        for reach in report.reachability:
+            for line in format_reachability_lines(reach):
+                lines.append(f'  {line}')
+        if unsatisfiable:
+            lines.append('  a threshold nothing can reach fires never and reports nothing — '
+                         'which reads exactly like a quiet news week')
 
     # Per-episode listing (ISSUE_64): what broke this window, grouped by pipeline — when it started,
     # how long it lasted, and why (the LLM's reasoning). Edge-triggered, so one line per real episode.

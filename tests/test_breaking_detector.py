@@ -38,8 +38,10 @@ class _FakeStore(AbstractVectorStore):
     def count_neighbors(self, vector, since, max_distance) -> int:
         return self._cluster_size
 
-    def flag_candidates(self, article_ids, importance, breaking) -> int:
-        self.flagged.append((list(article_ids), importance, breaking))
+    def flag_candidates(self, article_ids, importance, breaking, trigger='') -> int:
+        # `trigger` is captured, not ignored: which path raised the tier is the fact ISSUE_106
+        # exists to persist, and a double that dropped it would let the write regress unnoticed.
+        self.flagged.append((list(article_ids), importance, breaking, trigger))
         return len(article_ids)
 
 
@@ -58,13 +60,13 @@ def test_small_cluster_is_not_flagged():
 
 def test_mid_cluster_flags_mid_not_candidate():
     store, result = _detect(3, _article('a'))       # == mid_cluster_size
-    assert store.flagged == [(['a'], MID, False)]
+    assert store.flagged == [(['a'], MID, False, 'cluster')]
     assert result.max_tier == MID and result.candidates == 0 and result.mid == 1
 
 
 def test_high_cluster_flags_candidate():
     store, result = _detect(5, _article('a'))       # == high_cluster_size
-    assert store.flagged == [(['a'], HIGH, True)]
+    assert store.flagged == [(['a'], HIGH, True, 'cluster')]
     assert result.max_tier == HIGH and result.candidates == 1
 
 
@@ -72,7 +74,7 @@ def test_keyword_on_trusted_source_flags_high_without_a_cluster():
     # A single high-weight source + a breaking keyword -> HIGH immediately (fast-path).
     store, result = _detect(1, _article('Exchange hit by exploit', weight=1.0),
                             keywords=['exploit'], keyword_source_weight=0.9)
-    assert store.flagged == [(['Exchange hit by exploit'], HIGH, True)]
+    assert store.flagged == [(['Exchange hit by exploit'], HIGH, True, 'keyword')]
     assert result.candidates == 1
 
 
@@ -96,3 +98,48 @@ def test_empty_batch_flags_nothing():
     store = _FakeStore(9)
     result = BreakingDetector(store, DetectionConfig()).detect([], [])
     assert store.flagged == [] and result.max_tier == 0
+
+
+# --- which path fired (ISSUE_106) --------------------------------------------------------
+
+def test_the_path_that_raised_the_tier_is_recorded():
+    # The defect this closes: the decision was known inside `_tier` and discarded one line later,
+    # so `flagged_candidates` has only ever been the sum of two near-independent channels — and
+    # "is the cluster path still alive?" was unanswerable from any query, report or log.
+    store, result = _detect(5, _article('Five outlets carry the same story'),
+                            high_cluster_size=5)
+    assert store.flagged[0][3] == 'cluster'
+    assert result.by_trigger == {'cluster': 1}
+
+    store, result = _detect(1, _article('Exchange hit by exploit', weight=1.0),
+                            keywords=['exploit'], keyword_source_weight=0.9)
+    assert store.flagged[0][3] == 'keyword'
+    assert result.by_trigger == {'keyword': 1}
+
+    store, result = _detect(3, _article('Three outlets, no keyword'),
+                            mid_cluster_size=3, high_cluster_size=5)
+    assert store.flagged[0][1:] == (MID, False, 'cluster')
+
+
+def test_an_overlap_is_attributed_to_the_cluster_not_the_fast_path():
+    # Both paths would fire: a real burst that also contains a keyword. Attributing it to the
+    # keyword would flatter the fast path's hit rate — and the fast path's whole justification is
+    # that it fires BEFORE a cluster exists. The burst is the stronger evidence and the tier's
+    # primary meaning, so it wins the attribution.
+    store, result = _detect(6, _article('Exchange halt confirmed by six outlets', weight=1.0),
+                            keywords=['halt'], keyword_source_weight=0.9,
+                            high_cluster_size=5)
+
+    assert store.flagged[0][3] == 'cluster'
+    assert result.by_trigger == {'cluster': 1}
+
+
+def test_a_routine_article_records_no_path_at_all():
+    # A tier that was never raised must leave no trigger behind — the column's NULL has to keep
+    # meaning "not flagged / not recorded", never a third category.
+    store, result = _detect(1, _article('Nothing much happened'),
+                            mid_cluster_size=3, high_cluster_size=5)
+
+    assert store.flagged == []
+    assert result.by_trigger == {}
+    assert (result.candidates, result.mid, result.max_tier) == (0, 0, 0)

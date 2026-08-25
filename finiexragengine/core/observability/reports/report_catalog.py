@@ -44,6 +44,9 @@ from finiexragengine.core.observability.reports.source_quarantine_report import 
     build_source_quarantine_report,
 )
 from finiexragengine.core.pipeline.breaking_episode_rule import groupings_from_configs
+from finiexragengine.core.pipeline.detection_preflight import (
+    check_detection_reachability,
+)
 from finiexragengine.core.pipeline.breaking_story_rule import (
     groupings_from_configs as story_groupings_from_configs,
 )
@@ -210,10 +213,17 @@ def _build_quarantine_episode(database_url: str, manager: AppConfigManager,
 
 def _build_breaking(database_url: str, manager: AppConfigManager, params: ReportParams) -> Any:
     configs = _pipeline_configs(manager)
+    # The detection thresholds are resolved here, through the registry factory (ISSUE_106): this is
+    # the report an operator opens when nothing is flagging, and "the threshold is out of reach for
+    # the feeds that are running" is one of the two answers to that question. The factory matters —
+    # a per-machine `enabled: false` is exactly what moves these counts.
+    reachability = [check_detection_reachability(source_set)
+                    for source_set in manager.build_source_set_registry().list_sets()]
     return build_breaking_report(database_url, params.since,
                                  since_label=params.window_label or '7d',
                                  rules=groupings_from_configs(configs),
-                                 stories=story_groupings_from_configs(configs))
+                                 stories=story_groupings_from_configs(configs),
+                                 reachability=reachability)
 
 
 def _build_breaking_timeline(database_url: str, manager: AppConfigManager,

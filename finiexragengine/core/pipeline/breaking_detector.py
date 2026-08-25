@@ -1,19 +1,32 @@
 """Breaking-candidate detection at ingest — LLM-free cluster-burst + keyword heuristic (ISSUE_11)."""
 import logging
 import re
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Pattern
 
 from finiexragengine.core.rag.abstract_vector_store import AbstractVectorStore
 from finiexragengine.types.article_types import Article
 from finiexragengine.types.config_types.source_set_types import DetectionConfig
-from finiexragengine.types.ingest_types import DetectionResult
+from finiexragengine.types.ingest_types import DetectionResult, DetectionTrigger
 
 logger = logging.getLogger(__name__)
 
 # Importance tiers written to the corpus (ISSUE_11) — the graded signal the per-pipeline wake
 # filter (breaking.min_importance) and the deep retrieval tier (importance >= 2) both read.
 LOW, MID, HIGH = 1, 2, 3
+
+
+@dataclass
+class _TierVerdict:
+    """A tier and the path that reached it (ISSUE_106).
+
+    File-private and deliberately not in `types/`: it never crosses a seam — `_tier` builds it and
+    `detect` consumes it, both inside this class. A result object rather than a tuple, because the
+    next thing anyone wants here is the cluster size that justified the tier.
+    """
+    tier: int
+    trigger: DetectionTrigger
 
 
 class BreakingDetector:
@@ -54,11 +67,15 @@ class BreakingDetector:
             # Cluster size = near-duplicates already in the corpus within the window (this article
             # and its just-stored siblings included) — one COUNT(*), no rows, no LLM.
             cluster_size = self._store.count_neighbors(vector, since, max_distance)
-            tier = self._tier(cluster_size, article.source_weight, self._has_keyword(article))
-            if tier is None:
+            verdict = self._tier(cluster_size, article.source_weight,
+                                 self._has_keyword(article))
+            if verdict is None:
                 continue   # routine article — left untagged (NULL importance)
+            tier = verdict.tier
             breaking = tier == HIGH
-            self._store.flag_candidates([article.article_id], tier, breaking)
+            self._store.flag_candidates([article.article_id], tier, breaking,
+                                        trigger=verdict.trigger)
+            result.by_trigger[verdict.trigger] = result.by_trigger.get(verdict.trigger, 0) + 1
             if breaking:
                 result.candidates += 1
                 if len(high_examples) < 3:
@@ -67,9 +84,13 @@ class BreakingDetector:
                 result.mid += 1
             result.max_tier = max(result.max_tier, tier)
         if result.max_tier:
-            logger.info('[breaking] flagged %d HIGH + %d MID (window %dmin, sim>=%.2f)',
-                        result.candidates, result.mid, cfg.cluster_window_minutes,
-                        cfg.cluster_similarity)
+            # The per-path split rides the line (ISSUE_106): the persisted column is the durable
+            # answer, this is the at-the-call echo — the same rule that puts spend on a pass line.
+            split = ' · '.join(f'{trigger} {count}'
+                               for trigger, count in sorted(result.by_trigger.items()))
+            logger.info('[breaking] flagged %d HIGH + %d MID via %s (window %dmin, sim>=%.2f)',
+                        result.candidates, result.mid, split or 'nothing',
+                        cfg.cluster_window_minutes, cfg.cluster_similarity)
             # Sample the flagged HIGH stories so an overnight review can spot false positives.
             for title, size in high_examples:
                 logger.info('[breaking]   HIGH: %r (cluster %d)', title[:72], size)
@@ -78,15 +99,25 @@ class BreakingDetector:
         return result
 
     def _tier(self, cluster_size: int, source_weight: float,
-              keyword_hit: bool) -> Optional[int]:
-        """Map cluster size + the keyword fast-path to an importance tier (or None = routine)."""
+              keyword_hit: bool) -> Optional[_TierVerdict]:
+        """Map cluster size + the keyword fast-path to a tier AND the path that got it there.
+
+        Returns a verdict rather than a bare tier (ISSUE_106): the two paths are near-independent
+        channels, and which one fired is the fact every calibration question needs. It was known
+        exactly here and discarded one line later, which is why `flagged_candidates` has only ever
+        been the sum of both.
+        """
         cfg = self._config
         # HIGH: a big burst OR a breaking keyword from a source we trust (no wait for the cluster).
-        if cluster_size >= cfg.high_cluster_size or (
-                keyword_hit and source_weight >= cfg.keyword_source_weight):
-            return HIGH
+        # The cluster is checked FIRST because that is the tier's primary meaning — when both would
+        # fire, the burst is the stronger evidence and the one the threshold is calibrated on.
+        # Attributing an overlap to the fast path would flatter the fast path's hit rate.
+        if cluster_size >= cfg.high_cluster_size:
+            return _TierVerdict(HIGH, 'cluster')
+        if keyword_hit and source_weight >= cfg.keyword_source_weight:
+            return _TierVerdict(HIGH, 'keyword')
         if cluster_size >= cfg.mid_cluster_size:
-            return MID
+            return _TierVerdict(MID, 'cluster')
         return None
 
     def _has_keyword(self, article: Article) -> bool:

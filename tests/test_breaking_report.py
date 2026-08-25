@@ -9,6 +9,8 @@ from finiexragengine.core.observability.reports.breaking_report import (
     format_breaking_report,
 )
 from finiexragengine.core.pipeline.breaking_episode_rule import DEFAULT_EPISODE_GAP
+from finiexragengine.core.pipeline.breaking_story_rule import StoryGrouping
+from finiexragengine.types.ingest_types import DetectionReachability
 
 _T0 = datetime(2026, 7, 13, 14, 0, 5, tzinfo=timezone.utc)
 _T1 = datetime(2026, 7, 13, 14, 0, 12, tzinfo=timezone.utc)
@@ -321,3 +323,110 @@ def test_the_listing_falls_back_to_reasoning_before_prompt_v3():
     episode = report.episodes[0]
     assert episode.breaking_reason == ''
     assert episode.display_reason == _BUG
+
+
+# --- the seam the tests above cannot see (ISSUE_106 build, 2026-08-25) --------------------
+
+def test_the_builder_forwards_the_story_rule_it_was_given(monkeypatch):
+    """`build_breaking_report(stories=...)` must reach `_aggregate`.
+
+    It did not. Every test in this file drives `_aggregate` directly — which honours the rule — so
+    the *pass-through above it* was never exercised, and the report silently grouped every pipeline
+    by the schema default while `stories_applied` printed that default as the rule it had applied.
+    Harmless the day it was found (both pipelines resolved to exactly the default, so no number
+    moved), and wrong the moment anyone tunes `story_similarity` — silently, and with a false
+    provenance line. Exactly the shape of the two-groupings divergence ISSUE_82 spent weeks on.
+    """
+    import finiexragengine.core.observability.reports.breaking_report as module
+
+    seen = {}
+
+    def fake_aggregate(rows, flagged, since_label, rules=None, stories=None, reachability=None):
+        seen['stories'] = stories
+        seen['rules'] = rules
+        seen['reachability'] = reachability
+        return module.BreakingReport(since_label, [], 0, 0)
+
+    monkeypatch.setattr(module, '_aggregate', fake_aggregate)
+    # No DB: the psycopg call is replaced too — this test is about the argument, not the query.
+    monkeypatch.setattr(module.psycopg, 'connect',
+                        lambda *a, **kw: (_ for _ in ()).throw(module.psycopg.Error('no db')))
+
+    grouping = StoryGrouping(similarity=0.61, window=timedelta(days=1))
+    try:
+        module.build_breaking_report('postgresql://nowhere', _T0,
+                                     stories={'crypto_sentiment': grouping})
+    except Exception:
+        pass   # the DB path is expected to fail; the assertion is on what was forwarded
+    else:
+        assert seen['stories'] == {'crypto_sentiment': grouping}
+
+
+def test_the_report_shows_whether_the_thresholds_can_still_fire():
+    # Part C of ISSUE_106: this is the report an operator opens when nothing is flagging, so
+    # "the threshold is out of reach for the feeds that run" belongs here — not only in a boot line
+    # nobody scrolls back to. The census renders either way: "nothing reported" must be
+    # distinguishable from "nothing checked".
+    healthy = DetectionReachability(source_set_id='forex_news', declared=18, active=11,
+                                    mid_cluster_size=3, high_cluster_size=5,
+                                    keyword_source_weight=0.9, max_active_weight=1.0,
+                                    at_or_above_gate=9)
+    starved = DetectionReachability(source_set_id='crypto_news', declared=6, active=4,
+                                    disabled_ids=['theblock', 'cryptoslate'],
+                                    mid_cluster_size=3, high_cluster_size=5,
+                                    keyword_source_weight=0.9, max_active_weight=1.0,
+                                    at_or_above_gate=3)
+    report = _aggregate([], 0, '7d')
+    report.reachability = [healthy, starved]
+    text = format_breaking_report(report, width=100)
+
+    assert 'detection reachability: 2 source-set(s) checked · 1 with a path out of reach' in text
+    assert 'crypto_news · 4 active feeds (6 declared, 2 out: theblock, cryptoslate)' in text
+    assert 'forex_news · cluster thresholds 3/5 satisfiable by 11 active feeds' in text
+    # The sentence that makes the finding actionable rather than decorative.
+    assert 'reads exactly like a quiet news week' in text
+
+    # And with nothing wrong it still says it checked.
+    clean = _aggregate([], 0, '7d')
+    clean.reachability = [healthy]
+    assert 'all thresholds satisfiable' in format_breaking_report(clean, width=100)
+
+
+def test_the_report_splits_the_flagged_count_by_the_path_that_fired():
+    # The total on its own cannot tune either threshold — it is the sum of two near-independent
+    # channels (ISSUE_106). The split can.
+    report = _aggregate([], 0, '7d', by_trigger={'cluster': 31, 'keyword': 15})
+    text = format_breaking_report(report, width=100)
+    assert 'flagged by path: 31 cluster · 15 keyword' in text
+
+
+def test_rows_flagged_before_the_column_existed_are_their_own_bucket():
+    # Folding them into either path would invent evidence: their decision depended on the corpus
+    # state at that instant and is irreconstructable, which is why there is no backfill.
+    report = _aggregate([], 0, '7d', by_trigger={'cluster': 4, 'unrecorded': 42})
+    text = format_breaking_report(report, width=100)
+    assert 'flagged by path: 4 cluster · 42 unrecorded' in text
+    assert 'not attributable to either path, and never backfilled' in text
+
+
+def test_the_report_renders_the_read_time_count_when_quarantine_is_known():
+    # The distinction the issue asked for: the boot line reports `enabled` (a config fact), the
+    # report reports `pollable` (config minus whoever the health policy has out right now). Two
+    # honestly different numbers — and a verdict that does not name its population is unverifiable.
+    from finiexragengine.core.pipeline.detection_preflight import with_quarantine
+
+    reach = DetectionReachability(source_set_id='crypto_news', declared=21, active=7,
+                                  active_ids=['cryptonews', 'cointelegraph', 'decrypt', 'coindesk',
+                                              'beincrypto', 'cryptopolitan', 'theblock'],
+                                  mid_cluster_size=3, high_cluster_size=5,
+                                  keyword_source_weight=0.9, max_active_weight=1.0,
+                                  at_or_above_gate=5)
+    report = _aggregate([], 0, '7d')
+    report.reachability = [with_quarantine(reach, {'theblock', 'coindesk', 'fxstreet'})]
+    text = format_breaking_report(report, width=110)
+
+    # fxstreet belongs to the other set and must not count against this one.
+    assert '5 of 7 enabled feeds pollable' in text
+    assert '2 quarantined right now: coindesk, theblock' in text
+    assert 'fxstreet' not in text
+    assert 'quarantine not included' not in text
