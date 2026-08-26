@@ -422,6 +422,62 @@ displaying whatever the replay left open (`BreakingEpisodeTracker.seed`), so a s
 restart keeps its row; the session counters beside it are not restored, because they count what
 this process saw.
 
+### The distribution under the two gates — `prompt_drift` (ISSUE_110)
+
+The lattice above is what makes a prompt change dangerous. Both gates sit *on* lattice values, so a
+prompt that shifts the score distribution by one step changes how much of the population is above
+the confirm gate — without changing anything a provenance field can show. That happened: v2 → v3
+went live on 2026-08-23 21:37 UTC and cut the crypto confirm rate **8.43 % → 0.47 %**, 113 breaking
+rows a day down to six, and it took three days to see. `prompt_version` and `prompt_hash` labelled
+every affected row correctly the whole time. A label is not a comparison.
+
+`prompt_drift` (`core/observability/reports/prompt_drift_report.py`, `GET
+/v1/reports/prompt_drift`, `prompt_drift_cli`) is that comparison: per pipeline, per prompt version,
+the urgency histogram plus the confirm and hold-band shares. Three of its properties are load-bearing
+rather than presentational, and each one exists because its absence produced a wrong answer.
+
+**It never pools.** Grouping is per pipeline, always. Across both streams the v3 → v4 aggregate moved
+6.67 % → 6.60 % — practically unchanged, while both distributions underneath were rebuilt. No field
+in the result object holds a cross-pipeline figure and no line of the rendering prints one, so the
+report has nowhere to put the number that would mislead.
+
+**The confirm band never travels without its concentration.** Forex v3 reads healthy at 10.78 % and
+collapsed at *"one analysis unit supplies 93 % of it"* — roughly 205 of its 220 confirm rows were
+USDCAD alone. Every row therefore carries the number of contributing analysis units and the largest
+one's share. The unit is the **episode key** (the retrieval query, so a fanned pair under ISSUE_70
+counts once) and it is *displayed* by its tickers — counting by query and reading by query are two
+different requirements.
+
+**Only LLM-scored passes enter the distribution.** A result with `basis != 'llm'` is a mechanical
+`no_data` HOLD: retrieval came back empty after the floor and the model never ran, yet the row
+carries `urgency 0.0`. Folding those in makes a corpus outage — the 37 frozen hours of 2026-08-20 —
+read as *"the new prompt got calmer"*. `mechanical` is reported beside `scored`, because an absent
+number is not an answer either.
+
+Two further readings the shape buys:
+
+- **The hold/break ratio** separates a collapse from a calm model. v3's confirm share fell 18-fold
+  while it kept parking one step below the gate, so its ratio ran to ~19 against v2's ~2.3. A bare
+  confirm share cannot tell "the model stopped seeing urgency" from "the model stopped crossing the
+  line", and only the second is a threshold problem.
+- **The confirm count comes from each pass's recorded `is_breaking`**, never re-derived against
+  today's `urgency_threshold` — the same rule `BreakingEpisodeRule` follows, so a retune cannot
+  rewrite what the archive says happened. The **hold band** is a read-time derivation against the
+  configured `urgency_exit_threshold`, and the report prints which of the two it applied to which
+  number. Its totals are pinned against `breaking_timeline`'s by a parity test: `scored`, the
+  confirm count and `mechanical` are defined in the same words on both surfaces, so they are
+  asserted to agree rather than assumed to.
+
+Buckets are the **observed** value set, not a hard-coded seven: the lattice is a measured property
+of a prompt, and a version emitting 0.75 must not be folded into a neighbour silently. Past twelve
+distinct values in one version the report bins to 0.1 and says so in its legend.
+
+**A prompt bump's Definition of Done.** A prompt change is a series break by construction, so the
+issue that makes one records the before/after distribution from this report, in the issue, at the
+time of the bump — an artefact produced once, not a monitor somebody is supposed to watch. And it
+records the *split*, never one number per version: v3 → v4 is the worked example of an aggregate
+that moved 0.07 points while both streams were rebuilt underneath it.
+
 ### Episode identity on the envelope (ISSUE_65)
 
 The rule above decides *where* an episode begins and ends. This is what a consumer receives of it.

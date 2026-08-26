@@ -336,6 +336,26 @@
                 "order": 12
             }
         },
+        {
+            // "Did the last prompt bump move the scores?" The urgency distribution per prompt
+            // version, per pipeline — with the confirm band's concentration next to its share,
+            // because forex v3 read healthy at 10.78% while ONE symbol supplied 93% of it.
+            // Never pooled: the v3→v4 aggregate moved 6.67%→6.60% while both streams were rebuilt.
+            "name": "📊 RAGEngine: Prompt Drift (score distribution per version)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/finiexragengine/cli/prompt_drift_cli.py",
+            "args": [
+                "--since",
+                "30d"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "04_diagnostics",
+                "order": 13
+            }
+        },
         // ====================================================
         // Weekly
         // ====================================================
