@@ -122,6 +122,24 @@ Two properties keep the handover redundancy-free — the whole reason it exists:
   byte-identical — no append, no partial days (a time-window cut would split a bucket and break
   this).
 
+**The one announced exception (ISSUE_108).** A closed day gains no *rows*, but the episode
+backfill rewrites two keys inside rows it already has — `breaking_episode_id` and
+`breaking_episode_start`, which ISSUE_65 populated on the assembly path only, leaving the
+consumer's archived range without them. So a re-export of a backfilled day is **not** byte-identical
+to the one handed over before it, deliberately, and the order is fixed:
+
+1. run `backfill_episode_ids_cli --since … --until … --apply` (a dry run first; it refuses to write
+   if its self-check disagreed with any identity the engine already served);
+2. clear `archive_export_log` for the touched `(stream_id, bucket)` pairs, so `--incremental` picks
+   them up again;
+3. re-export and hand the range over;
+4. the consumer re-takes the range rather than patching in place.
+
+Doing it once, cleanly, beats a partial that leaves two versions of the same day in circulation.
+And it is a **reconstruction, not a recovery**: three read-time policy changes landed inside that
+window, so pre-2026-08-18 FX episodes come out better than what was served and different from it —
+see `breaking_detection.md`.
+
 In a DB export, `collected_msc` is the envelope's analysis `timestamp` in epoch-ms (there
 is no collector receive-time to stamp; this matches the validated mock). When the live
 collector runs, it stamps its own receive time instead — the durable archive is still the

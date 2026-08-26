@@ -356,6 +356,36 @@
                 "order": 13
             }
         },
+        {
+            // ISSUE_108: stamps breaking_episode_id/_start onto archived envelopes that predate
+            // ISSUE_65. WRITES when --apply is added — without it this is a dry run that reports
+            // what it would do and refuses to write if its self-check disagreed with any identity
+            // the engine already served. The range is absolute on purpose (a relative window would
+            // mean a different range tomorrow). Re-export the touched days afterwards.
+            //
+            // --until is EXCLUSIVE, and it must clear the ISSUE_65 deploy (the fields landed in
+            // 211583d, 2026-08-24) even though nothing past it needs writing. A range ending at
+            // the consumer's 08-20 contains no envelope that already carries an identity, so the
+            // self-check has nothing to compare against and reports `carried: 0` — the one real
+            // validation available, silently skipped. Running past the boundary is what turns the
+            // dry run into evidence that the replay matches the live path.
+            "name": "\ud83d\uddc4 RAGEngine: Backfill Episode Ids (dry run)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/finiexragengine/cli/backfill_episode_ids_cli.py",
+            "args": [
+                "--since",
+                "2026-07-16",
+                "--until",
+                "2026-08-27"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "07_database",
+                "order": 3
+            }
+        },
         // ====================================================
         // Weekly
         // ====================================================
