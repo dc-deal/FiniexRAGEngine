@@ -138,6 +138,46 @@ Everything the HTTP surface does not cover, the operator still bridges by hand (
 for either has costs the operator has already weighed — the edge that exists was built deliberately,
 route by route, and is not an opening to widen casually.
 
+## The container is disposable — its home is not
+
+**Never recommend or confirm a container rebuild without first checking the transcript backup, and
+say what you found.** `~/.claude/projects/` holds the session transcripts, and it lives inside the
+container: a rebuild deletes whatever is not on a volume or a bind mount — silently, irreversibly,
+and with no prompt.
+
+Two tiers exist here and only the first is automatic. `devhome:/root` is a named volume: it survives
+every rebuild, and dies with `docker compose down -v`. `.devcontainer/local/home-seed`, written by
+`backup_home.sh` and restored by `restore_home.sh` on container create, survives volume deletion —
+but is only ever as fresh as its last manual run.
+
+**This is a rule for the assistant, not documentation for the operator**, and that distinction is
+the whole point: nobody opens a rulebook at the moment they click rebuild, and a pre-rebuild
+instruction living in a script header is read by whoever is already looking at the script. The
+assistant is in the conversation when a rebuild comes up — usually because it proposed one — so that
+is where the check belongs. Report the seed's age and transcript count *before* the rebuild runs,
+not after.
+
+And prefer the mechanical fix to the reminder: a bind mount of `projects/` needs nothing remembered,
+which is the difference between a backup and an intention.
+
+## The cross-project bus is operator-initiated
+
+**Never read or write the bus unless the operator asks for it.** A shared folder mounted at `/bus`
+carries questions and answers between this project and its siblings, through `bus_*` tools from a
+client that lives on the bus itself. Its inbox is not something to check on your own initiative —
+not at session start, not in passing while looking for something else, and not because a question
+at hand happens to suit it.
+
+The reason is not tidiness. A message written to the bus lands in another project's inbox and is
+read by whoever works there, so sending one is an outward-facing act; reading one pulls another
+project's material into this conversation. Neither is a step taken to be helpful.
+
+Enforced rather than promised: every `mcp__finiex-bus__*` tool is listed under `permissions.ask` in
+`.claude/settings.json`, so no call happens without explicit approval. **There is deliberately no
+SessionStart hook** — a hook that prints the inbox at every start is precisely the unbidden read
+this rule forbids. Adding `"disabledMcpjsonServers": ["finiex-bus"]` removes the tools from context
+altogether.
+
 ## Session start
 
 Read first, in order:
