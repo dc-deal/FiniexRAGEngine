@@ -5,16 +5,6 @@
       "Bash(python -m pytest tests/ -q)",
       "Bash(python3 -c \"import json; c=json.load\\(open\\('/app/configs/app_config.json'\\)\\); print\\(list\\(c.keys\\(\\)\\)\\)\")",
       "Bash(python3 -c \"import json; c=json.load\\(open\\('/app/configs/pipelines/crypto_sentiment.json'\\)\\); print\\(json.dumps\\(c, indent=1\\)[:1200]\\)\")"
-    ],
-    "ask": [
-      "mcp__finiex-bus__bus_ask",
-      "mcp__finiex-bus__bus_reply",
-      "mcp__finiex-bus__bus_note",
-      "mcp__finiex-bus__bus_decision",
-      "mcp__finiex-bus__bus_inbox",
-      "mcp__finiex-bus__bus_thread",
-      "mcp__finiex-bus__bus_threads",
-      "mcp__finiex-bus__*"
     ]
   }
 }

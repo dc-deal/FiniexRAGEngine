@@ -172,11 +172,37 @@ The reason is not tidiness. A message written to the bus lands in another projec
 read by whoever works there, so sending one is an outward-facing act; reading one pulls another
 project's material into this conversation. Neither is a step taken to be helpful.
 
-Enforced rather than promised: every `mcp__finiex-bus__*` tool is listed under `permissions.ask` in
-`.claude/settings.json`, so no call happens without explicit approval. **There is deliberately no
-SessionStart hook** — a hook that prints the inbox at every start is precisely the unbidden read
-this rule forbids. Adding `"disabledMcpjsonServers": ["finiex-bus"]` removes the tools from context
-altogether.
+**There is no mechanical gate, and that is a decision rather than an omission.** Two were built,
+both worked, and both were removed. A later session must not read their absence as an oversight and
+rebuild them, so the reasons are recorded here.
+
+A `permissions.ask` rule on the bus tool names fires correctly and costs nothing. It was removed
+anyway: the policy is that the rule above governs bus access by itself, and a prompt standing behind
+it invites the discipline to be delegated to a dialog box. The discipline is the whole protection.
+
+A PreToolUse hook covering the shell route also works — a `cat` on a message file raises a prompt
+that a tool-name rule cannot reach. It was removed because **a tool carrying a matching PreToolUse
+entry stops being auto-accepted**: a catch-all matcher does not add friction to bus access, it ends
+auto mode for every tool in every session, and it arrives disguised as "suddenly everything asks"
+rather than as a bus problem. Answering `permissionDecision: "allow"` for non-matching calls would
+restore auto mode and is worse — a hook that answers "allow" overrides the operator's other
+permission rules, including denials. A protection that suspends a larger protection is not one.
+
+There is likewise no SessionStart hook: one that prints the inbox at every start is precisely the
+unbidden read this rule forbids.
+
+So nothing stands between the assistant and that folder except the rule. Concretely: no unprompted
+read — not `bus_inbox`, not `bus_threads`, not a `cat` on a message file; no check "while I am
+here"; no poll because something might have arrived; no look at the start of a session or a task.
+No write without an explicit request. The failure mode to design against is a **read**, and it has
+already happened once.
+
+`bus_inbox` is never on its own evidence that nothing arrived — a `note` enters no inbox by design,
+which produced three false all-clears in one hour. Pair it with `bus_threads` and compare the count;
+report "nothing" only when both are empty. Client 1.1.0 appends that count itself, but only once a
+session has restarted: the stdio server imports the client at spawn and does not reload it.
+
+Adding `"disabledMcpjsonServers": ["finiex-bus"]` removes the tools from context altogether.
 
 ## Session start
 
