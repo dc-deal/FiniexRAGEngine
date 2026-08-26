@@ -21,6 +21,13 @@ code knows a test is running. Tests therefore use the canonical table names (`ar
 instead of hiding behind hand-written test DDL. `clean_db` adds a truncate for a per-test blank
 slate. See [development/migrations.md](development/migrations.md).
 
+`clean_db` reads its target list from `pg_tables` for the test schema and truncates each name
+**schema-qualified**, minus the `schema_migrations` ledger. Two failure modes disappear with the
+literal list it replaced: a name the migrations do not create in `finiex_test` used to resolve
+through the `search_path` fallback to `public.<name>` — the operator's real table, truncated by a
+test that then passes — and a table added by a later migration but forgotten in the list used to
+leak rows between tests, which is the order-dependent flake nobody finds for months.
+
 Note what this deliberately cannot cover: the fixture builds its schema from scratch every run, so
 **checksum drift never appears here** — it only exists against a database that already applied an
 older version of a file. Drift is caught by `migrate_cli --status` and the boot guard, on a real
@@ -132,7 +139,7 @@ in different folders would collide at collection.
 | `observability/test_cost_recorder.py` | USD derivation, billing rows, latency column, session accumulators; per-pass scoping (ISSUE_74): a scope collects only its own calls, recording outside one still works, and **two concurrent passes in real threads do not cross-attribute** — the guarantee the removed global lock used to provide, and what makes every envelope's `cost_usd` trustworthy; the pass reason (ISSUE_87) lands on **every** row of its pass — the query embeddings too — stays NULL outside a scope, and does not leak between two overlapping passes | PostgreSQL |
 | `observability/reports/test_cost_report.py` / `observability/reports/test_perf_report.py` | section aggregation + pattern tables; fresh/legacy-DB guards | PostgreSQL |
 | `contracts/test_typing_contract.py` | the typing convention (CLAUDE.md "Fully typed") over `finiexragengine/`: an AST sweep asserting every parameter and return carries an annotation, plus a `get_type_hints` pass asserting every annotation **resolves** — since PEP 649 made annotations lazy, a name that was never imported no longer fails at import time | — |
-| `contracts/test_suite_layout.py` | the suite's own layout ("Layout" above): test basenames stay **unique across the tree** — with no `__init__.py`, pytest imports every module by its bare basename, so two same-named files in different folders collide at collection — plus no `__init__.py` creeping in and nothing landing back at the flat root | — |
+| `contracts/test_suite_layout.py` | the suite's own layout ("Layout" above): test basenames stay **unique across the tree** — with no `__init__.py`, pytest imports every module by its bare basename, so two same-named files in different folders collide at collection — plus no `__init__.py` creeping in, nothing landing back at the flat root, and no module *hiding from collection* — a file that lost its `test_` prefix in a move drops out of pytest's `python_files` pattern and out of the three checks above at the same time, so that one looks at every `.py` under `tests/` | — |
 | `contracts/test_vocabulary_boundary.py` | ISSUE_94: an unknown `signal`/`basis`/`status`/`data_origin` loads and round-trips, a 72 h window containing one still seeds completely (`get_since`), a typo still fails where a row is written (`hold_result`), the domains stay enumerable | PostgreSQL (one test) |
 | `generator/test_mock_signal_generator.py` | ISSUE_93: a generated week loads through the production models, every line names its trigger, `seq` gapless and in commit order, the three evidence invariants on every row, the seq/evidence inversion is present, the archive line declares its time base, and a bare `--rotate daily` puts `data/<stream_id>/<bucket>.jsonl` at the root with stream directories and nothing else beside them (run with `cwd=tmp_path` so the *default* `--out` is what is asserted — the layout a consumer's range read binds to, and the one whose recorded invocation drifted from the shipped files once). Runs the generator as a subprocess | — |
 | `schema/test_migration_runner.py` | ordered apply + record, re-run no-op, column added to a populated table, failed migration rolls back whole, checksum drift refuses, duplicate version, boot guard checks-but-never-applies, `-- finiex:no-transaction` (concurrent index needs it / builds with it / one statement only) | PostgreSQL |

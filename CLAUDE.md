@@ -157,7 +157,7 @@ Read first, in order:
   - If a runtime import would cycle, use `if TYPE_CHECKING:` + a string annotation. Dropping the
     annotation is never the answer — and check first: `core/` never imports `api/`, so most feared
     cycles do not exist.
-  - Verified mechanically by `tests/test_typing_contract.py`, not by eye — so the rule runs on
+  - Verified mechanically by `tests/contracts/test_typing_contract.py`, not by eye — so the rule runs on
     every suite and in CI instead of being remembered. It checks two different things: that every
     annotation **exists** (AST sweep over `finiexragengine/`), and that every annotation
     **resolves** (`typing.get_type_hints`). The second half is not redundant: since Python 3.14
@@ -261,7 +261,7 @@ Read first, in order:
     that way — the surface is per-router information — so a **new domain router that omits
     `Security(..., scopes=[...])` would be authenticated but ungated**, reachable by any valid
     token. That is the failure mode to watch when adding a router, and it is the reason
-    `tests/test_report_scopes.py` walks every registered identity route and asserts a token holding
+    `tests/api/test_report_scopes.py` walks every registered identity route and asserts a token holding
     nothing is refused: the declaration is not trusted, it is checked. **A new router means a new
     surface in `GRANT_SURFACES` and a `Security` declaration — or the suite says so.**
   - **`active: false` is a kill switch**, not documentation: a consumer can be switched off without
@@ -406,7 +406,7 @@ finiexragengine/        package root (no __init__.py)
   utils/                dependency-free helpers (pure functions, no engine imports)
 configs/                app_config.json + pipelines/*.json (constellations)
 docs/                   architecture + guides
-tests/                  pytest suite
+tests/                  pytest suite — one folder per domain, mirroring the package
 ```
 
 ## Testing
@@ -415,6 +415,22 @@ tests/                  pytest suite
 - Plain pytest + markers only — no custom test runner (transparency; the project is small).
 - Tests that spend API budget carry the `paid` marker (`*_live.py` files); default runs and
   CI exclude them via pytest.ini. Run deliberately: `pytest -m paid -v`.
+- **The suite mirrors the package — a test lives where its subject lives.** `tests/rag/` covers
+  `core/rag/`, `tests/api/` covers `api/`, `tests/observability/reports/` covers
+  `core/observability/reports/`: finding a unit's tests is the same navigation as finding the
+  unit. A new test goes into the folder its subject already occupies; **if none fits, create the
+  folder for that category** rather than dropping the file at the root — a flat root of 91 files
+  is what the 2026-08-26 split replaced. Two folders are deliberately not mirrors: `contracts/`
+  holds the guards that are about the *codebase* rather than a unit (the typing sweep, the
+  closed-vocabulary boundary, the layout guard itself), and `generator/` holds the tests for the
+  sample generators under `experiments/`. Sample **data** files go to `tests/fixtures/<domain>/`;
+  a factory helper that builds a shape per case stays with its test — a static file cannot vary
+  per case, which is why nothing was outsourced in the split.
+  No `__init__.py` anywhere, so pytest imports each module by its bare basename: **basenames stay
+  unique across the whole tree** — two `test_report.py` in different folders collide at
+  collection. Checked by `tests/contracts/test_suite_layout.py`, which also refuses a new file at
+  the root: the failure mode of a move is a test that is no longer *collected*, which is a green
+  suite with less coverage.
 - New behavior gets tests. New test suites get a doc note (`docs/testing.md`).
 
 ## Issues

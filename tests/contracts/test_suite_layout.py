@@ -21,6 +21,11 @@ _TESTS = pathlib.Path(__file__).resolve().parents[1]
 # there would be an un-filed test.
 _ROOT_ALLOWED = {'conftest.py'}
 
+# `tests/` holds test modules and pytest's own hooks, nothing else — the split deliberately
+# outsourced no helpers (a factory that varies per case stays with its test). Extend this set
+# rather than dropping a bare module into the tree, so the exception is a decision on the record.
+_NON_TEST_ALLOWED = {'conftest.py'}
+
 
 def _test_files() -> List[pathlib.Path]:
     return [p for p in _TESTS.rglob('test_*.py') if '__pycache__' not in p.parts]
@@ -49,3 +54,25 @@ def test_every_test_file_sits_in_a_category_folder() -> None:
     assert not stray, (
         'these belong in a category folder (create one if none fits — docs/testing.md): '
         f'{stray}')
+
+
+def test_no_module_hides_from_collection() -> None:
+    """A file that lost its `test_` prefix is silently no longer collected.
+
+    The three checks above all search with `rglob('test_*.py')`, so none of them can see the one
+    mistake a *move* actually invites: a file renamed to `breaking_report_test.py`, or stripped of
+    the prefix entirely, drops out of pytest's collection (`python_files = test_*.py`) and out of
+    this suite's own census at the same moment. The result is a green run with less coverage —
+    the same failure shape the root check exists for, one level less visible.
+
+    So this is the one check that has to look at every `.py` under `tests/` rather than at the
+    collected ones, and it is deliberately strict: an intentional non-test module joins
+    `_NON_TEST_ALLOWED` above.
+    """
+    uncollected = sorted(str(p.relative_to(_TESTS)) for p in _TESTS.rglob('*.py')
+                         if '__pycache__' not in p.parts
+                         and not p.name.startswith('test_')
+                         and p.name not in _NON_TEST_ALLOWED)
+    assert not uncollected, (
+        'these are not collected by pytest (python_files = test_*.py) — rename them to test_*.py '
+        f'or add them to _NON_TEST_ALLOWED with a reason: {uncollected}')
