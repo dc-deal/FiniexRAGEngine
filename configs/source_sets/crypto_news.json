@@ -45,7 +45,7 @@
             "type": "rss",
             "url": "https://www.theblock.co/rss.xml",
             "weight": 1.0,
-            "comment": "Disabled on the live server 2026-08-25 after five dead days and three escalating quarantines — every trigger a read timeout at the ~20.7s deadline, which is a SLOW-BUT-ALIVE profile, not a bot-wall. Re-measured 2026-08-25 (ISSUE_107): 200 with 20 entries from the dev container. Try timeout_seconds before treating it as gone."
+            "comment": "Was disabled on the live server 2026-08-25 after five dead days and three escalating quarantines; RE-ENABLED the same day 17:54 and holding (+77 polls, zero failures, no quarantine). MEASURED, so do NOT reach for timeout_seconds (ISSUE_107): the 30d journal makes it the FASTEST feed in this set — p50 410ms, p95 571ms, p99 751ms over 33,952 polls, 22 failures (99.94% success). The failures are bimodal, either ~400ms or the full deadline burnt twice at ~20.8s, which is a host stalling mid-connection rather than a slow feed; a longer deadline only waits longer for the same nothing. What held it out was the quarantine ladder through a bad stretch, and the ladder will catch it again if the stalls return."
         },
         {
             "source_id": "cryptoslate",
@@ -53,7 +53,7 @@
             "url": "https://cryptoslate.com/feed/",
             "weight": 0.8,
             "poll_interval_seconds": 120,
-            "comment": "Behind Cloudflare Bot-Management. Measured 2026-07-16: 200 from a clean egress IP, 403 (Cf-Mitigated: challenge) from a datacenter IP — a JS browser challenge no feed reader can pass, and no User-Agent changes that. Where it is reachable it still needs the identified UA. Switch off per machine via user_configs/source_sets/ when the egress IP is challenged. Re-measured 2026-08-25 (ISSUE_107): 200 with 10 entries from the dev container — the wall did not reproduce, so re-probe with feed_doctor_cli before assuming it is still there."
+            "comment": "Behind Cloudflare Bot-Management. CONFIRMED WALLED ON THE SERVER, 2026-08-25 (ISSUE_107): feed_doctor there returns 403 with the Cloudflare interstitial (\"Just a moment...\") — the JS browser challenge no feed reader can pass. A dev-container probe the same day returned 200 with 10 entries; that was the DEV egress, not the engine's, and taking it as recovery would have been exactly the mistake CLAUDE.md warns about. Re-enable only after feed_doctor_cli ON THE SERVER answers 200."
         },
         {
             "source_id": "beincrypto",
@@ -83,7 +83,7 @@
             "url": "https://ambcrypto.com/feed/",
             "weight": 0.8,
             "enabled": false,
-            "comment": "Tier B candidate (ISSUE_107). Probed 2026-08-25: 200, 16 entries, newest 1.1h, 2 of 16 matching this set's keywords (a chain halt and a delisting) — a useful hit rate, which is precisely why it must not enter above the 0.9 fast-path gate before the trigger is observable."
+            "comment": "Tier B candidate (ISSUE_107). Probed from the dev container 2026-08-25: 200, 16 entries, newest 1.1h, 2 of 16 matching this set's keywords (a chain halt and a delisting). BUT WALLED ON THE SERVER the same day: 403 with the Cloudflare interstitial (\"Just a moment...\"). Not promotable on this host — kept declared so the finding is recorded rather than rediscovered."
         },
         {
             "source_id": "protos",
