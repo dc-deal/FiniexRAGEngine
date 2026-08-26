@@ -12,6 +12,7 @@ predate are injected, and the header states which. Run: python experiments/strea
 import json
 import os
 import re
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -90,7 +91,19 @@ def _shift(node: Any, delta: timedelta) -> Any:
     return node
 
 
-def _fetch_episode_trio(database_url: str) -> List[Dict[str, Any]]:
+@dataclass
+class EpisodeTrio:
+    """The three passes of one episode, plus the id they were selected by.
+
+    A result object rather than a bare list: `build` has to verify the passes belong to the episode
+    the query picked, and it cannot do that from the envelopes alone — an envelope carries every
+    symbol of its pipeline, so several episode ids legitimately appear in one pass.
+    """
+    episode_id: str
+    envelopes: List[Dict[str, Any]]
+
+
+def _fetch_episode_trio(database_url: str) -> EpisodeTrio:
     """Three passes of ONE breaking episode: its opener, a continuation, and a hold-band pass.
 
     Curated rather than "the last two passes" (reissue-6). The consumer asked for a sample that
@@ -150,7 +163,7 @@ def _fetch_episode_trio(database_url: str) -> List[Dict[str, Any]]:
             envelope = found[0]
             picked.append(envelope if isinstance(envelope, dict) else json.loads(envelope))
     print(f'sample built from episode {episode_id} — opener, continuation, hold-band pass')
-    return picked
+    return EpisodeTrio(episode_id=episode_id, envelopes=picked)
 
 
 def _fetch_pair(database_url: str) -> List[Dict[str, Any]]:
@@ -187,6 +200,36 @@ def _renumber(env: Dict[str, Any], seq: int) -> Dict[str, Any]:
         row.setdefault('breaking_episode_id', None)
         row.setdefault('breaking_episode_start', False)
     return {k: env[k] for k in ENVELOPE_FIELDS if k in env}
+
+
+def _check_one_episode(episode_id: str, trio: Tuple[Dict[str, Any], ...]) -> None:
+    """The three passes belong to `episode_id`, and each shows the shape the sample promises.
+
+    Its own function because the previous inline version asserted a property of the MARKET rather
+    than of the sample: *"exactly one episode id across all rows"*. An envelope carries every symbol
+    of its pipeline, so that held only while a single symbol was ever inside an episode — and it
+    broke the first time two were (2026-08-26: USDJPY sampled while USDCAD's own episode was still
+    open, both legitimately stamped). The generator refused to emit a sample it had correctly built.
+
+    Extracted so the case that shipped can be tested without a database, and so the three shapes
+    are *verified* here rather than merely selected by the SQL above.
+    """
+    sampled = [next((row for row in env['result']
+                     if row.get('breaking_episode_id') == episode_id), None)
+               for env in trio]
+    if any(row is None for row in sampled):
+        missing = [index + 1 for index, row in enumerate(sampled) if row is None]
+        raise AssertionError(
+            f'episode {episode_id} is absent from frame(s) {missing} — the three passes are not '
+            f'one episode')
+    opener, continuation, hold_band = sampled
+    if not opener.get('breaking_episode_start'):
+        raise AssertionError('frame 1 does not carry breaking_episode_start — it is not the opener')
+    if continuation.get('breaking_episode_start') or not continuation.get('is_breaking'):
+        raise AssertionError('frame 2 is not a continuation (start false + is_breaking true)')
+    if hold_band.get('is_breaking'):
+        raise AssertionError('frame 3 is not a hold-band pass — is_breaking must be false while the '
+                             'id persists, which is the case the consumer asked for')
 
 
 def _check_envelope(env: Dict[str, Any]) -> None:
@@ -233,7 +276,8 @@ def _frame(event: str, payload: Dict[str, Any]) -> str:
 
 
 def build(database_url: str) -> str:
-    trio = _fetch_episode_trio(database_url)
+    selected = _fetch_episode_trio(database_url)
+    trio = selected.envelopes
     # The contract check runs on the RAW rows: what the engine actually wrote, before this script
     # touches anything. That is what makes the sample evidence instead of illustration.
     for env in trio:
@@ -256,11 +300,7 @@ def build(database_url: str) -> str:
         raise AssertionError('seq not contiguous')
     if len({a['pipeline_id'], b['pipeline_id'], c['pipeline_id']}) != 1:
         raise AssertionError('several pipeline_ids in one series — the reissue-1 defect')
-    episode_ids = {row.get('breaking_episode_id')
-                   for env in (a, b, c) for row in env['result']
-                   if row.get('breaking_episode_id')}
-    if len(episode_ids) != 1:
-        raise AssertionError(f'the three passes are not one episode: {episode_ids}')
+    _check_one_episode(selected.episode_id, (a, b, c))
 
     now_msc = c['available_msc'] + 41_883
     frames = [
@@ -371,7 +411,13 @@ def main() -> None:
     if not url:
         raise SystemExit('DATABASE_URL not set')
     text = build(url)
-    with open(OUT_PATH, 'w') as handle:
+    # Both keywords are load-bearing, and the report below is why. It measures `text` — UTF-8 bytes,
+    # LF line endings — so without pinning them the file on disk is not the artifact that was
+    # verified. On the live host (Windows) the platform defaults are cp1252 and CRLF translation,
+    # which on 2026-08-26 produced a sample the consumer could not decode as UTF-8 at all: one
+    # em-dash in a comment line landed as the single byte 0x97. SSE mandates UTF-8, and `reasoning`
+    # is model-written text that can carry any code point, so this must never be left to the host.
+    with open(OUT_PATH, 'w', encoding='utf-8', newline='\n') as handle:
         handle.write(text)
     longest = max(len(line.encode()) for line in text.split('\n'))
     print(f'{OUT_PATH}: {len(text.encode())} B, longest data line {longest} B — contract check passed')

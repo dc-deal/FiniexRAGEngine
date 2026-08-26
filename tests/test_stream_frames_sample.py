@@ -61,8 +61,12 @@ def test_the_trio_is_opener_continuation_and_hold_band(clean_db: str) -> None:
 
     trio = generate._fetch_episode_trio(clean_db)
 
-    assert len(trio) == 3
-    opener, continuation, hold = (env['result'][0] for env in trio)
+    # `_fetch_episode_trio` returns the selected episode id alongside its three passes: `build` has
+    # to verify the passes belong to the episode the query picked, and an envelope carries every
+    # symbol of its pipeline, so several ids legitimately appear in one pass.
+    assert trio.episode_id == _EPISODE
+    assert len(trio.envelopes) == 3
+    opener, continuation, hold = (env['result'][0] for env in trio.envelopes)
     assert opener['breaking_episode_start'] is True
     assert continuation['breaking_episode_start'] is False and continuation['is_breaking'] is True
     assert hold['is_breaking'] is False
@@ -96,3 +100,37 @@ def test_a_partial_pass_is_never_used(clean_db: str) -> None:
 
     with pytest.raises(SystemExit, match='no episode carries all three shapes'):
         generate._fetch_episode_trio(clean_db)
+
+
+def _row(symbol: str, episode_id: str, *, start: bool, is_breaking: bool) -> Dict[str, Any]:
+    return {'symbol': symbol, 'signal': 'SELL', 'sentiment_score': -0.4, 'confidence': 0.8,
+            'reasoning': 'r', 'urgency': 0.8 if is_breaking else 0.6, 'is_breaking': is_breaking,
+            'basis': 'llm', 'breaking_episode_id': episode_id, 'breaking_episode_start': start}
+
+
+def test_a_second_concurrent_episode_does_not_break_the_check() -> None:
+    """Two symbols inside their own episodes at once is normal — and it once refused a valid sample.
+
+    The check used to assert "exactly one episode id across all rows". An envelope carries every
+    symbol of its pipeline, so that only ever held while a single symbol was in an episode. On
+    2026-08-26 the generator selected a USDJPY episode carrying all three shapes, built the sample,
+    and then refused it because USDCAD's own episode was still open in the same envelopes. Both ids
+    were correct; the assertion was not. No database needed — this is the pure check.
+    """
+    other = 'forex_macro_sentiment:usd jpy boj:2026-08-26T00:30:20Z'
+    trio = tuple(
+        {'result': [_row('USDCAD', _EPISODE, start=start, is_breaking=is_breaking),
+                    _row('USDJPY', other, start=False, is_breaking=True)]}
+        for start, is_breaking in ((True, True), (False, True), (False, False)))
+
+    generate._check_one_episode(_EPISODE, trio)     # the sampled episode passes
+
+    # And the check still bites. The concurrent episode is present in all three passes but does not
+    # open in the first one, so it fails on the earliest shape rule rather than being waved through.
+    with pytest.raises(AssertionError, match='not the opener'):
+        generate._check_one_episode(other, trio)
+
+    # A trio that genuinely spans two episodes is still refused.
+    broken = (trio[0], trio[1], {'result': [_row('USDCAD', other, start=False, is_breaking=False)]})
+    with pytest.raises(AssertionError, match='absent from frame'):
+        generate._check_one_episode(_EPISODE, broken)
