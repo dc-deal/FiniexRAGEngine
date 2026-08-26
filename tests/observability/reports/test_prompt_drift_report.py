@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 
 from finiexragengine.core.observability.reports.prompt_drift_report import (
     _aggregate_drift,
+    build_prompt_drift_report,
     format_prompt_drift_report,
 )
 from finiexragengine.core.pipeline.breaking_episode_rule import (
@@ -352,3 +353,74 @@ def test_it_agrees_with_the_timeline_report_on_the_same_rows() -> None:
         assert sum(v.confirm_passes for v in block.versions) == sum(
             r.breaking_passes for r in series)
         assert sum(v.mechanical for v in block.versions) == sum(r.mechanical for r in series)
+
+
+def test_the_projected_read_is_output_identical_to_reading_whole_envelopes(clean_db: str) -> None:
+    """The SELECT reads a projection of each envelope; that must change nothing it decides.
+
+    `_PROJECTION` exists for a resource reason — a served envelope is ~42 KB and this report
+    consumes nine leaves, so a 30-day window was a transient of order a gigabyte. Measured on the
+    dev journal when it landed: 8.22 MiB → 0.39 MiB for the same 505 envelopes, rendering
+    byte-identically. That measurement is what this test makes permanent, because the failure mode
+    of a projection is silent: a mistyped key arrives as SQL NULL, the aggregation treats it as
+    absent, and the numbers move without anything raising.
+
+    The fixture deliberately contains every shape whose projection could go wrong: a fanned pair
+    (whose ticker LABEL depends on array order, which is why the SQL orders by ordinality), a
+    mechanical row (`basis` other than `llm`), a row with no `base_currency`, two prompt versions,
+    and an `error` envelope that must be excluded by both paths.
+    """
+    import json
+
+    import psycopg
+
+    envelopes = [
+        {'pipeline_id': 'crypto_sentiment', 'timestamp': '2026-08-23T12:00:00+00:00',
+         'status': 'success', 'prompt_version': '3', 'prompt_id': 'sentiment-crypto',
+         'prompt_hash': 'aaaaaaaaaaaa', 'metadata': {'model': 'gpt-4o-mini', 'cost_usd': 0.01},
+         'result': [
+             {'symbol': 'ETHUSD', 'urgency': 0.8, 'is_breaking': True, 'basis': 'llm',
+              'base_currency': 'ETH', 'reasoning': 'x' * 4000, 'sources': [{'url': 'u'}] * 20},
+             {'symbol': 'ETHEUR', 'urgency': 0.7, 'is_breaking': False, 'basis': 'llm',
+              'base_currency': 'ETH', 'reasoning': 'y' * 4000, 'sources': []},
+             {'symbol': 'BTCUSD', 'urgency': 0.0, 'is_breaking': False, 'basis': 'no_data',
+              'reasoning': '', 'sources': []}]},
+        {'pipeline_id': 'crypto_sentiment', 'timestamp': '2026-08-25T16:00:00+00:00',
+         'status': 'partial', 'prompt_version': '4', 'prompt_id': 'sentiment-crypto',
+         'prompt_hash': 'bbbbbbbbbbbb', 'metadata': {'model': 'gpt-4o'},
+         'result': [{'symbol': 'SOLUSD', 'urgency': 0.9, 'is_breaking': True, 'basis': 'llm'}]},
+        {'pipeline_id': 'crypto_sentiment', 'timestamp': '2026-08-25T17:00:00+00:00',
+         'status': 'error', 'prompt_version': '4', 'prompt_id': 'sentiment-crypto',
+         'prompt_hash': 'bbbbbbbbbbbb', 'metadata': {'model': 'gpt-4o'}, 'result': []},
+    ]
+    with psycopg.connect(clean_db) as conn, conn.cursor() as cur:
+        for envelope in envelopes:
+            cur.execute('INSERT INTO outcomes (pipeline_id, ts, status, envelope) '
+                        'VALUES (%s, %s, %s, %s)',
+                        (envelope['pipeline_id'], envelope['timestamp'], envelope['status'],
+                         json.dumps(envelope)))
+        conn.commit()
+
+    since = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    grouping = {'crypto_sentiment': EpisodeGrouping(
+        BreakingEpisodeRule(exit_threshold=0.7),
+        query_map={'ETHUSD': 'Ethereum ETH', 'ETHEUR': 'Ethereum ETH'})}
+    gates = {'crypto_sentiment': 0.8}
+
+    projected = build_prompt_drift_report(clean_db, since, since_label='all', rules=grouping,
+                                          confirm_thresholds=gates)
+    with psycopg.connect(clean_db) as conn, conn.cursor() as cur:
+        cur.execute("SELECT pipeline_id, envelope FROM outcomes WHERE ts >= %s "
+                    "AND status <> 'error' ORDER BY pipeline_id, ts", (since,))
+        whole = _aggregate_drift(cur.fetchall(), 'all', grouping, gates, since=since,
+                                 until=projected.until)
+
+    assert (format_prompt_drift_report(projected, width=200)
+            == format_prompt_drift_report(whole, width=200))
+    # And the shapes really were exercised, or the comparison proves nothing (both paths could be
+    # equally empty): the fanned pair is one unit with its label in stored order, the mechanical row
+    # is counted apart, and the error envelope is in neither.
+    v3 = _version(projected, 'crypto_sentiment', '3')
+    assert v3.scored == 1 and v3.mechanical == 1
+    assert v3.top_unit_label == 'ETHUSD/ETHEUR'
+    assert _version(projected, 'crypto_sentiment', '4').scored == 1      # the error one is excluded

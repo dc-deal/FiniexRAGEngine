@@ -168,6 +168,47 @@ def _parse_dt(value: str) -> datetime:
     return datetime.fromisoformat(value.replace('Z', '+00:00'))
 
 
+# Read a PROJECTION of each envelope, never the whole thing. The report consumes nine leaves; a
+# served envelope is ~42 KB, and `reasoning` plus `sources` are almost all of it. Measured against
+# production 2026-08-26: a 7-day window is ~2,200 envelopes and a 30-day one — the configured
+# default — is ~9,400, so reading them whole is a transient of order a gigabyte once parsed, on a
+# 16 GB host. The window it was sized against in development held 1,400.
+#
+# Two details are load-bearing rather than stylistic:
+#   * `WITH ORDINALITY` + `ORDER BY ord` keeps the result array in its stored order. The
+#     aggregation itself is order-free (max urgency, any verdict), but the ticker LABEL of a fanned
+#     pair is built by first appearance — without the ordering `ETHUSD/ETHEUR` could render as
+#     `ETHEUR/ETHUSD` between two runs of the same query.
+#   * `COALESCE(..., '[]')` twice: an envelope with no `result` key, and a result array that
+#     aggregates to nothing, must both arrive as an empty list rather than as SQL NULL.
+#
+# What it must NOT become is a second aggregation. Everything below `_aggregate_drift` still sees a
+# plain envelope-shaped dict, so the DB-free core stays the single place where a number is decided
+# and the suite keeps driving it with whole envelopes.
+_PROJECTION = """
+    SELECT pipeline_id, jsonb_build_object(
+        'timestamp',      envelope -> 'timestamp',
+        'prompt_version', envelope -> 'prompt_version',
+        'prompt_id',      envelope -> 'prompt_id',
+        'prompt_hash',    envelope -> 'prompt_hash',
+        'metadata',       jsonb_build_object('model', envelope -> 'metadata' -> 'model'),
+        'result',         COALESCE((
+            SELECT jsonb_agg(jsonb_build_object(
+                       'symbol',        row -> 'symbol',
+                       'base_currency', row -> 'base_currency',
+                       'basis',         row -> 'basis',
+                       'urgency',       row -> 'urgency',
+                       'is_breaking',   row -> 'is_breaking')
+                   ORDER BY ord)
+            FROM jsonb_array_elements(COALESCE(envelope -> 'result', '[]'::jsonb))
+                 WITH ORDINALITY AS elements(row, ord)), '[]'::jsonb)
+    ) AS envelope
+    FROM {table}
+    WHERE ts >= %s AND status <> 'error'
+    ORDER BY pipeline_id, ts
+"""
+
+
 def build_prompt_drift_report(database_url: str, since: datetime, *,
                              since_label: str = '30d',
                              outcomes_table: str = 'outcomes',
@@ -189,10 +230,7 @@ def build_prompt_drift_report(database_url: str, since: datetime, *,
                         (outcomes_table,))
             if cur.fetchone()[0] == 0:
                 return PromptDriftReport(since_label)
-            cur.execute(
-                f'SELECT pipeline_id, envelope FROM {outcomes_table} '
-                "WHERE ts >= %s AND status <> 'error' ORDER BY pipeline_id, ts",
-                (since,))
+            cur.execute(_PROJECTION.format(table=outcomes_table), (since,))
             rows = cur.fetchall()
     except psycopg.Error as exc:
         raise VectorStoreError(f'prompt drift report failed: {exc}') from exc
