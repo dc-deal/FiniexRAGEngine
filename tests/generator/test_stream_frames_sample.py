@@ -19,7 +19,7 @@ from typing import Any, Dict, List
 import psycopg
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'experiments' / 'stream_frames_sample'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'experiments' / 'stream_frames_sample'))
 generate = pytest.importorskip('generate')
 
 _T0 = datetime(2026, 8, 24, 16, 51, 3, tzinfo=timezone.utc)

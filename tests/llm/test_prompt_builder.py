@@ -152,7 +152,7 @@ def test_shipped_prompt_hashes_are_pinned():
     archived under it, and the consumer certifies against exactly that. A change here means a new
     version file; if this test fails, the edit belongs in a new `_v<N+1>.md` instead.
     """
-    builder = PromptBuilder(Path(__file__).resolve().parents[1] / 'prompts')
+    builder = PromptBuilder(Path(__file__).resolve().parents[2] / 'prompts')
     pinned = {
         ('crypto_sentiment', '1'): '1f191112898f',
         ('crypto_sentiment', '2'): '1c86eac137d8',
@@ -166,7 +166,7 @@ def test_shipped_prompt_hashes_are_pinned():
 
 def test_shipped_v3_prompts_ask_for_breaking_reason():
     """Both families landed on v3 together (forex skips v2), and both carry the new field."""
-    builder = PromptBuilder(Path(__file__).resolve().parents[1] / 'prompts')
+    builder = PromptBuilder(Path(__file__).resolve().parents[2] / 'prompts')
     for family in ('crypto_sentiment', 'forex_sentiment'):
         rendered = builder.build(family, '3', 'Bitcoin BTC', [])
         assert 'breaking_reason' in rendered

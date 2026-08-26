@@ -2,7 +2,7 @@
 
 Fenced behind the `paid` marker (excluded from default runs). Run deliberately:
 
-    pytest -m paid tests/test_llm_live.py -v
+    pytest -m paid tests/llm/test_llm_live.py -v
 
 Needs OPENAI_API_KEY. One gpt-4o-mini call — fractions of a cent.
 """
@@ -26,7 +26,7 @@ pytestmark = [
                        reason='OPENAI_API_KEY not set'),
 ]
 
-_PROMPTS = Path(__file__).resolve().parents[1] / 'prompts'
+_PROMPTS = Path(__file__).resolve().parents[2] / 'prompts'
 
 
 def _article(article_id: str, title: str, summary: str) -> Article:

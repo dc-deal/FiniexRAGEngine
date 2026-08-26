@@ -571,7 +571,7 @@ otherwise — so every envelope produced before prompt v3 keeps rendering. The p
 **`breaking_reason` must not become the story measure's input.** `story_similarity = 0.45` was
 calibrated over 1,455 real `reasoning` texts, and the new field is both differently distributed and
 empty on non-breaking rows — repointing the clustering at it would retire that calibration without
-a visible failure. `tests/test_breaking_report.py` pins this: two episodes whose `breaking_reason`
+a visible failure. `tests/observability/reports/test_breaking_report.py` pins this: two episodes whose `breaking_reason`
 lines share almost no vocabulary still count as one story because their `reasoning` does.
 
 The prompt change itself is a **series break** — different prompts yield different scores for the
@@ -579,7 +579,7 @@ same news — so both families moved to **v3** together (`forex_sentiment` skips
 one number describes the prompt generation across pipelines) and the old template files stay
 byte-identical: their `content_hash` is the `prompt_hash` recorded in every envelope they ever
 produced. A `{{ symbol }}` → `{{ query }}` rename therefore lives only in the new files, with the
-builder binding both keys; `tests/test_prompt_builder.py` pins every shipped hash.
+builder binding both keys; `tests/llm/test_prompt_builder.py` pins every shipped hash.
 
 A follow-up rides on this: `story_similarity` should be re-measured on v3 reasons once enough exist
 — asking the model for one more field shifts the others' distribution slightly, even though the

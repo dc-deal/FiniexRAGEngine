@@ -554,7 +554,7 @@
             "request": "launch",
             "module": "pytest",
             "args": [
-                "tests/test_rag_live.py",
+                "tests/rag/test_rag_live.py",
                 "-m",
                 "paid",
                 "-v"

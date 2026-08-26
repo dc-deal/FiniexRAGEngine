@@ -29,7 +29,7 @@ def build_bearer_dependency(registry: TokenRegistry,
 
     Mounting it on the `APIRouter` is the whole design: a route added later inherits it by
     construction, so the failure this issue exists to prevent — an endpoint shipped unprotected by
-    omission — cannot be reached by forgetting something. `tests/test_api_auth.py` asserts that on
+    omission — cannot be reached by forgetting something. `tests/api/test_api_auth.py` asserts that on
     a route registered inside the test.
 
     `limiter`, when given, bounds **failed** attempts per client: a valid call is never throttled

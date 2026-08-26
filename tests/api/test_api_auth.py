@@ -287,7 +287,7 @@ def test_the_tracked_config_never_ships_a_token() -> None:
     import json
     from pathlib import Path as _Path
 
-    tracked = json.loads((_Path(__file__).resolve().parents[1] / 'configs' / 'app_config.json')
+    tracked = json.loads((_Path(__file__).resolve().parents[2] / 'configs' / 'app_config.json')
                          .read_text(encoding='utf-8'))
     assert tracked['api']['tokens'] == {}
     assert ApiConfig().tokens == {}

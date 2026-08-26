@@ -42,7 +42,7 @@ the retrieved `articles`.
   ("Bitcoin BTC"), never the ticker. **The rename lives in the new files only** — an older template
   edited in place would change its `content_hash`, i.e. the `prompt_hash` recorded in every envelope
   it ever produced, so the builder binds `query` *and* `symbol` to the same value and
-  `tests/test_prompt_builder.py` pins every shipped hash.
+  `tests/llm/test_prompt_builder.py` pins every shipped hash.
 - **Bump the version when the prompt changes** — different prompts score the same news differently,
   so the consumer must keep the series apart (replay/backfill). A bump = a new file.
 

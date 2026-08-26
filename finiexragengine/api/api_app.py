@@ -334,7 +334,7 @@ def create_app(attach_runners: Optional[bool] = None,
     # The bearer dependency sits on the protected `APIRouter` itself, never on individual routes,
     # so a route added later inherits it *by construction*. The failure this issue exists to
     # prevent — an endpoint shipped unprotected because someone forgot a decorator — stops being
-    # a thing anyone can forget. `tests/test_api_auth.py` asserts it on a route registered inside
+    # a thing anyone can forget. `tests/api/test_api_auth.py` asserts it on a route registered inside
     # the test, so the guarantee is checked rather than described.
     #
     # Which side an exempt route lands on is decided here, once, and it is mounted on exactly one

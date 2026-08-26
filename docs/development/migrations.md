@@ -108,7 +108,7 @@ It also replaced five `_ensure_schema()` methods and four inline
 
 ## Tests
 
-`tests/test_migration_runner.py` covers the runner against throwaway schemas of its own.
+`tests/schema/test_migration_runner.py` covers the runner against throwaway schemas of its own.
 
 More importantly, **every DB test runs against the real migrations**: the `db_dsn` fixture
 (`tests/conftest.py`) creates a `finiex_test` schema, applies `migrations/` into it, and hands
