@@ -25,7 +25,7 @@ import pathlib
 import typing
 from typing import Dict, List, Set
 
-_PACKAGE = pathlib.Path(__file__).resolve().parent.parent / 'finiexragengine'
+_PACKAGE = pathlib.Path(__file__).resolve().parents[2] / 'finiexragengine'
 # Names the interpreter injects into every module namespace.
 _MODULE_DUNDERS = {'__file__', '__name__', '__doc__', '__package__', '__spec__',
                    '__loader__', '__builtins__', '__class__'}

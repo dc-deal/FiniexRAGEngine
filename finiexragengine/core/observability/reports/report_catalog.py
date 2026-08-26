@@ -30,6 +30,9 @@ from finiexragengine.core.observability.reports.cost_report import (
     build_cost_report,
 )
 from finiexragengine.core.observability.reports.perf_report import build_perf_report
+from finiexragengine.core.observability.reports.prompt_drift_report import (
+    build_prompt_drift_report,
+)
 from finiexragengine.core.observability.reports.breaking_timeline_report import (
     build_breaking_timeline_report,
 )
@@ -44,6 +47,9 @@ from finiexragengine.core.observability.reports.source_quarantine_report import 
     build_source_quarantine_report,
 )
 from finiexragengine.core.pipeline.breaking_episode_rule import groupings_from_configs
+from finiexragengine.core.pipeline.detection_preflight import (
+    check_detection_reachability,
+)
 from finiexragengine.core.pipeline.breaking_story_rule import (
     groupings_from_configs as story_groupings_from_configs,
 )
@@ -210,10 +216,17 @@ def _build_quarantine_episode(database_url: str, manager: AppConfigManager,
 
 def _build_breaking(database_url: str, manager: AppConfigManager, params: ReportParams) -> Any:
     configs = _pipeline_configs(manager)
+    # The detection thresholds are resolved here, through the registry factory (ISSUE_106): this is
+    # the report an operator opens when nothing is flagging, and "the threshold is out of reach for
+    # the feeds that are running" is one of the two answers to that question. The factory matters —
+    # a per-machine `enabled: false` is exactly what moves these counts.
+    reachability = [check_detection_reachability(source_set)
+                    for source_set in manager.build_source_set_registry().list_sets()]
     return build_breaking_report(database_url, params.since,
                                  since_label=params.window_label or '7d',
                                  rules=groupings_from_configs(configs),
-                                 stories=story_groupings_from_configs(configs))
+                                 stories=story_groupings_from_configs(configs),
+                                 reachability=reachability)
 
 
 def _build_breaking_timeline(database_url: str, manager: AppConfigManager,
@@ -222,6 +235,23 @@ def _build_breaking_timeline(database_url: str, manager: AppConfigManager,
         database_url, params.since, since_label=params.window_label or '7d',
         symbol=params.symbol or '',
         rules=groupings_from_configs(_pipeline_configs(manager)))
+
+
+def _build_prompt_drift(database_url: str, manager: AppConfigManager,
+                        params: ReportParams) -> Any:
+    """The per-version score distribution (ISSUE_110).
+
+    Two config inputs, and they are read differently on purpose: the **hold gate** travels inside the
+    grouping and is applied to the archive at read time, while the **confirm gate** is passed for
+    display only — the confirm counts come from each pass's recorded verdict, so a retune since then
+    cannot rewrite what happened.
+    """
+    configs = _pipeline_configs(manager)
+    return build_prompt_drift_report(
+        database_url, params.since, since_label=params.window_label or '30d',
+        rules=groupings_from_configs(configs),
+        confirm_thresholds={config.pipeline_id: config.breaking.urgency_threshold
+                            for config in configs})
 
 
 _CATALOG: Dict[str, ReportSpec] = {
@@ -250,6 +280,12 @@ _CATALOG: Dict[str, ReportSpec] = {
         defaults=lambda config: {'window': config.breaking_timeline.window},
         summary='The per-pass breaking on/off series behind the episode count, with the flip count '
                 'next to it — optionally narrowed to one symbol.'),
+    'prompt_drift': ReportSpec(
+        build=_build_prompt_drift, params=('window',),
+        defaults=lambda config: {'window': config.prompt_drift.window},
+        summary='The urgency distribution per prompt version, per pipeline — confirm and hold-band '
+                'shares, the hold/break ratio, and how concentrated the confirm band is. Never '
+                'pooled across pipelines.'),
     'perf': ReportSpec(
         build=_build_perf, params=('window',),
         defaults=lambda config: {'window': config.perf.window},

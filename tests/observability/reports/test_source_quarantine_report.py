@@ -2,7 +2,7 @@
 
 No database: the report's row shapes are built directly, so the *arithmetic and the wording* — the
 parts an operator reads during an incident — are covered everywhere, including where PostgreSQL is
-not reachable. The SQL side is exercised by `test_source_health_store.py`, which writes real
+not reachable. The SQL side is exercised by `observability/test_source_health_store.py`, which writes real
 episodes through the store.
 
 The numbers below are the measured ones from the two incidents in the issue, so a regression shows

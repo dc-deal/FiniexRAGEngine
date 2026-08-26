@@ -55,7 +55,7 @@ flag skipped. Nothing was exposed that was not meant to be — the deployed conf
 been `true`, the documented state — but the control did not exist.
 
 Which side an exempt route is mounted on is now decided in one place in `create_app`, and each route
-is mounted exactly once; `tests/test_api_auth.py` asserts both positions behaviourally. `/v1/build`
+is mounted exactly once; `tests/api/test_api_auth.py` asserts both positions behaviourally. `/v1/build`
 (see `connect_contract.md`) is the second exemption and carries the same switch.
 
 The general shape of the defect is worth keeping: **a guarantee that rests on a call site is not a

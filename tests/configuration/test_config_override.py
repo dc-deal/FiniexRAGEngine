@@ -16,7 +16,7 @@ def _write(path, data) -> None:
 def test_defaults_mirror_tracked_json():
     # The convention "config defaults must mirror configs/app_config.json exactly",
     # checked mechanically: applying the tracked file must change nothing vs pure defaults.
-    tracked = json.loads((Path(__file__).resolve().parents[1] / 'configs'
+    tracked = json.loads((Path(__file__).resolve().parents[2] / 'configs'
                           / 'app_config.json').read_text(encoding='utf-8'))
     assert AppConfig(**tracked).model_dump() == AppConfig().model_dump()
 
@@ -112,7 +112,7 @@ def test_the_overlay_template_still_loads():
     Without this, the file rots quietly: a renamed key or a new mandatory field would first be
     discovered by someone following the README on their first day.
     """
-    template = json.loads((Path(__file__).resolve().parents[1] / 'user_configs'
+    template = json.loads((Path(__file__).resolve().parents[2] / 'user_configs'
                            / 'app_config.example.json').read_text(encoding='utf-8'))
 
     config = AppConfig(**template)
@@ -126,7 +126,7 @@ def test_the_template_cannot_authenticate_anything():
     That is what makes a credential-shaped example safe to track at all — unlike a bare token
     string, which would be a working credential the moment the file was read.
     """
-    template = json.loads((Path(__file__).resolve().parents[1] / 'user_configs'
+    template = json.loads((Path(__file__).resolve().parents[2] / 'user_configs'
                            / 'app_config.example.json').read_text(encoding='utf-8'))
 
     config = AppConfig(**template)
@@ -141,7 +141,7 @@ def test_the_templates_journal_ids_can_never_match_a_real_one():
     labelling whichever database it meets as 'production' — the same reasoning the tracked config's
     own `EXAMPLE_ID` follows.
     """
-    template = json.loads((Path(__file__).resolve().parents[1] / 'user_configs'
+    template = json.loads((Path(__file__).resolve().parents[2] / 'user_configs'
                            / 'app_config.example.json').read_text(encoding='utf-8'))
 
     for journal_id in template['journal_names']:

@@ -64,6 +64,16 @@ class BreakingTimelineReportConfig(BaseModel):
     window: str = '7d'
 
 
+class PromptDriftReportConfig(BaseModel):
+    """Wider than the house default on purpose (ISSUE_110).
+
+    This report's statement is a *comparison between prompt versions*, and 7 days at the current
+    cadence often contains exactly one — a comparison whose default window shows nothing to compare
+    against is the wrong default. 30 days spans the last three prompt generations.
+    """
+    window: str = '30d'
+
+
 class PerfReportConfig(BaseModel):
     window: str = '7d'
 
@@ -89,5 +99,6 @@ class ReportsConfig(BaseModel):
     breaking: BreakingReportConfig = Field(default_factory=BreakingReportConfig)
     breaking_timeline: BreakingTimelineReportConfig = Field(
         default_factory=BreakingTimelineReportConfig)
+    prompt_drift: PromptDriftReportConfig = Field(default_factory=PromptDriftReportConfig)
     perf: PerfReportConfig = Field(default_factory=PerfReportConfig)
     cost: CostReportConfig = Field(default_factory=CostReportConfig)

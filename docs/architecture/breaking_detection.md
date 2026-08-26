@@ -46,8 +46,11 @@ cross-feed copies count):
 - **Byproduct:** flagged MID+/HIGH articles populate `importance`, so the previously-dead
   `retrieval.deep_tier` becomes live — detection feeds retention for free.
 
-Config lives on the **source-set** (`detection` block) — clustering is across a set's feeds, and
-the keyword vocabulary is market-specific:
+Config lives on the **source-set** (`detection` block) because the keyword vocabulary is
+market-specific and the thresholds are read next to the feeds they are judged against — but note
+what the cluster size counts: **near-duplicate articles, corpus-wide**, not distinct feeds and not
+one set's slice. See *The detection trigger* and `DetectionConfig` for why that distinction matters
+and which half of it is still open.
 
 ```json
 "detection": {
@@ -59,6 +62,126 @@ the keyword vocabulary is market-specific:
 
 > The static `keywords` list is the **seam** an LLM-refreshed buzzword flow (ISSUE_46) later fills
 > automatically — the detector reads the same field, so hand-seeding now is zero rework.
+
+## The detection trigger — which path fired (ISSUE_106, migration 011)
+
+`flag_candidates` wrote `importance`, `breaking_candidate` and `flagged_at`, but never *which of the
+two paths* raised the tier. The decision was known inside `_tier` and discarded one line later, so
+the one number the report offered — `flagged_candidates` — has only ever been the **sum of two
+near-independent channels**. "Is the cluster path still alive?" could not be answered by any query,
+report or log line after the fact, only by re-deriving it from the vectors and the window. **A
+threshold whose effect nobody can observe is a threshold nobody can tune.**
+
+`articles.detection_trigger` closes it. Closed vocabulary (`types/ingest_types.py`):
+
+| value | meaning |
+|---|---|
+| `cluster` | `cluster_size` crossed `mid_` / `high_cluster_size` |
+| `keyword` | a keyword on a source at/above `keyword_source_weight` — the fast path |
+| `NULL` | flagged before the column existed. **Not a category**, and never backfilled: the decision depended on the corpus state at that instant and is irreconstructable |
+
+Three properties worth knowing before someone changes one of them:
+
+- **An overlap is attributed to the cluster.** When a real burst also contains a keyword, both
+  branches would fire. The burst wins, for two reasons: it is the tier's primary meaning and the
+  value `high_cluster_size` is calibrated on, and the fast path's entire justification is that it
+  fires *before* a cluster exists — crediting it with bursts would flatter its hit rate and make the
+  measurement useless for the question it was built to answer.
+- **An empty trigger writes nothing.** `flag_candidates(..., trigger='')` leaves the column
+  untouched rather than storing `''`, so NULL keeps meaning "not recorded". A caller that does not
+  know must not erase what another pass recorded.
+- **Surfaces report NULL as its own bucket.** The `breaking` report renders
+  `flagged by path: 31 cluster · 15 keyword` — and where old rows are in the window,
+  `42 unrecorded` beside them with the reason. Folding them into either path would invent evidence.
+
+The pass log carries the same split at the call (`[breaking] flagged 3 HIGH + 1 MID via cluster 3 ·
+keyword 1`), the persisted column is the durable warehouse — the same division of labour as spend.
+
+## The reachability preflight — a threshold only means something relative to the feeds (ISSUE_106)
+
+All three thresholds above are **relative to the feeds that actually run**, and nothing validated
+them against the source set. The set is declared once and then erodes at runtime, in two ways the
+config never learns about: `enabled: false` (usually per machine — reachability is an environment
+fact) and the quarantine ladder switching a failing feed out dynamically. Measured on the live
+engine 2026-08-25: `crypto_news` asked for a cluster of **5** while running **4** feeds, and had
+done for weeks without a single surface saying so.
+
+`core/pipeline/detection_preflight.py` checks it. Reported at boot as `[DETECTION]` lines — the same
+idiom as `[OVERRIDE]` and `[AUTH]` — and again in the `breaking` report, from **one** formatting
+function, so the two surfaces cannot describe the same state differently.
+
+**Warn, never refuse.** A pending migration is corruption and rightly blocks boot; an
+over-ambitious threshold is a *degraded feature*, and blocking on it would take the engine down over
+a quarantined feed. Warning it is the whole point — the failure mode was silence.
+
+### The two checks are not equally strong, and the wording keeps them apart
+
+| check | strength | why |
+|---|---|---|
+| `keyword_source_weight` > every active feed's weight | **proof** | `source_weight` comes from the config and nothing else can raise it. The fast-path cannot fire, period. |
+| `high/mid_cluster_size` > active feed count | **indicator** | `count_neighbors` is a `COUNT(*)` over corpus *articles* with no notion of which feed each came from, so four feeds reach a cluster of five whenever one publishes near-duplicates of its own (live-blog, follow-up, syndicated re-post). |
+
+So the cluster line says *"the cross-feed path cannot be reached by these feeds alone; only a feed
+duplicating itself, or the keyword path, can still fire"* — never "unreachable", which would be
+false and, worse, reassuring. Reporting an indicator as a proof is how a report loses its
+credibility.
+
+### What each state looks like, with the numbers that produced it
+
+```
+# the case that filed the issue — crypto_news as it actually ran, 2026-08-25
+[DETECTION] crypto_news · 4 active feeds (6 declared, 2 out: theblock, cryptoslate)
+[DETECTION] crypto_news · high_cluster_size=5 exceeds the active feed count (4) — the cross-feed
+            path to HIGH cannot be reached by these feeds alone; only a feed duplicating itself,
+            or the keyword path, can still fire
+[DETECTION] crypto_news · keyword gate 0.9 · 3 of 4 active feeds at or above (highest 1.0)
+
+# after ISSUE_107
+[DETECTION] crypto_news · 7 active feeds (21 declared, 14 out: cryptoslate, bitcoinmagazine, +12 more)
+[DETECTION] crypto_news · keyword gate 0.9 · 5 of 7 active feeds at or above (highest 1.0)
+[DETECTION] crypto_news · cluster thresholds 3/5 satisfiable by 7 feeds
+
+# the SILENT failure — every 1.0 feed walled, only the 0.8 tier survives
+[DETECTION] crypto_news · keyword_source_weight=0.9 is above every active feed (highest 0.8) —
+            the keyword fast-path CANNOT fire; detection is cluster-only
+```
+
+The last one is the case worth building this for: a keyword hit that never fires writes nothing,
+logs nothing and flags nothing. Half the detection system switches off and every existing surface
+keeps reporting a healthy fleet — because the feeds *are* healthy. Two Cloudflare walls have already
+landed on this catalogue in 2026 (`cryptoslate` in July, `ambcrypto` in August), so it is not a
+thought experiment.
+
+### The gate distribution, not a boolean
+
+The line reports `keyword gate 0.9 · N of M active feeds at or above` rather than a yes/no.
+ISSUE_82 measured `keyword_source_weight: 0.9` as *"a binary switch separating 10 feeds from 4"* and
+shelved the question as **observation, no lever** for want of an instrument. This is the instrument:
+a gate that every feed clears is a constant with extra steps, and one that 5 of 20 clear is a
+different lever than the config suggests.
+
+### What it deliberately does not do
+
+- **Quarantine is not part of the boot check.** It is dynamic — a boot-time verdict would be stale
+  within the hour. So the two surfaces report two different populations, and each names its own:
+
+  ```
+  # boot, from config alone
+  [DETECTION] crypto_news · 7 active feeds (21 declared, …) · quarantine not included
+              (it is dynamic — the breaking report reads it live)
+  # the breaking report, at read time
+  crypto_news · 5 of 7 enabled feeds pollable (21 declared, …) · 2 quarantined right now:
+              coindesk, theblock
+  crypto_news · high_cluster_size=5 exceeds the pollable feed count (5) — …
+  ```
+
+  `with_quarantine()` recomputes the verdict against `effective` (enabled minus currently
+  quarantined) and stamps `quarantine_known`, so "none are quarantined" stays distinguishable from
+  "nobody looked". Only ids belonging to the set are counted — the health store is engine-wide, and
+  charging another set's cool-off to this one would invent a warning nobody can act on.
+- **It does not retune anything.** Whether `high_cluster_size: 5` is *right* for the current feed
+  count is a calibration question that needs the detection trigger on the row first (ISSUE_106
+  part A) — the preflight makes the mismatch visible, it does not decide the value.
 
 ## Stage 2 — the two-parameter split (the wake vs the confirm)
 
@@ -299,6 +422,62 @@ displaying whatever the replay left open (`BreakingEpisodeTracker.seed`), so a s
 restart keeps its row; the session counters beside it are not restored, because they count what
 this process saw.
 
+### The distribution under the two gates — `prompt_drift` (ISSUE_110)
+
+The lattice above is what makes a prompt change dangerous. Both gates sit *on* lattice values, so a
+prompt that shifts the score distribution by one step changes how much of the population is above
+the confirm gate — without changing anything a provenance field can show. That happened: v2 → v3
+went live on 2026-08-23 21:37 UTC and cut the crypto confirm rate **8.43 % → 0.47 %**, 113 breaking
+rows a day down to six, and it took three days to see. `prompt_version` and `prompt_hash` labelled
+every affected row correctly the whole time. A label is not a comparison.
+
+`prompt_drift` (`core/observability/reports/prompt_drift_report.py`, `GET
+/v1/reports/prompt_drift`, `prompt_drift_cli`) is that comparison: per pipeline, per prompt version,
+the urgency histogram plus the confirm and hold-band shares. Three of its properties are load-bearing
+rather than presentational, and each one exists because its absence produced a wrong answer.
+
+**It never pools.** Grouping is per pipeline, always. Across both streams the v3 → v4 aggregate moved
+6.67 % → 6.60 % — practically unchanged, while both distributions underneath were rebuilt. No field
+in the result object holds a cross-pipeline figure and no line of the rendering prints one, so the
+report has nowhere to put the number that would mislead.
+
+**The confirm band never travels without its concentration.** Forex v3 reads healthy at 10.78 % and
+collapsed at *"one analysis unit supplies 93 % of it"* — roughly 205 of its 220 confirm rows were
+USDCAD alone. Every row therefore carries the number of contributing analysis units and the largest
+one's share. The unit is the **episode key** (the retrieval query, so a fanned pair under ISSUE_70
+counts once) and it is *displayed* by its tickers — counting by query and reading by query are two
+different requirements.
+
+**Only LLM-scored passes enter the distribution.** A result with `basis != 'llm'` is a mechanical
+`no_data` HOLD: retrieval came back empty after the floor and the model never ran, yet the row
+carries `urgency 0.0`. Folding those in makes a corpus outage — the 37 frozen hours of 2026-08-20 —
+read as *"the new prompt got calmer"*. `mechanical` is reported beside `scored`, because an absent
+number is not an answer either.
+
+Two further readings the shape buys:
+
+- **The hold/break ratio** separates a collapse from a calm model. v3's confirm share fell 18-fold
+  while it kept parking one step below the gate, so its ratio ran to ~19 against v2's ~2.3. A bare
+  confirm share cannot tell "the model stopped seeing urgency" from "the model stopped crossing the
+  line", and only the second is a threshold problem.
+- **The confirm count comes from each pass's recorded `is_breaking`**, never re-derived against
+  today's `urgency_threshold` — the same rule `BreakingEpisodeRule` follows, so a retune cannot
+  rewrite what the archive says happened. The **hold band** is a read-time derivation against the
+  configured `urgency_exit_threshold`, and the report prints which of the two it applied to which
+  number. Its totals are pinned against `breaking_timeline`'s by a parity test: `scored`, the
+  confirm count and `mechanical` are defined in the same words on both surfaces, so they are
+  asserted to agree rather than assumed to.
+
+Buckets are the **observed** value set, not a hard-coded seven: the lattice is a measured property
+of a prompt, and a version emitting 0.75 must not be folded into a neighbour silently. Past twelve
+distinct values in one version the report bins to 0.1 and says so in its legend.
+
+**A prompt bump's Definition of Done.** A prompt change is a series break by construction, so the
+issue that makes one records the before/after distribution from this report, in the issue, at the
+time of the bump — an artefact produced once, not a monitor somebody is supposed to watch. And it
+records the *split*, never one number per version: v3 → v4 is the worked example of an aggregate
+that moved 0.07 points while both streams were rebuilt underneath it.
+
 ### Episode identity on the envelope (ISSUE_65)
 
 The rule above decides *where* an episode begins and ends. This is what a consumer receives of it.
@@ -448,7 +627,7 @@ otherwise — so every envelope produced before prompt v3 keeps rendering. The p
 **`breaking_reason` must not become the story measure's input.** `story_similarity = 0.45` was
 calibrated over 1,455 real `reasoning` texts, and the new field is both differently distributed and
 empty on non-breaking rows — repointing the clustering at it would retire that calibration without
-a visible failure. `tests/test_breaking_report.py` pins this: two episodes whose `breaking_reason`
+a visible failure. `tests/observability/reports/test_breaking_report.py` pins this: two episodes whose `breaking_reason`
 lines share almost no vocabulary still count as one story because their `reasoning` does.
 
 The prompt change itself is a **series break** — different prompts yield different scores for the
@@ -456,7 +635,7 @@ same news — so both families moved to **v3** together (`forex_sentiment` skips
 one number describes the prompt generation across pipelines) and the old template files stay
 byte-identical: their `content_hash` is the `prompt_hash` recorded in every envelope they ever
 produced. A `{{ symbol }}` → `{{ query }}` rename therefore lives only in the new files, with the
-builder binding both keys; `tests/test_prompt_builder.py` pins every shipped hash.
+builder binding both keys; `tests/llm/test_prompt_builder.py` pins every shipped hash.
 
 A follow-up rides on this: `story_similarity` should be re-measured on v3 reasons once enough exist
 — asking the model for one more field shifts the others' distribution slightly, even though the

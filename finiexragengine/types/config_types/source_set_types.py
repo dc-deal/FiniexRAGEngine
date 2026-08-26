@@ -55,15 +55,40 @@ class DetectionConfig(BaseModel):
     """Breaking-candidate detection thresholds (ISSUE_11) — source-set-scoped.
 
     Detection runs LLM-free at ingest over the *shared* corpus: a burst of near-duplicate
-    articles across feeds (cluster size / velocity) is the primary signal; a keyword hit on a
-    high-trust source is a secondary fast-path. Clustering happens across a set's feeds and the
-    keyword vocabulary is market-specific, so the config lives with the source-set. Sensitivity
+    articles is the primary signal; a keyword hit on a high-trust source is a secondary fast-path.
+    The keyword vocabulary is market-specific, so the config lives with the source-set. Sensitivity
     (which tier wakes a given pipeline) is per-pipeline instead — see `BreakingConfig`.
+
+    **What the cluster size actually counts, corrected 2026-08-25 (ISSUE_106).** These comments
+    used to say "feeds", and that was wrong in two ways at once. `PgVectorStore.count_neighbors` is
+    `SELECT COUNT(*) FROM articles WHERE published_at >= … AND (embedding <=> …) <= …`, so it counts
+
+      1. **articles, not distinct feeds** — one feed publishing a live-blog, a follow-up and a
+         syndicated re-post reaches a cluster of three on its own; and
+      2. **the whole corpus, not this set's feeds** — `articles` is one table for every source-set,
+         and the query filters on vector distance and time only. A macro story carried by both
+         `forex_news` and `crypto_news` (a Fed decision, a tariff announcement) accumulates
+         neighbours from both, and each set then scores it against *its own* thresholds using a
+         count the other set contributed to.
+
+    The design *intent* was cross-feed corroboration, which is what would make a burst evidence of
+    anything; the implementation measures **near-duplicate density**. The two agree while feeds are
+    many and self-duplication is rare, and they come apart exactly when the feed count drops —
+    which is how it went unnoticed for six weeks of production.
+
+    Not yet decided (the open half of ISSUE_106): whether the query changes to count distinct
+    `source_id`s, or the intent is restated as duplicate density. The comments below now describe
+    what the code *does*, so nothing here claims a property it lacks while that is settled. A shared
+    corpus is a deliberate property of this engine (ISSUE_28), so a corpus-wide count may well be
+    the right answer — but then the threshold is not the per-set knob it looks like.
     """
     cluster_similarity: float = 0.85     # pairwise cosine to count as the same story
     cluster_window_minutes: int = 60     # burst window
-    mid_cluster_size: int = 3            # >= this many feeds carrying it -> importance MID (2)
-    high_cluster_size: int = 5           # >= this (OR high-weight source + keyword) -> HIGH (3) + candidate
+    # >= this many NEAR-DUPLICATE ARTICLES in the window, corpus-wide -> importance MID (2).
+    # Not "this many feeds": see the class docstring.
+    mid_cluster_size: int = 3
+    # >= this many (OR high-weight source + keyword) -> HIGH (3) + breaking candidate.
+    high_cluster_size: int = 5
     keyword_source_weight: float = 0.9   # a source at/above this weight + a keyword hit alone -> HIGH
     # Static seed vocabulary (ISSUE_46 later auto-refreshes this field via an LLM flow — the
     # detector reads the same field, so seeding by hand now is zero rework).

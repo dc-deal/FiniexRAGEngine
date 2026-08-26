@@ -144,6 +144,9 @@
     "breaking_timeline": {
       "window": "7d"
     },
+    "prompt_drift": {
+      "window": "30d"
+    },
     "perf": {
       "window": "7d"
     },

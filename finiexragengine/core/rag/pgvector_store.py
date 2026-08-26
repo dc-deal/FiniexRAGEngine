@@ -142,9 +142,14 @@ class PgVectorStore(AbstractVectorStore):
                         max_distance: float) -> int:
         """Count corpus articles within `max_distance` of `vector`, published at/after `since`.
 
-        The breaking detector's cluster-size probe (ISSUE_11): a burst of near-duplicate stories
-        across feeds is a `COUNT(*)` over the recency window with a cosine-distance filter — pure
-        vector math in the DB, no rows materialized, no LLM. `max_distance` = 1 − cluster_similarity.
+        The breaking detector's cluster-size probe (ISSUE_11): a `COUNT(*)` over the recency window
+        with a cosine-distance filter — pure vector math in the DB, no rows materialized, no LLM.
+        `max_distance` = 1 − cluster_similarity.
+
+        **Read the count for what it is (ISSUE_106):** articles, not distinct feeds, and the whole
+        `articles` table, not one source-set's slice. So a single feed's live-blog reaches a cluster
+        of three by itself, and a macro story carried by two source-sets accumulates neighbours from
+        both. `DetectionConfig` carries the full note and the open decision.
         """
         table = _TABLE
         try:
@@ -158,22 +163,32 @@ class PgVectorStore(AbstractVectorStore):
             raise VectorStoreError(f'count_neighbors query failed: {exc}') from exc
 
     def flag_candidates(self, article_ids: List[str], importance: int,
-                        breaking: bool) -> int:
+                        breaking: bool, trigger: str = '') -> int:
         """Stamp an importance tier (+ breaking-candidate + detection time) on articles (ISSUE_11).
 
         Idempotent: re-flagging a known cluster on a later pass just re-writes the same values.
         `flagged_at` is set to the DB clock — the detection-time anchor the reaction-time report
         joins by article_id. Returns the number of rows updated.
+
+        `trigger` records WHICH path fired (ISSUE_106). An empty string leaves the column
+        untouched rather than writing `''`: NULL means "not recorded", and a surface must be able
+        to tell that from a category. That is also why the column is written in a separate clause
+        instead of always being set — a re-flag by the other path on a later pass should update it,
+        a caller that does not know should not erase it.
         """
         if not article_ids:
             return 0
         table = _TABLE
         try:
             with self._connect() as conn, conn.cursor() as cur:
+                trigger_set = ', detection_trigger = %s' if trigger else ''
+                values = ([importance, breaking]
+                          + ([trigger] if trigger else [])
+                          + [article_ids])
                 cur.execute(
-                    f'UPDATE {table} SET importance = %s, breaking_candidate = %s, '
-                    'flagged_at = now() WHERE article_id = ANY(%s)',
-                    (importance, breaking, article_ids))
+                    f'UPDATE {table} SET importance = %s, breaking_candidate = %s'
+                    f'{trigger_set}, flagged_at = now() WHERE article_id = ANY(%s)',
+                    tuple(values))
                 return cur.rowcount
         except psycopg.Error as exc:
             raise VectorStoreError(f'flag_candidates update failed: {exc}') from exc

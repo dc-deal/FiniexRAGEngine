@@ -7,7 +7,7 @@ os.environ['FINIEX_LOG_FILE'] = ''
 
 # ISSUE_98: the app now refuses to boot with `require_auth` on and no tokens configured — which is
 # the point. The suite therefore configures one and calls with it, so the *authenticated* path is
-# what every existing API test exercises. `tests/test_api_auth.py` builds its own unauthenticated
+# what every existing API test exercises. `tests/api/test_api_auth.py` builds its own unauthenticated
 # clients for the rejection cases; nothing here weakens the default.
 _SUITE_TOKEN = 'suite-token-not-a-real-credential'
 os.environ.setdefault('FINIEX_API_TOKENS', f'suite:{_SUITE_TOKEN}')
@@ -23,6 +23,9 @@ from finiexragengine.core.schema.migration_runner import MigrationRunner  # noqa
 
 # Every DB-touching test runs against this schema, never against the operator's real corpus.
 _TEST_SCHEMA = 'finiex_test'
+# The migration ledger's name, mirroring `MigrationRunner`'s default: `clean_db` empties every
+# table in the test schema EXCEPT this one, because it records that the schema is already migrated.
+_MIGRATION_LEDGER = 'schema_migrations'
 _DEFAULT_DSN = 'postgresql://ragengine:ragengine@127.0.0.1:5433/ragengine'
 
 
@@ -75,18 +78,29 @@ def clean_db(db_dsn: str) -> Iterator[str]:
     """`db_dsn`, with every data table emptied first — tests share one migrated schema.
 
     Truncate rather than re-migrate: the schema is the expensive part and it does not change
-    between tests; the rows do. `corpus_meta` is included so the corpus guard (ISSUE_16) starts
-    unstamped, as it would on a fresh corpus, and `stream_seq` so each test mints from 1 —
-    a leaked counter would make sequence assertions depend on test order. `breaking_episodes`
-    likewise (ISSUE_65): the registry upserts by episode id, so a row surviving from an earlier
-    test would turn an insert into a continuation and quietly change what `n_passes` proves.
+    between tests; the rows do. Emptying *everything* is the point rather than a shortcut —
+    `corpus_meta` so the corpus guard (ISSUE_16) starts unstamped as it would on a fresh corpus,
+    `stream_seq` so each test mints from 1, `breaking_episodes` (ISSUE_65) because the registry
+    upserts by episode id and a surviving row turns an insert into a continuation.
+
+    **The list comes from the schema, not from a literal here**, and both reasons have cost time
+    once. A name the migrations do not create in `_TEST_SCHEMA` resolves through the DSN's
+    `search_path` fallback to `public.<name>` — the operator's real table — so a typo in a literal
+    list is a production truncate that looks like a passing test. And a table added by a later
+    migration but forgotten in the list leaks rows between tests, which is the order-dependent
+    flake that is found three months later. Reading `pg_tables` removes both: every target is
+    schema-qualified, so `public` is unreachable by construction, and the list cannot drift from
+    the migrations. `schema_migrations` is excluded — the ledger is what says the schema is already
+    migrated, and emptying it would re-apply every migration on the next connect.
     """
     import psycopg
 
     with psycopg.connect(db_dsn) as conn:
-        conn.execute('TRUNCATE articles, corpus_meta, outcomes, cost_log, query_vectors, '
-                     'source_health, source_poll_log, source_quarantine_log, '
-                     'resource_samples, archive_export_log, config_fingerprints, '
-                     'stream_seq, breaking_episodes')
+        rows = conn.execute('SELECT tablename FROM pg_tables '
+                            'WHERE schemaname = %s AND tablename <> %s',
+                            (_TEST_SCHEMA, _MIGRATION_LEDGER)).fetchall()
+        if rows:
+            targets = ', '.join(f'{_TEST_SCHEMA}.{row[0]}' for row in rows)
+            conn.execute(f'TRUNCATE {targets}')
         conn.commit()
     yield db_dsn

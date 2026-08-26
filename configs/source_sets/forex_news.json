@@ -22,7 +22,7 @@
             "type": "rss",
             "url": "https://www.fxstreet.com/rss/news",
             "weight": 1.0,
-            "comment": "High-trust FX source. Behind Cloudflare Bot-Management. Measured 2026-07-16: 200 from a clean egress IP, 403 (Cf-Mitigated: challenge) from a datacenter IP — a JS browser challenge no feed reader can pass, and no User-Agent changes that. Switch off per machine via user_configs/source_sets/ when the egress IP is challenged. Re-measured 2026-08-25 (ISSUE_107): 200 with 30 entries from the dev container — the wall did not reproduce, so re-probe with feed_doctor_cli before assuming it is still there."
+            "comment": "High-trust FX source. Behind Cloudflare Bot-Management. CONFIRMED WALLED ON THE SERVER, 2026-08-25 (ISSUE_107): 403 with the Cloudflare interstitial (\"Just a moment...\"). A dev probe the same day returned 200 with 30 entries — the dev egress, not the engine's. Re-enable only after feed_doctor_cli ON THE SERVER answers 200."
         },
         {
             "source_id": "forexlive",
@@ -110,7 +110,7 @@
             "url": "https://www.rbnz.govt.nz/rss/news",
             "weight": 1.0,
             "enabled": false,
-            "comment": "Primary source for NZDUSD ('Reserve Bank of New Zealand RBNZ' in the retrieval query) — NOT REACHABLE, and the URL is unconfirmed (ISSUE_107). Measured 2026-08-25: 403 with Cf-Mitigated: challenge on every rbnz.govt.nz path from the dev container AND from a second, unrelated egress; this path itself answers 404 behind the wall. RBNZ documents no RSS endpoint anywhere, so a feed may not exist at all. Declared disabled rather than dropped so feed_doctor_cli retries it from the server; if it stays walled, NZDUSD has no primary feed and that is the honest state."
+            "comment": "Primary source for NZDUSD ('Reserve Bank of New Zealand RBNZ' in the retrieval query) — NOT REACHABLE, and the URL is unconfirmed (ISSUE_107). Measured 2026-08-25 from THREE independent egresses — the dev container, an unrelated fetcher, and the live server: 403 on every rbnz.govt.nz path, serving RBNZ's own \"Website unavailable\" page. RBNZ documents no RSS endpoint anywhere, so a feed may not exist at all. Kept declared and disabled so the finding is recorded; NZDUSD has no primary feed and that is the honest state."
         },
         {
             "source_id": "marketwatch",

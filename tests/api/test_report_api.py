@@ -1,6 +1,6 @@
 """`GET /v1/reports` (ISSUE_104) — the transport half: parameters, bounds, and who may call.
 
-What the reports *contain* is `test_report_catalog.py`'s business. Here: that an unknown name reads
+What the reports *contain* is `observability/reports/test_report_catalog.py`'s business. Here: that an unknown name reads
 as "no such report" rather than "the report is broken", that a window can never be unbounded, and
 that a report added later is protected without anyone remembering to protect it.
 """

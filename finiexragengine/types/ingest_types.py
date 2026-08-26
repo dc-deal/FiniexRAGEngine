@@ -6,7 +6,7 @@ Behaviour lives in `core/pipeline/` and `core/observability/`; only the shapes l
 """
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Dict, List, Literal, Optional, Tuple
+from typing import Dict, List, Literal, Optional, Tuple, get_args
 
 from finiexragengine.types.outcome_types import StageTiming
 
@@ -172,12 +172,109 @@ class ReachCensus:
     unreached: List[UnreachedSource] = field(default_factory=list)   # the gap, named and explained
 
 
+# WHICH path raised an article's tier (ISSUE_106). A closed vocabulary rather than free text: it
+# is written onto every flagged corpus row and every calibration question about detection filters on
+# it, so renaming a key later invalidates the series.
+#
+# The two paths are near-independent channels, not stages of one funnel, which is precisely why the
+# distinction has to be recorded. Before this column, "is the cluster path still alive?" could not be
+# answered by any query, report or log line after the fact — only by re-deriving it from the vectors
+# and the window. A threshold whose effect nobody can observe is a threshold nobody can tune.
+DetectionTrigger = Literal[
+    'cluster',      # cluster_size crossed mid/high_cluster_size — near-duplicates in the window
+    'keyword',      # a breaking keyword on a source at/above keyword_source_weight (the fast path)
+]
+
+# The same vocabulary as data, for validation and for surfaces that enumerate it. Note what is NOT
+# in it: '' / NULL, which means "flagged before this column existed" — an absence, never a category.
+# Same asymmetry as `TriggerReason`: strict at the producing seam (a typo fails where it is
+# written), plain `str` at the storage boundary, because a row carrying a value a later version
+# introduced must still load.
+DETECTION_TRIGGERS: Tuple[str, ...] = get_args(DetectionTrigger)
+
+
 @dataclass
 class DetectionResult:
     """What one detection pass flagged — totals for the ingest log + the wake signal."""
     candidates: int = 0          # articles raised to HIGH (breaking_candidate = TRUE)
     mid: int = 0                 # articles raised to MID
     max_tier: int = 0            # highest tier written this pass (0 = nothing) — drives the wake
+    # Per-path counts for this pass (ISSUE_106), keyed by `DetectionTrigger`. The pass log can then
+    # say which channel did the work instead of only how much was flagged — the durable answer is
+    # the persisted column, this is the at-the-call echo (CLAUDE.md: a run reports its own effect).
+    by_trigger: Dict[str, int] = field(default_factory=dict)
+
+
+@dataclass
+class DetectionReachability:
+    """Whether one source-set's detection thresholds can still fire, given the feeds that run.
+
+    A domain shape rather than a report row: the boot preflight builds it and the `breaking` report
+    renders it, so it crosses a seam (ISSUE_106). Both halves carry their own basis — a verdict
+    whose numbers are invisible is one nobody can check.
+
+    The two checks are NOT equally strong, and the difference decides how each is worded:
+
+    - **the weight check is a proof.** `keyword_source_weight` is compared against the highest
+      weight actually running. If the gate sits above it, the keyword fast-path cannot fire at all —
+      there is no loophole, because `source_weight` comes from the config and nothing else.
+    - **the cluster check is an indicator.** `count_neighbors` is a `COUNT(*)` over corpus articles
+      with no notion of which feed each came from, so a set of four feeds reaches a cluster of five
+      whenever one of them publishes near-duplicates of its own (a live-blog, a follow-up, a
+      syndicated re-post). Fewer active feeds than the threshold therefore means "only intra-feed
+      duplication can still get there", never "unreachable".
+    """
+    source_set_id: str
+    declared: int
+    active: int
+    disabled_ids: List[str] = field(default_factory=list)
+    # The feeds this set actually runs. Carried rather than derived because the health store is
+    # engine-wide: counting another set's quarantined feed against this set would understate its
+    # reach, and the only way to tell them apart is to know whose feeds these are.
+    active_ids: List[str] = field(default_factory=list)
+    mid_cluster_size: int = 0
+    high_cluster_size: int = 0
+    keyword_source_weight: float = 0.0
+    # Highest weight among the ACTIVE feeds, and how many of them clear the gate. The count is the
+    # more useful number: ISSUE_82 found the gate to be "a binary switch separating 10 feeds from
+    # 4" and shelved it for want of an instrument — this is the instrument.
+    max_active_weight: float = 0.0
+    at_or_above_gate: int = 0
+    # Feeds the health policy has switched out *right now* (ISSUE_106). Config cannot know this —
+    # quarantine is dynamic — so the boot preflight leaves it unknown and the `breaking` report
+    # fills it at read time. `quarantine_known` keeps "none are quarantined" distinguishable from
+    # "nobody looked": without the flag a boot-time verdict would silently pass itself off as a
+    # live one, which is the same mistake as reading an unmeasured corpus as an empty one.
+    quarantined_ids: List[str] = field(default_factory=list)
+    quarantine_known: bool = False
+
+    @property
+    def effective(self) -> int:
+        """Feeds that can actually deliver a cluster member right now.
+
+        `active` is a config fact and cannot fall below itself; this is the number the thresholds
+        are really up against, and the two differ exactly when the health policy has a feed out.
+        """
+        return max(0, self.active - len(self.quarantined_ids))
+
+    @property
+    def cluster_needs_self_duplication(self) -> bool:
+        """HIGH is out of reach for the set's feeds alone — only a feed duplicating itself gets there."""
+        return self.high_cluster_size > self.effective
+
+    @property
+    def mid_needs_self_duplication(self) -> bool:
+        return self.mid_cluster_size > self.effective
+
+    @property
+    def keyword_path_dead(self) -> bool:
+        """The fast path cannot fire — a proof, not an indicator (see the class docstring)."""
+        return self.at_or_above_gate == 0
+
+    @property
+    def satisfiable(self) -> bool:
+        return not (self.cluster_needs_self_duplication or self.mid_needs_self_duplication
+                    or self.keyword_path_dead)
 
 
 @dataclass

@@ -67,11 +67,15 @@ class AbstractVectorStore(ABC):
         return 0
 
     def flag_candidates(self, article_ids: List[str], importance: int,
-                        breaking: bool) -> int:
+                        breaking: bool, trigger: str = '') -> int:
         """Stamp importance tier + breaking-candidate flag + detection time on articles (ISSUE_11).
 
         Idempotent; returns the number of rows updated. Populated by the breaking detector,
         read by the deep retrieval tier (`importance`) and the reaction-time report (`flagged_at`).
         A store without the columns no-ops (returns 0); the pgvector store overrides.
+
+        `trigger` is WHICH path raised the tier (ISSUE_106) — `cluster` or `keyword`, from the
+        `DetectionTrigger` vocabulary. `''` writes nothing, so a caller that does not know (or a
+        store predating the column) leaves it NULL rather than guessing a category.
         """
         return 0

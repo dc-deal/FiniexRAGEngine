@@ -105,7 +105,7 @@ See `docs/architecture/weekly_report_and_alerts.md`.
 
 ## Tests
 
-`tests/test_retriever.py` (mocked embedder/store: recency, cap, dedup, deep tier,
-tie-breaks), `tests/test_symbol_query_map.py` (alias + fallback), and the paid live
-round-trip in `tests/test_rag_live.py` (real embeddings → pgvector → retrieve) — see
+`tests/rag/test_retriever.py` (mocked embedder/store: recency, cap, dedup, deep tier,
+tie-breaks), `tests/rag/test_symbol_query_map.py` (alias + fallback), and the paid live
+round-trip in `tests/rag/test_rag_live.py` (real embeddings → pgvector → retrieve) — see
 [testing](../testing.md).
