@@ -372,6 +372,55 @@ class WeeklyReportConfig(BaseModel):
     export_dir: str = 'data/signal_export'   # archive root: <dir>/<stream_id>/<bucket>.jsonl
 
 
+class StreamConfig(BaseModel):
+    """`GET /v1/stream/{pipeline_id}` — the live signal transport (ISSUE_9).
+
+    Two of these leaves are **served to the consumer** on `GET /v1/pipelines`
+    (`heartbeat_seconds`, `replay_window_hours`), because a threshold they compute from a number we
+    own must be read rather than hand-copied: a value they configure locally is a second answer to a
+    question the producer already answers, and a change on our side would reach them as a false
+    outage. The rest is internal.
+
+    Bounded, unlike the rest of this file. Every leaf here has a value that is not merely unusual
+    but broken — `heartbeat_seconds: 0` is a send loop, `replay_window_hours: 0` truncates every
+    replay — and the bounds are what let a future config reload refuse such a value instead of
+    applying it (#115).
+    """
+    # The transport itself, so an operator can take it down without unmounting a route.
+    enabled: bool = True
+    # Keep-alive cadence on EVERY view, including the ~10-minute cadence view: without it a
+    # consumer's connection watchdog would have to exceed the pass interval, and a dead socket
+    # would go unnoticed for longer than a pass. The consumer sets their watchdog at a multiple of
+    # this (3x today), which is why it is served rather than assumed.
+    heartbeat_seconds: int = Field(default=20, ge=1, le=300)
+    # How far back `?since=` and `?history=N` may reach. Beyond a week a gap is an archive question
+    # (#62's journal export), not a replay one — hence the ceiling rather than an open range.
+    replay_window_hours: int = Field(default=24, ge=1, le=168)
+    # The VOLUME bound, and it is not redundant with the window above: the window bounds *age*, and
+    # when it holds nothing — a quiet weekend, a stream that stopped days ago — it clamps nothing at
+    # all, so a cursor far in the past would replay the whole tail in one burst. Found on the wire
+    # against the dev journal: 164 envelopes at ~34 kB is 5.5 MB, and the same shape on a
+    # production-length series is orders of magnitude worse. A replay is bounded by construction
+    # rather than by the window happening to be non-empty; the caller learns it was clamped from the
+    # `replay_truncated` marker, whose `oldest_available_seq` names where the replay actually starts.
+    #
+    # 200 has a measured origin rather than a round-number one. A production frame is **38.3 kB**
+    # (crypto, 9 rows, 87 source refs) / 36.9 kB (forex) — measured over the live API on 2026-08-27,
+    # not the ~13.5 kB the contract text carried — so the window's own volume at M10 is 144 frames
+    # ≈ 5.5 MB. A cap several times that would defeat its purpose: 200 sits just above one M10 day
+    # with headroom, at ~7.7 MB per reconnect burst.
+    max_replay_frames: int = Field(default=200, ge=1, le=10000)
+    # Per-subscriber frame buffer. A full queue DROPS that subscriber (#9 RC-6): a slow consumer
+    # must never delay a pass, and the resulting `seq` gap is visible and recoverable via `?since`.
+    subscriber_queue_size: int = Field(default=64, ge=1, le=4096)
+    # The Postgres LISTEN/NOTIFY channel the outcome store notifies on commit. One channel for
+    # every stream; the payload carries the `pipeline_id`.
+    notify_channel: str = 'finiex_outcomes'
+    # Belt to NOTIFY's braces: the dispatcher sweeps forward on this interval as well, so a
+    # notification lost with a dropped connection delays a frame instead of stalling a stream.
+    fallback_poll_seconds: int = Field(default=5, ge=1, le=300)
+
+
 class AppConfig(BaseModel):
     version: str = '0.3.3'
     schema_version: str = '1.0'
@@ -402,6 +451,7 @@ class AppConfig(BaseModel):
     journal_names: Dict[str, str] = Field(
         default_factory=lambda: {'EXAMPLE_ID': 'example-only — map real ids in user_configs'})
     api: ApiConfig = Field(default_factory=ApiConfig)
+    stream: StreamConfig = Field(default_factory=StreamConfig)
     llm: LlmConfig = Field(default_factory=LlmConfig)
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     vector_store: VectorStoreConfig = Field(default_factory=VectorStoreConfig)

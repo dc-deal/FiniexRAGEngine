@@ -12,6 +12,7 @@ from finiexragengine.core.outcome.episode_registry import EpisodeRegistry
 from finiexragengine.core.outcome.stream_sequencer import StreamSequencer
 from finiexragengine.types.eval_types import EpisodeUpsert
 from finiexragengine.types.outcome_types import AnalysisEnvelope, SentimentEnvelope
+from finiexragengine.types.stream_types import StreamHead
 
 logger = logging.getLogger(__name__)
 
@@ -44,9 +45,15 @@ class OutcomeStore:
     reconstructable.
     """
 
-    def __init__(self, database_url: str, table: str = 'outcomes') -> None:
+    def __init__(self, database_url: str, table: str = 'outcomes',
+                 notify_channel: str = 'finiex_outcomes') -> None:
         self._database_url = database_url
         self._table = table
+        # The LISTEN/NOTIFY channel the stream dispatcher tails (ISSUE_9). Defaulted rather than
+        # required because every existing caller writes envelopes without caring about the stream —
+        # and a mismatched channel is a stream that never advances, so the tracked config carries
+        # the same literal and `create_app` passes it explicitly.
+        self._notify_channel = notify_channel
         # Not an injected collaborator: minting is part of how this store writes, not a strategy it
         # picks. The sequencer holds no state of its own — `reconcile()` at boot may use its own
         # instance without coordination.
@@ -140,6 +147,18 @@ class OutcomeStore:
                      json.dumps(raw_output) if raw_output else None))
                 for episode in episodes or ():
                     self._episodes.upsert(cur, episode)
+                # The stream's wake-up, INSIDE this transaction (ISSUE_9 §3.4). PostgreSQL delivers
+                # notifications on COMMIT, which is exactly the semantics the dispatcher needs: it
+                # is woken only for rows it can actually read, and a rolled-back pass notifies
+                # nobody. `pg_notify()` rather than the `NOTIFY` statement because the channel is
+                # configuration and this form takes it as a parameter instead of interpolating a
+                # name into SQL.
+                #
+                # The payload is the `pipeline_id` alone — the dispatcher re-reads the journal
+                # forward by `seq` regardless, so a payload carrying the envelope would be a second
+                # copy of the frame on a channel with an 8000-byte limit.
+                cur.execute('SELECT pg_notify(%s, %s)',
+                            (self._notify_channel, envelope.pipeline_id))
         except psycopg.Error as exc:
             raise VectorStoreError(f'outcome save failed: {exc}') from exc
 
@@ -185,6 +204,78 @@ class OutcomeStore:
         except psycopg.Error as exc:
             raise VectorStoreError(f'outcome read failed: {exc}') from exc
         return [SentimentEnvelope.model_validate(row[0]) for row in rows]
+
+    # --- the stream's reads (ISSUE_9) -----------------------------------------------------------
+
+    def stream_head(self, pipeline_id: str) -> StreamHead:
+        """Where this stream currently stands: `(seq, epoch, available_msc)`.
+
+        Read from `stream_seq`, not from the journal, and that is the cheaper *and* the more correct
+        source: the counter is updated inside the envelope's own transaction, so a rolled-back pass
+        leaves it untouched and its value always equals the journal's highest committed `seq`. One
+        indexed point read instead of an aggregate over JSONB.
+
+        A stream the sequencer has never seen returns `(0, 0, None)` — which the caller renders as a
+        cold start. `seq: 0` cannot collide with a real position, because the counter returns
+        `seq + 1`.
+        """
+        try:
+            with self._connect() as conn, conn.cursor() as cur:
+                cur.execute('SELECT seq, epoch, last_available_msc FROM stream_seq '
+                            'WHERE pipeline_id = %s', (pipeline_id,))
+                row = cur.fetchone()
+        except psycopg.Error as exc:
+            raise VectorStoreError(f'stream head read failed: {exc}') from exc
+        if row is None:
+            return StreamHead(seq=0, epoch=0, available_msc=None)
+        return StreamHead(seq=int(row[0]), epoch=int(row[1]), available_msc=row[2])
+
+    def envelopes_by_seq(self, pipeline_id: str, after_seq: int,
+                         limit: int) -> List[Dict[str, Any]]:
+        """This stream's envelopes with `seq > after_seq`, ascending, at most `limit` of them.
+
+        **Returns the raw JSONB rows, deliberately not `SentimentEnvelope` instances.** The frame is
+        the stored envelope verbatim (§3.2); validating into a model only to serialize it again would
+        let a model default rewrite an archived line on its way to the wire — and the parity anchor
+        ("pushed equals stored, byte for byte") would then be a claim about the model rather than
+        about the store.
+
+        Ascending is the contract, not a convenience: the dispatcher advances by `seq` and wire order
+        must equal `seq` order. `envelope->>'seq'` is covered by the `outcomes_stream_seq` expression
+        index, which PostgreSQL scans backwards for an ascending walk.
+        """
+        try:
+            with self._connect() as conn, conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT envelope FROM {self._table} "
+                    "WHERE pipeline_id = %s AND (envelope->>'seq')::BIGINT > %s "
+                    "ORDER BY (envelope->>'seq')::BIGINT ASC LIMIT %s",
+                    (pipeline_id, after_seq, limit))
+                rows = cur.fetchall()
+        except psycopg.Error as exc:
+            raise VectorStoreError(f'stream read failed: {exc}') from exc
+        return [row[0] for row in rows]
+
+    def oldest_seq_since(self, pipeline_id: str, cutoff: datetime) -> Optional[int]:
+        """The lowest `seq` this stream produced at or after `cutoff` — the replay window's floor.
+
+        `None` when the stream produced nothing inside the window, which is a real state (a quiet
+        weekend on a low-cadence pipeline) and not an error.
+
+        Bounded on `ts`, the indexed column, rather than on the JSONB `seq`: the window is a time
+        question and the answer is a position, so the conversion belongs here — a caller comparing
+        seq numbers to hours would be inventing a cadence.
+        """
+        try:
+            with self._connect() as conn, conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT min((envelope->>'seq')::BIGINT) FROM {self._table} "
+                    "WHERE pipeline_id = %s AND ts >= %s AND envelope->>'seq' IS NOT NULL",
+                    (pipeline_id, cutoff))
+                row = cur.fetchone()
+        except psycopg.Error as exc:
+            raise VectorStoreError(f'stream window read failed: {exc}') from exc
+        return int(row[0]) if row and row[0] is not None else None
 
     def get_latest_raw_output(self, pipeline_id: str) -> Optional[Dict[str, Any]]:
         """The raw LLM output stored with the newest envelope (debug/replay, ISSUE_36)."""

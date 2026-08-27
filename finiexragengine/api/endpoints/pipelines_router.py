@@ -5,30 +5,20 @@ from fastapi import APIRouter, Request, Security
 
 from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
 from finiexragengine.api.token_registry import TokenRegistry
-from finiexragengine.types.api_types import PipelineInfo, PipelinesResponse
-from finiexragengine.utils.timeframe import timeframe_minutes
-
-
-def _cadence_seconds(timeframe: Optional[str]) -> Optional[int]:
-    """The trigger's timeframe as seconds — None when it carries none.
-
-    An unknown token would raise here rather than on the worker's first tick, which is the wrong
-    place to find out: the listing must stay answerable even when a pipeline is misconfigured, so
-    an unparseable timeframe reports as absent and the configuration error surfaces where it is
-    acted on (the supervisor refuses to schedule it).
-    """
-    if timeframe is None:
-        return None
-    try:
-        return timeframe_minutes(timeframe) * 60
-    except ValueError:
-        return None
+from finiexragengine.types.api_types import PipelineInfo, PipelinesResponse, StreamInfo
+from finiexragengine.types.config_types.app_config_types import StreamConfig
 
 
 def build_pipelines_router(registry: PipelineRegistry,
+                           stream: StreamConfig,
                            tokens: Optional[TokenRegistry] = None,
                            grant: Optional[Callable[..., None]] = None) -> APIRouter:
     """`GET /v1/pipelines` — what this engine produces.
+
+    `stream` is **required and not defaulted**, deliberately. Two of its leaves are served to the
+    consumer as the numbers their watchdog and their replay window are derived from, and a router
+    that could fall back to a schema default would be free to serve numbers the running engine is
+    not using — the same "one fact, two copies" defect this file's cadence field just had.
 
     It lives here rather than beside `/health` because the two sit on opposite sides of the
     authentication boundary (ISSUE_98): `/health` is the one documented public exemption, this is
@@ -61,11 +51,22 @@ def build_pipelines_router(registry: PipelineRegistry,
                 market=pipeline.get_config().market,
                 symbols=pipeline.get_config().symbol_keys(),
                 trigger_type=pipeline.get_config().trigger.type,
-                cadence_seconds=_cadence_seconds(pipeline.get_config().trigger.timeframe),
+                # `TriggerConfig.cadence_seconds` and nothing else — it is, in its own words, "the
+                # one place the two knobs collapse to a number", and `/health` reads it for the
+                # same pipeline's eval worker. This file used to convert `trigger.timeframe`
+                # itself, so one fact had two derivations that agreed by arithmetic rather than by
+                # construction; the consumer asked which of the two served numbers was
+                # authoritative, which is the question a second copy always eventually raises.
+                cadence_seconds=pipeline.get_config().trigger.cadence_seconds,
             )
             for pipeline in registry.list_pipelines()
             if _permitted(request, pipeline.get_config().pipeline_id)
         ]
-        return PipelinesResponse(pipelines=infos)
+        return PipelinesResponse(
+            # Engine-wide, so it is built from the configuration this process runs on — never from
+            # a default. Serving it at all is what stops the consumer configuring a second answer.
+            stream=StreamInfo(heartbeat_seconds=stream.heartbeat_seconds,
+                              replay_window_hours=stream.replay_window_hours),
+            pipelines=infos)
 
     return router

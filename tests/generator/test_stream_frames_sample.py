@@ -134,3 +134,86 @@ def test_a_second_concurrent_episode_does_not_break_the_check() -> None:
     broken = (trio[0], trio[1], {'result': [_row('USDCAD', other, start=False, is_breaking=False)]})
     with pytest.raises(AssertionError, match='absent from frame'):
         generate._check_one_episode(_EPISODE, broken)
+
+
+# --- the selection must not reach back past ISSUE_65 (found on the PRODUCTION journal) -----------
+
+def _with_legacy_row(envelope: Dict[str, Any]) -> Dict[str, Any]:
+    """Append a row from before ISSUE_65 — the two episode keys are ABSENT, not null.
+
+    This is the production shape exactly: an envelope whose in-episode row was stamped by #108's
+    backfill while a row outside the episode was left untouched, so the keys never appeared on it.
+    """
+    envelope['result'].append({
+        'symbol': 'EURUSD', 'signal': 'HOLD', 'sentiment_score': 0.0, 'confidence': 0.5,
+        'reasoning': 'no strong signal', 'urgency': 0.2, 'is_breaking': False, 'basis': 'llm'})
+    return envelope
+
+
+def _trio_for(episode_id: str, first_seq: int, offset: int, *, legacy: bool = False):
+    """The three shapes of one episode, optionally with a legacy row on the opener."""
+    opener = _envelope(first_seq, offset, is_breaking=True, start=True, episode_id=episode_id)
+    return [
+        _with_legacy_row(opener) if legacy else opener,
+        _envelope(first_seq + 1, offset + 10, is_breaking=True, start=False, episode_id=episode_id),
+        _envelope(first_seq + 2, offset + 20, is_breaking=False, start=False, episode_id=episode_id),
+    ]
+
+
+def test_an_episode_with_a_legacy_row_is_skipped_for_a_fully_native_one(clean_db: str) -> None:
+    """A pre-ISSUE_65 row has no `breaking_episode_id` KEY, so its envelope cannot be evidence.
+
+    Found by running the generator against production: the newest qualifying episode contained a row
+    from before the field existed, the contract check refused it — and the fill-in meant to cover
+    exactly that case could never run, because it sat behind the check that forbids it. The generator
+    promised an injection its own guard made impossible.
+
+    The fix belongs in the SELECTION, not in the check: only envelopes whose every row carries the
+    identity natively may be chosen. Pinned by offering the query a legacy episode that is NEWER than
+    a native one, because recency alone would pick the wrong one.
+    """
+    _store(clean_db, _trio_for('native-episode', 1, 0)
+           + _trio_for('legacy-episode', 10, 120, legacy=True))
+
+    trio = generate._fetch_episode_trio(clean_db)
+
+    assert trio.episode_id == 'native-episode'
+    assert len(trio.envelopes) == 3
+    for envelope in trio.envelopes:
+        for row in envelope['result']:
+            assert 'breaking_episode_id' in row        # native on every row, never filled in
+            assert 'breaking_episode_start' in row
+
+
+def test_the_refusal_names_the_legacy_cause_rather_than_the_missing_shape(clean_db: str) -> None:
+    """The refusal a reader first met was ambiguous between two causes and cost a round trip.
+
+    "No episode carries all three shapes" is the wrong message when an episode *does* carry them and
+    was rejected for a legacy row: the reader then hunts for a hold-band pass that is actually there.
+    """
+    _store(clean_db, _trio_for('legacy-only', 1, 0, legacy=True))
+
+    with pytest.raises(SystemExit) as excinfo:
+        generate._fetch_episode_trio(clean_db)
+
+    message = str(excinfo.value)
+    assert 'legacy-only' in message                    # names the episode it rejected
+    assert 'ISSUE_65' in message and 'native' in message
+    assert 'all three shapes' in message               # and says they WERE present
+
+
+def test_a_role_pass_carrying_a_legacy_row_is_not_chosen(clean_db: str) -> None:
+    """The predicate belongs on both queries. An episode can qualify on its native passes while a
+    DIFFERENT pass of it carries a legacy row — picking that one for a role would reintroduce
+    precisely what the selection excluded."""
+    envelopes = _trio_for('mixed-episode', 1, 0)
+    # A fourth pass of the same episode, newer and hold-band shaped, but with a legacy row.
+    envelopes.append(_with_legacy_row(
+        _envelope(4, 30, is_breaking=False, start=False, episode_id='mixed-episode')))
+    _store(clean_db, envelopes)
+
+    trio = generate._fetch_episode_trio(clean_db)
+
+    assert trio.episode_id == 'mixed-episode'
+    hold_band = trio.envelopes[2]
+    assert [row['symbol'] for row in hold_band['result']] == ['USDCAD']   # the native pass, seq 3

@@ -11,10 +11,12 @@ from fastapi import APIRouter, Depends, FastAPI
 from finiexragengine.api.bearer_auth import build_bearer_dependency
 from finiexragengine.api.grant_auth import build_grant_dependency
 from finiexragengine.api.endpoints.build_router import build_build_router
+from finiexragengine.api.endpoints.envelopes_router import build_envelopes_router
 from finiexragengine.api.endpoints.health_router import build_health_router
 from finiexragengine.api.endpoints.report_router import build_report_router
 from finiexragengine.api.endpoints.pipelines_router import build_pipelines_router
 from finiexragengine.api.endpoints.sentiment_router import build_sentiment_router
+from finiexragengine.api.endpoints.stream_router import build_stream_router
 from finiexragengine.api.rate_limiter import RateLimiter, build_rate_limit_dependency
 from finiexragengine.api.token_registry import TokenRegistry
 from finiexragengine.configuration.app_config_manager import AppConfigManager
@@ -32,6 +34,8 @@ from finiexragengine.core.observability.resource_sample_store import ResourceSam
 from finiexragengine.core.observability.stall_watchdog import StallWatchdog
 from finiexragengine.core.outcome.outcome_exporter import auto_export_weekly
 from finiexragengine.core.outcome.outcome_store import OutcomeStore
+from finiexragengine.core.outcome.stream_dispatcher import StreamDispatcher
+from finiexragengine.core.outcome.stream_replay import StreamReplay
 from finiexragengine.core.pipeline.detection_preflight import log_detection_preflight
 from finiexragengine.core.pipeline.pipeline_assembler import PipelineAssembler
 from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
@@ -39,7 +43,7 @@ from finiexragengine.core.pipeline.worker_supervisor import WorkerSupervisor
 from finiexragengine.core.ui.engine_stats import EngineStats
 from finiexragengine.core.ui.live_display import LiveDisplay
 from finiexragengine.exceptions.ragengine_errors import ConfigurationError
-from finiexragengine.types.config_types.app_config_types import ApiConfig
+from finiexragengine.types.config_types.app_config_types import ApiConfig, StreamConfig
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +145,11 @@ def create_app(attach_runners: Optional[bool] = None,
     outcome_store = None
     supervisor = None
     budget_guard = None
+    # The stream's two units (ISSUE_9): the journal tailer and the replay policy. None without a
+    # database — a stream over no journal has nothing to tail and would answer every connect with a
+    # cold start that is not true.
+    stream_dispatcher: Optional[StreamDispatcher] = None
+    stream_replay: Optional[StreamReplay] = None
     # Live dashboard's shared state (ISSUE_26): built only in live mode, injected into every
     # worker so each pass pushes its snapshot/events; None otherwise (zero overhead). Keys are
     # pre-registered from the same ids the supervisor builds workers from, so the dashboard's
@@ -178,6 +187,19 @@ def create_app(attach_runners: Optional[bool] = None,
         # per-machine `enabled: false` is precisely what moves these counts.
         log_detection_preflight(
             config_manager.build_source_set_registry().list_sets())
+        # The live stream's journal tailer (ISSUE_9). Built whenever there is a store and the
+        # transport is enabled — deliberately NOT gated on `start_workers`: the stream is a read
+        # surface over the journal, so it serves a journal another process writes. That is what lets
+        # a dev instance serve the live contract to a consumer without making a single paid call.
+        stream_config = config_manager.get_config().stream
+        if stream_config.enabled:
+            stream_dispatcher = StreamDispatcher(
+                outcome_store, database_url,
+                notify_channel=stream_config.notify_channel,
+                fallback_poll_seconds=stream_config.fallback_poll_seconds,
+                subscriber_queue_size=stream_config.subscriber_queue_size)
+            stream_replay = StreamReplay(outcome_store, stream_config.replay_window_hours,
+                                         stream_config.max_replay_frames)
         if start_workers:
             supervisor = WorkerSupervisor(
                 assembler, registry,
@@ -283,6 +305,12 @@ def create_app(attach_runners: Optional[bool] = None,
         # event loop exists, stopped on shutdown after in-flight passes finish.
         live_task: Optional[asyncio.Task] = None
         watchdog_task: Optional[asyncio.Task] = None
+        stream_task: Optional[asyncio.Task] = None
+        # The dispatcher first: a subscriber attaching in the first milliseconds of the process must
+        # find a tail already running, and it costs nothing when nobody is watching (a stream with no
+        # subscriptions is not read at all).
+        if stream_dispatcher is not None:
+            stream_task = asyncio.create_task(stream_dispatcher.run(), name='stream-dispatcher')
         if supervisor is not None:
             await supervisor.start_all()
         # Watch the workers from the moment they exist (ISSUE_75) — a stall during the very first
@@ -310,6 +338,13 @@ def create_app(attach_runners: Optional[bool] = None,
                 await watchdog_task
         if supervisor is not None:
             await supervisor.stop_all()
+        # After the workers: nothing new commits from here, so the tail can end having delivered
+        # everything the last pass produced.
+        if stream_dispatcher is not None:
+            await stream_dispatcher.stop()
+            if stream_task is not None:
+                stream_task.cancel()
+                await asyncio.gather(stream_task, return_exceptions=True)
         # Stop the display last, so it shows the drained state, then releases the terminal.
         if live_display is not None:
             await live_display.stop()
@@ -363,9 +398,24 @@ def create_app(attach_runners: Optional[bool] = None,
         protected_extra.append(build_report_router(
             database_url, config_manager, tokens,
             max_window_days=api_config.reports_max_window_days))
+    # The stream rides the protected router like everything else (ISSUE_98), and carries its own
+    # `Security(..., scopes=['pipelines'])` so the grant is checked against `{pipeline_id}`.
+    if stream_dispatcher is not None and stream_replay is not None:
+        protected_extra.append(build_stream_router(
+            stream_dispatcher, stream_replay, registry,
+            config_manager.get_config().stream, build_grant_dependency(tokens)))
+        # The same replay policy over plain HTTP (ISSUE_9 §2): the collector's catch-up path, and the
+        # reason `/latest` is not it — everything superseded between two polls is otherwise never
+        # fetched. Shares the unit, so the two surfaces cannot disagree about a cursor.
+        protected_extra.append(build_envelopes_router(
+            stream_replay, registry, build_grant_dependency(tokens)))
     app.include_router(_build_protected_router(
         registry, api_config, tokens, outcome_store=outcome_store,
-        extra_routers=protected_extra))
+        extra_routers=protected_extra,
+        # The transport's engine-wide numbers, taken from the configuration THIS process runs on
+        # (ISSUE_9). Passed explicitly rather than defaulted, so the listing cannot serve a value
+        # the engine is not using.
+        stream=config_manager.get_config().stream))
     return app
 
 
@@ -394,7 +444,8 @@ def _build_protected_router(registry: PipelineRegistry,
                             api_config: ApiConfig,
                             tokens: TokenRegistry,
                             outcome_store: Optional[OutcomeStore] = None,
-                            extra_routers: Optional[List[APIRouter]] = None) -> APIRouter:
+                            extra_routers: Optional[List[APIRouter]] = None,
+                            stream: Optional[StreamConfig] = None) -> APIRouter:
     """Everything a token is required for — and everything added here later, automatically.
 
     `extra_routers` carries routers assembled by the caller: the exemptions that were switched
@@ -446,7 +497,10 @@ def _build_protected_router(registry: PipelineRegistry,
     # dependency above runs first (outer router before inner), so `request.state.consumer` is set
     # by the time a grant is checked.
     grant = build_grant_dependency(tokens)
-    protected.include_router(build_pipelines_router(registry, tokens, grant))
+    # `stream` is required by the listing router on purpose; this helper defaults it only for
+    # callers that do not exercise the field (the auth and scope suites), never for `create_app`.
+    protected.include_router(build_pipelines_router(
+        registry, stream if stream is not None else StreamConfig(), tokens, grant))
     protected.include_router(build_sentiment_router(
         registry, grant, outcome_store=outcome_store,
         run_enabled=api_config.run_endpoint_enabled))

@@ -15,9 +15,15 @@ from fastapi.testclient import TestClient
 
 from finiexragengine.api.api_app import _build_protected_router
 from finiexragengine.api.endpoints.report_router import build_report_router
+from finiexragengine.api.endpoints.stream_router import build_stream_router
 from finiexragengine.api.token_registry import TokenRegistry
 from finiexragengine.configuration.app_config_manager import AppConfigManager
 from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
+from finiexragengine.api.grant_auth import build_grant_dependency
+from finiexragengine.core.outcome.outcome_store import OutcomeStore
+from finiexragengine.core.outcome.stream_dispatcher import StreamDispatcher
+from finiexragengine.core.outcome.stream_replay import StreamReplay
+from finiexragengine.types.config_types.app_config_types import StreamConfig
 from finiexragengine.types.config_types.app_config_types import ApiConfig
 
 _NARROW = 'narrow-consumer-token'
@@ -182,9 +188,21 @@ def test_no_route_with_an_identity_segment_is_ungated(clean_db: str) -> None:
     api_config = ApiConfig(tokens={'empty': {'token': 'holds-nothing', 'grants': []}})
     tokens = TokenRegistry(api_config.tokens)
     app = FastAPI()
+    # Every domain router that carries an identity segment belongs in this app, or the walk below
+    # cannot see it. The stream (ISSUE_9) is the newest one, and it is the reason its address is
+    # `/v1/stream/{pipeline_id}` rather than `?pipeline=`: a query-parameter route would be
+    # authenticated, ungated, and invisible to exactly this test.
+    store = OutcomeStore(clean_db)
+    stream_config = StreamConfig()
     app.include_router(_build_protected_router(
         _pipelines(), api_config, tokens,
-        extra_routers=[build_report_router(clean_db, AppConfigManager(), tokens)]))
+        extra_routers=[
+            build_report_router(clean_db, AppConfigManager(), tokens),
+            build_stream_router(
+                StreamDispatcher(store, clean_db),
+                StreamReplay(store, stream_config.replay_window_hours),
+                _pipelines(), stream_config, build_grant_dependency(tokens)),
+        ]))
     client = TestClient(app)
 
     identity_routes = [(path, method)

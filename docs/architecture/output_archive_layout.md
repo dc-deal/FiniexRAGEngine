@@ -63,6 +63,17 @@ parity hash between an archive line and a stream frame.
 order, because an epoch changes only at boot — everything of epoch N was committed before that
 instant and everything of N+1 after. Time is the *gate*, never the sort.
 
+## The live half of the same contract
+
+This document defines the archive **line**. The frame that carries the same envelope over the socket
+is defined in [`signal_stream_contract.md`](signal_stream_contract.md), and the two are deliberately
+the same object: a frame is the stored envelope verbatim, and an archive line is that envelope plus
+`collected_msc` and `collected_msc_timebase`. **Those two fields are the exclusion set for any parity
+hash between a line and a frame** — everything else must match byte for byte, which is what makes
+"content-identical in the store" a checkable claim rather than an intention.
+
+Ordering is the same on both: `(stream_epoch, seq)`, never a clock.
+
 ## Reader contract (TestingIDE #141)
 
 For a query range `[start, end]`:

@@ -197,6 +197,11 @@ control: the same five boots left `forex_macro_sentiment`'s fingerprint untouche
 the differing leaf to the crypto source set without reading a single config payload. The registry
 then names it (`theblock`) rather than being asked to find it.
 
+**And do not mistake that ordering test for a detector.** It rules concurrency *out*; it cannot find
+the excursion. Nothing about the ordering here is wrong — one generation per boot, in strict
+succession — so no ordering check would ever flag a configuration that appeared for a single pass
+and was taken back. Only looking at the gaps finds that.
+
 So: group by fingerprint **and look at the gaps**. `first_seen`/`last_seen` answer "when was this
 setup ever alive", never "was it alive throughout". It is the same failure as a single confirm rate
 per prompt version (`prompt_drift`, ISSUE_110): a summary that hides the distribution it summarises.

@@ -15,6 +15,15 @@
     "rate_limit_per_minute": 60,
     "auth_failures_per_minute": 10
   },
+  "stream": {
+    "enabled": true,
+    "heartbeat_seconds": 20,
+    "replay_window_hours": 24,
+    "max_replay_frames": 200,
+    "subscriber_queue_size": 64,
+    "notify_channel": "finiex_outcomes",
+    "fallback_poll_seconds": 5
+  },
   "llm": {
     "provider": "openai",
     "temperature": 0.1,

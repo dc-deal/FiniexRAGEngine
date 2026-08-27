@@ -167,6 +167,37 @@ in different folders would collide at collection.
 | `rag/test_rag_live.py` 💸 | real embeddings end-to-end through store + retriever | `OPENAI_API_KEY` + PostgreSQL, `-m paid` |
 | `llm/test_llm_live.py` 💸 | one real structured LLM call (schema + usage) | `OPENAI_API_KEY`, `-m paid` |
 
+### The signal stream (ISSUE_9)
+
+Five suites, split by what they can actually assert.
+
+| Suite | Subject |
+|---|---|
+| `tests/outcome/test_stream_frames.py` | the wire format itself — named events, the blank line that **dispatches** an event, no `id:` line, compact JSON, the epoch on every frame, and the closed control vocabulary refused at the producing seam |
+| `tests/outcome/test_stream_replay.py` | the replay **policy**: the connect snapshot, the window floor, truncation, a cursor ahead of the head, an epoch mismatch. A plan is a value, so every boundary is assertable without a socket |
+| `tests/outcome/test_stream_dispatcher.py` | wire order equals `seq` order, the subscribe race (RC-1), the drop policy (RC-6), the sweep that heals a lost notification — plus one end-to-end case over real `LISTEN/NOTIFY` |
+| `tests/outcome/test_stream_session.py` | one connection's frame sequence: retry → replay → `live` → frames and keep-alives, the terminal codes, and the cold-stream epoch |
+| `tests/api/test_stream_endpoint.py` | what only HTTP decides — the status codes, the parameter refusals, and the two control codes that close the connection |
+| `tests/api/test_envelope_range.py` | the range endpoint, and the mapping rule: terminal on the stream ⇒ `409` here, non-terminal marker ⇒ a body field |
+
+**Why the sequence is not driven over HTTP.** An SSE stream never ends, and a test client cannot
+close one before the server's response generator finishes — it deadlocks (it did, for two minutes,
+which is how `StreamSession` came to be its own unit). An async generator is closed with `aclose()`,
+so the sequence is asserted against the generator and the HTTP suite covers only requests that
+terminate by themselves.
+
+Two defects these suites caught before anything reached a consumer, recorded because both were
+silent by construction: a frame rendered **without the blank line that dispatches an SSE event**
+(every frame buffered forever by a conforming client — it looked right in the published sample only
+because the generator's join supplied the blank line by accident), and a **cold stream's
+`stream_epoch: 0` read as a rewind**, which would have closed every consumer attached to a newly
+added pipeline with a false resync signal.
+
+Also extended: `tests/api/test_report_scopes.py`'s walk over identity routes now includes
+`/v1/stream/{pipeline_id}`, so the grant on the newest router is checked rather than declared —
+and `tests/api/test_pipelines_endpoint.py` pins that `/v1/pipelines` and `/v1/health` report **one**
+cadence, from one derivation.
+
 ## Continuous integration
 
 `.github/workflows/tests.yml` runs the free suite on every pull request and on every

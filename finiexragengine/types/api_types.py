@@ -113,17 +113,47 @@ class PipelineInfo(BaseModel):
     trigger_type: str
     # The eval cadence in SECONDS, not as the `M10` token (ISSUE_9). A consumer computes a staleness
     # threshold with the number; the token is a rendering of it, and shipping both would leave one
-    # of them unread. `None` when the trigger carries no timeframe.
+    # of them unread.
     #
     # Exposed because a consumer's staleness contract is derived from it: silence longer than one
     # cadence is what tells them the producer stopped, so the threshold that blocks their order
     # entry rested on a hand-copied constant. Note the direction that makes it usable — an
     # out-of-band pass makes the OBSERVED interval shorter than nominal, never longer, so the
     # cadence is an upper bound on normal quiet.
-    cadence_seconds: Optional[int] = None
+    #
+    # Always present, and no longer `Optional`: it is `TriggerConfig.cadence_seconds`, which
+    # resolves a timeframe first and falls back to the raw interval, so there is no configuration
+    # that yields nothing. The nullable form went with the router's own second derivation of this
+    # number — and a field documented as "absent when …" that can no longer be absent is exactly
+    # the stale claim a reader plans around.
+    cadence_seconds: int
+
+
+class StreamInfo(BaseModel):
+    """The stream's engine-wide numbers, served once per response (ISSUE_9).
+
+    **Response level, not on each pipeline row** — and the placement is the point. Both values are
+    properties of the engine, so a copy per pipeline would claim to be a per-stream property;
+    someone would eventually set two of them differently and the engine would honour neither the
+    second value nor the reader's expectation. `pass_timeout_seconds` on `/health` is engine-level
+    for exactly this reason. If either ever becomes genuinely per-stream it moves to the row, which
+    is a visible contract change rather than a stable name quietly changing meaning.
+
+    Both fields are **required**. The consumer asked to depend on their presence: they intend to let
+    the served value govern and keep only their own multiple (a 3x connection watchdog), so a null
+    here would put a branch in their code for a state the engine cannot be in.
+    """
+    # Keep-alive cadence, so their watchdog is read rather than hand-copied — a change on our side
+    # would otherwise arrive as a false outage.
+    heartbeat_seconds: int
+    # How far back `?since=`/`?history=N` may reach on the stream and the range endpoint.
+    replay_window_hours: int
 
 
 class PipelinesResponse(BaseModel):
+    # Engine-wide facts about the transport (ISSUE_9). Every value that varies per stream lives on
+    # the row below; everything that has exactly one value lives here, once.
+    stream: StreamInfo
     pipelines: List[PipelineInfo]
 
 
@@ -193,3 +223,36 @@ class ReportCatalogEntry(BaseModel):
 class ReportCatalog(BaseModel):
     reports: List[ReportCatalogEntry]
     max_window_days: int
+
+
+class EnvelopeRange(BaseModel):
+    """`GET /v1/pipelines/{id}/envelopes` — a bounded range of the series (ISSUE_9 §2).
+
+    The collector's catch-up path, and the reason it exists rather than a flag on `/latest`:
+    `/latest` returns only the newest envelope per pipeline, so everything produced between two polls
+    that is no longer newest at poll time is never fetched — systematically the out-of-band breaking
+    passes, which are overtaken by the next scheduled pass within one cadence period.
+
+    **The mapping rule between this surface and the stream is worth stating once**: a condition that
+    is *terminal* on the stream (`epoch_changed`, `cursor_ahead`) is a **409** here, because in both
+    cases the caller's cursor is unusable and returning rows would be actively wrong. A condition
+    that is a *non-terminal marker* on the stream (`replay_truncated`) is a **body field** here,
+    because a truncated range still carries data the caller wants. Two renderings, one decision — the
+    decision itself lives in `StreamReplay`.
+    """
+    pipeline_id: str
+    # The epoch these envelopes belong to. Part of the archive key `(pipeline_id, stream_epoch, seq)`,
+    # so a caller writing them down needs it even when it never changes.
+    stream_epoch: int
+    # The stream's current position, so a paging caller knows whether to ask again without guessing
+    # from the row count.
+    head_seq: int
+    # The stored JSON, verbatim — never re-validated on the way out, for the same reason a stream
+    # frame is not: a model default would rewrite an archived line and the parity claim would become
+    # a claim about the model.
+    envelopes: List[Dict[str, Any]] = Field(default_factory=list)
+    # True when the requested `since` was older than `replay_window_hours`. Never silent: the field
+    # below names the oldest position still held, so the caller learns exactly what it must fetch
+    # from the journal export (#62) instead of discovering a hole later.
+    truncated: bool = False
+    oldest_available_seq: Optional[int] = None

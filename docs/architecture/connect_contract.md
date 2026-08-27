@@ -212,6 +212,27 @@ cost log accounts for it. This route was the one hole in that property.
 
 A caller who wants the latest signal uses `GET /v1/pipelines/{id}/latest`, which never spends.
 
+## The live stream and the range endpoint
+
+```
+GET /v1/stream/{pipeline_id}                              text/event-stream
+GET /v1/pipelines/{pipeline_id}/envelopes?since=&epoch=   application/json
+```
+
+Token-gated like everything else, and gated **by name**: both carry `{pipeline_id}` as a path
+segment, so the grant checked is `pipelines:<pipeline_id>` — the same one that governs `/latest`. A
+stream is the pipeline's series through another transport, not a separate surface.
+
+The pipeline is a path segment rather than `?pipeline=` for that reason. Authorization derives the
+grant from the matched route's first path parameter, so a query-parameter form would be
+*authenticated but ungated*: reachable by any valid token, including one holding nothing.
+
+Neither route can spend. The stream reads the journal forward; the range endpoint is one bounded
+`SELECT`. The only route in the engine that converts a request into provider spend is
+`POST /v1/pipelines/{id}/run`, and it is not registered in production.
+
+Field-by-field contract: [`signal_stream_contract.md`](signal_stream_contract.md).
+
 ## Diagnostics: `GET /v1/reports`
 
 Token-gated like everything else. It serves the engine's own metrics surfaces — source health and

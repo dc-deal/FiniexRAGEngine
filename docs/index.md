@@ -28,6 +28,9 @@ you need.**
   tracking, flag/quarantine, rotating file logs.
 - [Weekly report & alerts](architecture/weekly_report_and_alerts.md) — the typed weekly
   model, the console + Telegram renderers, the scheduler and `/report`.
+- [Signal stream contract](architecture/signal_stream_contract.md) — the LIVE half of the
+  output contract: the frame format, the five `control` codes, the heartbeat, the
+  subscribe race, and the range endpoint a collector catches up with (ISSUE_9).
 - [Output archive layout](architecture/output_archive_layout.md) — the rotated JSONL
   bucket naming shared with the collector (#9) and the Testing IDE (#141).
 - [`/v1/health` contract](architecture/health_contract.md) — the six fields a live
