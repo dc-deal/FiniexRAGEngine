@@ -320,3 +320,28 @@ def test_a_dry_run_before_an_apply_does_not_change_what_the_apply_writes(clean_d
     assert applied.disagreements == []
     starts = [row['result'][0]['breaking_episode_start'] for row in _stored(clean_db)]
     assert starts == [True, False, False]            # exactly one opener, and it is the first pass
+
+
+def test_the_episode_columns_describe_the_range_not_the_write(clean_db: str) -> None:
+    """After a successful backfill a re-run must still report the episodes it found.
+
+    They used to count only NEWLY STAMPED episodes, so a fully backfilled range reported
+    `episodes: 0` — which reads as "none found" rather than "none new". Measured on production
+    2026-08-27: the verification run showed 0 episodes and 0 openers over 12,243 populated ids.
+    `would stamp` is the column that describes the action; these two describe the data.
+    """
+    _store(clean_db, _series([0.8, 0.7, 0.8]))
+    backfill = _backfill(clean_db)
+    window = (_T0 - timedelta(days=1), _T0 + timedelta(days=1))
+
+    first = backfill.apply(*window)
+    again = backfill.plan(*window)
+
+    assert first.pipelines[0].episodes == 1 and first.pipelines[0].openers == 1
+    assert again.would_stamp == 0                      # nothing left to write
+    assert again.pipelines[0].episodes == 1            # but the episode is still reported
+    assert again.pipelines[0].openers == 1
+    # And the registry line names upserts and episodes apart, so 3 upserts over 1 episode cannot
+    # read as 3 rows.
+    assert first.episode_upserts == 3 and first.episode_ids_written == 1
+    assert 'registry upsert(s) over 1 episode(s)' in format_backfill_plan(first)

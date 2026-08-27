@@ -106,7 +106,11 @@ class BackfillPlan:
     fingerprint_coverage: int = 0        # envelopes in range whose fingerprint is non-empty
     applied: bool = False
     envelopes_written: int = 0
-    episode_rows_written: int = 0
+    # Upserts issued, NOT rows created. An episode spanning 200 passes is upserted 200 times and
+    # lands on one row — that is how `n_passes` accumulates. Reported as "9280 registry rows" for
+    # 65 episodes it read like a duplication, so the two numbers are now separate and named.
+    episode_upserts: int = 0
+    episode_ids_written: int = 0
 
     @property
     def disagreements(self) -> List[Disagreement]:
@@ -242,6 +246,14 @@ class EpisodeBackfill:
                 served_id, served_start = served[index]
                 computed_id = result.breaking_episode_id
                 computed_start = result.breaking_episode_start
+                # Episodes are counted over every in-range row, carried or newly stamped, because
+                # they describe the DATA. Counting only the stamped ones made them collapse to zero
+                # on a re-run — a fully backfilled range reporting `episodes: 0` reads as "none
+                # found". `would stamp` is the column that describes the action.
+                if computed_id:
+                    episodes_here.setdefault(computed_id, None)
+                    if computed_start:
+                        row.openers += 1
                 if served_id:
                     row.carried += 1
                     if served_id != (computed_id or '') or served_start != computed_start:
@@ -254,8 +266,6 @@ class EpisodeBackfill:
                 if not computed_id:
                     continue                      # outside any episode — nothing to write
                 row.would_stamp += 1
-                row.openers += 1 if computed_start else 0
-                episodes_here.setdefault(computed_id, None)
                 stamp.fields.append((index, computed_id, computed_start))
 
             # The registry rows come from the tracker, already deduplicated per episode id rather
@@ -321,6 +331,7 @@ class EpisodeBackfill:
         change. `create_missing` is on because an envelope produced before ISSUE_65 has no such key
         to replace.
         """
+        registered: Dict[str, None] = {}
         try:
             with psycopg.connect(self._database_url) as conn:
                 for stamp in stamps:
@@ -337,14 +348,16 @@ class EpisodeBackfill:
                                     'WHERE id = %s', (*params, stamp.row_id))
                         for episode_row in stamp.episodes:
                             self._registry.upsert(cur, episode_row)
-                            plan.episode_rows_written += 1
+                            plan.episode_upserts += 1
+                            registered[episode_row.episode_id] = None
                         plan.envelopes_written += 1
                     conn.commit()
         except psycopg.Error as exc:
             raise VectorStoreError(f'backfill write failed: {exc}') from exc
         plan.applied = True
-        logger.info('[BACKFILL] wrote %d envelope(s) and %d registry row(s)',
-                    plan.envelopes_written, plan.episode_rows_written)
+        plan.episode_ids_written = len(registered)
+        logger.info('[BACKFILL] wrote %d envelope(s) · %d registry upsert(s) over %d episode(s)',
+                    plan.envelopes_written, plan.episode_upserts, plan.episode_ids_written)
 
 
 def _fmt_rules(rules: Dict[str, EpisodeGrouping]) -> str:
@@ -431,8 +444,10 @@ def format_backfill_plan(plan: BackfillPlan) -> str:
         if len(plan.disagreements) > 20:
             lines.append(f'  … {len(plan.disagreements) - 20} more not shown')
     elif plan.applied:
-        lines.append(f'wrote {plan.envelopes_written} envelope(s) and '
-                     f'{plan.episode_rows_written} registry row(s)')
+        lines.append(f'wrote {plan.envelopes_written} envelope(s) · '
+                     f'{plan.episode_upserts} registry upsert(s) over '
+                     f'{plan.episode_ids_written} episode(s) — an episode is upserted once per '
+                     f'pass and lands on one row, which is how n_passes accumulates')
     else:
         lines.append('re-run with --apply to write (outcomes envelope JSONB + breaking_episodes)')
     return '\n'.join(lines)
