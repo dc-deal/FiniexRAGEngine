@@ -170,6 +170,37 @@ series:
 [CONFIG] forex_macro_sentiment · source_set forex_news · config_fingerprint 1e63b9aa21fc (new)
 ```
 
+#### A fingerprint's `first_seen`/`last_seen` is not its span
+
+The two columns invite being read as an interval, and that reading invents history. A configuration
+can appear, be **reverted**, and return later — so a fingerprint's first and last sighting can
+straddle a long stretch in which it produced nothing at all. Taking min and max then makes two
+generations look like two *concurrent* ones.
+
+Worked example, 2026-08-25 on the production crypto stream. `3cce880a58d4` (6 active feeds) and
+`9458492ce234` (7 — the same six plus `theblock`) appear to overlap: B's `first_seen` sits eight
+minutes inside A's span and runs to the present. They never overlapped. Five restarts happened
+around one deploy, and B produced **exactly one pass**:
+
+```
+16:18:45  3cce880a58d4  boot        deploy: source breadth, theblock still out
+16:26:14  9458492ce234  boot        theblock in — one pass
+16:28:39  3cce880a58d4  boot        reverted
+   …      3cce880a58d4  scheduled   for the next 82 minutes
+17:54:40  9458492ce234  boot        applied for good; still current
+```
+
+**How to tell the two apart, and why the archive settles it.** Concurrency would interleave: two
+live assemblies minting into one stream produce passes whose `seq` values do not ascend with their
+timestamps. They did — strictly, in both streams, with no duplicates. And the second stream is the
+control: the same five boots left `forex_macro_sentiment`'s fingerprint untouched, which localises
+the differing leaf to the crypto source set without reading a single config payload. The registry
+then names it (`theblock`) rather than being asked to find it.
+
+So: group by fingerprint **and look at the gaps**. `first_seen`/`last_seen` answer "when was this
+setup ever alive", never "was it alive throughout". It is the same failure as a single confirm rate
+per prompt version (`prompt_drift`, ISSUE_110): a summary that hides the distribution it summarises.
+
 ## Interfaces (swappable backends)
 
 | Interface | Default | Swap candidates |

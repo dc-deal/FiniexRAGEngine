@@ -138,6 +138,72 @@ Everything the HTTP surface does not cover, the operator still bridges by hand (
 for either has costs the operator has already weighed — the edge that exists was built deliberately,
 route by route, and is not an opening to widen casually.
 
+## The container is disposable — its home is not
+
+**Never recommend or confirm a container rebuild without first checking the transcript backup, and
+say what you found.** `~/.claude/projects/` holds the session transcripts, and it lives inside the
+container: a rebuild deletes whatever is not on a volume or a bind mount — silently, irreversibly,
+and with no prompt.
+
+Two tiers exist here and only the first is automatic. `devhome:/root` is a named volume: it survives
+every rebuild, and dies with `docker compose down -v`. `.devcontainer/local/home-seed`, written by
+`backup_home.sh` and restored by `restore_home.sh` on container create, survives volume deletion —
+but is only ever as fresh as its last manual run.
+
+**This is a rule for the assistant, not documentation for the operator**, and that distinction is
+the whole point: nobody opens a rulebook at the moment they click rebuild, and a pre-rebuild
+instruction living in a script header is read by whoever is already looking at the script. The
+assistant is in the conversation when a rebuild comes up — usually because it proposed one — so that
+is where the check belongs. Report the seed's age and transcript count *before* the rebuild runs,
+not after.
+
+And prefer the mechanical fix to the reminder: a bind mount of `projects/` needs nothing remembered,
+which is the difference between a backup and an intention.
+
+## The cross-project bus is operator-initiated
+
+**Never read or write the bus unless the operator asks for it.** A shared folder mounted at `/bus`
+carries questions and answers between this project and its siblings, through `bus_*` tools from a
+client that lives on the bus itself. Its inbox is not something to check on your own initiative —
+not at session start, not in passing while looking for something else, and not because a question
+at hand happens to suit it.
+
+The reason is not tidiness. A message written to the bus lands in another project's inbox and is
+read by whoever works there, so sending one is an outward-facing act; reading one pulls another
+project's material into this conversation. Neither is a step taken to be helpful.
+
+**There is no mechanical gate, and that is a decision rather than an omission.** Two were built,
+both worked, and both were removed. A later session must not read their absence as an oversight and
+rebuild them, so the reasons are recorded here.
+
+A `permissions.ask` rule on the bus tool names fires correctly and costs nothing. It was removed
+anyway: the policy is that the rule above governs bus access by itself, and a prompt standing behind
+it invites the discipline to be delegated to a dialog box. The discipline is the whole protection.
+
+A PreToolUse hook covering the shell route also works — a `cat` on a message file raises a prompt
+that a tool-name rule cannot reach. It was removed because **a tool carrying a matching PreToolUse
+entry stops being auto-accepted**: a catch-all matcher does not add friction to bus access, it ends
+auto mode for every tool in every session, and it arrives disguised as "suddenly everything asks"
+rather than as a bus problem. Answering `permissionDecision: "allow"` for non-matching calls would
+restore auto mode and is worse — a hook that answers "allow" overrides the operator's other
+permission rules, including denials. A protection that suspends a larger protection is not one.
+
+There is likewise no SessionStart hook: one that prints the inbox at every start is precisely the
+unbidden read this rule forbids.
+
+So nothing stands between the assistant and that folder except the rule. Concretely: no unprompted
+read — not `bus_inbox`, not `bus_threads`, not a `cat` on a message file; no check "while I am
+here"; no poll because something might have arrived; no look at the start of a session or a task.
+No write without an explicit request. The failure mode to design against is a **read**, and it has
+already happened once.
+
+`bus_inbox` is never on its own evidence that nothing arrived — a `note` enters no inbox by design,
+which produced three false all-clears in one hour. Pair it with `bus_threads` and compare the count;
+report "nothing" only when both are empty. Client 1.1.0 appends that count itself, but only once a
+session has restarted: the stdio server imports the client at spawn and does not reload it.
+
+Adding `"disabledMcpjsonServers": ["finiex-bus"]` removes the tools from context altogether.
+
 ## Session start
 
 Read first, in order:

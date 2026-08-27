@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "finiex-bus": {
+      "command": "python3",
+      "args": ["/bus/client/bus_mcp.py"],
+      "env": {
+        "BUS_ROOT": "/bus",
+        "BUS_PEER": "ragengine"
+      }
+    }
+  }
+}

@@ -49,6 +49,11 @@ github_issues/
 user_configs/*
 !user_configs/app_config.example.json
 
+# MCP server registration — points at /bus, which only a machine with the bus folder has.
+# A tracked copy would hand every clone a server pointing at a path that does not exist.
+# .mcp.json.example is the tracked counterpart, like .env.example and user_configs/.
+.mcp.json
+
 # Local dev-home seed (personal state, restored after container rebuilds)
 .devcontainer/local/
 

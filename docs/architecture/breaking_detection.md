@@ -533,6 +533,49 @@ What the table is *not* for: it is not what makes assignment restart-safe. Seedi
 passes per episode — which otherwise cost a full JSONB scan of `outcomes` and a re-grouping in
 Python.
 
+### Backfilling identity into the archive (ISSUE_108)
+
+ISSUE_65 stamps identity in the assembly path, so every pass since its deploy carries it and nothing
+before it does. `backfill_episode_ids_cli` closes that gap over a named range —
+`core/outcome/episode_backfill.py`, dry run by default.
+
+**It drives the live tracker, not a second derivation.** `_aggregate` in the funnel report never
+calls `episode_id()`; the report cannot produce identities at all. Only
+`BreakingEpisodeTracker.observe()` mints them, and the hard part is the bookkeeping around the rule —
+the per-key id map, the adopt-an-existing-id branch, and the release that lets the next episode on a
+key mint fresh. So the backfill replays the archive through the same `observe` the eval workers run,
+which is what `tracker.seed()` already does at boot for the same reason. Parity is against the live
+path rather than against a report.
+
+**The range needs a prologue.** An episode that opened before the range is still open inside it, so
+replaying from the range's start cold would mint an id from a *clipped* start — a second identity for
+a story already running. A window before the range is therefore replayed for state only and never
+written, its width `max(2 × gap, episode_seed_hours)` — the boot seed's own formula, calibrated
+against measured hold-band tails of 5 h, 8.7 h and 33 h rather than guessed.
+
+**The self-check is the reason to replay past the ISSUE_65 boundary** even though nothing past it
+needs writing. The backfill keeps each served identity aside, clears it on the model so `observe`
+computes instead of adopting, and compares. Agreement is evidence that the replay matches the live
+path on real data; a disagreement aborts `--apply` and is printed with both values. There is no
+override flag. Note that a disagreement is not automatically a defect: for an episode open across
+that boundary the served id was minted by a process whose own seed window clipped the start, so a
+different anchor is possible with no rule divergence — and because the write rule is *only where
+absent*, such a case can never corrupt anything.
+
+**Both sinks or neither**, in one transaction per envelope: `jsonb_set` on the two keys (never a
+whole-envelope rewrite, so "nothing else can move" is provable and tested), plus the
+`breaking_episodes` rows the tracker produced — deduplicated per episode id rather than per result,
+so a fanned pair counts one pass and not two.
+
+**It is a reconstruction, not a recovery.** Three read-time policy changes landed inside the
+consumer's window — hysteresis (2026-08-17), `EPISODE_GAP` 45 → 150 (08-18), and the episode key
+moving from base currency to the retrieval query (08-18). The last is consequential: before it,
+`USDJPY`/`USDCAD`/`USDCHF` shared one `USD` key, so one symbol's story held another's episode open.
+A replay under today's grouping splits them correctly, which makes the backfilled FX episodes for
+that stretch better than what was served **and different from it**. For a backtest that is the right
+answer — the strategy is tested against the engine that will run it — but a diff against anything
+captured off the live wire in that window will disagree for FX, wholesale and correctly.
+
 ### Stories — the number the episode count is read with (ISSUE_96)
 
 An **episode** is what the rule produces: a run of breaking passes held together by the hysteresis
