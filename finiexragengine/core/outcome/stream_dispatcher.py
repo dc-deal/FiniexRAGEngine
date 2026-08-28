@@ -21,12 +21,24 @@ exactly the semantics needed — the wake-up cannot arrive before the row is rea
 sweep is the belt to that braces: a notification lost with a dropped connection then delays a frame
 by one sweep instead of stalling a stream until someone reconnects.
 
+**The listener is a SYNC connection waited on in a thread, and that is a platform decision rather
+than a style one.** The first version used `psycopg.AsyncConnection`, which needs a selector-based
+event loop; Windows defaults to `ProactorEventLoop`, so on the deployed host every connect raised
+`InterfaceError` and the tail reconnected every two seconds for 22 hours — serving connect and
+replay correctly while pushing nothing, with the dev container green throughout because it is Linux.
+A sync connection has no such dependency. `notifies(timeout=…, stop_after=1)` returns **on the first
+notification** (measured lag 0.0 s) or empty at the deadline, which is the sweep's cue — the same two
+outcomes the async form had, with the platform coupling removed instead of configured around.
+`tests/contracts/test_stream_dispatcher_is_platform_neutral.py` pins it: no `AsyncConnection` here,
+ever, because no test on a Linux runner can otherwise see the difference.
+
 **It runs whenever there is a store, with or without `--workers`.** The stream is a read surface over
 the journal, so it serves a journal another process writes — which is also what lets a dev instance
 serve the live contract without paying for a single LLM call.
 """
 import asyncio
 import logging
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import psycopg
@@ -41,6 +53,12 @@ logger = logging.getLogger(__name__)
 # fixed: the failure is almost always the database restarting under us, and every second of it is a
 # second in which frames are delivered only by the sweep of a connection that no longer exists.
 _RECONNECT_SECONDS = 2.0
+
+# The listener's connect is bounded. `socket.setdefaulttimeout` cannot do it — libpq is C-level and
+# ignores it — so an un-timeouted connect here would be the ISSUE_73 shape in a new place: one call
+# that never returns, holding a loop that nothing else can advance. `asyncio.wait_for` is not a
+# substitute: it abandons the await, not the thread.
+_CONNECT_TIMEOUT_SECONDS = 10
 
 
 class StreamDispatcher:
@@ -65,6 +83,12 @@ class StreamDispatcher:
         # the heartbeat reports. Tracked here so a keep-alive costs no query: on a quiet stream the
         # dispatcher's position *is* the head.
         self._cursor: Dict[str, StreamHead] = {}
+        # What `/v1/health` reports (the consumer asked for it: today the only way to notice a
+        # stalled push path is to hold a connection longer than the cadence and count what did not
+        # arrive — a fourteen-minute diagnosis for a fact this process knows immediately).
+        self._listening = False                          # is the LISTEN connection up right now
+        self._listener_error: Optional[str] = None        # why not, when it is down
+        self._last_advance: Dict[str, datetime] = {}      # per stream: when a frame last went out
         self._stopped = False
 
     # --- subscription ---------------------------------------------------------------------------
@@ -104,12 +128,36 @@ class StreamDispatcher:
         logger.info('[STREAM] %s: subscriber detached (%d live)', subscription.pipeline_id,
                     len(live))
 
-    def head(self, pipeline_id: str) -> StreamHead:
-        """This stream's position as the dispatcher knows it — what a heartbeat reports.
+    async def producer_head(self, pipeline_id: str) -> StreamHead:
+        """The **producer's** position, read from the store — never this object's own cursor.
 
-        Falls back to the store only for a stream with no subscribers, which is a state a heartbeat
-        cannot be in (there is no connection to send one on) and therefore only a caller's
-        diagnostic path reaches.
+        This is what a keep-alive reports, and the distinction is the defect it was built out of.
+        The cursor moves only when the push path works, so a heartbeat fed from it reports a stalled
+        *tail* as a stalled *producer*: nearly the right answer for the wrong reason, and exactly the
+        wrong one when the producer is healthy and only the tail is broken — which is what happened
+        on 2026-08-28, where the field sat at the boot head for 22 hours while 143 envelopes were
+        produced. A liveness signal must not share fate with the mechanism it monitors.
+
+        One indexed point read per keep-alive per connection. That is the cost of the field meaning
+        what the contract says it means, and the earlier "a heartbeat costs no query" optimisation is
+        precisely what bought the wrong number.
+        """
+        try:
+            return await asyncio.to_thread(self._store.stream_head, pipeline_id)
+        except Exception:                          # noqa: BLE001 — see below
+            # A keep-alive is a liveness proof for the socket, so it must go out even when the store
+            # cannot be read. Reporting the last known position is honest, and `now_msc` still
+            # proves this process is alive, which is the half a consumer cannot get anywhere else.
+            logger.warning('[STREAM] %s: head unreadable for the keep-alive — reporting last known',
+                           pipeline_id)
+            return self.head(pipeline_id)
+
+    def head(self, pipeline_id: str) -> StreamHead:
+        """This stream's position as the **dispatcher** knows it — how far the push path has got.
+
+        Internal, and deliberately no longer what a keep-alive reports (see `producer_head`): this
+        number is exactly the one that stops moving when the tail breaks, which makes it the right
+        thing for `/v1/health` to expose and the wrong thing to put on the wire as liveness.
         """
         known = self._cursor.get(pipeline_id)
         if known is not None:
@@ -132,28 +180,59 @@ class StreamDispatcher:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:               # noqa: BLE001 — see the docstring
-                logger.warning('[STREAM] listener dropped (%s: %s) — reopening in %.0fs',
-                               exc.__class__.__name__, exc, _RECONNECT_SECONDS)
+                # Recorded as well as logged: a log line is read once, and the condition this
+                # produced went unnoticed for 22 hours because nothing outside the log could see it.
+                self._listening = False
+                self._listener_error = f'{exc.__class__.__name__}: {exc}'
+                logger.warning('[STREAM] listener dropped (%s) — reopening in %.0fs',
+                               self._listener_error, _RECONNECT_SECONDS)
                 await asyncio.sleep(_RECONNECT_SECONDS)
+
+    def _open_listener(self) -> psycopg.Connection:
+        """Open the LISTEN connection. Blocking by nature, so only ever called inside a thread.
+
+        `LISTEN` takes a channel NAME rather than a value, so it cannot be parameterised — quoted as
+        an identifier instead of interpolated, because the channel comes from configuration.
+        """
+        conn = psycopg.connect(self._database_url, autocommit=True,
+                               connect_timeout=_CONNECT_TIMEOUT_SECONDS)
+        conn.execute(sql.SQL('LISTEN {}').format(sql.Identifier(self._channel)))
+        return conn
+
+    @staticmethod
+    def _wait_for_payloads(conn: psycopg.Connection, seconds: int) -> List[str]:
+        """Block until the FIRST notification or the deadline, whichever comes first.
+
+        `stop_after=1` is what keeps this sub-second: without it the generator collects until the
+        deadline and returns everything at once, which would silently turn every push into a delay of
+        up to `fallback_poll_seconds` — a latency regression no test asserts against. With it, a
+        pending notification returns the round immediately (measured lag 0.0 s) and an empty list
+        means the deadline passed, which is the sweep's cue.
+        """
+        return [notify.payload for notify in conn.notifies(timeout=seconds, stop_after=1)]
 
     async def _listen_once(self) -> None:
         """One life of the listening connection: LISTEN, catch up, then follow notifications."""
-        async with await psycopg.AsyncConnection.connect(
-                self._database_url, autocommit=True) as conn:
-            # `LISTEN` takes a channel NAME, not a value, so it cannot be parameterised — quoted as
-            # an identifier instead of interpolated, because the channel comes from configuration.
-            await conn.execute(sql.SQL('LISTEN {}').format(sql.Identifier(self._channel)))
+        conn = await asyncio.to_thread(self._open_listener)
+        self._listening = True
+        self._listener_error = None
+        try:
             # Catch up first: anything committed while the connection was down has no notification
             # coming, and a subscriber attached in that window would otherwise wait for the sweep.
             await self._sweep()
             while not self._stopped:
-                # The generator ends when the timeout elapses, which is the sweep's tick — so one
-                # loop serves both the notification path and the fallback without a second task.
-                async for notify in conn.notifies(timeout=self._fallback_poll_seconds):
-                    await self._advance(notify.payload)
-                    if self._stopped:
-                        return
+                payloads = await asyncio.to_thread(
+                    self._wait_for_payloads, conn, self._fallback_poll_seconds)
+                if payloads:
+                    for payload in payloads:
+                        await self._advance(payload)
+                    continue
+                # The deadline passed with nothing pending — the fallback's turn. A stream whose
+                # notifications keep arriving is advanced by them and needs no sweep.
                 await self._sweep()
+        finally:
+            self._listening = False
+            await asyncio.to_thread(conn.close)
 
     async def _sweep(self) -> None:
         """Advance every watched stream — the path that does not depend on a notification."""
@@ -180,6 +259,7 @@ class StreamDispatcher:
                     epoch=int(envelope.get('stream_epoch') or cursor.epoch),
                     available_msc=envelope.get('available_msc'))
                 cursor = self._cursor[pipeline_id]
+                self._last_advance[pipeline_id] = datetime.now(timezone.utc)
                 self._fan_out(pipeline_id, envelope)
             if len(envelopes) < self._batch_size:
                 return
@@ -201,6 +281,35 @@ class StreamDispatcher:
     async def stop(self) -> None:
         """Ask the loop to end. In-flight reads finish; nothing is cancelled mid-query."""
         self._stopped = True
+
+    def status(self) -> Dict[str, Any]:
+        """What `/v1/health` publishes about the push path (the consumer asked for it).
+
+        Before this, the only way to notice a stalled tail was to hold a connection longer than the
+        cadence and count what did not arrive — a fourteen-minute diagnosis for a fact this process
+        knows immediately, and the reason a broken tail went unnoticed for 22 hours. The engine
+        already says when a *worker* stops (ISSUE_75/97); the push path simply was not covered,
+        because it did not exist when that rule was written.
+
+        Reported per stream rather than folded into `stall.stalled`: a dispatcher is not a worker, and
+        one field meaning two things is how a monitor ends up reading the wrong one. `pushed_seq` is
+        the DISPATCHER's cursor — deliberately the number that stops moving when the tail breaks,
+        which is what makes it worth publishing and what made it wrong on the wire.
+        """
+        return {
+            'enabled': True,
+            'listening': self._listening,
+            'listener_error': self._listener_error,
+            'channel': self._channel,
+            'streams': [
+                {'pipeline_id': pipeline_id,
+                 'pushed_seq': head.seq,
+                 'subscribers': len(self._subscriptions.get(pipeline_id, ())),
+                 'last_advance_at': (self._last_advance[pipeline_id].isoformat()
+                                     if pipeline_id in self._last_advance else None)}
+                for pipeline_id, head in sorted(self._cursor.items())
+            ],
+        }
 
     def subscriber_count(self, pipeline_id: Optional[str] = None) -> int:
         """Live connections, for `/health`-style reporting and for tests."""

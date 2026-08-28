@@ -20,6 +20,9 @@ logger = logging.getLogger(__name__)
 # and must not trigger a retry on every health poll.
 _UNRESOLVED = object()
 
+# See `_connect`. Five seconds against a measured ~6 ms healthy connect.
+_CONNECT_TIMEOUT_SECONDS = 5
+
 
 class OutcomeStore:
     """Stores every produced envelope and serves the latest per pipeline.
@@ -100,8 +103,23 @@ class OutcomeStore:
         return self._journal_id
 
     def _connect(self) -> psycopg.Connection:
+        """A connection per call, and the connect is **bounded** (ISSUE_9 follow-up).
+
+        `socket.setdefaulttimeout` cannot bound it — libpq is C-level and ignores it — so an
+        un-timeouted connect here is the ISSUE_73 shape in a new place: one call that never returns,
+        on a path that runs unattended for weeks. This store sits on the serving path (`/latest`),
+        inside every pass, and inside the stream's tail; a healthy local connect measures ~6 ms, so
+        five seconds is three orders of magnitude of headroom and still fails fast when the database
+        is genuinely gone.
+
+        Deliberately NOT a global fix: 34 call sites in this package connect without a bound. The two
+        on the stream's path are closed here because that is where the tail hangs; the rest is its own
+        issue, because a report CLI hangs in front of an operator who can interrupt it, and a worker
+        loop does not.
+        """
         try:
-            return psycopg.connect(self._database_url)
+            return psycopg.connect(self._database_url,
+                                   connect_timeout=_CONNECT_TIMEOUT_SECONDS)
         except psycopg.Error as exc:
             raise VectorStoreError(f'cannot connect to the outcome store: {exc}') from exc
 

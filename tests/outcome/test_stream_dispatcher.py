@@ -19,6 +19,11 @@ from finiexragengine.core.outcome.outcome_store import OutcomeStore
 from finiexragengine.core.outcome.stream_dispatcher import StreamDispatcher
 from finiexragengine.types.outcome_types import RunMetadata, SentimentEnvelope, SentimentResult
 
+
+# Platform-sensitive: the listener connection and its event loop. A Linux runner cannot exercise it, so this file is part
+# of the version-bump run on the production machine (`pytest -m deploy`).
+pytestmark = pytest.mark.deploy
+
 _CHANNEL = 'test_dispatcher_channel'
 
 

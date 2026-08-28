@@ -25,6 +25,11 @@ from finiexragengine.types.outcome_types import (
     SentimentResult,
 )
 
+# Platform-sensitive: the keep-alive, which depends on the tail actually running. A Linux runner
+# cannot exercise it, so this file joins the version-bump run on the production machine
+# (`pytest -m deploy`).
+pytestmark = pytest.mark.deploy
+
 _CHANNEL = 'test_stream_session'
 
 
@@ -267,3 +272,61 @@ def test_the_first_frame_on_a_cold_stream_is_not_a_rewind(store, session):
     assert _payloads(opening)[0] == {'code': 'live', 'stream_epoch': 0, 'head_seq': 0}
     assert _events([first]) == ['signal']                  # a frame, not a control code
     assert _payloads([first])[0]['stream_epoch'] == 1
+
+
+# --- the keep-alive must not share fate with the push path (production, 2026-08-28) --------------
+
+def test_the_keep_alive_reports_the_producer_head_even_when_the_tail_is_dead(store, session):
+    """The regression for the defect the consumer found, reproduced by leaving the tail unstarted.
+
+    In production the listener could not open at all (Windows / ProactorEventLoop), so `_advance`
+    never ran and the dispatcher's cursor stayed at the head it had when the first subscriber
+    attached — for 22 hours, while 143 envelopes were produced. The keep-alive was fed from that
+    cursor, so it reported a stalled *tail* as a stalled *producer*: nearly the right answer for the
+    wrong reason, and exactly the wrong one here.
+
+    `dispatcher.run()` is deliberately NOT started, which is the same condition seen from the inside:
+    nothing advances the cursor. The keep-alive must still report where the producer actually is.
+    """
+    async def scenario():
+        generator = session.frames('p')                    # cold connect, no snapshot
+        opening = [await anext(generator), await anext(generator)]
+        # Three passes commit while the tail is dead — no advance, no push, cursor untouched.
+        for _ in range(3):
+            await asyncio.to_thread(store.save, _envelope())
+        beat = await asyncio.wait_for(anext(generator), timeout=10)
+        cursor = session._dispatcher.head('p')
+        await generator.aclose()
+        return opening, beat, cursor
+
+    opening, beat, cursor = _run(scenario())
+
+    assert _payloads(opening)[0]['head_seq'] == 0           # the connect saw a cold stream
+    assert cursor.seq == 0                                   # the tail never advanced — the defect
+    payload = _payloads([beat])[0]
+    assert _events([beat]) == ['heartbeat']
+    assert payload['seq'] == 3, 'the keep-alive reported the cursor, not the producer'
+    assert payload['available_msc'] is not None
+
+
+def test_the_keep_alive_survives_an_unreadable_store(store, session, monkeypatch):
+    """A keep-alive is a liveness proof for the socket, so a store that cannot be read must degrade
+    the number rather than the frame — `now_msc` alone still proves this process is alive, which is
+    the half a consumer cannot obtain anywhere else."""
+    def explode(_pipeline_id):
+        raise RuntimeError('journal unreachable')
+
+    async def scenario():
+        generator = session.frames('p')
+        opening = [await anext(generator), await anext(generator)]
+        monkeypatch.setattr(store, 'stream_head', explode)
+        beat = await asyncio.wait_for(anext(generator), timeout=10)
+        await generator.aclose()
+        return opening, beat
+
+    _opening, beat = _run(scenario())
+
+    payload = _payloads([beat])[0]
+    assert _events([beat]) == ['heartbeat']                 # the frame still went out
+    assert 'now_msc' in payload
+

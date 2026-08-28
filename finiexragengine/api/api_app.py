@@ -378,7 +378,8 @@ def create_app(attach_runners: Optional[bool] = None,
     # "moves it behind the token" removed the only protection an anonymous caller met.
     health = build_health_router(config_manager, supervisor=supervisor,
                                  budget_guard=budget_guard, stall_watchdog=stall_watchdog,
-                                 resource_gauge=resource_gauge, outcome_store=outcome_store)
+                                 resource_gauge=resource_gauge, outcome_store=outcome_store,
+                                 stream_dispatcher=stream_dispatcher)
     # Sampled once, here, so it describes the code THIS process imported rather than whatever the
     # working tree holds at request time (see `build_info.sample_build_info`).
     build = build_build_router(sample_build_info(config_manager.get_config().version))

@@ -107,7 +107,10 @@ class StreamSession:
                 envelope = await asyncio.wait_for(subscription.queue.get(),
                                                   timeout=self._config.heartbeat_seconds)
             except asyncio.TimeoutError:
-                head = self._dispatcher.head(pipeline_id)
+                # The PRODUCER's head, from the store — not the dispatcher's cursor. A keep-alive
+                # is documented as the liveness proof ("a stalled seq is a stalled producer"), so it
+                # must not be fed by the push path it is supposed to reveal the failure of.
+                head = await self._dispatcher.producer_head(pipeline_id)
                 yield render_heartbeat(head.epoch or stream_epoch, head.seq, _now_msc(),
                                        available_msc=head.available_msc)
                 continue

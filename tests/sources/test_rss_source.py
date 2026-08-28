@@ -14,6 +14,11 @@ from finiexragengine.types.article_types import Article
 from finiexragengine.types.config_types.source_set_types import SourceConfig
 
 
+# Platform-sensitive: socket deadlines and host-level timeouts. A Linux runner cannot exercise it, so this file is part
+# of the version-bump run on the production machine (`pytest -m deploy`).
+pytestmark = pytest.mark.deploy
+
+
 class _FakeParsed:
     """Minimal stand-in for a feedparser result (attribute access + dict entries)."""
 

@@ -63,6 +63,39 @@ class ResourceInfo(BaseModel):
     over_ceiling: bool = False
 
 
+class DispatcherStreamInfo(BaseModel):
+    """One stream as the push path sees it (ISSUE_9 follow-up)."""
+    pipeline_id: str
+    # How far the DISPATCHER has pushed — not where the producer is. That distinction is the point:
+    # this is the number that stops moving when the tail breaks, which is why it belongs here and
+    # why it does not belong on the wire as a liveness signal (the heartbeat reports the producer).
+    pushed_seq: int
+    subscribers: int = 0
+    last_advance_at: Optional[str] = None
+
+
+class DispatcherInfo(BaseModel):
+    """The live stream's push path (ISSUE_9 follow-up) — requested by the consumer.
+
+    Without it the only way to notice a stalled tail is to hold a connection longer than the cadence
+    and count what did not arrive. That is a fourteen-minute diagnosis for a fact the process knows
+    immediately, and it is how a tail that could not open its listener served connect and replay
+    correctly while pushing nothing for 22 hours.
+
+    Kept out of `stall.stalled`, which watches *workers*: a dispatcher is not a worker, and one field
+    meaning two things is how a monitor comes to read the wrong one.
+    """
+    enabled: bool = True
+    # False while the LISTEN connection is down. The engine reconnects on its own, so a single false
+    # reading is not an incident — a false reading that persists is.
+    listening: bool = False
+    # Why it is down, when it is. Recorded as well as logged, because the condition that produced
+    # this field went unnoticed for 22 hours precisely because it existed only in a log.
+    listener_error: Optional[str] = None
+    channel: str = ''
+    streams: List[DispatcherStreamInfo] = []
+
+
 HEALTH_STATUSES: Tuple[str, ...] = ('ok', 'degraded')
 
 
@@ -103,6 +136,9 @@ class HealthResponse(BaseModel):
     stall: Optional[StallInfo] = None
     # Present only with workers running — the gauge rides the watchdog's tick (ISSUE_89).
     resources: Optional[ResourceInfo] = None
+    # The live stream's push path (ISSUE_9). Present whenever the transport is enabled — which is
+    # independent of `--workers`, because the stream is a read surface over the journal.
+    stream: Optional[DispatcherInfo] = None
 
 
 class PipelineInfo(BaseModel):

@@ -19,6 +19,11 @@ from typing import Any, Dict, List
 import psycopg
 import pytest
 
+
+# Platform-sensitive: a subprocess and its console codepage. A Linux runner cannot exercise it, so this file is part
+# of the version-bump run on the production machine (`pytest -m deploy`).
+pytestmark = pytest.mark.deploy
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'experiments' / 'stream_frames_sample'))
 generate = pytest.importorskip('generate')
 

@@ -198,6 +198,57 @@ Also extended: `tests/api/test_report_scopes.py`'s walk over identity routes now
 and `tests/api/test_pipelines_endpoint.py` pins that `/v1/pipelines` and `/v1/health` report **one**
 cadence, from one derivation.
 
+### The `deploy` marker — tests a Linux runner cannot exercise
+
+```bash
+pytest -m deploy -q        # ~68 tests, seconds — the platform-sensitive subset
+pytest tests/ -q           # everything; the version-bump run (CLAUDE.md) does this on the server
+```
+
+The criterion is narrow and deliberate: a dependency the suite **encodes** but this container cannot
+**exercise** — an event loop implementation, a console codepage, a socket deadline, a subprocess, a
+path separator. It is not "tests that touch the OS" and not "tests that are slow".
+
+It exists because two defects shipped green on 2026-08-28, and neither could have failed here:
+
+- the stream's journal tailer used `psycopg.AsyncConnection`, which needs a selector-based event
+  loop. Windows defaults to `ProactorEventLoop`, so on the deployed host every connect raised
+  `InterfaceError` and the tail reconnected every two seconds **for 22 hours** — serving connect and
+  replay correctly while pushing nothing. The consumer found it by running a real session;
+- `experiments/mock_signal_data/generate.py` printed `→` and `·` without calling `use_utf8_output()`,
+  so on a non-UTF-8 console it raised `UnicodeEncodeError` and exited non-zero, taking seven tests
+  with it. It had never run on Windows at all.
+
+Marked at module level (`pytestmark = pytest.mark.deploy`) with a comment saying which dependency
+puts each file in the gate — a marker whose membership rule is not written down becomes a list nobody
+can audit. The gate is **not** a substitute for the full run the release rule requires; it is the
+fast check for the classes that have actually bitten.
+
+### The stream's platform invariant
+
+`tests/contracts/test_no_async_psycopg.py` asserts that **no module in the package reaches for
+psycopg's async API**, because no behavioural test on a Linux runner can. It is paired: the negative
+(no `AsyncConnection` anywhere) plus the positive (the sync listener factory, the threaded wait and
+the bounded connect are all still present), because absence alone would also be satisfied by deleting
+the tail.
+
+Parsed as an **AST rather than grepped** — a textual search trips over the dispatcher's own docstring,
+which names `AsyncConnection` precisely in order to explain why it is absent. A guard that fails on
+its own reasoning teaches the next person to delete it.
+
+### Two regressions worth naming
+
+`tests/outcome/test_stream_session.py` carries the one that would have caught the outage: it leaves
+the dispatcher's tail **unstarted** — the same condition as a listener that cannot open — and asserts
+that the keep-alive still reports the *producer's* head. Before the fix the heartbeat read the
+dispatcher's cursor, so a stalled tail reported itself as a stalled producer: nearly the right answer
+for the wrong reason, and exactly the wrong one when the producer is healthy.
+
+And `tests/generator/test_mock_signal_generator.py` now surfaces the child process's own output on a
+non-zero exit. `check=True` names the command and discards the captured stderr, so seven failures
+said only "exit status 1" and the cause was guessed twice — wrongly both times — before anyone could
+read it. Captured output that is then thrown away is worse than not capturing it.
+
 ## Continuous integration
 
 `.github/workflows/tests.yml` runs the free suite on every pull request and on every

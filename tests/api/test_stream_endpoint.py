@@ -25,6 +25,11 @@ from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
 from finiexragengine.types.config_types.app_config_types import StreamConfig
 from finiexragengine.types.outcome_types import RunMetadata, SentimentEnvelope, SentimentResult
 
+
+# Platform-sensitive: a long-lived socket through the ASGI server. A Linux runner cannot exercise it, so this file is part
+# of the version-bump run on the production machine (`pytest -m deploy`).
+pytestmark = pytest.mark.deploy
+
 _PIPELINE = 'crypto_sentiment'          # a real constellation, so the registry resolves it
 _CHANNEL = 'test_stream_endpoint'
 

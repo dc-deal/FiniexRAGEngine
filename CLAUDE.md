@@ -89,6 +89,24 @@ Before committing to a design for a non-trivial feature or change:
   that tells them apart. Deliberately no staleness verdict anywhere: picking a threshold would
   invent a policy nobody chose, and #67's pricing probe is the mechanism meant to *check* rather
   than to remind.
+- **The suite runs on the production machine at every version bump**, not on the dev container
+  alone: `pytest tests/ -q --tb=line -r fE` from the project root, venv active. The dev container is
+  Linux and the live engine is Windows Server, and the suite **encodes** that difference without
+  being able to exercise it — a green run here is not evidence about there. Both defects found on
+  the first such run (2026-08-28) are of that shape: the stream dispatcher's async psycopg
+  connection cannot work on Windows' default `ProactorEventLoop`, so `GET /v1/stream` served
+  connect and replay but pushed **nothing for 22 hours** while every test was green; and
+  `experiments/mock_signal_data/generate.py` had never run on Windows at all, taking seven tests
+  with it. Neither could fail in the container.
+  **What it costs and touches**, so neither is a surprise: ~22 minutes for ~1,020 tests, because
+  every DB test opens a TCP connection where the container uses a socket; no API budget (`-m paid`
+  is excluded by default); and it creates, migrates and drops a `finiex_test` schema **inside the
+  production database** — isolated by `search_path`, with `clean_db` truncating schema-qualified
+  (`docs/testing.md`). The live engine keeps running: stopping it would cost a gap in the signal
+  series, which is the worse trade.
+  **A red result is decided, never absorbed.** Each failure is either fixed before the tag or
+  recorded as a named platform gap with its reason — a version that ships over an unexplained red
+  is a version whose own evidence nobody read.
 - **Roadmap #1** ticks a batch's checkbox only when it merges; the version's 🏷️ line is the
   batch's Definition of Done.
 

@@ -16,6 +16,29 @@ The generator is invoked as a subprocess, the way an operator runs it — not im
 """
 import json
 import subprocess
+
+
+def _run_generator(command, **kwargs):
+    """Run the generator and, on failure, say WHAT it said.
+
+    `check=True` raises a `CalledProcessError` whose message names the command and discards the
+    child's captured output, so when this script began failing on the production machine
+    (2026-08-28) seven tests reported only "exit status 1" — and the cause had to be guessed from
+    outside, twice and wrongly, before anyone could read it. Captured output that is then thrown
+    away is worse than not capturing it: the evidence existed and the test withheld it.
+
+    Nothing about the child's environment is arranged here, deliberately. The generator bootstraps
+    its own `sys.path` (`sys.path.insert(0, …parents[2])`), so it imports the package whether or not
+    `PYTHONPATH` is set — which is why the Windows failure was NOT an import error, and why a
+    plausible fix for one would have been a fix for nothing.
+    """
+    result = subprocess.run(command, capture_output=True, text=True, check=False, **kwargs)
+    if result.returncode != 0:
+        raise AssertionError(
+            f'the generator exited {result.returncode}\n'
+            f'--- command ---\n{" ".join(str(part) for part in command)}\n'
+            f'--- stderr ---\n{result.stderr}\n--- stdout ---\n{result.stdout}')
+    return result
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -23,6 +46,11 @@ from pathlib import Path
 import pytest
 
 from finiexragengine.types.outcome_types import SentimentEnvelope
+
+
+# Platform-sensitive: a subprocess and its console codepage. A Linux runner cannot exercise it, so this file is part
+# of the version-bump run on the production machine (`pytest -m deploy`).
+pytestmark = pytest.mark.deploy
 
 _SCRIPT = Path('experiments/mock_signal_data/generate.py')
 _CYCLES = 400          # smallest run that reliably contains an inversion at the default seed
@@ -32,9 +60,8 @@ _ARCHIVER_KEYS = ('collected_msc', 'collected_msc_timebase')
 @pytest.fixture(scope='module')
 def week(tmp_path_factory) -> list:
     out = tmp_path_factory.mktemp('mock') / 'week.jsonl'
-    result = subprocess.run(
-        [sys.executable, str(_SCRIPT), '--cycles', str(_CYCLES), '--out', str(out)],
-        capture_output=True, text=True, check=True)
+    result = _run_generator(
+        [sys.executable, str(_SCRIPT), '--cycles', str(_CYCLES), '--out', str(out)])
     assert 'inversions (per envelope)' in result.stdout, \
         'the generator stopped reporting inversions, or dropped the unit from the label'
     return [json.loads(line) for line in out.read_text().splitlines() if line.strip()]
@@ -130,10 +157,10 @@ def test_a_rotated_run_puts_the_stream_directory_at_the_root(tmp_path):
     week went out in that shape, and nothing compared the shipped files against the commands that
     supposedly produced them.
     """
-    subprocess.run(
+    _run_generator(
         [sys.executable, str(Path.cwd() / _SCRIPT), '--cycles', '20', '--rotate', 'daily',
          '--symbols', 'BTCUSD,ETHUSD'],
-        cwd=tmp_path, capture_output=True, text=True, check=True)
+        cwd=tmp_path)
 
     root = tmp_path / 'data'
     assert root.is_dir(), 'a rotated run with no --out must write into data/'
