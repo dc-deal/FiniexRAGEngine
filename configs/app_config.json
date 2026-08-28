@@ -49,6 +49,7 @@
   },
   "pricing": {
     "currency": "USD",
+    "checked": "2026-08-28",
     "models": {
       "text-embedding-3-small": {
         "input_per_1k": 2e-05,

@@ -2,6 +2,7 @@
 
 Defaults mirror configs/app_config.json exactly (operator-visible, tunable).
 """
+from datetime import date
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 from pydantic import BaseModel, Field, field_validator
@@ -195,6 +196,18 @@ _DEFAULT_MODEL_PRICES = {
 class PricingConfig(BaseModel):
     """Per-model token prices — the reproducible basis for deriving USD from usage."""
     currency: str = 'USD'
+    # When the table below was last held against the vendor's published rates. There is no pricing
+    # API, so the table is hand-maintained — and a hand-maintained number with no date cannot be
+    # audited: every USD figure this engine reports is derived from it, and nothing said how old
+    # the basis was. A real `date` rather than a string, so a typo fails at load and the report can
+    # render the *age*, which is the part that makes it actionable. `None` is a valid state and
+    # means "not recorded" — never "current". Global rather than per model: one opens the vendor's
+    # price page once, and four dates would be three rotting ones.
+    #
+    # Verdicts are deliberately NOT derived from this (no STALE threshold): picking a staleness
+    # number here would be inventing a policy, and ISSUE_67's pricing probe is the mechanism that
+    # is supposed to *check* rather than to *remind*. This field is provenance, nothing more.
+    checked: Optional[date] = date(2026, 8, 28)
     models: Dict[str, ModelPrice] = Field(
         default_factory=lambda: dict(_DEFAULT_MODEL_PRICES))
 

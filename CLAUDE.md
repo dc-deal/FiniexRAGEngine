@@ -80,6 +80,15 @@ Before committing to a design for a non-trivial feature or change:
   `export_github_issues.sh` pulls every release's notes into
   `github_issues/release_notes/<tag>.md` — check there for orientation on what a past
   version delivered.
+- **Every release re-checks the token prices.** The USD on every report, every `cost_log` row and
+  every envelope is derived from a hand-maintained table (`pricing.models`) — the vendor publishes
+  no pricing API, so nothing detects a change on its own. So a release holds the table against the
+  vendor's published rates and stamps `pricing.checked` with that date; the cost report renders the
+  date and its age on every run. **An unchanged table still gets a fresh date** — "verified today,
+  unchanged" and "nobody has looked since July" are different states, and the date is the only thing
+  that tells them apart. Deliberately no staleness verdict anywhere: picking a threshold would
+  invent a policy nobody chose, and #67's pricing probe is the mechanism meant to *check* rather
+  than to remind.
 - **Roadmap #1** ticks a batch's checkbox only when it merges; the version's 🏷️ line is the
   batch's Definition of Done.
 

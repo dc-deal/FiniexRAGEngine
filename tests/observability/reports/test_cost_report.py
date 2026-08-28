@@ -121,3 +121,68 @@ def test_build_survives_missing_cost_table(db_dsn):
     report = build_cost_report(db_dsn, cost_table='cost_log_never_created', credit_usd=5.0)
     assert all(w.usd == 0.0 for w in report.real) and report.spent_all_usd == 0.0
     assert report.remaining_usd == pytest.approx(5.0)
+
+
+# --- the price basis: how old is the table every USD figure comes from? ------------------
+
+def test_the_report_dates_the_price_basis_it_derived_from():
+    # Every USD figure in this report is derived from a hand-maintained price table, and there is no
+    # pricing API to check it against. A derived number whose basis carries no date cannot be
+    # audited — so the age is rendered, always, at the top.
+    from datetime import date, datetime, timedelta, timezone
+
+    today = datetime.now(timezone.utc).date()
+    fresh = _report(None)
+    fresh.prices_checked = today
+    assert fresh.prices_checked_days_ago == 0
+    assert f'prices verified {today.isoformat()} (today)' in format_cost_report(fresh)
+
+    old = _report(None)
+    old.prices_checked = today - timedelta(days=73)
+    assert old.prices_checked_days_ago == 73
+    assert '(73 days ago)' in format_cost_report(old)
+
+    # Singular reads correctly — the line is on every cost report anyone ever runs.
+    yesterday = _report(None)
+    yesterday.prices_checked = today - timedelta(days=1)
+    assert '(1 day ago)' in format_cost_report(yesterday)
+
+
+def test_a_missing_check_date_says_so_instead_of_reading_as_current():
+    # `None` is a real state: nobody recorded when the table was held against the vendor. Rendering
+    # nothing there would let an undated basis pass for a current one — the same mistake as reading
+    # an unmeasured corpus as an empty one.
+    report = _report(None)
+    assert report.prices_checked is None
+    assert report.prices_checked_days_ago is None
+
+    text = format_cost_report(report)
+    assert 'NO verification date recorded' in text
+    assert 'prices verified' not in text
+
+
+def test_the_age_carries_no_verdict():
+    # Deliberately no STALE threshold: picking a staleness number here would be inventing a policy
+    # nobody chose, and ISSUE_67's pricing probe is the mechanism meant to CHECK rather than remind.
+    from datetime import datetime, timedelta, timezone
+
+    ancient = _report(None)
+    ancient.prices_checked = datetime.now(timezone.utc).date() - timedelta(days=900)
+    text = format_cost_report(ancient)
+
+    assert '(900 days ago)' in text
+    for verdict in ('STALE', 'OUTDATED', '⚠️ prices', 'WARNING'):
+        assert verdict not in text
+
+
+def test_the_builder_actually_carries_the_date_onto_the_report(db_dsn):
+    # The bug this pins: the parameter was accepted by `build_cost_report` and dropped on the floor —
+    # the signature took it, both `return CostReport(...)` sites ignored it, and the report rendered
+    # "NO verification date recorded" against a config that carried one. The tests passed because
+    # they built `CostReport` directly and never went through the builder. Accepting an argument and
+    # discarding it is invisible to every test that does not exercise the seam.
+    from datetime import date
+
+    report = build_cost_report(db_dsn, prices_checked=date(2026, 8, 28))
+    assert report.prices_checked == date(2026, 8, 28)
+    assert 'prices verified 2026-08-28' in format_cost_report(report)

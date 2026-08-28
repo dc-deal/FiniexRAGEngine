@@ -190,7 +190,10 @@ def _build_cost(database_url: str, manager: AppConfigManager, params: ReportPara
     return build_cost_report(database_url, eval_pipelines=_eval_pipelines(manager),
                              credit_usd=manager.get_config().cost.account_credit_usd,
                              recent_passes=params.options.get('recent_passes', 20),
-                             windows=windows)
+                             windows=windows,
+                             # When the price table was last held against the vendor's rates —
+                             # every USD figure in this report is derived from it.
+                             prices_checked=manager.get_config().pricing.checked)
 
 
 def _build_source_latency(database_url: str, manager: AppConfigManager,
