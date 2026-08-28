@@ -12,7 +12,7 @@ Contract in three sentences: an envelope lands in the bucket of its **`collected
 one boundary kept for its whole history; a closed bucket is immutable, and a range read
 loads exactly the buckets overlapping the range, concatenated in order.
 """
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timedelta, timezone
 from pathlib import PurePosixPath
 from typing import List, Literal
 
@@ -31,6 +31,26 @@ def bucket_name(moment: datetime, boundary: Boundary) -> str:
         return f'{moment:%Y-%m-%d}'
     iso = moment.isocalendar()
     return f'{iso.year}-W{iso.week:02d}'
+
+
+def bucket_closes_at(moment: datetime, boundary: Boundary) -> datetime:
+    """The instant the bucket containing `moment` stops growing — the start of the next one.
+
+    Here rather than in the exporter because it is the same fact as `bucket_name`: what a bucket IS.
+    An exporter that computed its own closing time would be a second definition of the boundary, and
+    the two would agree until someone changed one.
+
+    It exists so a skipped bucket can say **when** it closes rather than only that it is open. That
+    is not decoration: buckets are UTC, an operator's clock usually is not, and "still growing:
+    2026-08-28" read at 00:59 local (22:59 UTC) looks exactly like an export that has fallen a day
+    behind. It cost a round trip on 2026-08-28.
+    """
+    moment = _require_utc(moment)
+    midnight = moment.replace(hour=0, minute=0, second=0, microsecond=0)
+    if boundary == 'daily':
+        return midnight + timedelta(days=1)
+    # Weekly buckets are ISO weeks, Monday start — so the close is the next Monday 00:00 UTC.
+    return midnight + timedelta(days=7 - moment.isoweekday() + 1)
 
 
 def bucket_path(stream_id: str, moment: datetime, boundary: Boundary) -> PurePosixPath:

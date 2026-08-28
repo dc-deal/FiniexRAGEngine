@@ -67,9 +67,20 @@ def main() -> None:
     for exported in result.files:
         print(f'wrote {exported.lines:>4} lines · {exported.path}')
     if result.skipped_open:
+        # Say WHEN it closes, not only that it is open. Buckets are UTC and an operator's clock
+        # usually is not, so "still growing: 2026-08-28" read at 00:59 local (22:59 UTC) looks
+        # exactly like an export that has fallen a day behind — which is how it was read on
+        # 2026-08-28. The remaining minutes are the part that ends the question.
         print(f'skipped {len(result.skipped_open)} open bucket(s) (still growing): '
-              + ', '.join(result.skipped_open)
-              + '  — export once closed, or pass --include-open')
+              + ', '.join(result.skipped_open))
+        if result.open_closes_at is not None:
+            remaining = result.open_closes_at - datetime.now(timezone.utc)
+            minutes = max(0, int(remaining.total_seconds() // 60))
+            print(f'   closes {result.open_closes_at:%Y-%m-%dT%H:%MZ} '
+                  f'(in {minutes // 60}h {minutes % 60}m) — buckets are UTC, '
+                  f'so a local clock may already show the next day')
+        print('   export once closed; --include-open is a peek, not a handover '
+              '(it is deliberately not flagged as exported)')
     if result.skipped_flagged:
         print(f'skipped {len(result.skipped_flagged)} already-exported bucket(s) (incremental)')
     if not result.files:

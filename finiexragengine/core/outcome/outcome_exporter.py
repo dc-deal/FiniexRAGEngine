@@ -34,7 +34,7 @@ import psycopg
 
 from finiexragengine.exceptions.ragengine_errors import VectorStoreError
 from finiexragengine.types.config_types.app_config_types import WeeklyReportConfig
-from finiexragengine.utils.archive_layout import Boundary, bucket_name
+from finiexragengine.utils.archive_layout import Boundary, bucket_closes_at, bucket_name
 
 
 @dataclass
@@ -51,6 +51,9 @@ class ExportResult:
     """What the export produced — a typed result, not a bare list (stage-boundary rule)."""
     files: List[ExportedFile] = field(default_factory=list)
     skipped_open: List[str] = field(default_factory=list)      # bucket names still growing
+    # When the still-growing bucket stops growing, in UTC. Carried so the CLI can say *when* rather
+    # than only *that* — see `bucket_closes_at`. None when nothing was skipped.
+    open_closes_at: Optional[datetime] = None
     skipped_flagged: List[str] = field(default_factory=list)   # 'stream/bucket' already exported
     total_lines: int = 0
 
@@ -125,6 +128,8 @@ class OutcomeArchiveExporter:
         if written_flags:
             self._flag_exported(boundary, written_flags)
         result.skipped_open.sort()
+        if result.skipped_open:
+            result.open_closes_at = bucket_closes_at(now, boundary)
         result.skipped_flagged.sort()
         return result
 
