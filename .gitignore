@@ -59,3 +59,10 @@ user_configs/*
 
 # OS / editor
 .DS_Store
+
+# Suite output written on the production machine during the version-bump run (CLAUDE.md). An
+# untracked file in the repo root makes `git status --porcelain` non-empty, which is what
+# `/v1/build`'s `dirty` flag reports — and a dirty flag that cries wolf stops being read, which is
+# the one thing it must not do: it exists because an in-place edit on an RDP-reached server is
+# plausible.
+pytest_win.txt
