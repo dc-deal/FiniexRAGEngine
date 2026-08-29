@@ -40,7 +40,7 @@ class _FakeSource(AbstractSource):
     def due_for_fetch(self) -> bool:
         return self._due
 
-    def fetch(self) -> List[Article]:
+    def _fetch_articles(self) -> List[Article]:
         if self._fail:
             raise SourceFetchError(f'{self.get_source_id()}: unreachable')
         return self._articles
@@ -51,9 +51,13 @@ class _CountingEmbedder(AbstractEmbedder):
 
     def __init__(self) -> None:
         self.total = 0
+        # What was actually sent (ISSUE_112) — the count alone cannot show that the paid call
+        # stopped paying for markup.
+        self.texts: List[str] = []
 
     def embed(self, texts: List[str]) -> EmbedResult:
         self.total += len(texts)
+        self.texts.extend(texts)
         return EmbedResult(
             vectors=[[float(len(text)), 0.0, 0.0, 0.0] for text in texts],
             input_tokens=[len(text.split()) for text in texts],
@@ -329,7 +333,7 @@ class _SlowFailingSource(_FakeSource):
         self._error_type = error_type
         self._status = status
 
-    def fetch(self) -> List[Article]:
+    def _fetch_articles(self) -> List[Article]:
         sleep(self._stall)
         raise SourceFetchError(f'{self.get_source_id()}: cannot fetch feed',
                                error_type=self._error_type, status=self._status)
@@ -432,11 +436,11 @@ class _SlowSource(_FakeSource):
         self._delay = delay
         self.thread_name = ''
 
-    def fetch(self) -> List[Article]:
+    def _fetch_articles(self) -> List[Article]:
         import threading
         self.thread_name = threading.current_thread().name
         sleep(self._delay)
-        return super().fetch()
+        return super()._fetch_articles()
 
 
 def _pass_shape(result) -> list:
@@ -528,3 +532,60 @@ def test_a_budget_suspend_rewinds_the_feeds_it_fetched_but_never_stored():
     assert first.rewinds == 0
     assert (second.rewinds, third.rewinds) == (1, 1)
     assert [poll.source_id for poll in result.polls] == ['first']
+
+
+# --- what the normaliser removed on the way in (ISSUE_112) --------------------------------------
+
+def _dirty_article(article_id: str, title: str, summary: str) -> Article:
+    article = _article(article_id)
+    article.title, article.summary = title, summary
+    return article
+
+
+def test_the_pass_counts_what_the_normaliser_removed():
+    """A run reports its own effect — a silent 36.7 % overhead is how this survived unnoticed."""
+    source = _FakeSource('dirty', [
+        _dirty_article('a1', '<b>Hack</b> confirmed', '<p>Funds &amp; keys lost</p>'),
+        _dirty_article('a2', 'Clean headline', 'Clean summary'),
+    ])
+    result = Ingestor([source], _CountingEmbedder(), _FakeStore()).run()
+
+    assert result.fetched == 2
+    assert result.normalised == 1            # only the article that actually carried markup
+    assert result.dropped_chars > 0
+    assert result.per_source['dirty'].normalised == 1
+
+
+def test_a_clean_pass_reports_no_normalisation():
+    """The non-zero idiom: a feed serving plain text must not grow a line saying it was cleaned."""
+    source = _FakeSource('clean', [_dirty_article('a1', 'Rate cut', 'The RBNZ held at 4.25%.')])
+    result = Ingestor([source], _CountingEmbedder(), _FakeStore()).run()
+
+    assert result.normalised == 0
+    assert result.dropped_chars == 0
+
+
+def test_the_normalised_count_covers_everything_fetched_not_only_new_ids():
+    """It answers "how dirty is this feed", which is a property of the pull, not of the corpus.
+
+    Second pass: both ids are already known, so nothing is embedded or stored — and the count still
+    reports the markup the feed served, which is what makes it usable as a per-feed measure.
+    """
+    articles = [_dirty_article('a1', '<b>Hack</b>', '<p>Lost</p>'),
+                _dirty_article('a2', '<i>Halt</i>', 'plain')]
+    store, embedder = _FakeStore(), _CountingEmbedder()
+    Ingestor([_FakeSource('dirty', articles)], embedder, store).run()
+
+    second = Ingestor([_FakeSource('dirty', articles)], embedder, store).run()
+    assert second.stored == 0 and second.embedded == 0
+    assert second.normalised == 2
+
+
+def test_the_embedded_text_is_the_normalised_text():
+    """The cost half: markup must not reach the paid call, which is where the 36.7 % was spent."""
+    embedder = _CountingEmbedder()
+    source = _FakeSource('dirty', [_dirty_article(
+        'a1', '<b>Hack</b> confirmed', '<p>Funds &amp; keys lost</p>')])
+    Ingestor([source], embedder, _FakeStore()).run()
+
+    assert embedder.texts == ['Hack confirmed. Funds & keys lost']

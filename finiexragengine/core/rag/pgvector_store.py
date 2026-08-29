@@ -105,8 +105,13 @@ class PgVectorStore(AbstractVectorStore):
             f'INSERT INTO {table} (article_id, source_id, source_weight, url, title, '
             'summary, language, published_at, fetched_at, embedding, '
             # What the embedding saw (ISSUE_79) — see migration 003; NULL when nothing was cut.
-            'embed_input_tokens, embed_truncated_tokens) '
-            'VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) '
+            'embed_input_tokens, embed_truncated_tokens, '
+            # The fetched bytes and the treatment that produced the stored text (ISSUE_112) — see
+            # migration 012. The raw pair is NULL when the text arrived clean, which is the common
+            # case; write-only here, deliberately absent from `_COLUMNS` so retrieval never pays to
+            # read a forensic copy back.
+            'title_raw, summary_raw, text_normalizer) '
+            'VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) '
             'ON CONFLICT (article_id) DO NOTHING'
         )
         written = 0
@@ -118,6 +123,7 @@ class PgVectorStore(AbstractVectorStore):
                         article.url, article.title, article.summary, article.language,
                         article.published_at, article.fetched_at, vector,
                         article.embed_input_tokens, article.embed_truncated_tokens,
+                        article.title_raw, article.summary_raw, article.text_normalizer,
                     ))
                     written += cur.rowcount
         except psycopg.Error as exc:

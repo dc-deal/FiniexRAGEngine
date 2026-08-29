@@ -17,6 +17,8 @@ import pytest
 
 from finiexragengine.core.outcome.outcome_store import OutcomeStore
 from finiexragengine.core.pipeline.envelope_contract import hold_result
+from finiexragengine.core.sources.article_normalizer import ArticleNormalizer
+from finiexragengine.types.ingest_types import DETECTION_TRIGGERS, TEXT_NORMALIZER_PROFILES
 from finiexragengine.types.outcome_types import (
     DATA_ORIGINS,
     RESULT_BASES,
@@ -88,3 +90,17 @@ def test_the_vocabularies_are_still_declared():
     assert RESULT_BASES == ('llm', 'no_data', 'degraded')
     assert RUN_STATUSES == ('success', 'partial', 'error')
     assert DATA_ORIGINS == ('live', 'synthetic')
+    assert DETECTION_TRIGGERS == ('cluster', 'keyword')
+    assert TEXT_NORMALIZER_PROFILES == ('v1',)
+
+
+def test_a_corpus_column_vocabulary_is_strict_where_it_is_configured():
+    """The corpus-side half of the same split (ISSUE_106 / ISSUE_112).
+
+    Both values are written onto `articles` rows as plain TEXT — a row carrying a profile or a
+    trigger a later version introduced must still load. Strictness therefore sits where the value
+    is *chosen*: the normaliser refuses an unknown profile at construction, which is boot time,
+    rather than stamping a name nothing implements onto a corpus nobody can re-derive.
+    """
+    with pytest.raises(ValueError, match='v2'):
+        ArticleNormalizer('v2')

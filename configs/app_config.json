@@ -42,6 +42,9 @@
     "encoding": null,
     "timeout_seconds": 60
   },
+  "ingest": {
+    "text_normalizer": "v1"
+  },
   "vector_store": {
     "backend": "pgvector",
     "retrieval_top_k": 12,
@@ -156,6 +159,10 @@
     },
     "prompt_drift": {
       "window": "30d"
+    },
+    "corpus_text": {
+      "window": "7d",
+      "examples": 3
     },
     "perf": {
       "window": "7d"

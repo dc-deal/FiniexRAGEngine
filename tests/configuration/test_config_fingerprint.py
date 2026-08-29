@@ -17,7 +17,7 @@ import pytest
 
 from finiexragengine.configuration.app_config_manager import AppConfigManager
 from finiexragengine.configuration.config_fingerprint import compute_config_fingerprint
-from finiexragengine.types.config_types.app_config_types import AppConfig
+from finiexragengine.types.config_types.app_config_types import AppConfig, IngestConfig
 from finiexragengine.types.config_types.pipeline_config_types import PipelineConfig
 from finiexragengine.types.config_types.source_set_types import SourceSetConfig
 from finiexragengine.types.outcome_types import SentimentEnvelope
@@ -240,6 +240,32 @@ def test_operational_app_config_does_not_change_it(baseline):
     }) == baseline
 
 
+def test_the_text_normalizer_profile_is_hashed(baseline):
+    """ISSUE_112: the text treatment behind every vector and every prompt is series-defining.
+
+    It is the case ISSUE_109 warns about in its sharpest form — the treatment rewrites what the
+    embedder and the model read while `prompt_version`, `prompt_hash`, `embedding.model` and every
+    other provenance field stay byte-identical. Without this leaf, two corpora a third apart in
+    token content would be indistinguishable to a consumer.
+
+    The profile is built with `model_construct` because the vocabulary declares exactly one value
+    today: the assertion is about the *mechanism* — a future profile forks the series — and the
+    Literal is what stops a typo reaching it in production.
+    """
+    profile_v2 = IngestConfig.model_construct(text_normalizer='v2')
+    forked = compute_config_fingerprint(
+        PipelineConfig(**_PIPELINE), SourceSetConfig(**_SOURCE_SET),
+        AppConfig().model_copy(update={'ingest': profile_v2})).value
+    assert forked != baseline
+
+
+def test_the_profile_travels_in_the_canonical_payload():
+    """The registry has to be able to say what a fingerprint stood for, treatment included."""
+    result = compute_config_fingerprint(PipelineConfig(**_PIPELINE),
+                                        SourceSetConfig(**_SOURCE_SET), AppConfig())
+    assert '"ingest.text_normalizer":"v1"' in result.canonical
+
+
 # --- the merged-registry trap (the most important one) --------------------------------------
 
 def _write(path: Path, data: Dict[str, Any]) -> None:
@@ -293,9 +319,16 @@ def test_golden_value_pins_the_canonicalization():
     # every series at once and silently: every fingerprint moves although no configuration did.
     # This literal is that alarm. It may only be updated together with a deliberate decision to
     # re-baseline the archive's comparability — never to make a red test green.
+    #
+    # Re-baselined once, 2026-08-29 (ISSUE_112): `ingest.text_normalizer` joined `_APP_INCLUDED`.
+    # 56b4585dbbd9 -> ebef0b431c40. The fork is the POINT of that change, not a side effect — the
+    # normaliser rewrites the text behind every vector and every prompt while every provenance
+    # field stays byte-identical, which is precisely the unattributable series the fingerprint
+    # exists to prevent (the ISSUE_109 lesson). A deploy of the leaf and a re-baseline of this
+    # literal are the same decision.
     result = compute_config_fingerprint(PipelineConfig(**_PIPELINE),
                                         SourceSetConfig(**_SOURCE_SET), AppConfig())
-    assert result.value == '56b4585dbbd9'
+    assert result.value == 'ebef0b431c40'
     assert result.pipeline_id == 'crypto_sentiment'
     assert result.source_set_id == 'crypto_news'
     # The canonical payload travels with the hash so the registry can persist what it stood for.

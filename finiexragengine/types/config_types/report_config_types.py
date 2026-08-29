@@ -74,6 +74,17 @@ class PromptDriftReportConfig(BaseModel):
     window: str = '30d'
 
 
+class CorpusTextReportConfig(BaseModel):
+    # Narrows the FLOW half only (what was fetched in the window). The census, the removal and the
+    # phantom table are corpus-wide by nature — a text treatment is a property of the stored row,
+    # not of a time slice — and the rendering says which is which, because two numbers under one
+    # heading with different populations is the mistake this report exists to prevent elsewhere.
+    window: str = '7d'
+    # Phantom examples printed per feed. Enough to recognise the mechanism (a CDN filename, a slug
+    # inside an <a href>), few enough that the table stays readable.
+    examples: int = 3
+
+
 class PerfReportConfig(BaseModel):
     window: str = '7d'
 
@@ -100,5 +111,6 @@ class ReportsConfig(BaseModel):
     breaking_timeline: BreakingTimelineReportConfig = Field(
         default_factory=BreakingTimelineReportConfig)
     prompt_drift: PromptDriftReportConfig = Field(default_factory=PromptDriftReportConfig)
+    corpus_text: CorpusTextReportConfig = Field(default_factory=CorpusTextReportConfig)
     perf: PerfReportConfig = Field(default_factory=PerfReportConfig)
     cost: CostReportConfig = Field(default_factory=CostReportConfig)

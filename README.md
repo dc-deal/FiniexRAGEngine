@@ -39,7 +39,7 @@ Trigger (timeframe bar-close · breaking-wake · event-socket planned)
   └─ Pipeline (declared as a "constellation" JSON)
        ├─ Sources[]   RSS · blog · socket · API   (pluggable connectors)
        ├─ Scope       market + symbols
-       ├─ RAG stage   ingest → embed → store → retrieve (top-k, recent, deduped)
+       ├─ RAG stage   ingest → normalise → embed → store → retrieve (top-k, recent, deduped)
        ├─ Analysis    prompt + LLM (structured output)
        └─ Outcome     typed signal (sentiment, trend, events, …)
   → persist outcome to the store

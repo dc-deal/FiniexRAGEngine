@@ -127,6 +127,13 @@ def format_ingest_report(report: IngestReport) -> str:
         f'embedded {result.embedded} (paid), stored {result.stored} new, '
         f'{result.duplicates} duplicates',
     ]
+    # What the normaliser removed before any of the above ran (ISSUE_112). Its own line rather
+    # than a headline clause: the headline answers "what did this pass cost and store", this
+    # answers "how much of what the feeds served was markup" — a different question about the same
+    # pass, and one whose absence for the project's whole life is why the 36.7 % went unnoticed.
+    if result.normalised:
+        lines.append(f'  normalised {result.normalised} of {result.fetched} fetched '
+                     f'({result.dropped_chars:,} chars dropped)')
     # A pass-level fact, not a per-source one (ISSUE_47): the circuit-breaker stopped the paid
     # work for everything after the source it tripped on — so it belongs above the table.
     if result.suspended:

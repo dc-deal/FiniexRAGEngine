@@ -252,6 +252,88 @@ Top-down, each new article flows through these units in order:
    independently; `pipeline_engine_architecture.md` covers what that cost, since the two
    invariants the lock carried had to be rehomed first.
 
+   **Normalisation sits between the fetch and everything that reads the text (ISSUE_112).**
+   Until 2026-08-29 an article travelled from `feedparser` to the embedder, the eval prompt and the
+   breaking keyword matcher with a `.strip()` and nothing else. Measured over 1,966 dev articles:
+   50.5 % carried HTML markup, 21.2 % HTML entities, 3.2 % zero-width characters or a BOM — and
+   **36.7 % of every token the engine paid for was markup**.
+
+   It was not only a cost. The keyword fast path (`_has_keyword`, over `title + summary`) matched
+   *inside* markup, so 6 of 99 keyword hits were a CDN's stock-image filenames
+   (`…courtroom-court-lawsuit-justice-breaking-news.png`) on a weight-1.0 source — and that path
+   flags an article HIGH on its own, with no cluster and no corroboration. Production shows why
+   that matters: over a 7-day window, **32 of 32 attributed detection flags came from the keyword
+   path and the cluster path fired zero times**, so the contaminated gate was the only gate running.
+
+   The treatment is one class, `core/sources/article_normalizer.py`, applied where an `Article` is
+   built:
+
+   ```
+   AbstractSource.fetch()          concrete — normalises and stamps
+     └─ _fetch_articles()          abstract — what the feed served
+   ```
+
+   `fetch` is deliberately no longer overridable. Normalisation has to happen for every source
+   type, and a step each implementation must remember is the step the next implementation forgets —
+   the accretion that left 32 of 34 `psycopg.connect` calls unbounded (ISSUE_117). A new source type
+   implements `_fetch_articles` and inherits the treatment without knowing it exists.
+
+   Seven ordered steps, stdlib only: drop `<script>`/`<style>` **bodies** → strip tags → unescape
+   entities → strip again (unescaping can *reveal* an encoded tag) → drop Unicode `Cc`/`Cf`
+   (zero-width, BOM, bidi overrides, Unicode Tags) → NFC → collapse whitespace. No sanitiser
+   library, and that is a decision rather than an omission: `bleach`, `lxml` and BeautifulSoup would
+   each make a *library version* part of what defines the signal series without appearing anywhere
+   in `config_fingerprint` — the ISSUE_109 vector-space lesson in a different column.
+
+   Three properties are load-bearing:
+
+   - **The tag pattern is length-bounded** (`<[a-zA-Z/!][^>]{0,400}?>`). Over 11,994 measured tags
+     the p99 is 238 characters and the max 2,880, so 400 covers all but one outlier — and the
+     *direction* of the miss is the point. An unbounded `[^>]*` meeting a stray `<` consumes prose
+     to the end of the field; bounded, the worst case is a surviving tag instead of a deleted
+     article. The first attempt at measuring this problem shipped a character class that deleted
+     almost all text while still producing a plausible token count.
+   - **The fetched bytes are kept, not discarded.** `title_raw`/`summary_raw` are written only where
+     normalisation changed the field (NULL = arrived clean), so the ingest rule holds exactly:
+     markup leaves what the model *reads*, never what the engine *holds*. Re-applying the treatment
+     never overwrites an existing raw value — the text is idempotent under it, and without that
+     guard the provenance would not be.
+   - **It is stamped, because it moves the vector space.** `ingest.text_normalizer` is a declared
+     `config_fingerprint` leaf and `articles.text_normalizer` records the profile per row. A text
+     treatment that changes the embeddings while every provenance field stays byte-identical is
+     precisely the unattributable series ISSUE_109 exists to prevent. Profiles move forward only: a
+     corrected treatment is the next profile, never an edit to one that archived rows carry.
+
+   Forward-only by construction, not by policy: the corpus upserts
+   `ON CONFLICT (article_id) DO NOTHING` and the ingestor skips ids it already holds, so existing
+   rows keep their text and their vectors and nothing is re-embedded. The mixing is bounded —
+   `recency_window_minutes` is 1440/2880, so ordinary retrieval is entirely normalised within two
+   days. The named tail is the deep tier (`importance >= 2`), which can reach older rows.
+
+   The pass reports what it removed (`normalised 71 of 185 fetched (13,353 chars dropped)`), for the
+   same reason every paid stage echoes its spend: a silent 36.7 % is how this survived unnoticed for
+   the project's whole life.
+
+   **And the durable half is a report, because an echo is not an observation.** The pass line lives
+   until the next pass overwrites it, so "is the treatment still working, and how far has the corpus
+   turned over" was answerable only at a SQL prompt on the production box — by an operator with a
+   shell, and by nobody else. `corpus_text` (`corpus_text_cli`, `/v1/reports/corpus_text`) answers
+   four things at once:
+
+   - **the stock** — articles per treatment, so the forward-only transition is watchable;
+   - **the proof** — carriers surviving *per treatment*. A stamped row holding markup is the
+     normaliser failing, and the report says so rather than printing a reassuring tick. That is the
+     line that makes it a check instead of a decoration;
+   - **the removal** — measured WITHIN each row against its own kept original, so a drift in article
+     length between two periods cannot pass for a change in markup;
+   - **the keyword fast path** — hits that exist only inside markup, per feed, against the gate that
+     decides whether such a hit alone raises an article to HIGH.
+
+   The keyword half runs the **real** `ArticleNormalizer` over the rows that match as served, never
+   a SQL imitation of it: a report that approximates the treatment it audits can only measure its
+   own approximation. Only matching rows are transferred (99 of 1,966 in dev), so the corpus is
+   never pulled into memory.
+
    **The embed stage got the same treatment (ISSUE_79) — one stage later, one lesson identical.**
    The fetch was hardened first because it was the stage that hung. The stage after it could still
    take the pass down, and did: an article exceeding the embedding model's 8192-token input limit
@@ -277,8 +359,9 @@ Top-down, each new article flows through these units in order:
      isolating a defect.
 
    What the trim leaves behind is deliberately reversible. The embedded string is `title. summary`,
-   built per pass and **never stored** — so `articles.title`/`summary` remain the untouched
-   original, and two nullable columns describe only the embedding input:
+   built per pass and **never stored** — so `articles.title`/`summary` remain the row's own text
+   (normalised, per the step above, and with the fetched bytes beside it in `title_raw`/
+   `summary_raw`), and two nullable columns describe only the embedding input:
    `embed_input_tokens` (what was sent) and `embed_truncated_tokens` (what was cut; NULL = nothing).
    Their sum is the original length, and the full text is still in the row, so the question "how
    far did the trim move the signal?" stays answerable later from stored data alone.

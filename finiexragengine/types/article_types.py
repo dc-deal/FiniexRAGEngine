@@ -16,8 +16,8 @@ class Article:
         source_id: Originating source identifier.
         source_weight: Trust / weight of the source (from the constellation config).
         url: Canonical article URL.
-        title: Article headline.
-        summary: Short summary / excerpt (full-text scraping is out of scope).
+        title: Article headline, normalised at ingest (ISSUE_112).
+        summary: Short summary / excerpt (full-text scraping is out of scope), normalised at ingest.
         language: Best-effort ISO language code.
         published_at: Publication time as reported by the feed (UTC, tz-aware).
         fetched_at: Time the article was fetched into the engine (UTC, tz-aware).
@@ -32,13 +32,23 @@ class Article:
     published_at: datetime
     fetched_at: datetime
     # What the embedding actually saw (ISSUE_79). The embedded string is `title. summary`, built
-    # per pass and never stored — so `title`/`summary` above remain the untouched original and
-    # these two only describe the *embedding input*: how many tokens were sent, and how many were
-    # cut to fit the model's limit (None = nothing was cut). Their sum is the original length.
-    # Stored rather than recomputed so per-source analysis is a SQL aggregate, and so the row
-    # records what happened rather than what today's tokenizer would say.
+    # per pass and never stored — so these two only describe the *embedding input*: how many tokens
+    # were sent, and how many were cut to fit the model's limit (None = nothing was cut). Their sum
+    # is the length of the normalised text. Stored rather than recomputed so per-source analysis is
+    # a SQL aggregate, and so the row records what happened rather than what today's tokenizer
+    # would say.
     embed_input_tokens: Optional[int] = None
     embed_truncated_tokens: Optional[int] = None
+    # The text as the feed served it, kept ONLY where normalisation changed it (ISSUE_112) —
+    # None means "arrived clean", not "not measured". This is what keeps the ingest rule intact:
+    # markup is removed from what the model reads, never from what the engine holds, so an
+    # injection investigation gets the exact bytes instead of a URL whose feed has rolled over.
+    title_raw: Optional[str] = None
+    summary_raw: Optional[str] = None
+    # Which declared treatment produced `title`/`summary` and therefore the vector (ISSUE_112).
+    # The ISSUE_79 pattern: the row records its own provenance rather than leaving it to be
+    # inferred from when it was stored. None = stored before the column existed.
+    text_normalizer: Optional[str] = None
 
     @staticmethod
     def make_id(url: str, guid: str | None = None) -> str:

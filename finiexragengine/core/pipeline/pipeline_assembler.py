@@ -27,6 +27,7 @@ from finiexragengine.core.rag.pgvector_store import PgVectorStore
 from finiexragengine.core.rag.query_vector_cache import QueryVectorCache
 from finiexragengine.core.rag.retriever import Retriever
 from finiexragengine.core.schema.schema_guard import verify_schema_current
+from finiexragengine.core.sources.article_normalizer import ArticleNormalizer
 from finiexragengine.core.sources.source_factory import build_source
 from finiexragengine.exceptions.ragengine_errors import (
     ConfigurationError,
@@ -250,9 +251,14 @@ class PipelineAssembler:
         poll_log = (SourcePollLog(self._database_url,
                                   retention_days=diagnostics.poll_log_retention_days)
                     if diagnostics.poll_log_enabled else None)
+        # One normaliser for the whole set (ISSUE_112): the profile is an app-level declaration, not
+        # a per-feed one, and it is pure — so a single instance is shared by every source rather
+        # than rebuilt per feed. An unknown profile raises here, at assembly, which is where a
+        # configuration error belongs.
+        normalizer = ArticleNormalizer(self._cfg.ingest.text_normalizer)
         # A disabled source is never built, so it is never polled and produces no health event —
         # the same "defined but toggled off" semantics a disabled model variant has.
-        return Ingestor([build_source(source, source_set.fetch_timeout_seconds)
+        return Ingestor([build_source(source, source_set.fetch_timeout_seconds, normalizer)
                          for source in source_set.active_sources()],
                         news_embedder, store, breaking_detector=detector,
                         health_store=health_store, source_set_id=source_set_id,

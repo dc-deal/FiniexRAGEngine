@@ -149,9 +149,15 @@ def build_breaking_report(database_url: str, since: datetime, *, since_label: st
             cur.execute('SELECT count(*) FROM information_schema.tables WHERE table_name = %s',
                         (outcomes_table,))
             if cur.fetchone()[0] == 0:
+                # `by_trigger` is EMPTY here, never `dict(by_trigger or {})`: this function takes
+                # no such parameter, and the name is bound further down (the corpus census). The
+                # copied `or {}` idiom belongs to `_aggregate`, which does take one — here it made
+                # the name function-local and turned this early return into an UnboundLocalError.
+                # The branch whose whole purpose is "a clean empty report, not a crash" was the
+                # crash, on any database without an outcomes table.
                 return BreakingReport(since_label, [], 0, 0,
                                       reachability=list(reachability or []),
-                          by_trigger=dict(by_trigger or {}))
+                                      by_trigger={})
             cur.execute(
                 f'SELECT pipeline_id, envelope FROM {outcomes_table} '
                 "WHERE ts >= %s AND status <> 'error' ORDER BY pipeline_id, ts",

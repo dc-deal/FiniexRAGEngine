@@ -53,6 +53,10 @@ from finiexragengine.core.pipeline.detection_preflight import (
 from finiexragengine.core.pipeline.breaking_story_rule import (
     groupings_from_configs as story_groupings_from_configs,
 )
+from finiexragengine.core.observability.reports.corpus_text_report import (
+    KeywordSet,
+    build_corpus_text_report,
+)
 from finiexragengine.types.config_types.report_config_types import ReportsConfig
 from finiexragengine.types.report_types import (
     AppliedParam,
@@ -257,6 +261,37 @@ def _build_prompt_drift(database_url: str, manager: AppConfigManager,
                             for config in configs})
 
 
+def _keyword_sets(manager: AppConfigManager) -> List[KeywordSet]:
+    """Each source-set's detection vocabulary, gate and per-feed weights (ISSUE_112).
+
+    Read through `build_source_set_registry()` — the only load path that honours the
+    `user_configs/` overlay, which is exactly the layer that disables a feed or retunes a gate per
+    machine. Resolving it any other way would judge the corpus against a configuration that did not
+    run.
+
+    Every declared source is carried, not only the enabled ones: the corpus holds articles from
+    feeds that have since been switched off, and their phantom hits are still what the detector
+    acted on at the time.
+    """
+    sets: List[KeywordSet] = []
+    for source_set in manager.build_source_set_registry().list_sets():
+        detection = source_set.detection
+        sets.append(KeywordSet(
+            source_set_id=source_set.source_set_id,
+            keywords=tuple(detection.keywords),
+            keyword_source_weight=detection.keyword_source_weight,
+            weights={source.source_id: source.weight for source in source_set.sources}))
+    return sets
+
+
+def _build_corpus_text(database_url: str, manager: AppConfigManager,
+                       params: ReportParams) -> Any:
+    return build_corpus_text_report(
+        database_url, params.since, since_label=params.window_label or '7d',
+        keyword_sets=_keyword_sets(manager),
+        example_limit=manager.get_config().reports.corpus_text.examples)
+
+
 _CATALOG: Dict[str, ReportSpec] = {
     'source_health': ReportSpec(
         build=_build_source_health,
@@ -283,6 +318,12 @@ _CATALOG: Dict[str, ReportSpec] = {
         defaults=lambda config: {'window': config.breaking_timeline.window},
         summary='The per-pass breaking on/off series behind the episode count, with the flip count '
                 'next to it — optionally narrowed to one symbol.'),
+    'corpus_text': ReportSpec(
+        build=_build_corpus_text, params=('window',),
+        defaults=lambda config: {'window': config.corpus_text.window},
+        summary='Which text treatment produced the stored corpus, what carriers survive in each '
+                'slice, how much the normaliser removed measured within each row, and the keyword '
+                'hits that exist only inside markup.'),
     'prompt_drift': ReportSpec(
         build=_build_prompt_drift, params=('window',),
         defaults=lambda config: {'window': config.prompt_drift.window},

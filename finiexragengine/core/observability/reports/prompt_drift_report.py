@@ -6,7 +6,7 @@ provenance control worked perfectly and is the wrong control, because a label is
 v2 → v3 (2026-08-23) cut the crypto confirm rate 8.43 % → 0.47 %, 113 breaking rows a day down to
 six, and it took three days to see.
 
-Three properties are therefore designed in rather than left to the reader:
+Four properties are therefore designed in rather than left to the reader:
 
 - **Never pooled.** Grouping is per pipeline, always. The v3 → v4 measurement is the argument: the
   aggregate across both streams moved 6.67 % → 6.60 %, practically unchanged, while both
@@ -15,6 +15,13 @@ Three properties are therefore designed in rather than left to the reader:
 - **The confirm band carries its concentration.** Forex v3 reads healthy at 10.78 % and collapsed at
   "one analysis unit supplies 93 % of it". The share alone is the near-miss this report exists to
   prevent, so it never travels without the unit count beside it.
+- **A version is not a setup, so the grouping carries both** (ISSUE_112). `prompt_version` says
+  which template ran; it cannot say which corpus, which retrieval floor or which text treatment fed
+  it. Production proves the gap rather than merely implying it: over 152 crypto envelopes sampled
+  2026-08-29, two `config_fingerprint` values ran under one `prompt_version: 4` and this report
+  rendered them as a single pooled row. Every leaf of the fingerprint is score-defining by
+  construction, so a fingerprint change is exactly as much a series break as a prompt change — and
+  the text normaliser was about to make one without touching a prompt at all.
 - **Only LLM-scored passes enter the distribution.** A result with `basis != 'llm'` is a mechanical
   `no_data` HOLD: retrieval came back empty after the floor, no LLM call was made, and the row
   carries `urgency 0.0`. Folding those in means a corpus outage — the 37-hour frozen corpus of
@@ -63,6 +70,11 @@ class VersionDistribution:
     """
     pipeline_id: str
     prompt_version: str
+    # The setup that produced these passes (ISSUE_85), and the second half of the grouping key
+    # (ISSUE_112). A prompt version says which template ran; it cannot say which corpus, which
+    # retrieval floor or which text treatment fed it — and a change to any of those moves the
+    # distribution just as hard while `prompt_version` stays put.
+    config_fingerprint: str = ''
     prompt_id: str = ''
     prompt_hashes: List[str] = field(default_factory=list)
     models: List[str] = field(default_factory=list)
@@ -189,6 +201,7 @@ _PROJECTION = """
     SELECT pipeline_id, jsonb_build_object(
         'timestamp',      envelope -> 'timestamp',
         'prompt_version', envelope -> 'prompt_version',
+        'config_fingerprint', envelope -> 'config_fingerprint',
         'prompt_id',      envelope -> 'prompt_id',
         'prompt_hash',    envelope -> 'prompt_hash',
         'metadata',       jsonb_build_object('model', envelope -> 'metadata' -> 'model'),
@@ -289,8 +302,11 @@ def _aggregate_drift(rows: List[Tuple[str, object]], since_label: str,
         # A legacy envelope with no prompt version is its own row rather than a dropped one: the
         # archive reaches back before the field existed, and silence about it would be a gap.
         version = str(env.get('prompt_version') or '(none)')
-        key = (pipeline_id, version)
-        row = built.setdefault(key, VersionDistribution(pipeline_id, version))
+        # Same idiom as the missing version above: an envelope from before ISSUE_85 is its own row
+        # rather than a dropped one, and '(none)' is an absence rather than a setup.
+        fingerprint = str(env.get('config_fingerprint') or '(none)')
+        key = (pipeline_id, version, fingerprint)
+        row = built.setdefault(key, VersionDistribution(pipeline_id, version, fingerprint))
         counter = samples.setdefault(key, Counter())
 
         row.prompt_id = row.prompt_id or str(env.get('prompt_id') or '')
@@ -339,7 +355,7 @@ def _aggregate_drift(rows: List[Tuple[str, object]], since_label: str,
         # Chronological by first appearance: the drift is a sequence, and reading it in time order
         # is the whole point of putting the versions on adjacent lines.
         versions.sort(key=lambda row: (row.first_seen or datetime.max.replace(tzinfo=timezone.utc),
-                                       row.prompt_version))
+                                       row.prompt_version, row.config_fingerprint))
         pipelines.append(PipelineDistribution(
             pipeline_id, confirm_threshold=confirm_thresholds.get(pipeline_id),
             exit_threshold=grouping.rule.get_exit_threshold(), versions=versions))
@@ -369,7 +385,7 @@ def format_prompt_drift_report(report: PromptDriftReport, *,
     """
     term_width = width if width is not None else shutil.get_terminal_size((120, 24)).columns
     labels = [_fmt_bucket(value) for value in report.buckets]
-    head = f'{"version":<8} {"first seen":<14} {"scored":>7} {"mech":>5}'
+    head = (f'{"version":<8} {"setup":<14} {"first seen":<14} {"scored":>7} {"mech":>5}')
     head += ''.join(f'{label:>7}' for label in labels)
     head += f'{"confirm":>9}{"hold":>8}{"h/b":>6}{"units":>6}  top unit'
 
@@ -418,13 +434,15 @@ def format_prompt_drift_report(report: PromptDriftReport, *,
             top = (f'{version.top_unit_label} {version.top_unit_share * 100:.0f}%'
                    if version.top_unit else '—')
             lines.append(
-                f'v{version.prompt_version:<7} {seen:<14} {version.scored:>7} '
+                f'v{version.prompt_version:<7} {version.config_fingerprint:<14.14} '
+                f'{seen:<14} {version.scored:>7} '
                 f'{version.mechanical:>5}{cells}{_pct(version.confirm_share):>9}'
                 f'{_pct(version.hold_share):>8}{_ratio(version.hold_break_ratio):>6}'
                 f'{version.confirm_units:>6}  {top}{mark}')
             # The flags say what the ⚠ meant. Only for states actually present, so the legend never
             # explains a condition the report did not find.
-            name = f'{pipeline.pipeline_id} v{version.prompt_version}'
+            name = (f'{pipeline.pipeline_id} v{version.prompt_version} '
+                    f'#{version.config_fingerprint}')
             if version.single_unit_confirm_band:
                 lines_flag = (f'⚠ {name}: the confirm band rests on a single analysis unit '
                               f'({version.top_unit_label}) — the share alone reads healthy')

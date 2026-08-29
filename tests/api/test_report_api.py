@@ -150,3 +150,25 @@ def test_remaining_credit_stays_an_all_time_fact_whichever_window_is_shown(
     narrowed = client.get('/v1/reports/cost?window=14d').json()['data']
 
     assert full['spent_all_usd'] == narrowed['spent_all_usd']
+
+
+def test_the_corpus_text_report_is_served_with_its_payload(client: TestClient) -> None:
+    """ISSUE_112's durable half has to be reachable remotely, or it is a shell-only answer again.
+
+    The engine runs on a box the assistant can only reach over the read-only HTTPS surface, so a
+    diagnostic that exists solely as a CLI answers nobody who is not already on the machine. This
+    pins the whole chain: the catalog lists it, the generic route builds it, and the payload
+    carries the fields the console renders — including `treatments`, whose per-slice carrier counts
+    are the one number that says whether the normaliser is working.
+    """
+    listing = client.get('/v1/reports').json()
+    assert 'corpus_text' in {entry['name'] for entry in listing['reports']}
+
+    body = client.get('/v1/reports/corpus_text').json()
+
+    assert body['report'] == 'corpus_text'
+    assert body['params']['window']['source'] == 'config'
+    # The census and the phantom table both travel — a payload carrying only the totals would make
+    # the API a strictly weaker surface than the console for the same report.
+    for key in ('articles', 'treatments', 'removal', 'phantoms', 'window_articles', 'keyword_sets'):
+        assert key in body['data'], key

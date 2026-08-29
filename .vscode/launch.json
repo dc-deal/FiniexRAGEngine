@@ -357,6 +357,27 @@
             }
         },
         {
+            // "Is the normaliser actually working, and how far has the corpus turned over?"
+            // ISSUE_112. Four answers in one place: which treatment produced the stored text, what
+            // carriers SURVIVE in each slice (a stamped row holding markup is the treatment
+            // failing, and the report says so instead of printing a reassuring tick), how much was
+            // removed measured WITHIN each row against its own kept original, and the keyword hits
+            // that exist only inside markup — the class where a CDN filename alone raised an
+            // article to HIGH on a weight-1.0 feed. Read-only, no API cost. --since narrows only
+            // the flow half; the census is corpus-wide by nature.
+            "name": "📊 RAGEngine: Corpus Text (normaliser census + phantom keyword hits)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/finiexragengine/cli/corpus_text_cli.py",
+            "args": [],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "04_diagnostics",
+                "order": 14
+            }
+        },
+        {
             // ISSUE_108: stamps breaking_episode_id/_start onto archived envelopes that predate
             // ISSUE_65. WRITES when --apply is added — without it this is a dry run that reports
             // what it would do and refuses to write if its self-check disagreed with any identity

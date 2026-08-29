@@ -22,6 +22,24 @@ PollOutcome = Literal['ok', 'failed']
 # look at the feed — which is exactly the wrong place.
 PollStatus = Literal[PollOutcome, 'quarantined', 'floor_skipped', 'suspended', 'host_backoff']
 
+# WHICH text treatment produced an article's stored text, its vector and the prompt that read it
+# (ISSUE_112). A closed vocabulary rather than free text for the same reason as `DetectionTrigger`:
+# it is written onto every corpus row and it is a leaf of `config_fingerprint`, so a typo would fork
+# the signal series under a name nothing else uses.
+#
+# Versions only move forward, like `prompt_version`: a profile is never edited in place, because the
+# archived rows stamped with it record what produced their vectors. A corrected treatment is the next
+# profile.
+TextNormalizerProfile = Literal[
+    'v1',           # strip script/style bodies + tags, unescape, drop Cc/Cf, NFC, collapse whitespace
+]
+
+# The same vocabulary as data, for validation and for surfaces that enumerate it. NOT in it:
+# '' / NULL, which means "stored before this column existed" — an absence, never a profile. Strict at
+# the producing seam, plain `str` at the storage boundary, so a row carrying a profile a later
+# version introduced still loads.
+TEXT_NORMALIZER_PROFILES: Tuple[str, ...] = get_args(TextNormalizerProfile)
+
 
 @dataclass
 class SourceIngest:
@@ -36,6 +54,12 @@ class SourceIngest:
     truncated: int = 0
     rejected: int = 0
     embed_tokens: int = 0
+    # What the normaliser removed before any of the above ran (ISSUE_112): how many fetched articles
+    # carried a markup/entity/zero-width carrier, and how many characters were dropped from them.
+    # A silent 36.7 % token overhead is how this survived unnoticed for the project's whole life, so
+    # the pass reports its own effect rather than leaving it to a later query.
+    normalised: int = 0
+    dropped_chars: int = 0
 
     @property
     def duplicates(self) -> int:
@@ -293,6 +317,8 @@ class IngestResult:
     truncated: int = 0              # inputs trimmed to the model's limit (ISSUE_79)
     rejected: int = 0               # inputs the provider refused — dropped, never stored
     embed_tokens: int = 0           # tokens actually sent to the embedder this pass
+    normalised: int = 0             # fetched articles whose text carried markup/entities (ISSUE_112)
+    dropped_chars: int = 0          # characters the normaliser removed from them
     candidates: int = 0             # breaking candidates flagged this pass (HIGH tier, ISSUE_11)
     max_tier: int = 0               # highest importance tier written this pass — drives the eval wake (ISSUE_11)
     suspended: bool = False         # paid embedding suspended this pass (provider quota, ISSUE_47)

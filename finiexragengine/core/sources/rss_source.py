@@ -7,6 +7,7 @@ from typing import Any, List, Mapping, Optional
 import feedparser
 
 from finiexragengine.core.sources.abstract_source import AbstractSource
+from finiexragengine.core.sources.article_normalizer import ArticleNormalizer
 from finiexragengine.exceptions.ragengine_errors import SourceFetchError
 from finiexragengine.types.article_types import Article
 from finiexragengine.types.config_types.source_set_types import SourceConfig
@@ -62,8 +63,9 @@ class RssSource(AbstractSource):
     are deliberately NOT slowed — 304 keeps them fast and polite.
     """
 
-    def __init__(self, config: SourceConfig, default_timeout_seconds: int = 10) -> None:
-        super().__init__(config)
+    def __init__(self, config: SourceConfig, default_timeout_seconds: int = 10,
+                 normalizer: Optional[ArticleNormalizer] = None) -> None:
+        super().__init__(config, normalizer)
         # Conditional-GET validators, remembered across polls (in-memory — a cold start just
         # re-pulls once). None until the first successful fetch.
         self._etag: Optional[str] = None
@@ -101,7 +103,7 @@ class RssSource(AbstractSource):
         self._etag = None
         self._modified = None
 
-    def fetch(self) -> List[Article]:
+    def _fetch_articles(self) -> List[Article]:
         now = datetime.now(timezone.utc)
         # Stamp the attempt time — the poll floor in `due_for_fetch` measures from here. The
         # Ingestor gates the floor before calling fetch, so a within-floor pass never reaches here.

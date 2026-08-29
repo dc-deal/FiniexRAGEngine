@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 from pydantic import BaseModel, Field, field_validator
 
 from finiexragengine.types.config_types.report_config_types import ReportsConfig
+from finiexragengine.types.ingest_types import TextNormalizerProfile
 
 
 # The surfaces a grant can name. A closed vocabulary on purpose: this is the *producing* seam —
@@ -166,6 +167,16 @@ class EmbeddingConfig(BaseModel):
     # the ingest path. Deliberately well below the worker's `pass_timeout_seconds` so the *call*
     # fails with a log line before the *pass* is abandoned without one.
     timeout_seconds: int = 60
+
+
+class IngestConfig(BaseModel):
+    """Acquisition-side settings that shape what enters the corpus (ISSUE_112)."""
+    # The declared text treatment applied where an `Article` is built. Series-defining, so it is a
+    # `config_fingerprint` leaf: it changes the vectors AND the prompt text while every provenance
+    # field stays byte-identical, which is exactly the unattributable series ISSUE_109 exists to
+    # prevent. Values move forward only — a corrected treatment is the next profile, never an edit
+    # to this one, because archived rows stamped 'v1' record what produced their vectors.
+    text_normalizer: TextNormalizerProfile = 'v1'
 
 
 class VectorStoreConfig(BaseModel):
@@ -467,6 +478,7 @@ class AppConfig(BaseModel):
     stream: StreamConfig = Field(default_factory=StreamConfig)
     llm: LlmConfig = Field(default_factory=LlmConfig)
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
+    ingest: IngestConfig = Field(default_factory=IngestConfig)
     vector_store: VectorStoreConfig = Field(default_factory=VectorStoreConfig)
     pricing: PricingConfig = Field(default_factory=PricingConfig)
     cost: CostConfig = Field(default_factory=CostConfig)

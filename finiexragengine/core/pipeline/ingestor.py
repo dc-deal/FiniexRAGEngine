@@ -232,6 +232,19 @@ class Ingestor:
                 if self._health_store.record_success(source_id, host, self._source_set_id):
                     result.recovered_sources.append(source_id)
             entry = SourceIngest(fetched=len(fetched))
+            # 1b. What the normaliser removed on the way in (ISSUE_112). Derived from the raw
+            #     fields rather than counted in the source: an article carrying either raw field is
+            #     one whose text changed, so the record IS the counter and nothing has to be
+            #     threaded back through `fetch`. Counted over everything fetched, not only the new
+            #     ids — the number answers "how dirty is this feed", which is a property of the
+            #     pull, and it sits next to `fetched` for exactly that reason.
+            entry.normalised = sum(1 for article in fetched
+                                   if article.title_raw is not None
+                                   or article.summary_raw is not None)
+            entry.dropped_chars = sum(
+                len(article.title_raw or article.title) - len(article.title)
+                + len(article.summary_raw or article.summary) - len(article.summary)
+                for article in fetched)
             # 2. Skip ids already in the corpus — embedding a known article is wasted
             #    spend. (Sub-ms id lookup — deliberately untimed.)
             known = self._store.existing_ids([article.article_id for article in fetched])
@@ -256,6 +269,8 @@ class Ingestor:
                         source_id, 'suspended', ingest=entry,
                         detail='paid work suspended (provider quota) — fetched, not embedded'))
                     result.fetched += entry.fetched
+                    result.normalised += entry.normalised
+                    result.dropped_chars += entry.dropped_chars
                     # "Reappear next pass" is the invariant this whole branch rests on, and
                     # pre-fetching would have quietly broken it (ISSUE_107): a successful fetch
                     # advances the feed's ETag/Last-Modified, so a source pulled here but never
@@ -303,6 +318,8 @@ class Ingestor:
             result.truncated += entry.truncated
             result.rejected += entry.rejected
             result.embed_tokens += entry.embed_tokens
+            result.normalised += entry.normalised
+            result.dropped_chars += entry.dropped_chars
             result.stored += entry.stored
         # 5. Breaking detection (ISSUE_11) — LLM-free, over everything just stored, so
         #    cross-feed clusters count. Its highest tier drives the eval wake (Stage B).

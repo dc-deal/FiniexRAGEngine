@@ -175,6 +175,12 @@ class IngestWorker:
                     self._state.last_detail += f' · {result.truncated} truncated'
                 if result.rejected:
                     self._state.last_detail += f' · {result.rejected} rejected'
+                # What the normaliser removed on the way in (ISSUE_112), same non-zero idiom. A
+                # silent 36.7 % token overhead is precisely how this went unnoticed for the
+                # project's whole life — a run reports its own effect.
+                if result.normalised:
+                    self._state.last_detail += (f' · normalised {result.normalised} '
+                                                f'({result.dropped_chars:,} chars)')
                 # Surface breaking candidates in the pass line when any were flagged (ISSUE_11).
                 if result.candidates:
                     self._state.last_detail += f' · flagged {result.candidates} breaking'

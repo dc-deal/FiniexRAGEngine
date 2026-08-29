@@ -534,6 +534,18 @@ tests/                  pytest suite — one folder per domain, mirroring the pa
   project root; the operator reads them first. Only on explicit OK does the assistant create
   them on GitHub (`gh issue create`, one at a time) — never push an issue to the tracker
   unprompted. (The bulk re-import script is retired; issues are added individually now.)
+- **An upload is finished only when the draft is gone and the roadmap knows.** On the operator's OK:
+  create or patch on GitHub, **verify by re-reading what the tracker now holds** (a `200` is not
+  evidence that the body arrived intact), then **delete the root `ISSUE_*.md`**, refresh its
+  `github_issues/` snapshot, and **place the issue on roadmap #1 in the same step**. All of it is the
+  assistant's, not the operator's. A draft left in the root after upload is a second copy that drifts
+  from the tracker and is edited by whoever finds it first; an issue that exists only in the tracker
+  is invisible to the one document meant to show what is ahead.
+  **Place it where its reason lives** — beside the issue it completes, or inside the batch whose
+  theme it shares — never appended at the end, and never in a release whose theme it does not belong
+  to. An issue that *is* another issue's Definition-of-Done item cannot sit in a different release
+  than the issue it completes; if the draft's own milestone line says otherwise, the draft is what
+  gets corrected, before upload.
 - **Comments vs body:** additions to a **not-yet-begun** issue always go into the **body**
   (the body stays the spec). Once implementation has started, progress, deviations and
   decisions land as dated **implementation-notes comments** — effectively: comments only on
@@ -546,8 +558,10 @@ tests/                  pytest suite — one folder per domain, mirroring the pa
 - **Never close/resolve issues.** The operator closes them at merge via `resolves #…`. The
   assistant may tick the roadmap checkbox (`[x]`) to show progress, but must never run
   `gh issue close` (or otherwise resolve an issue) — ticked ≠ closed; the issue stays open until merge.
-- Root-level gitignored working files (`ISSUE_*.md` drafts, `INTERNAL_*.md`) are the operator's
-  scratch space; the **operator prunes them once processed** (by processing status). A missing
+- Root-level gitignored working files (`INTERNAL_*.md`, `HANDOFF_*.md`, and any `ISSUE_*.md` that
+  was never uploaded) are the operator's scratch space; the **operator prunes them once processed**
+  (by processing status). An uploaded issue draft is not among them — the assistant removes that
+  one at upload, per the rule above. A missing
   one means "done / transferred", not data loss — GitHub is the durable copy for issues. Do not
   re-create a pruned file unless asked.
 

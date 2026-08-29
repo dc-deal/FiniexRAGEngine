@@ -430,3 +430,31 @@ def test_the_report_renders_the_read_time_count_when_quarantine_is_known():
     assert '2 quarantined right now: coindesk, theblock' in text
     assert 'fxstreet' not in text
     assert 'quarantine not included' not in text
+
+
+# --- the DB path's empty-database branch (the only case in this file that needs a database) -----
+
+def test_a_database_without_an_outcomes_table_returns_an_empty_report_not_a_crash(clean_db):
+    """The branch whose own comment promises "a clean empty report, not a crash" WAS the crash.
+
+    `build_breaking_report` takes no `by_trigger` parameter, but the early return referenced one —
+    an idiom copied from `_aggregate`, which does take it. Assigning the name further down (the
+    corpus census) made it function-local, so the reference raised `UnboundLocalError` on any
+    database without an outcomes table: a fresh install, a new deployment, or a test schema.
+
+    Found by an adversarial review of ISSUE_112's deploy checks, then reproduced. It is the
+    handoff's recurring shape — a guard that fails on the situation it exists to handle — and the
+    only test in this file that needs a database, because the defect lives above `_aggregate` in
+    the one branch the DB-free tests can never reach.
+    """
+    from finiexragengine.core.observability.reports.breaking_report import build_breaking_report
+
+    report = build_breaking_report(clean_db, _T0, since_label='7d',
+                                   outcomes_table='outcomes_absent')
+
+    assert report.rows == []
+    assert report.confirmed_episodes == 0
+    assert report.flagged_candidates == 0
+    assert report.by_trigger == {}
+    # It must also render, since an empty report is exactly what an operator sees on day one.
+    assert '7d' in format_breaking_report(report, width=100)
