@@ -459,9 +459,20 @@ def format_breaking_report(report: BreakingReport, *, width: Optional[int] = Non
         lines.append(f'detection reachability: {len(report.reachability)} source-set(s) checked · '
                      + (f'{len(unsatisfiable)} with a path out of reach'
                         if unsatisfiable else 'all thresholds satisfiable'))
+        # `satisfiable` is a claim about the CONFIG; `by_trigger` is what actually happened. Both
+        # are on this report, so it can say when they disagree — measured 2026-09-01: the cluster
+        # thresholds were satisfiable at eleven feeds and the path had still not fired once in 48
+        # attributed flags. A config-time verdict standing alone next to that reads as reassurance.
+        attributed = {k: v for k, v in report.by_trigger.items() if k != _UNRECORDED}
+        cluster_fired = attributed.get('cluster', 0)
+        total_attributed = sum(attributed.values())
         for reach in report.reachability:
             for line in format_reachability_lines(reach):
                 lines.append(f'  {line}')
+            if reach.satisfiable and total_attributed and not cluster_fired:
+                lines.append(f'  {reach.source_set_id} · …but the cluster path has not fired once '
+                             f'in {total_attributed} attributed flags this window — satisfiable '
+                             f'is a config verdict, not an observation')
         if unsatisfiable:
             lines.append('  a threshold nothing can reach fires never and reports nothing — '
                          'which reads exactly like a quiet news week')

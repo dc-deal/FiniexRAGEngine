@@ -357,6 +357,32 @@
             }
         },
         {
+            // "The cluster path never fires — would a different detector, or a looser similarity?"
+            // ISSUE_106. Answers it by REPLAYING the corpus rather than by deploying a detector:
+            // three measures side by side (articles = the live semantics, distinct feeds = the
+            // design intent, lexical story = ISSUE_96's clustering one stage earlier) across a
+            // similarity grid, with the largest neighbourhood NAMED at each step — the grid alone
+            // said 0.65 "works", and only the titles showed it fires on one feed's daily template.
+            // The gap between the article and feed columns IS the intra-feed duplication.
+            // Read-only, no LLM, no embedding calls. --normalizer compares like with like while
+            // the corpus still holds both text treatments (ISSUE_112).
+            "name": "\ud83d\udcca RAGEngine: Detection Sweep (which detector would have fired?)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/finiexragengine/cli/detection_sweep_cli.py",
+            "args": [
+                "crypto_news",
+                "--since",
+                "30d"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "04_diagnostics",
+                "order": 14
+            }
+        },
+        {
             // "Is the normaliser actually working, and how far has the corpus turned over?"
             // ISSUE_112. Four answers in one place: which treatment produced the stored text, what
             // carriers SURVIVE in each slice (a stamped row holding markup is the treatment

@@ -88,24 +88,28 @@ class Retriever:
             candidates = [(tier, hit) for tier, hit in candidates if hit.distance <= floor]
         floor_dropped = in_window - len(candidates)
         candidates.sort(key=_rank_key)
-        articles, tier_duplicates, near_duplicates = self._squeeze(candidates)
+        articles, tier_duplicates, near_duplicates, deep_kept = self._squeeze(candidates)
         return RetrievedContext(articles=articles, funnel=RetrievalFunnel(
             in_window=in_window, floor_dropped=floor_dropped,
             tier_duplicates=tier_duplicates, near_duplicates=near_duplicates,
-            kept=len(articles), best_distance=best_distance,
+            kept=len(articles), deep_kept=deep_kept, best_distance=best_distance,
             worst_distance=worst_distance, floor=floor))
 
-    def _squeeze(self, ranked: List[Tuple[int, ScoredArticle]]) -> Tuple[List[Article], int, int]:
+    def _squeeze(self,
+                 ranked: List[Tuple[int, ScoredArticle]]) -> Tuple[List[Article], int, int, int]:
         """Collapse id- and near-duplicates in rank order and cap at top_k.
 
-        Returns the kept articles plus the two collapse counters (tier duplicates,
-        near-duplicates) for the funnel.
+        Returns the kept articles, the two collapse counters (tier duplicates, near-duplicates),
+        and how many of the kept came from the **deep** tier (ISSUE_5). The tier is already on
+        every candidate for ranking; counting it here is what makes the deep tier's contribution
+        visible in the persisted funnel instead of only inferable from article ages.
         """
         kept: List[ScoredArticle] = []
         seen_ids = set()
         tier_duplicates = 0
         near_duplicates = 0
-        for _tier, hit in ranked:
+        deep_kept = 0
+        for tier, hit in ranked:
             if hit.article.article_id in seen_ids:
                 tier_duplicates += 1
                 continue   # same article surfaced by both tiers
@@ -115,6 +119,8 @@ class Retriever:
                 continue   # near-duplicate story from another feed
             seen_ids.add(hit.article.article_id)
             kept.append(hit)
+            if tier:
+                deep_kept += 1   # survived dedup AND the cap — it actually reached the prompt
             if len(kept) == self._config.top_k:
                 break   # cap applied after dedup, so duplicates never consume a slot
-        return [hit.article for hit in kept], tier_duplicates, near_duplicates
+        return [hit.article for hit in kept], tier_duplicates, near_duplicates, deep_kept

@@ -86,7 +86,11 @@
     "top_k": 12,
     "recency_window_minutes": 1440,
     "dedup_similarity": 0.85,
-    "floor_distance": 0.7
+    "floor_distance": 0.7,
+    "deep_tier": {
+      "min_importance": 2,
+      "window_minutes": 10080
+    }
   },
   "breaking": {
     "urgency_threshold": 0.8,

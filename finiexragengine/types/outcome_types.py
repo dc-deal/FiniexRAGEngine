@@ -84,6 +84,14 @@ class RetrievalFunnel(BaseModel):
     tier_duplicates: int = 0  # same article surfaced by both tiers
     near_duplicates: int = 0  # near-duplicate stories collapsed (>= dedup_similarity)
     kept: int = 0             # what reached the prompt (<= top_k)
+    # Of `kept`, how many came from the DEEP tier — an article older than
+    # `recency_window_minutes` that only reached the prompt because its `importance` cleared
+    # `deep_tier.min_importance` (ISSUE_5, switched on for crypto_sentiment 2026-09-01).
+    # Without it the deep tier's contribution is invisible: `kept` counts both tiers and the
+    # retriever discards the distinction one line after computing it. 0 with the tier enabled is a
+    # real answer — "detection flagged nothing worth carrying forward" — and it is exactly the
+    # number that says whether the dead cluster path is costing retention as well as wakes.
+    deep_kept: int = 0
     best_distance: Optional[float] = None    # nearest candidate pre-floor (nearest miss on 0 kept)
     worst_distance: Optional[float] = None   # farthest candidate pre-floor
     floor: Optional[float] = None            # floor_distance applied this run (None = disabled)

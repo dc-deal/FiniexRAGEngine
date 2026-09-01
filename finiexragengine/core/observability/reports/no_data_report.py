@@ -36,10 +36,25 @@ class NoDataRow:
     floor: Optional[float]                   # latest floor snapshot seen for this symbol
     kept_avg: Optional[float]                # avg articles kept on *delivering* passes
     candidate: bool                          # calibration candidate (see thresholds above)
+    # What the DEEP tier contributed (ISSUE_5, switched on for crypto_sentiment 2026-09-01):
+    # articles older than the recency window that reached the prompt because their `importance`
+    # cleared `deep_tier.min_importance`. `deep_passes` is how many delivering passes had at least
+    # one — the share matters more than the sum, because one pass carrying six old articles and six
+    # passes carrying one are different behaviours. Defaulted, so an envelope produced before the
+    # field existed reads as 0 rather than failing to construct: the tier was off, so it carried
+    # nothing, and that is the same statement.
+    deep_kept_sum: int = 0
+    deep_passes: int = 0
 
     @property
     def share(self) -> float:
         return self.no_data_passes / self.passes if self.passes else 0.0
+
+    @property
+    def deep_share(self) -> float:
+        """Share of delivering passes that carried at least one deep-tier article."""
+        delivering = self.passes - self.no_data_passes
+        return self.deep_passes / delivering if delivering else 0.0
 
 
 @dataclass
@@ -47,10 +62,22 @@ class NoDataReport:
     since_label: str
     rows: List[NoDataRow]                    # only symbols with no-data passes, worst first
     symbols_seen: int                        # distinct (pipeline, symbol) pairs in the window
+    # The deep tier across EVERY symbol, not only the silent ones (ISSUE_5). `rows` is filtered to
+    # symbols that went quiet — which is the report's question — and the deep tier's contribution
+    # shows up mostly on the healthy ones, so a per-row number alone would hide exactly the
+    # measurement the tier was switched on for.
+    deep_kept_total: int = 0
+    deep_passes_total: int = 0
+    delivering_total: int = 0
 
     @property
     def all_delivering(self) -> bool:
         return not self.rows
+
+    @property
+    def deep_share_total(self) -> float:
+        """Share of all delivering passes that carried at least one deep-tier article."""
+        return self.deep_passes_total / self.delivering_total if self.delivering_total else 0.0
 
 
 def build_no_data_report(database_url: str, since: datetime, *, since_label: str = '7d',
@@ -83,6 +110,8 @@ def _aggregate(rows: List[Tuple[str, object]], since_label: str) -> NoDataReport
     floors: Dict[Tuple[str, str], float] = {}
     kept_sum: Dict[Tuple[str, str], int] = {}
     delivering: Dict[Tuple[str, str], int] = {}
+    deep_sum: Dict[Tuple[str, str], int] = {}
+    deep_passes: Dict[Tuple[str, str], int] = {}
 
     for pipeline_id, envelope in rows:
         env = envelope if isinstance(envelope, dict) else json.loads(envelope)
@@ -104,6 +133,12 @@ def _aggregate(rows: List[Tuple[str, object]], since_label: str) -> NoDataReport
                 delivering[key] = delivering.get(key, 0) + 1
                 if funnel.get('kept') is not None:
                     kept_sum[key] = kept_sum.get(key, 0) + funnel['kept']
+                # Absent on envelopes produced before the field existed — treated as 0, which is
+                # correct: the deep tier was off, so it contributed nothing to those passes.
+                deep = funnel.get('deep_kept') or 0
+                if deep:
+                    deep_sum[key] = deep_sum.get(key, 0) + deep
+                    deep_passes[key] = deep_passes.get(key, 0) + 1
 
     out: List[NoDataRow] = []
     for key, total in passes.items():
@@ -123,11 +158,15 @@ def _aggregate(rows: List[Tuple[str, object]], since_label: str) -> NoDataReport
             nearest_miss_avg=sum(sample) / len(sample) if sample else None,
             floor=floor,
             kept_avg=kept_sum.get(key, 0) / served if served else None,
-            candidate=candidate))
+            candidate=candidate,
+            deep_kept_sum=deep_sum.get(key, 0), deep_passes=deep_passes.get(key, 0)))
 
     # Worst first: candidates on top, then by silent share.
     out.sort(key=lambda row: (not row.candidate, -row.share, row.pipeline_id, row.symbol))
-    return NoDataReport(since_label, out, len(passes))
+    return NoDataReport(since_label, out, len(passes),
+                        deep_kept_total=sum(deep_sum.values()),
+                        deep_passes_total=sum(deep_passes.values()),
+                        delivering_total=sum(delivering.values()))
 
 
 def _fmt(value: Optional[float], spec: str = '.3f') -> str:
@@ -142,15 +181,27 @@ def format_no_data_report(report: NoDataReport) -> str:
         f'window: last {report.since_label}',
         divider,
         f'{"pipeline":24} {"symbol":10} {"passes":>6} {"no-data":>8} {"share":>6} '
-        f'{"miss min/avg":>14} {"floor":>6} {"kept":>5}',
+        f'{"miss min/avg":>14} {"floor":>6} {"kept":>5} {"deep":>5}',
         divider,
     ]
+    # The deep tier across every symbol (ISSUE_5). Rendered whether or not it contributed: 0 with
+    # the tier enabled is the finding — detection flagged nothing worth carrying past the recency
+    # window — and it is only distinguishable from "the tier is off" because both numbers are here.
+    if report.delivering_total:
+        lines.append(f'deep tier: {report.deep_kept_total} article(s) carried past the recency '
+                     f'window on {report.deep_passes_total} of {report.delivering_total} '
+                     f'delivering passes ({report.deep_share_total:.1%})')
+        if not report.deep_kept_total:
+            lines.append('  0 — either the tier is off for these pipelines, or detection flagged '
+                         'nothing at/above its min_importance in the window')
+        lines.append(divider)
     for row in report.rows:
         flag = '  ⚠ candidate' if row.candidate else ''
         lines.append(
             f'{row.pipeline_id:24} {row.symbol:10} {row.passes:>6} {row.no_data_passes:>8} '
             f'{row.share:>6.0%} {_fmt(row.nearest_miss_min):>6}/{_fmt(row.nearest_miss_avg):>7} '
-            f'{_fmt(row.floor, ".2f"):>6} {_fmt(row.kept_avg, ".1f"):>5}{flag}')
+            f'{_fmt(row.floor, ".2f"):>6} {_fmt(row.kept_avg, ".1f"):>5} '
+            f'{row.deep_kept_sum:>5}{flag}')
     if report.all_delivering:
         lines.append(f'all {report.symbols_seen} symbols delivering — no silent no-data')
     lines.append(divider)

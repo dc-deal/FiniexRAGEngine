@@ -82,7 +82,20 @@ class DetectionConfig(BaseModel):
     corpus is a deliberate property of this engine (ISSUE_28), so a corpus-wide count may well be
     the right answer — but then the threshold is not the per-set knob it looks like.
     """
-    cluster_similarity: float = 0.85     # pairwise cosine to count as the same story
+    # Pairwise cosine to count as the same story — and MEASURED 2026-09-01 to be the gate that
+    # makes the whole cluster path inert, not the tier sizes below it. Production, 400 seeds: the
+    # nearest OTHER article inside the 60-minute window sits at cosine distance 0.561 (median) and
+    # 0.201 at the 5th percentile, while this value puts the gate at 0.150 — below 95 % of all
+    # nearest neighbours. Consequence: 48 of 48 attributed flags came from the keyword path, and
+    # `articles` carried zero rows at importance 2 or 3 from clustering.
+    #
+    # Do NOT simply lower it. At 0.75/0.65 the first neighbourhoods to form are one feed's own
+    # series — `actionforex`'s "EUR/USD / EUR/AUD / EUR/CHF Daily Outlook", `cryptonews`'s "XRP
+    # Price Prediction:" — because dense embeddings place "same template, different subject" closer
+    # than "same subject, different words". Loosening alone flags a daily template as breaking.
+    # `detection_sweep_cli` walks the grid with the distinct-feed count beside the article count;
+    # the gap between those two columns is exactly the intra-feed duplication.
+    cluster_similarity: float = 0.85
     cluster_window_minutes: int = 60     # burst window
     # >= this many NEAR-DUPLICATE ARTICLES in the window, corpus-wide -> importance MID (2).
     # Not "this many feeds": see the class docstring.

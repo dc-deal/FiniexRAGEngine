@@ -85,3 +85,61 @@ def test_format_renders_rows_and_clean_week():
     assert 'ETHUSD' in text and '⚠ candidate' in text and '100%' in text
     clean = _aggregate([_row('p', 'BTCUSD', kept=1)], '7d')
     assert 'all 1 symbols delivering' in format_no_data_report(clean)
+
+
+# --- the deep tier's contribution (ISSUE_5) ----------------------------------------------
+
+def _envelope(symbol: str, basis: str, *, kept: int = 6, deep: int = 0, best: float = 0.60):
+    funnel = {'kept': kept, 'floor': 0.70, 'in_window': 24, 'best_distance': best,
+              'floor_dropped': 0, 'near_duplicates': 0, 'tier_duplicates': 0}
+    if deep:
+        funnel['deep_kept'] = deep
+    return ('crypto_sentiment', {
+        'metadata': {'per_symbol_retrieval': {symbol: funnel}},
+        'result': [{'symbol': symbol, 'basis': basis}]})
+
+
+def test_the_deep_tier_is_summed_over_every_symbol_not_only_the_silent_ones():
+    """`rows` is filtered to symbols that went quiet — the deep tier shows up on the healthy ones.
+
+    A per-row number alone would hide exactly the measurement the tier was switched on for, which
+    is why the total sits on the report.
+    """
+    rows = [_envelope('BTCUSD', 'llm', deep=2),
+            _envelope('BTCUSD', 'llm', deep=1),
+            _envelope('BTCUSD', 'llm'),                      # delivering, no deep hit
+            _envelope('ADAUSD', 'no_data', kept=0, best=0.71)]
+    report = _aggregate(rows, '7d')
+
+    # BTCUSD never goes quiet, so it is not a row — but its deep hits must still be counted.
+    assert [r.symbol for r in report.rows] == ['ADAUSD']
+    assert report.deep_kept_total == 3
+    assert report.deep_passes_total == 2
+    assert report.delivering_total == 3
+    assert report.deep_share_total == 2 / 3
+
+    text = format_no_data_report(report)
+    assert '3 article(s) carried past the recency window on 2 of 3 delivering passes (66.7%)' in text
+
+
+def test_a_zero_deep_contribution_is_rendered_as_the_finding_it_is():
+    # 0 with the tier ON is an answer — detection flagged nothing worth carrying forward — and it is
+    # only distinguishable from "the tier is off" because both numbers are on the line.
+    report = _aggregate([_envelope('BTCUSD', 'llm'), _envelope('ADAUSD', 'no_data', kept=0)], '7d')
+    text = format_no_data_report(report)
+
+    assert report.deep_kept_total == 0
+    assert '0 article(s) carried past the recency window' in text
+    assert 'either the tier is off' in text
+
+
+def test_envelopes_predating_the_field_count_as_zero_rather_than_failing():
+    # The archive holds passes produced before `deep_kept` existed. Absent must read as "carried
+    # nothing", which is true, instead of breaking the aggregation.
+    old_style = ('crypto_sentiment', {
+        'metadata': {'per_symbol_retrieval': {'BTCUSD': {'kept': 6, 'floor': 0.70}}},
+        'result': [{'symbol': 'BTCUSD', 'basis': 'llm'}]})
+    report = _aggregate([old_style, _envelope('ADAUSD', 'no_data', kept=0)], '7d')
+
+    assert report.deep_kept_total == 0
+    assert report.delivering_total == 1

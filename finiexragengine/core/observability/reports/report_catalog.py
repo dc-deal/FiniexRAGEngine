@@ -29,6 +29,9 @@ from finiexragengine.core.observability.reports.cost_report import (
     EvalPipelineInfo,
     build_cost_report,
 )
+from finiexragengine.core.observability.reports.no_data_report import (
+    build_no_data_report,
+)
 from finiexragengine.core.observability.reports.perf_report import build_perf_report
 from finiexragengine.core.observability.reports.prompt_drift_report import (
     build_prompt_drift_report,
@@ -152,6 +155,18 @@ def _build_source_health(database_url: str, manager: AppConfigManager,
     return build_source_health_report(
         database_url, configured, disabled_ids=disabled, allowances=allowances,
         silence_days=manager.get_config().reports.source_health.silence_days)
+
+
+def _build_no_data(database_url: str, manager: AppConfigManager, params: ReportParams) -> Any:
+    """Retrieval coverage — read-only over the persisted envelopes.
+
+    Belongs on the catalog even though `coverage` deliberately does not: this one **reads
+    `metadata.per_symbol_retrieval` from outcomes** and never touches the corpus or the query-vector
+    cache, so there is no path from a GET into a paid embedding call. It is the only surface that
+    answers the floor question and the deep tier's contribution from off the machine.
+    """
+    return build_no_data_report(database_url, params.since,
+                                since_label=params.window_label or '7d')
 
 
 def _build_perf(database_url: str, manager: AppConfigManager, params: ReportParams) -> Any:
@@ -330,6 +345,13 @@ _CATALOG: Dict[str, ReportSpec] = {
         summary='The urgency distribution per prompt version, per pipeline — confirm and hold-band '
                 'shares, the hold/break ratio, and how concentrated the confirm band is. Never '
                 'pooled across pipelines.'),
+    'no_data': ReportSpec(
+        build=_build_no_data, params=('window',),
+        defaults=lambda config: {'window': config.perf.window},
+        summary='Retrieval coverage per symbol: the share of mechanical no-data passes, how close '
+                'the nearest article came to the relevance floor, and what the deep tier carried '
+                'past the recency window. Read from the persisted envelopes — no corpus access, '
+                'no paid call.'),
     'perf': ReportSpec(
         build=_build_perf, params=('window',),
         defaults=lambda config: {'window': config.perf.window},
