@@ -26,6 +26,10 @@ class ReportParams:
     source_id: Optional[str] = None
     episode_start: Optional[datetime] = None
     symbol: Optional[str] = None            # narrows a per-symbol series; empty = every symbol
+    # Narrows a per-source-set report to one set (ISSUE_106). Absent = every configured set, which
+    # is what the console has always done — the selector narrows an answer, it never picks a
+    # different report.
+    source_set_id: Optional[str] = None
     # Report-specific resolved values (caps, window sets) — each builder reads the keys it declared
     # defaults for. Generic on purpose: the resolution machinery is one code path for every report,
     # and what a value *means* stays with the report that asked for it.

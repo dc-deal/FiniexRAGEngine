@@ -67,11 +67,37 @@ def test_the_catalog_has_no_entry_that_can_spend() -> None:
 
     A GET that converts into spend is the hole ISSUE_98 closed. Keeping coverage out of the catalog
     is what keeps it closed, so the absence is asserted rather than assumed.
+
+    `floor_profile` is here for the same reason and had to be named explicitly (ISSUE_106): it
+    embeds an uncached query too. **Spend is the criterion, not weight** — `detection_sweep` was
+    excluded for years for being a heavy self-join and was admitted once that was noticed, so the
+    two properties are pinned apart here rather than left to the next reader's judgement.
     """
     names = {entry.name for entry in report_catalog.list_reports()}
 
     assert 'coverage' not in names
     assert not any('coverage' in name for name in names)
+    assert 'floor_profile' not in names
+    # The other half of the same rule: a read is admitted however heavy it is.
+    assert 'detection_sweep' in names
+
+
+def test_the_sweep_answers_for_every_set_and_narrows_to_one(clean_db: str) -> None:
+    """`source_set_id` narrows an answer; it never selects a different report (CLAUDE.md).
+
+    The console has always swept every configured set by default, so the route does too — a report
+    that answered for one set under the same name would be a second program wearing the first
+    one's.
+    """
+    manager = AppConfigManager()
+    configured = len(manager.build_source_set_registry().list_sets())
+
+    every = report_catalog.build_report('detection_sweep', clean_db, manager, ReportParams())
+    narrowed = report_catalog.build_report(
+        'detection_sweep', clean_db, manager, ReportParams(source_set_id='crypto_news'))
+
+    assert len(every) == configured
+    assert [report.source_set_id for report in narrowed] == ['crypto_news']
 
 
 def test_an_unknown_name_raises_key_error_for_the_caller_to_translate() -> None:

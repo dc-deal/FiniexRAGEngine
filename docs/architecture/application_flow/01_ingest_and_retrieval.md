@@ -564,10 +564,21 @@ Retrieval runs **per symbol**. Top-down, one symbol's query flows through:
 
 4. **Relevance floor — `core/rag/retriever.py` (`Retriever.retrieve`) · ISSUE_24.**
    Before dedup, candidates whose query↔article distance exceeds `floor_distance`
-   (crypto constellation 0.68, forex 0.55 — the cut is query-length dependent, see
+   (crypto constellation 0.70, forex 0.55 — the cut is query-length dependent, see
    `../retrieval_policy.md`) are dropped — nearest is not the same as *near*, and an
    off-topic article must never reach the prompt. An **empty** survivor set is a result:
    the evaluator answers it mechanically (`HOLD`, `basis='no_data'`, no LLM call).
+
+   **The floor is an absolute cut against a vector space that can move under it**, which is
+   why the funnel's `floor` snapshot travels in every envelope. When ISSUE_112's normaliser
+   changed the stored text on 2026-08-29 the embeddings moved with it and the same constant
+   admitted materially less: on matched weekdays `forex_macro_sentiment` went from ~9.8 to
+   ~7.3 articles per unit, with the *nearest* candidate unchanged. Two reports read that
+   from the archive rather than from a re-measurement — `no_data` per symbol ("who is
+   starving"), `retrieval_drift` per pipeline, config fingerprint and weekday ("did the
+   evidence move when the setup changed"). The weekday is part of the second one's key
+   because a deploy usually changes the day of the week too: read across a weekend the same
+   change looked twice as large as it was.
 
 5. **Squeeze — `core/rag/retriever.py` (`Retriever._squeeze`).**
    Walks candidates in rank order and collapses near-duplicates (the same story

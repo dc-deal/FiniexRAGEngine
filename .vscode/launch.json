@@ -383,6 +383,33 @@
             }
         },
         {
+            // "The scores moved after a deploy — did the EVIDENCE move, or only the answers?"
+            // The retrieval-side sibling of Prompt Drift: the funnel per pipeline, config
+            // fingerprint and WEEKDAY, read from persisted envelopes (ISSUE_24's
+            // per_symbol_retrieval). The weekday is a key, not decoration — the ISSUE_112
+            // normaliser deployed on a Saturday, and read straight off the day series it looked
+            // like a 42% evidence collapse where the matched-weekday figure is 18%; Sunday costs
+            // both pipelines about a third of their corpus with no deploy involved.
+            // Read the PAIR of columns: a rising cut% beside a flat best distance is the floor
+            // meeting a wider spread, beside a rising one it is the corpus drifting away from the
+            // query. Different findings, and neither column alone separates them.
+            // Read-only, no corpus access, no API cost.
+            "name": "📊 RAGEngine: Retrieval Drift (did the evidence move, per weekday?)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/finiexragengine/cli/retrieval_drift_cli.py",
+            "args": [
+                "--since",
+                "14d"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "04_diagnostics",
+                "order": 15
+            }
+        },
+        {
             // "Is the normaliser actually working, and how far has the corpus turned over?"
             // ISSUE_112. Four answers in one place: which treatment produced the stored text, what
             // carriers SURVIVE in each slice (a stamped row holding markup is the treatment

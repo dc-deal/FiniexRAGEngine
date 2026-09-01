@@ -31,6 +31,11 @@ authenticated by construction rather than by remembering (#98).
 | `breaking_timeline` | `window`, `symbol` | the per-pass on/off series behind the episode count, with flip counts |
 | `perf` | `window` | per-stage and per-call latency — where a pass spends its time |
 | `cost` | `window`, `recent_passes` | real spend per window against the configured credit, plus the cadence projection |
+| `no_data` | `window` | per-symbol retrieval coverage: the share of mechanical no-data passes, the nearest miss against the floor, what the deep tier carried |
+| `prompt_drift` | `window` | the urgency distribution per pipeline, prompt version and config fingerprint — did the *answers* move |
+| `retrieval_drift` | `window` | the retrieval funnel per pipeline, config fingerprint and **weekday** — did the *evidence* move |
+| `corpus_text` | `window` | which text treatment produced the stored corpus, surviving carriers, and keyword hits that exist only inside markup |
+| `detection_sweep` | `window`, `sample`, `similarities`, `normalizer`, `source_set_id` | what each candidate detector would have flagged, replayed from the corpus across a similarity grid |
 
 ## Config declares, the call overrides — and the answer says which applied
 
@@ -232,6 +237,16 @@ entitled to the thing that is absent.
   `embed_missing=False` mode, so an uncached query reports as *not measured* instead of triggering a
   call. About fifteen lines, and it would let the entry exist without the principle gaining a
   footnote — and without the report path needing an embedder at all.
+
+  **Spend is the criterion. Weight is not** — and the distinction had to be repaired once (#106).
+  `detection_sweep` sat off the catalog for months under its own docstring's reason, *"a self-join
+  over embeddings, far heavier than every catalogued read"*. It reads: one connection, SELECTs, no
+  LLM and no embedder, so no GET through it can become a charge. It had been sorted in beside
+  `coverage` and `floor_profile` without sharing the property that put them there, and the cost of
+  the mistake was an operator at an RDP console three times in one session. Weight is handled where
+  the window ceiling already is — bounded on the **exposed** surface (`sample`, refused above 5000),
+  because a ceiling is a property of the door, not of the report behind it. The catalog test now
+  pins both halves: `floor_profile` absent, `detection_sweep` present.
 - **A diagnostic surface, not part of #9's contract.** The row shapes are internal and stay free to
   change; they are versioned with the engine, not with the collector handshake, and they are
   deliberately absent from the field contract the Testing IDE builds against. This is the opposite

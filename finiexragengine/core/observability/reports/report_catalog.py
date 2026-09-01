@@ -29,8 +29,14 @@ from finiexragengine.core.observability.reports.cost_report import (
     EvalPipelineInfo,
     build_cost_report,
 )
+from finiexragengine.core.observability.reports.detection_sweep_report import (
+    build_detection_sweep_report,
+)
 from finiexragengine.core.observability.reports.no_data_report import (
     build_no_data_report,
+)
+from finiexragengine.core.observability.reports.retrieval_drift_report import (
+    build_retrieval_drift_report,
 )
 from finiexragengine.core.observability.reports.perf_report import build_perf_report
 from finiexragengine.core.observability.reports.prompt_drift_report import (
@@ -307,6 +313,61 @@ def _build_corpus_text(database_url: str, manager: AppConfigManager,
         example_limit=manager.get_config().reports.corpus_text.examples)
 
 
+def _build_detection_sweep(database_url: str, manager: AppConfigManager,
+                           params: ReportParams) -> Any:
+    """The detector replay, one report per source-set (ISSUE_106).
+
+    **Belongs on the catalog, and the reason is the catalog's own rule.** Its CLI docstring used to
+    say it was excluded for being heavy — a self-join over embeddings. Weight is not the criterion
+    this module applies: `coverage` is absent because a cache miss inside it is a paid embedding
+    call, and `_build_no_data` is present because it reads persisted envelopes and cannot spend.
+    This builder opens one connection and runs SELECTs over the corpus — no LLM, no embedder, no
+    write — so there is no path from a GET into a charge. Weight is bounded where the window ceiling
+    already is, on the exposed surface, by `sample`.
+
+    Returns a LIST, one entry per set, narrowed by `source_set_id`. The console has always swept
+    every set by default; a route that answered for one would be a second program wearing the same
+    name.
+    """
+    reports_config = manager.get_config().reports.detection_sweep
+    similarities = tuple(sorted(params.options.get('similarities')
+                                or reports_config.similarities, reverse=True))
+    sample = params.options.get('sample') or reports_config.sample
+    wanted = params.source_set_id
+    reports = []
+    # Through the registry factory, like `_build_breaking`: a per-machine `enabled: false` decides
+    # which feeds contributed articles at all, and a sweep counting a parked feed would flatter a
+    # neighbourhood it never joined.
+    for source_set in manager.build_source_set_registry().list_sets():
+        if wanted and source_set.source_set_id != wanted:
+            continue
+        detection = source_set.detection
+        reports.append(build_detection_sweep_report(
+            database_url, params.since, source_set_id=source_set.source_set_id,
+            source_ids={source.source_id for source in source_set.active_sources()},
+            window_minutes=detection.cluster_window_minutes,
+            mid_cluster_size=detection.mid_cluster_size,
+            high_cluster_size=detection.high_cluster_size,
+            live_similarity=detection.cluster_similarity,
+            since_label=params.window_label or '7d', sample=sample,
+            similarities=similarities, normalizer=params.options.get('normalizer')))
+    return reports
+
+
+def _build_retrieval_drift(database_url: str, manager: AppConfigManager,
+                           params: ReportParams) -> Any:
+    """Whether the evidence moved when the setup changed — read over persisted envelopes.
+
+    On the catalog for the same reason `no_data` is: it reads `metadata.per_symbol_retrieval` from
+    `outcomes` and never touches the corpus or the query-vector cache. The floor's own snapshot
+    travels in that field, so a retune is visible in the archive rather than inferred from config
+    history.
+    """
+    return build_retrieval_drift_report(
+        database_url, params.since, since_label=params.window_label or '14d',
+        min_passes=manager.get_config().reports.retrieval_drift.min_passes)
+
+
 _CATALOG: Dict[str, ReportSpec] = {
     'source_health': ReportSpec(
         build=_build_source_health,
@@ -369,6 +430,21 @@ _CATALOG: Dict[str, ReportSpec] = {
         defaults=lambda config: {'window': config.breaking.window},
         summary='Confirmed breaking episodes, the detection funnel, reaction times and the '
                 'episodes-vs-stories measure over the window.'),
+    'detection_sweep': ReportSpec(
+        build=_build_detection_sweep,
+        params=('window', 'sample', 'similarities', 'normalizer', 'source_set_id'),
+        defaults=lambda config: {'window': config.detection_sweep.window,
+                                 'sample': config.detection_sweep.sample,
+                                 'similarities': config.detection_sweep.similarities},
+        summary='What each candidate detector would have flagged, replayed from the stored corpus: '
+                'near-duplicate articles, distinct feeds and lexical stories across a similarity '
+                'grid. Read-only — no LLM, no embedding call.'),
+    'retrieval_drift': ReportSpec(
+        build=_build_retrieval_drift, params=('window',),
+        defaults=lambda config: {'window': config.retrieval_drift.window},
+        summary='Whether the evidence reaching the prompt moved when the setup changed — the '
+                'retrieval funnel per pipeline, config fingerprint and weekday, so a deploy '
+                'boundary is not read across a weekend.'),
 }
 
 
@@ -416,9 +492,10 @@ def resolve(name: str, config: ReportsConfig,
             options[key] = supplied[key]
 
     params = ReportParams(source_id=supplied.get('source_id'), symbol=supplied.get('symbol'),
-                          episode_start=supplied.get('episode_start'), options=options)
+                          episode_start=supplied.get('episode_start'),
+                          source_set_id=supplied.get('source_set_id'), options=options)
     # The selectors have no configured default — they narrow one call or they are absent.
-    for key in ('source_id', 'symbol', 'episode_start'):
+    for key in ('source_id', 'symbol', 'episode_start', 'source_set_id'):
         if key in supplied:
             applied[key] = AppliedParam(value=supplied[key], source='request')
 

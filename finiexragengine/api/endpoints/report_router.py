@@ -10,9 +10,10 @@ why `coverage` is absent rather than merely last in the queue.
 """
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Annotated, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request, Security
+from pydantic import Field
 
 from finiexragengine.api.grant_auth import build_grant_dependency
 from finiexragengine.api.token_registry import TokenRegistry
@@ -101,7 +102,24 @@ def build_report_router(database_url: str, config_manager: AppConfigManager,
                episode_start: Optional[datetime] = Query(None),
                symbol: Optional[str] = Query(None, description='narrow a per-symbol series'),
                recent_problems: Optional[int] = Query(None, ge=1, le=200),
-               recent_passes: Optional[int] = Query(None, ge=1, le=500)
+               recent_passes: Optional[int] = Query(None, ge=1, le=500),
+               source_set_id: Optional[str] = Query(None,
+                                                    description='narrow to one source set'),
+               # The sweep is the heaviest entry on the catalog — a self-join over embeddings — so
+               # its size is bounded HERE rather than in the catalog, for the same reason
+               # `max_window_days` is: the ceiling is a property of the exposed surface, and an
+               # operator at the console may ask for anything. `le=5000` is roughly five times the
+               # largest run performed by hand (988 seeds, seconds, 2026-09-01). Refused rather
+               # than clamped, matching every other numeric parameter on this route.
+               sample: Optional[int] = Query(None, ge=1, le=5000),
+               # The bound belongs on the ELEMENT, not on the list: `Query(..., ge=0.0)` against a
+               # `List[float]` asks pydantic to compare a list to a number, which raises a
+               # `TypeError` inside validation and surfaces as a 500 — a malformed request
+               # answering as a broken server. Annotating the item keeps it a 422.
+               similarities: Optional[List[Annotated[float, Field(ge=0.0, le=1.0)]]] = Query(
+                   None, description='override the similarity grid; repeatable'),
+               normalizer: Optional[str] = Query(
+                   None, description="restrict the corpus sample to one text treatment, e.g. 'v1'")
                ) -> ReportEnvelope:
         """Build one report. 404 for an unknown name, 422 for a parameter it cannot use."""
         try:
@@ -113,7 +131,8 @@ def build_report_router(database_url: str, config_manager: AppConfigManager,
 
         supplied = {'source_id': source_id, 'episode_start': episode_start, 'symbol': symbol,
                     'window': window, 'recent_problems': recent_problems,
-                    'recent_passes': recent_passes}
+                    'recent_passes': recent_passes, 'source_set_id': source_set_id,
+                    'sample': sample, 'similarities': similarities, 'normalizer': normalizer}
         missing = [param for param in spec.required if not supplied.get(param)]
         if missing:
             raise HTTPException(status_code=422,

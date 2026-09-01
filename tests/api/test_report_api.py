@@ -132,6 +132,60 @@ def test_a_cap_is_bounded_like_the_window(client: TestClient) -> None:
     assert client.get('/v1/reports/source_health?recent_problems=100000').status_code == 422
 
 
+def test_the_sweep_sample_is_bounded_because_weight_is_what_made_it_doubtful(
+        client: TestClient) -> None:
+    """`detection_sweep` is the heaviest entry on the catalog — a self-join over embeddings.
+
+    It belongs here because it cannot spend (ISSUE_106), not because it is cheap. The bound is what
+    makes admitting it safe, so it is asserted rather than trusted: an unbounded `sample` would be
+    the one way this entry differs in kind from every other read.
+    """
+    assert client.get('/v1/reports/detection_sweep?sample=99999').status_code == 422
+    assert client.get('/v1/reports/detection_sweep?sample=0').status_code == 422
+
+    body = client.get('/v1/reports/detection_sweep?sample=25').json()
+    assert body['params']['sample']['value'] == 25
+    assert body['params']['sample']['source'] == 'request'
+
+
+def test_the_sweep_grid_can_be_overridden_and_its_values_are_bounded(
+        client: TestClient) -> None:
+    """The grid is a list parameter, following `cost.windows` — so it is asserted, not assumed.
+
+    A repeated query parameter with per-item bounds is the one shape on this route that behaves
+    differently from a scalar, and a similarity outside [0, 1] is not a grid, it is a typo.
+    """
+    body = client.get('/v1/reports/detection_sweep?similarities=0.9&similarities=0.5').json()
+    assert body['params']['similarities']['value'] == [0.9, 0.5]
+    assert body['params']['similarities']['source'] == 'request'
+
+    assert client.get('/v1/reports/detection_sweep?similarities=1.5').status_code == 422
+
+    # Nothing supplied: the configured grid stands, and the answer says it came from config.
+    configured = client.get('/v1/reports/detection_sweep').json()
+    assert configured['params']['similarities']['source'] == 'config'
+
+
+def test_the_sweep_narrows_to_one_set_over_http(client: TestClient) -> None:
+    every = client.get('/v1/reports/detection_sweep').json()['data']
+    narrowed = client.get(
+        '/v1/reports/detection_sweep?source_set_id=crypto_news').json()['data']
+
+    assert len(every) >= len(narrowed)
+    assert [report['source_set_id'] for report in narrowed] == ['crypto_news']
+
+
+def test_retrieval_drift_takes_a_window_and_nothing_a_caller_could_bend(
+        client: TestClient) -> None:
+    """`min_passes` decides whether a cell reads as thin — a verdict, so it stays config-only.
+
+    Same rule as `source_health.silence_days`: a caller must not be able to make the same cell look
+    solid or thin.
+    """
+    assert client.get('/v1/reports/retrieval_drift?window=14d').status_code == 200
+    assert client.get('/v1/reports/retrieval_drift?symbol=BTCUSD').status_code == 422
+
+
 def test_cost_compares_the_configured_set_and_a_call_narrows_it(client: TestClient) -> None:
     configured = client.get('/v1/reports/cost').json()
     assert [window['label'] for window in configured['data']['real']] == [

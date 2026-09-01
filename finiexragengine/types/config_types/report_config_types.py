@@ -101,6 +101,36 @@ class CostReportConfig(BaseModel):
     recent_passes: int = 20
 
 
+class DetectionSweepReportConfig(BaseModel):
+    """The replay grid (ISSUE_106) — a corpus read, so it belongs on the catalog like the rest.
+
+    `similarities` is the grid the sweep walks, and the live value belongs in it: a grid whose first
+    row is not the running configuration cannot show what changing it would buy. Declared here rather
+    than as a literal so an operator can widen it without a code change.
+    """
+    window: str = '7d'
+    # Seeds scored per source-set. The sample takes the MOST RECENT articles, so it also decides how
+    # far back the window reaches in practice — 400 seeds covered 1.1 days of the crypto corpus on
+    # 2026-09-01 while `--since 3d` was asked for, and the report says the span it actually got.
+    sample: int = 400
+    similarities: List[float] = Field(default_factory=lambda: [0.85, 0.75, 0.65, 0.55])
+
+
+class RetrievalDriftReportConfig(BaseModel):
+    """Did the evidence move when the setup changed — the retrieval-side sibling of `prompt_drift`.
+
+    Two weeks by default, and the reason is the grouping: rows are keyed by weekday, so a shorter
+    window cannot hold two of the same weekday and the report's central comparison has nothing to
+    compare. A deploy almost always changes the weekday as well as the configuration, and reading
+    across that difference is what produced two wrong diagnoses on 2026-09-01.
+    """
+    window: str = '14d'
+    # Below this many symbol-passes a cell is marked thin rather than dropped — a verdict threshold,
+    # so it is config-only and never a call parameter (same rule as `source_health.silence_days`):
+    # a caller must not be able to make the same cell look solid or thin.
+    min_passes: int = 40
+
+
 class ReportsConfig(BaseModel):
     """One config object per report, keyed by the name the catalog and the API use."""
     source_health: SourceHealthReportConfig = Field(default_factory=SourceHealthReportConfig)
@@ -114,3 +144,7 @@ class ReportsConfig(BaseModel):
     corpus_text: CorpusTextReportConfig = Field(default_factory=CorpusTextReportConfig)
     perf: PerfReportConfig = Field(default_factory=PerfReportConfig)
     cost: CostReportConfig = Field(default_factory=CostReportConfig)
+    detection_sweep: DetectionSweepReportConfig = Field(
+        default_factory=DetectionSweepReportConfig)
+    retrieval_drift: RetrievalDriftReportConfig = Field(
+        default_factory=RetrievalDriftReportConfig)

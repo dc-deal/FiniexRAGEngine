@@ -4,9 +4,13 @@ Read-only replay over the stored corpus: no LLM, no embedding calls, no writes. 
 the live cluster path cannot — whether a different measure or a looser similarity would detect
 corroboration, or merely admit one feed's daily template first.
 
-Not on the report catalog, deliberately: it is a self-join over embeddings, far heavier than every
-catalogued read. `source_contribution_cli` is the standing precedent for "its own command until it
-earns an HTTP entry".
+**On the report catalog, and it took a correction to get there.** This file used to say the sweep was
+excluded for being heavy — a self-join over embeddings. Weight is not the criterion the catalog
+applies: `coverage` and `floor_profile` are absent because a cache miss inside them is a paid
+embedding call, and a GET must never convert into spend. This report reads. It was excluded for a
+property it does not have, while being needed three times in one session from a console on the
+production host. Its size is bounded where the window ceiling already is — on the exposed surface,
+by `sample`.
 """
 import argparse
 import os
@@ -14,12 +18,15 @@ import os
 from finiexragengine.configuration.app_config_manager import AppConfigManager
 from finiexragengine.core.observability.reports.detection_sweep_report import (
     DEFAULT_SIMILARITIES,
-    build_detection_sweep_report,
     format_detection_sweep_report,
+)
+from finiexragengine.core.observability.reports.report_catalog import (
+    build_report,
+    format_parameter_line,
+    resolve,
 )
 from finiexragengine.exceptions.ragengine_errors import ConfigurationError
 from finiexragengine.utils.console_encoding import use_utf8_output
-from finiexragengine.utils.report_window import parse_since
 
 
 def main() -> None:
@@ -29,9 +36,12 @@ def main() -> None:
                     'from the corpus')
     parser.add_argument('source_set_id', nargs='?', default='',
                         help='the set to sweep; omitted, every configured set')
-    parser.add_argument('--since', default='7d', help='window: 7d, 30d, or all')
-    parser.add_argument('--sample', type=int, default=400,
-                        help='how many recent articles to score as seeds (default 400)')
+    parser.add_argument('--since', default=None,
+                        help='window: 7d, 30d, or all; omitted, reports.detection_sweep.window '
+                             'applies')
+    parser.add_argument('--sample', type=int, default=None,
+                        help='how many recent articles to score as seeds; omitted, '
+                             'reports.detection_sweep.sample applies')
     parser.add_argument('--similarity', type=float, action='append', dest='similarities',
                         help='override the grid; repeatable (default: '
                              + ', '.join(f'{s:.2f}' for s in DEFAULT_SIMILARITIES) + ')')
@@ -49,30 +59,21 @@ def main() -> None:
         parser.error('DATABASE_URL is not set (point it at the pgvector Postgres)')
 
     manager = AppConfigManager()
-    sets = manager.build_source_set_registry()
-    since, since_label = parse_since(args.since)
-    wanted = [args.source_set_id] if args.source_set_id else [
-        source_set.source_set_id for source_set in sets.list_sets()]
-    similarities = tuple(sorted(args.similarities, reverse=True)) if args.similarities \
-        else DEFAULT_SIMILARITIES
-
-    for index, source_set_id in enumerate(wanted):
+    # An unknown id is a usage error, not an empty sweep: the catalog would filter it to nothing and
+    # print a blank grid, which reads as "this set has no clusters" rather than "no such set".
+    if args.source_set_id:
         try:
-            source_set = sets.get(source_set_id)
+            manager.build_source_set_registry().get(args.source_set_id)
         except ConfigurationError as exc:
-            parser.error(str(exc))          # an unknown id is a usage error, not a crash
-        detection = source_set.detection
-        report = build_detection_sweep_report(
-            database_url, since, source_set_id=source_set_id,
-            # The ACTIVE feeds, not the declared catalogue: a parked candidate contributes no
-            # articles, so counting it would flatter the neighbourhood it never joined.
-            source_ids={source.source_id for source in source_set.active_sources()},
-            window_minutes=detection.cluster_window_minutes,
-            mid_cluster_size=detection.mid_cluster_size,
-            high_cluster_size=detection.high_cluster_size,
-            live_similarity=detection.cluster_similarity,
-            since_label=since_label, sample=args.sample, similarities=similarities,
-            normalizer=args.normalizer)
+            parser.error(str(exc))
+
+    resolved = resolve('detection_sweep', manager.get_config().reports,
+                       {'window': args.since, 'sample': args.sample,
+                        'similarities': args.similarities, 'normalizer': args.normalizer,
+                        'source_set_id': args.source_set_id or None})
+    print(format_parameter_line(resolved.applied))
+    reports = build_report('detection_sweep', database_url, manager, resolved.params)
+    for index, report in enumerate(reports):
         if index:
             print()
         print(format_detection_sweep_report(report))
