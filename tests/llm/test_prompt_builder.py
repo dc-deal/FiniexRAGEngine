@@ -8,7 +8,12 @@ pytest.importorskip('jinja2')
 
 from finiexragengine.core.llm.prompt_builder import PromptBuilder  # noqa: E402
 from finiexragengine.exceptions.ragengine_errors import LLMError  # noqa: E402
-from finiexragengine.types.article_types import Article  # noqa: E402
+from finiexragengine.types.article_types import (  # noqa: E402
+    Article,
+    RetrievedArticle,
+    RetrievedContext,
+)
+from finiexragengine.types.outcome_types import RetrievalFunnel  # noqa: E402
 
 _TS = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
 
@@ -157,8 +162,12 @@ def test_shipped_prompt_hashes_are_pinned():
         ('crypto_sentiment', '1'): '1f191112898f',
         ('crypto_sentiment', '2'): '1c86eac137d8',
         ('crypto_sentiment', '3'): '3f037f75b4b2',
+        # v4 is what production runs, so its hash is the one in every live envelope — and it was
+        # missing from this pin until ISSUE_30 touched the retrieval seam feeding it.
+        ('crypto_sentiment', '4'): 'c45e07e1b260',
         ('forex_sentiment', '1'): 'f6e09cf6c039',
         ('forex_sentiment', '3'): '8d23b742645a',
+        ('forex_sentiment', '4'): '86afc8942291',
     }
     actual = {key: builder.metadata(*key).content_hash for key in pinned}
     assert actual == pinned
@@ -172,3 +181,43 @@ def test_shipped_v3_prompts_ask_for_breaking_reason():
         assert 'breaking_reason' in rendered
         assert 'Bitcoin BTC' in rendered
         assert builder.metadata(family, '3').version == '3'
+
+
+def test_the_retrieval_seam_does_not_change_what_a_shipped_prompt_renders():
+    """ISSUE_30 moved `RetrievedContext.articles` from a field to a property. This asserts the move
+    is invisible to the template.
+
+    The hash pin above guards the template *file*; this guards the *render*, which is the half a
+    seam change can move. A shipped version is immutable by rule — its `content_hash` is recorded
+    as `prompt_hash` in every envelope it has produced — so a rendering that shifts makes archived
+    provenance unverifiable while every hash still matches.
+
+    Both shipped v4 families are checked, and the equality is against the bare list the builder
+    received before the change.
+    """
+    builder = PromptBuilder(Path(__file__).resolve().parents[2] / 'prompts')
+    articles = [
+        Article(article_id='a', source_id='cointelegraph', source_weight=1.0,
+                url='https://example.test/a', title='Bitcoin holds support',
+                summary='desks stay long', language='en',
+                published_at=datetime(2026, 9, 2, 8, 0, tzinfo=timezone.utc),
+                fetched_at=datetime(2026, 9, 2, 8, 5, tzinfo=timezone.utc)),
+        Article(article_id='b', source_id='coindesk', source_weight=0.8,
+                url='https://example.test/b', title='Strategy adds to its treasury',
+                summary='a week-old follow-up', language='en',
+                published_at=datetime(2026, 8, 26, 9, 0, tzinfo=timezone.utc),
+                fetched_at=datetime(2026, 8, 26, 9, 4, tzinfo=timezone.utc)),
+    ]
+    context = RetrievedContext(
+        retrieved=[RetrievedArticle(article=articles[0], retrieval_tier='recent'),
+                   RetrievedArticle(article=articles[1], retrieval_tier='deep')],
+        funnel=RetrievalFunnel(in_window=2, kept=2, deep_kept=1))
+
+    for family in ('crypto_sentiment', 'forex_sentiment'):
+        through_property = builder.build(family, '4', 'Bitcoin BTC', context.articles)
+        through_bare_list = builder.build(family, '4', 'Bitcoin BTC', articles)
+        assert through_property == through_bare_list
+        # And the tier stays out of the prompt: fencing is a v5 decision with its own version bump
+        # and its own before/after distribution (ISSUE_110), not something that leaks in early.
+        assert 'retrieval_tier' not in through_property
+        assert 'deep' not in through_property

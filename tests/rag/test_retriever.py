@@ -169,9 +169,60 @@ def test_deep_tier_opt_in_queries_and_ranks_behind_recent():
                            deep_tier=DeepTierConfig(min_importance=2, window_minutes=2880))
     context = retriever.retrieve('q')
     assert [a.article_id for a in context.articles] == ['recent', 'deep']   # recency dominates
+    # ...and each survivor now says which window produced it (ISSUE_30).
+    assert [(r.article.article_id, r.retrieval_tier) for r in context.retrieved] == [
+        ('recent', 'recent'), ('deep', 'deep')]
     assert len(store.calls) == 2
     assert store.calls[1]['min_importance'] == 2
     assert store.calls[1]['since'] < store.calls[0]['since']      # deep window reaches back further
+
+
+def test_recency_still_dominates_when_the_deep_hit_is_far_nearer():
+    """The ranking pin, and it exists because ISSUE_30's own change nearly broke it.
+
+    The tier used to be the integers 0/1 and `_rank_key` sorted on them directly. Turning it into
+    the labels 'recent'/'deep' without a rank map would have sorted them ALPHABETICALLY — 'deep'
+    before 'recent' — putting week-old articles ahead of today's news at the top of the prompt.
+    Silent, and the precise contamination this issue exists to prevent.
+
+    The distances here make it unmissable: the deep hit is at 0.01 against the recent tier's 0.90,
+    so any ordering that is not tier-first puts it first.
+    """
+    store = _FakeStore([[_hit('today', 0.90)], [_hit('last-week', 0.01, importance=3)]])
+    retriever = _retriever(store, top_k=5, floor_distance=None,
+                           deep_tier=DeepTierConfig(min_importance=2))
+    context = retriever.retrieve('q')
+
+    assert [r.retrieval_tier for r in context.retrieved] == ['recent', 'deep']
+    assert [a.article_id for a in context.articles] == ['today', 'last-week']
+
+
+def test_a_recent_only_retrieval_marks_every_survivor_recent():
+    """Never `None` and never blank: the tier is set at the seam, so the envelope's `None`
+    keeps its single meaning of "archived before the field existed"."""
+    store = _FakeStore([[_hit('a', 0.1), _hit('b', 0.2)]])
+    context = _retriever(store, top_k=5).retrieve('q')
+
+    assert [r.retrieval_tier for r in context.retrieved] == ['recent', 'recent']
+    assert context.funnel.deep_kept == 0
+
+
+def test_deep_kept_is_the_count_of_deep_survivors_not_a_parallel_tally():
+    """One computation, so the funnel's number and the envelope's per-citation tiers agree.
+
+    They used to be two — a counter accumulated beside the list — and two numbers meant to agree
+    is the shape ISSUE_82 spent weeks on. The day they diverge is the day the funnel lies.
+    """
+    store = _FakeStore([
+        [_hit('r1', 0.10), _hit('r2', 0.20)],
+        [_hit('d1', 0.30, importance=3), _hit('d2', 0.40, importance=3)],
+    ])
+    context = _retriever(store, top_k=10, floor_distance=None,
+                         deep_tier=DeepTierConfig(min_importance=2)).retrieve('q')
+
+    deep_in_list = sum(1 for r in context.retrieved if r.retrieval_tier == 'deep')
+    assert context.funnel.deep_kept == deep_in_list == 2
+    assert context.funnel.kept == len(context.retrieved) == 4
 
 
 def test_deep_tier_does_not_duplicate_recent_articles():

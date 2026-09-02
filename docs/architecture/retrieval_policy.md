@@ -83,6 +83,18 @@ with the evaluation (`SymbolEval.retrieval`) into the envelope
 `retrieval` line in the `eval` CLI — so a thin or empty context is explainable from the
 persisted run, not just asserted: was the window empty, or did the floor cut everything?
 
+**Which tier surfaced each kept article travels too** (ISSUE_30). `Retriever._squeeze` had the
+tier in its own loop and returned bare `Article`s, so nothing downstream could tell a week-old
+retrospective item from an hour-old one except by reading its timestamp — and the v4 templates
+re-sort by `published_at`, mixing both into one numbered list. It now returns
+`RetrievedArticle(article, retrieval_tier)`; `RetrievedContext.articles` stays available as a
+**property** so a shipped prompt renders byte-identically, and `RetrievalFunnel.deep_kept` is
+derived from that list rather than accumulated beside it — one computation, so the funnel's count
+and the envelope's per-citation tiers cannot disagree. The tier is a closed vocabulary
+(`RetrievalTier`), named in full because *tier* already means the **importance** tier (1/2/3)
+elsewhere; the retriever's rank key maps it back to an explicit order, since sorting the labels
+would put `deep` ahead of `recent` alphabetically and rank week-old articles above today's news.
+
 The weekly report aggregates these persisted funnels into the **no-data / coverage
 block** (ISSUE_27): per-symbol share of `no_data` passes, nearest miss vs the floor
 snapshot, and a *calibration-candidate* flag when a mostly-silent symbol's nearest miss

@@ -106,9 +106,14 @@ class SymbolEvaluator:
             # model's, and dropping one because the other disagreed would hide exactly the
             # disagreement worth seeing.
             breaking_reason=scored.breaking_reason,
-            sources=[ArticleRef(article_id=a.article_id, url=a.url, title=a.title,
-                                published_at=a.published_at, fetched_at=a.fetched_at)
-                     for a in articles],
+            # Built from `context.retrieved`, not from `articles` (ISSUE_30): the tier that
+            # surfaced each citation travels with it, so "did the retrospective channel contribute
+            # to this call" is answerable from the envelope instead of inferred from article ages.
+            sources=[ArticleRef(article_id=r.article.article_id, url=r.article.url,
+                                title=r.article.title, published_at=r.article.published_at,
+                                fetched_at=r.article.fetched_at,
+                                retrieval_tier=r.retrieval_tier)
+                     for r in context.retrieved],
             evidence_as_of=_evidence_as_of(articles))
         return SymbolEval(result=result, prompt=prompt, prompt_metadata=prompt_metadata,
                           usage=completion.usage, articles=articles,

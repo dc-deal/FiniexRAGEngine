@@ -2,9 +2,22 @@
 import hashlib
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional, Tuple, get_args
 
 from finiexragengine.types.outcome_types import RetrievalFunnel
+
+# WHICH retrieval tier surfaced an article (ISSUE_30). `retrieval_tier` rather than a bare `tier`
+# because the short name is already taken twice in this codebase — `ingest_types` and
+# `BreakingConfig` use "tier" for the IMPORTANCE tier (1=LOW/2=MID/3=HIGH), which is a different
+# axis entirely: importance decides whether an old article may be *admitted*, this records which
+# window actually *produced* it.
+#
+# A closed vocabulary rather than the retriever's internal 0/1: the value reaches an envelope, and
+# a reader should not have to know which integer meant which window. Strict here at the producing
+# seam so a typo fails where it is written; the model field that stores it is a plain `str`, so an
+# archived envelope carrying a value a later version introduces still parses.
+RetrievalTier = Literal['recent', 'deep']
+RETRIEVAL_TIERS: Tuple[str, ...] = get_args(RetrievalTier)
 
 
 @dataclass
@@ -83,13 +96,43 @@ class ScoredArticle:
 
 
 @dataclass
+class RetrievedArticle:
+    """One article that reached the prompt, and which retrieval tier surfaced it (ISSUE_30).
+
+    The pairing exists because the tier is a fact about *this retrieval*, not about the article:
+    the same corpus row is `recent` for one pipeline's 24h window and `deep` for another's week.
+    Putting it on `Article` would stamp a per-query verdict onto the shared corpus shape.
+
+    Why it has to travel at all: fear/greed is a **current-mood** measure, so a week-old article
+    must be fenced rather than mixed into today's reading — and nothing downstream could tell the
+    two apart once `_squeeze` returned bare `Article`s.
+    """
+    article: Article
+    retrieval_tier: RetrievalTier
+
+
+@dataclass
 class RetrievedContext:
     """What retrieval handed the evaluator: the squeezed context plus its funnel.
 
     Args:
-        articles: At most `top_k` relevant, recent, deduped articles — best first.
+        retrieved: At most `top_k` relevant, deduped articles — best first — each with the
+            tier that surfaced it (ISSUE_30).
         funnel: The counters of how the squeeze arrived there (ISSUE_24) — carried
             through `SymbolEval` into the envelope metadata.
     """
-    articles: list[Article]
+    retrieved: list[RetrievedArticle]
     funnel: RetrievalFunnel
+
+    @property
+    def articles(self) -> list[Article]:
+        """The bare articles, best first — the shape the prompt and the pass counters read.
+
+        Kept as a property when `retrieved` replaced it as the field (ISSUE_30), and that is
+        load-bearing rather than convenient: `PromptBuilder.build` renders `articles` straight into
+        the template, and every archived envelope records its template's `content_hash` as
+        `prompt_hash`. A shape change here would move the rendering of a prompt version that is
+        immutable by rule and make archived provenance unverifiable. Extending the result object
+        additively is precisely what result objects are kept for.
+        """
+        return [item.article for item in self.retrieved]

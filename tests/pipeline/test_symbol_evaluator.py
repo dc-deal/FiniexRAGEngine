@@ -9,7 +9,11 @@ from finiexragengine.core.observability.reports.eval_report import (
 )
 from finiexragengine.core.pipeline.symbol_evaluator import SymbolEvaluator
 from finiexragengine.exceptions.ragengine_errors import LLMParseError
-from finiexragengine.types.article_types import Article, RetrievedContext
+from finiexragengine.types.article_types import (
+    Article,
+    RetrievedArticle,
+    RetrievedContext,
+)
 from finiexragengine.types.llm_types import LlmCompletion, LlmUsage
 from finiexragengine.types.outcome_types import RetrievalFunnel
 from finiexragengine.types.prompt_metadata import PromptMetadata
@@ -24,13 +28,18 @@ def _article(article_id: str) -> Article:
 
 
 class _FakeRetriever:
-    def __init__(self, articles):
+    def __init__(self, articles, tiers=None):
         self._articles = articles
+        # Default every article to the recent tier; a case that cares passes its own (ISSUE_30).
+        self._tiers = tiers or ['recent'] * len(articles)
 
     def retrieve(self, query):
-        # Mirror the real return shape: context + its funnel (ISSUE_24).
-        return RetrievedContext(articles=self._articles, funnel=RetrievalFunnel(
-            in_window=len(self._articles), kept=len(self._articles)))
+        # Mirror the real return shape: tiered context + its funnel (ISSUE_24/ISSUE_30).
+        retrieved = [RetrievedArticle(article=a, retrieval_tier=t)
+                     for a, t in zip(self._articles, self._tiers)]
+        return RetrievedContext(retrieved=retrieved, funnel=RetrievalFunnel(
+            in_window=len(self._articles), kept=len(self._articles),
+            deep_kept=sum(1 for t in self._tiers if t == 'deep')))
 
 
 class _FakeBuilder:

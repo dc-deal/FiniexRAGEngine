@@ -19,6 +19,7 @@ from finiexragengine.core.outcome.outcome_store import OutcomeStore
 from finiexragengine.core.pipeline.envelope_contract import hold_result
 from finiexragengine.core.sources.article_normalizer import ArticleNormalizer
 from finiexragengine.types.ingest_types import DETECTION_TRIGGERS, TEXT_NORMALIZER_PROFILES
+from finiexragengine.types.article_types import RETRIEVAL_TIERS
 from finiexragengine.types.outcome_types import (
     DATA_ORIGINS,
     RESULT_BASES,
@@ -92,6 +93,7 @@ def test_the_vocabularies_are_still_declared():
     assert DATA_ORIGINS == ('live', 'synthetic')
     assert DETECTION_TRIGGERS == ('cluster', 'keyword')
     assert TEXT_NORMALIZER_PROFILES == ('v1',)
+    assert RETRIEVAL_TIERS == ('recent', 'deep')
 
 
 def test_a_corpus_column_vocabulary_is_strict_where_it_is_configured():
@@ -104,3 +106,30 @@ def test_a_corpus_column_vocabulary_is_strict_where_it_is_configured():
     """
     with pytest.raises(ValueError, match='v2'):
         ArticleNormalizer('v2')
+
+
+def test_a_citation_from_an_unknown_retrieval_tier_still_loads():
+    """ISSUE_30's field joins the same split: `ArticleRef.retrieval_tier` is a plain `str`.
+
+    A later version may add a third window — a per-symbol tier, a corroboration tier — and an
+    archive line carrying it must load on a reader pinned to this build rather than refusing the
+    whole envelope over one unknown tag.
+    """
+    line = _archived()
+    line['result'][0]['sources'] = [{
+        'article_id': 'a', 'url': 'https://example.test/a', 'title': 't',
+        'published_at': _TS.isoformat(), 'retrieval_tier': 'corroboration'}]
+
+    parsed = SentimentEnvelope(**line)
+    assert parsed.result[0].sources[0].retrieval_tier == 'corroboration'
+
+
+def test_a_citation_archived_before_the_field_existed_still_loads():
+    """And `None` keeps its single meaning: archived before ISSUE_30, never \"recent\"."""
+    line = _archived()
+    line['result'][0]['sources'] = [{
+        'article_id': 'a', 'url': 'https://example.test/a', 'title': 't',
+        'published_at': _TS.isoformat()}]
+
+    parsed = SentimentEnvelope(**line)
+    assert parsed.result[0].sources[0].retrieval_tier is None
