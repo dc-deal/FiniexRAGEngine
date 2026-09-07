@@ -6,11 +6,17 @@ Constellations never own feeds — they reference a set by id (`source_set`), so
 set can feed N pipelines (crypto sentiment, fan variants, later market-wide moods)
 with a single ingest worker: declare once, reference by id.
 """
-from typing import List, Literal, Optional
+from typing import List, Literal, Optional, Tuple, get_args
 
 from pydantic import BaseModel, Field
 
 from finiexragengine.types.config_types.pipeline_config_types import TriggerConfig
+
+# WHAT a cluster size counts (ISSUE_106). Strict here because this is where the value is *chosen* —
+# a typo must fail at config load, which is boot, rather than silently selecting a measure. Nothing
+# stores it as free text, so there is no parsing boundary needing the permissive half.
+ClusterUnit = Literal['articles', 'feeds']
+CLUSTER_UNITS: Tuple[str, ...] = get_args(ClusterUnit)
 
 
 class SourceConfig(BaseModel):
@@ -59,28 +65,29 @@ class DetectionConfig(BaseModel):
     The keyword vocabulary is market-specific, so the config lives with the source-set. Sensitivity
     (which tier wakes a given pipeline) is per-pipeline instead — see `BreakingConfig`.
 
-    **What the cluster size actually counts, corrected 2026-08-25 (ISSUE_106).** These comments
-    used to say "feeds", and that was wrong in two ways at once. `PgVectorStore.count_neighbors` is
-    `SELECT COUNT(*) FROM articles WHERE published_at >= … AND (embedding <=> …) <= …`, so it counts
+    **What the cluster size counts is now a per-set choice (ISSUE_106, settled 2026-09-07).** These
+    comments once said "feeds" while `count_neighbors` was `SELECT COUNT(*) FROM articles WHERE
+    published_at >= … AND (embedding <=> …) <= …` — wrong in two ways at once: it counted articles
+    rather than distinct feeds (one feed's live-blog, follow-up and syndicated re-post reached a
+    cluster of three on its own), and it counted the whole shared corpus rather than this set's
+    feeds (a macro story carried by both sets accumulated neighbours from both, and each then scored
+    it against *its own* thresholds using a count the other contributed to).
 
-      1. **articles, not distinct feeds** — one feed publishing a live-blog, a follow-up and a
-         syndicated re-post reaches a cluster of three on its own; and
-      2. **the whole corpus, not this set's feeds** — `articles` is one table for every source-set,
-         and the query filters on vector distance and time only. A macro story carried by both
-         `forex_news` and `crypto_news` (a Fed decision, a tariff announcement) accumulates
-         neighbours from both, and each set then scores it against *its own* thresholds using a
-         count the other set contributed to.
+    Both halves are fixed. The count is scoped to the calling set's active feeds, and `cluster_unit`
+    selects the measure. The decision came from measurement rather than from restating the intent,
+    and it is **different per set**, which is why it is a field and not a constant:
 
-    The design *intent* was cross-feed corroboration, which is what would make a burst evidence of
-    anything; the implementation measures **near-duplicate density**. The two agree while feeds are
-    many and self-duplication is rare, and they come apart exactly when the feed count drops —
-    which is how it went unnoticed for six weeks of production.
+    - `crypto_news` — distinct feeds at similarity 0.75. Over 2,000 seeds and 5.8 days that admits
+      7 genuine multi-outlet stories; the article count at the same threshold admits 12, and the
+      gap is one feed's own near-duplicates.
+    - `forex_news` — nothing works, so the path is switched off explicitly. Zero cross-feed
+      neighbourhoods at *every* similarity over a full week, while loosening the article count to
+      0.65 would fire 27 HIGH flags a week out of `actionforex`'s daily template.
 
-    Not yet decided (the open half of ISSUE_106): whether the query changes to count distinct
-    `source_id`s, or the intent is restated as duplicate density. The comments below now describe
-    what the code *does*, so nothing here claims a property it lacks while that is settled. A shared
-    corpus is a deliberate property of this engine (ISSUE_28), so a corpus-wide count may well be
-    the right answer — but then the threshold is not the per-set knob it looks like.
+    The honest ceiling, so nobody plans against the wrong number: at roughly 1.2 flags a day the
+    cluster path contributes about a sixth of what the keyword path already does. Its more valuable
+    half is **retention** — `importance >= 2` is what admits an older article to the deep retrieval
+    tier, and that channel is otherwise fed by keyword-HIGH alone.
     """
     # Pairwise cosine to count as the same story — and MEASURED 2026-09-01 to be the gate that
     # makes the whole cluster path inert, not the tier sizes below it. Production, 400 seeds: the
@@ -89,16 +96,42 @@ class DetectionConfig(BaseModel):
     # nearest neighbours. Consequence: 48 of 48 attributed flags came from the keyword path, and
     # `articles` carried zero rows at importance 2 or 3 from clustering.
     #
-    # Do NOT simply lower it. At 0.75/0.65 the first neighbourhoods to form are one feed's own
+    # **Never lower it alone.** At 0.75/0.65 the first neighbourhoods to form are one feed's own
     # series — `actionforex`'s "EUR/USD / EUR/AUD / EUR/CHF Daily Outlook", `cryptonews`'s "XRP
     # Price Prediction:" — because dense embeddings place "same template, different subject" closer
-    # than "same subject, different words". Loosening alone flags a daily template as breaking.
-    # `detection_sweep_cli` walks the grid with the distinct-feed count beside the article count;
-    # the gap between those two columns is exactly the intra-feed duplication.
+    # than "same subject, different words". Loosening alone flags a daily template as breaking; it
+    # is only safe **paired with `cluster_unit: 'feeds'`**, which is what makes a template count as
+    # the one feed it is. That pair is the whole finding, and either half without the other is a
+    # regression. `detection_sweep` walks the grid with both columns side by side, and the gap
+    # between them is exactly the intra-feed duplication.
     cluster_similarity: float = 0.85
     cluster_window_minutes: int = 60     # burst window
-    # >= this many NEAR-DUPLICATE ARTICLES in the window, corpus-wide -> importance MID (2).
-    # Not "this many feeds": see the class docstring.
+    # Whether the cluster path runs at all (ISSUE_106). `false` skips the neighbour query entirely;
+    # the keyword fast-path is untouched.
+    #
+    # An explicit switch rather than a threshold nobody can reach, and the distinction is the same
+    # one a disabled feed draws: switching a path off is a DECISION, not a degradation, and a
+    # surface should be able to say which. `forex_news` sets it false because no similarity produces
+    # cross-feed corroboration there (measured 2026-09-07: zero at every threshold over a full week)
+    # while loosening `ARTICLES` to 0.65 would fire 27 HIGH flags a week out of one feed's daily
+    # template. Leaving it inert by arithmetic instead would put that safety in a comment, and it
+    # would evaporate the moment someone retunes the similarity for an unrelated reason.
+    cluster_enabled: bool = True
+    # WHAT the cluster size counts (ISSUE_106). 'articles' is the historical behaviour and stays the
+    # default, so a set that says nothing keeps what it had — the safe direction, and also how a
+    # future set silently inherits the older semantics, which is why this comment exists.
+    #
+    # 'feeds' counts DISTINCT source_ids, which is what the thresholds were always described as
+    # measuring. `crypto_news` runs it at similarity 0.75: measured over 2,000 seeds and 5.8 days,
+    # that pair admits 7 genuine multi-outlet stories while the article count at the same threshold
+    # admits 12 — the gap is one feed's own near-duplicates, which corroborate nothing.
+    #
+    # Note what feed counting cannot reach: `high_cluster_size` of 5 distinct feeds did not occur at
+    # ANY similarity in that sample, so HIGH keeps coming from the keyword path alone. That is
+    # recorded rather than fixed by lowering the number — a threshold set to fire without evidence
+    # of what it fires on is the defect this issue was opened about.
+    cluster_unit: ClusterUnit = 'articles'
+    # >= this many units (see `cluster_unit`) in the window -> importance MID (2).
     mid_cluster_size: int = 3
     # >= this many (OR high-weight source + keyword) -> HIGH (3) + breaking candidate.
     high_cluster_size: int = 5

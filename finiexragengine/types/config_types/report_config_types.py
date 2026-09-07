@@ -131,6 +131,21 @@ class RetrievalDriftReportConfig(BaseModel):
     min_passes: int = 40
 
 
+class DetectionQualityReportConfig(BaseModel):
+    """What the detector flagged and on what evidence (ISSUE_106) — the archive counterpart to
+    `detection_sweep`'s replay.
+
+    The sweep answers *what a setting would do* by re-scoring the corpus; this answers *what the
+    running one did*, from the neighbourhood counts the detector recorded at flag time. Two
+    questions, so two reports — and the pairing is the point: a replay cannot be wrong about the
+    past, and a record cannot be wrong about the present.
+    """
+    window: str = '7d'
+    # How many recent cluster flags are named. Titles, because the grid alone once said 0.65
+    # "works" and only reading the headlines showed it firing on a daily template.
+    examples: int = 5
+
+
 class ReportsConfig(BaseModel):
     """One config object per report, keyed by the name the catalog and the API use."""
     source_health: SourceHealthReportConfig = Field(default_factory=SourceHealthReportConfig)
@@ -148,3 +163,5 @@ class ReportsConfig(BaseModel):
         default_factory=DetectionSweepReportConfig)
     retrieval_drift: RetrievalDriftReportConfig = Field(
         default_factory=RetrievalDriftReportConfig)
+    detection_quality: DetectionQualityReportConfig = Field(
+        default_factory=DetectionQualityReportConfig)

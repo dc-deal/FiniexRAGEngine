@@ -96,6 +96,31 @@ class ScoredArticle:
 
 
 @dataclass
+class NeighbourCount:
+    """How large the neighbourhood around one article is, measured two ways (ISSUE_106).
+
+    Both numbers, deliberately: the **gap between them is the intra-feed duplication**. A story
+    carried by three outlets counts 3 articles and 3 feeds; one feed's live-blog reaching a cluster
+    of three counts 3 and 1, and only the pair tells them apart. The detector tiers on whichever
+    unit its set configured; `detection_quality` renders the ratio.
+
+    A result object rather than a second return value: `count_neighbors` was a bare `int`, and the
+    house rule is that a seam needing a second value becomes a result object rather than a tuple.
+    """
+    articles: int
+    feeds: int
+
+    @property
+    def duplication(self) -> Optional[float]:
+        """Articles per distinct feed — `None` when the neighbourhood is empty.
+
+        ~1.0 is corroboration; 3x and above means one feed supplied most of the cluster it was
+        credited for.
+        """
+        return self.articles / self.feeds if self.feeds else None
+
+
+@dataclass
 class RetrievedArticle:
     """One article that reached the prompt, and which retrieval tier surfaced it (ISSUE_30).
 

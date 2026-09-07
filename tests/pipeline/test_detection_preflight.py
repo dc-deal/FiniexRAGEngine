@@ -78,7 +78,7 @@ def test_a_healthy_set_reports_the_gate_distribution_rather_than_a_boolean():
     assert (reach.at_or_above_gate, reach.active) == (5, 7)
     lines = '\n'.join(format_reachability_lines(reach))
     assert 'keyword gate 0.9 · 5 of 7 active feeds at or above (highest 1.0)' in lines
-    assert 'cluster thresholds 3/5 satisfiable by 7 active feeds' in lines
+    assert 'cluster thresholds 3/5 (articles) satisfiable by 7 active feeds' in lines
     assert 'CANNOT' not in lines
 
 
@@ -179,3 +179,54 @@ def test_a_clean_read_says_so_rather_than_staying_silent():
     text = '\n'.join(format_reachability_lines(live))
     assert 'none quarantined right now' in text
     assert 'quarantine not included' not in text
+
+
+# --- the unit decides how strong the verdict is (ISSUE_106) ------------------------------
+
+def _set_with(detection: DetectionConfig, *feeds) -> SourceSetConfig:
+    """A set whose `detection` block is supplied whole — the unit and the switch live there."""
+    return SourceSetConfig(
+        source_set_id='crypto_news', detection=detection,
+        sources=[SourceConfig(source_id=sid, url=f'https://{sid}.test/rss', weight=1.0)
+                 for sid in feeds])
+
+
+def test_the_cluster_verdict_is_a_proof_once_the_set_counts_feeds():
+    """The same comparison, two strengths — and the difference is not cosmetic.
+
+    Counting articles, four feeds can still reach a cluster of five when one of them duplicates
+    itself, so "unreachable" would be false and falsely reassuring. Counting DISTINCT feeds, five
+    cannot come from four: the tier simply cannot fire, and a report that hedged there would be
+    wasting a fact it holds.
+    """
+    feeds = ('a', 'b', 'c', 'd')
+    articles = _set_with(DetectionConfig(cluster_unit='articles', mid_cluster_size=3,
+                                         high_cluster_size=5), *feeds)
+    distinct = _set_with(DetectionConfig(cluster_unit='feeds', mid_cluster_size=3,
+                                         high_cluster_size=5), *feeds)
+
+    indicator = '\n'.join(format_reachability_lines(check_detection_reachability(articles)))
+    proof = '\n'.join(format_reachability_lines(check_detection_reachability(distinct)))
+
+    assert 'only a feed duplicating itself' in indicator
+    assert 'CANNOT fire' not in indicator
+    assert 'CANNOT fire' in proof and 'DISTINCT FEEDS' in proof
+
+
+def test_a_switched_off_cluster_path_reads_as_a_decision_not_as_a_broken_threshold():
+    """"Off by decision" and "off by arithmetic" are different states.
+
+    Rendering them alike invites the next reader to "fix" a threshold nobody wanted firing — which
+    for `forex_news` would mean loosening the article count into 27 HIGH flags a week out of one
+    feed's daily template.
+    """
+    off = _set_with(DetectionConfig(cluster_enabled=False, mid_cluster_size=3,
+                                    high_cluster_size=5), 'a', 'b')
+    reach = check_detection_reachability(off)
+    lines = '\n'.join(format_reachability_lines(reach))
+
+    assert 'cluster path OFF by config' in lines
+    assert 'keyword-only' in lines
+    # Not reported as unreachable — there is nothing to reach, by decision.
+    assert not reach.cluster_needs_self_duplication
+    assert 'satisfiable' not in lines

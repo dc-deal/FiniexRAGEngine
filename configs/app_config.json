@@ -188,6 +188,10 @@
     "retrieval_drift": {
       "window": "14d",
       "min_passes": 40
+    },
+    "detection_quality": {
+      "window": "7d",
+      "examples": 5
     }
   }
 }

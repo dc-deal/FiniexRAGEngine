@@ -34,9 +34,17 @@ ingest worker (every ~15s, conditional GET)         eval worker (interval OR bre
 cross-feed copies count):
 
 - **Primary signal — cluster-burst.** The same story hitting many feeds in a short window forms a
-  tight embedding cluster; the cluster size *is* the signal. `count_neighbors(vector, since,
-  max_distance)` is one `COUNT(*)` over the recency window with a cosine-distance filter
-  (`max_distance = 1 − cluster_similarity`) — pure vector math in the DB, **no LLM, ever**.
+  tight embedding cluster; the cluster size *is* the signal. `count_neighbors` is one query over the
+  recency window with a cosine-distance filter (`max_distance = 1 − cluster_similarity`) — pure
+  vector math in the DB, **no LLM, ever** — returning a `NeighbourCount` with **both** the article
+  count and the distinct-feed count.
+
+  **Which of the two the tiers read is the set's choice** (`cluster_unit`, ISSUE_106), and the
+  count is scoped to that set's active feeds. Both were defects until 2026-09-07: the query counted
+  articles rather than feeds *and* spanned the whole shared corpus, so one feed's live-blog reached
+  a cluster of three by itself and a macro story carried by another set inflated this set's count
+  against this set's thresholds. `cluster_enabled: false` switches the path off entirely for a set
+  that has nothing to find — a decision, reported as one, rather than a threshold left unreachable.
 - **Secondary fast-path — keyword.** A breaking keyword (word-boundary match, so "SEC" never fires
   on "seconds") on a high-trust source (`source_weight ≥ keyword_source_weight`) flags HIGH on its
   own, without waiting for the cluster to build.
@@ -119,11 +127,14 @@ a quarantined feed. Warning it is the whole point — the failure mode was silen
 | check | strength | why |
 |---|---|---|
 | `keyword_source_weight` > every active feed's weight | **proof** | `source_weight` comes from the config and nothing else can raise it. The fast-path cannot fire, period. |
-| `high/mid_cluster_size` > active feed count | **indicator** | `count_neighbors` is a `COUNT(*)` over corpus *articles* with no notion of which feed each came from, so four feeds reach a cluster of five whenever one publishes near-duplicates of its own (live-blog, follow-up, syndicated re-post). |
+| `high/mid_cluster_size` > active feed count, `cluster_unit: 'articles'` | **indicator** | the probe has no notion of which feed each neighbour came from, so four feeds reach a cluster of five whenever one publishes near-duplicates of its own (live-blog, follow-up, syndicated re-post). |
+| `high/mid_cluster_size` > active feed count, `cluster_unit: 'feeds'` | **proof** | distinct feeds cannot exceed the feeds that run. The tier cannot fire — no route, not merely a narrow one. |
+| `cluster_enabled: false` | **neither** | reported as *off by decision*. Not a threshold anybody should go fix — for `forex_news`, "fixing" it means loosening the article count into 27 HIGH flags a week out of one feed's daily template. |
 
-So the cluster line says *"the cross-feed path cannot be reached by these feeds alone; only a feed
-duplicating itself, or the keyword path, can still fire"* — never "unreachable", which would be
-false and, worse, reassuring. Reporting an indicator as a proof is how a report loses its
+So under `articles` the cluster line says *"the cross-feed path cannot be reached by these feeds
+alone; only a feed duplicating itself, or the keyword path, can still fire"* — never "unreachable",
+which would be false and, worse, reassuring. Under `feeds` it says CANNOT, because there it is a
+fact and hedging would waste one. Reporting an indicator as a proof is how a report loses its
 credibility.
 
 ### What each state looks like, with the numbers that produced it
@@ -182,6 +193,38 @@ different lever than the config suggests.
 - **It does not retune anything.** Whether `high_cluster_size: 5` is *right* for the current feed
   count is a calibration question that needs the detection trigger on the row first (ISSUE_106
   part A) — the preflight makes the mismatch visible, it does not decide the value.
+
+## What the cluster path is worth, measured (ISSUE_106, 2026-09-07)
+
+The decision above came from replaying the corpus, not from restating the intent. Over 2,000 seeds
+and 5.8 days of normalised text:
+
+| similarity | crypto `ARTICLES` | crypto `FEEDS` | forex `ARTICLES` | forex `FEEDS` |
+|---|---|---|---|---|
+| 0.85 (the old live value) | 0 | 0 | 0 | 0 |
+| **0.75** | 12 | **7** | 26 | 0 |
+| 0.65 | 37 | 15 | 69 (27 HIGH) | 0 |
+
+So `crypto_news` runs distinct feeds at 0.75, and `forex_news` runs the path switched off. Two facts
+the table carries that a single number would not:
+
+- **`high_cluster_size: 5` is unreachable by feed counting at any similarity** in that sample, so
+  HIGH keeps coming from the keyword path alone. Recorded rather than fixed by lowering the number —
+  a threshold set to fire without evidence of what it fires on is the defect this issue opened on.
+- **The honest ceiling is about 1.2 flags a day**, roughly a sixth of what the keyword path already
+  delivers. The cluster path's more valuable half is **retention**: `importance ≥ 2` is what admits
+  an older article to the deep retrieval tier, and that channel is otherwise fed by keyword-HIGH
+  alone.
+
+**The evidence is stored, not re-derived** (migration 013). `cluster_articles` and `cluster_feeds`
+are written onto the row when the cluster path produced the verdict — NULL on a keyword flag, since
+none was consulted. `detection_quality` reads them back as the **duplication ratio**
+(articles ÷ distinct feeds): near 1.0 is corroboration, 2x and above is one feed supplying most of
+what it was credited for. That turns "was this flag justified" from a replay into a read, which is
+the difference between judging a threshold change in days and judging it in a session.
+
+Two surfaces, deliberately: `detection_sweep` replays the corpus and says what a setting *would* do;
+`detection_quality` reads the archive and says what the running one *did*.
 
 ## Stage 2 — the two-parameter split (the wake vs the confirm)
 

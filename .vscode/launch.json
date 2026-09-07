@@ -410,6 +410,33 @@
             }
         },
         {
+            // "The cluster path fires now — but is it flagging stories or one feed's template?"
+            // ISSUE_106. The archive counterpart to the Detection Sweep: the sweep REPLAYS the
+            // corpus to say what a setting would do, this reads what the running one DID, from the
+            // neighbourhood counts the detector recorded at flag time (migration 013).
+            // Read the DUPLICATION column: articles / distinct feeds across the flagged
+            // neighbourhoods. ~1.0 is a story carried by separate outlets; 2x and above means one
+            // feed supplied most of what it was credited for — the shape that kept the cluster
+            // path switched off (actionforex publishing nine currency-pair outlooks in an hour and
+            // reaching a cluster of nine by itself). The named flags below the table are the
+            // eyeball check: the ratio flags a suspicion, the headline settles it.
+            // Read-only, no LLM, no embedding calls.
+            "name": "📊 RAGEngine: Detection Quality (are the flags corroboration or one feed?)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/finiexragengine/cli/detection_quality_cli.py",
+            "args": [
+                "--since",
+                "7d"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "04_diagnostics",
+                "order": 16
+            }
+        },
+        {
             // "Is the normaliser actually working, and how far has the corpus turned over?"
             // ISSUE_112. Four answers in one place: which treatment produced the stored text, what
             // carriers SURVIVE in each slice (a stamped row holding markup is the treatment

@@ -382,7 +382,7 @@ def test_the_report_shows_whether_the_thresholds_can_still_fire():
 
     assert 'detection reachability: 2 source-set(s) checked · 1 with a path out of reach' in text
     assert 'crypto_news · 4 active feeds (6 declared, 2 out: theblock, cryptoslate)' in text
-    assert 'forex_news · cluster thresholds 3/5 satisfiable by 11 active feeds' in text
+    assert 'forex_news · cluster thresholds 3/5 (articles) satisfiable by 11 active feeds' in text
     # The sentence that makes the finding actionable rather than decorative.
     assert 'reads exactly like a quiet news week' in text
 

@@ -35,6 +35,7 @@ authenticated by construction rather than by remembering (#98).
 | `prompt_drift` | `window` | the urgency distribution per pipeline, prompt version and config fingerprint — did the *answers* move |
 | `retrieval_drift` | `window` | the retrieval funnel per pipeline, config fingerprint and **weekday** — did the *evidence* move |
 | `corpus_text` | `window` | which text treatment produced the stored corpus, surviving carriers, and keyword hits that exist only inside markup |
+| `detection_quality` | `window` | what the detector actually flagged and on what evidence — flags per path, the neighbourhood each cluster flag was made on, the duplication ratio |
 | `detection_sweep` | `window`, `sample`, `similarities`, `normalizer`, `source_set_id` | what each candidate detector would have flagged, replayed from the corpus across a similarity grid |
 
 ## Config declares, the call overrides — and the answer says which applied

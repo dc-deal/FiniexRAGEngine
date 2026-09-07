@@ -3,10 +3,10 @@ import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional, Pattern
+from typing import List, Optional, Pattern, Set
 
 from finiexragengine.core.rag.abstract_vector_store import AbstractVectorStore
-from finiexragengine.types.article_types import Article
+from finiexragengine.types.article_types import Article, NeighbourCount
 from finiexragengine.types.config_types.source_set_types import DetectionConfig
 from finiexragengine.types.ingest_types import DetectionResult, DetectionTrigger
 
@@ -15,6 +15,11 @@ logger = logging.getLogger(__name__)
 # Importance tiers written to the corpus (ISSUE_11) — the graded signal the per-pipeline wake
 # filter (breaking.min_importance) and the deep retrieval tier (importance >= 2) both read.
 LOW, MID, HIGH = 1, 2, 3
+
+# The two detection paths, named once (ISSUE_106) — the value reaches a corpus column and a report,
+# so it is worth a constant rather than a literal repeated at four call sites.
+CLUSTER: DetectionTrigger = 'cluster'
+KEYWORD: DetectionTrigger = 'keyword'
 
 
 @dataclass
@@ -43,9 +48,15 @@ class BreakingDetector:
     string match — no LLM call, ever. The highest tier written drives the eval wake (Stage B).
     """
 
-    def __init__(self, store: AbstractVectorStore, config: DetectionConfig) -> None:
+    def __init__(self, store: AbstractVectorStore, config: DetectionConfig,
+                 source_ids: Optional[Set[str]] = None) -> None:
         self._store = store
         self._config = config
+        # The feeds this set actually runs (ISSUE_106). The neighbour count is scoped to them, so a
+        # macro story carried by another source-set no longer inflates this set's cluster size
+        # against this set's thresholds. `None` counts corpus-wide — the pre-ISSUE_106 behaviour,
+        # kept for a caller with no set in hand rather than as a default anyone should choose.
+        self._source_ids = source_ids
         # Word-boundary match (not naive substring): "SEC" must not fire on "seconds", and a
         # phrase like "rate decision" matches as a unit. None when no keywords are configured.
         self._keyword_pattern: Optional[Pattern] = None
@@ -64,17 +75,32 @@ class BreakingDetector:
         since = datetime.now(timezone.utc) - timedelta(minutes=cfg.cluster_window_minutes)
         high_examples = []   # (title, cluster_size) — a few, to judge detection quality in the log
         for article, vector in zip(fresh, vectors):
-            # Cluster size = near-duplicates already in the corpus within the window (this article
-            # and its just-stored siblings included) — one COUNT(*), no rows, no LLM.
-            cluster_size = self._store.count_neighbors(vector, since, max_distance)
+            # The neighbourhood already in the corpus within the window (this article and its
+            # just-stored siblings included) — one query, no rows materialized, no LLM. Skipped
+            # entirely when the cluster path is switched off (ISSUE_106): a set with nothing to
+            # find should not pay for the probe, and the keyword fast-path below is unaffected.
+            neighbours = (self._store.count_neighbors(vector, since, max_distance,
+                                                      source_ids=self._source_ids)
+                          if cfg.cluster_enabled else NeighbourCount(articles=0, feeds=0))
+            # Which number the tiers are read against is the set's choice (ISSUE_106): 'feeds'
+            # counts distinct outlets — corroboration — while 'articles' counts near-duplicate
+            # density, which one feed can reach on its own.
+            cluster_size = (neighbours.feeds if cfg.cluster_unit == 'feeds'
+                            else neighbours.articles)
             verdict = self._tier(cluster_size, article.source_weight,
                                  self._has_keyword(article))
             if verdict is None:
                 continue   # routine article — left untagged (NULL importance)
             tier = verdict.tier
             breaking = tier == HIGH
+            # The neighbourhood travels onto the row only when the cluster path produced the
+            # verdict: a keyword flag leaves both columns NULL rather than claiming a cluster it
+            # never consulted. NULL means "not measured", the same distinction `detection_trigger`
+            # draws — and it is what lets `detection_quality` read the duplication ratio of the
+            # flags the cluster path actually made.
+            measured = neighbours if verdict.trigger == CLUSTER else None
             self._store.flag_candidates([article.article_id], tier, breaking,
-                                        trigger=verdict.trigger)
+                                        trigger=verdict.trigger, neighbours=measured)
             result.by_trigger[verdict.trigger] = result.by_trigger.get(verdict.trigger, 0) + 1
             if breaking:
                 result.candidates += 1
@@ -113,11 +139,11 @@ class BreakingDetector:
         # fire, the burst is the stronger evidence and the one the threshold is calibrated on.
         # Attributing an overlap to the fast path would flatter the fast path's hit rate.
         if cluster_size >= cfg.high_cluster_size:
-            return _TierVerdict(HIGH, 'cluster')
+            return _TierVerdict(HIGH, CLUSTER)
         if keyword_hit and source_weight >= cfg.keyword_source_weight:
-            return _TierVerdict(HIGH, 'keyword')
+            return _TierVerdict(HIGH, KEYWORD)
         if cluster_size >= cfg.mid_cluster_size:
-            return _TierVerdict(MID, 'cluster')
+            return _TierVerdict(MID, CLUSTER)
         return None
 
     def _has_keyword(self, article: Article) -> bool:

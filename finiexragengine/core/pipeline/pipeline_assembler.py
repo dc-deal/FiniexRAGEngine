@@ -239,8 +239,14 @@ class PipelineAssembler:
                               dimensions=self._cfg.embedding.dimensions,
                               embedding_model=self._cfg.embedding.model)
         # Breaking detection (ISSUE_11): LLM-free cluster-burst + keyword flagging over the shared
-        # corpus, scoped to this set's `detection` block (clustering is across the set's feeds).
-        detector = BreakingDetector(store, source_set.detection)
+        # corpus, scoped to this set's `detection` block. The active feed ids make the second half
+        # of that scoping real (ISSUE_106) — the comment here claimed "across the set's feeds" while
+        # the query counted the whole corpus, so a macro story carried by another set inflated this
+        # set's cluster size against this set's thresholds. `active_sources()` is the one definition
+        # of what runs, the same one the ingestor and `SourceReach` read.
+        detector = BreakingDetector(
+            store, source_set.detection,
+            source_ids={source.source_id for source in source_set.active_sources()})
         # Source health (ISSUE_11): every poll is recorded; a persistently failing feed is flagged
         # and quarantined. One store per ingestor (long-lived on the worker → in-memory quarantine).
         health_store = SourceHealthStore(self._database_url, self._cfg.source_health)

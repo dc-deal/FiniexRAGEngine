@@ -242,11 +242,14 @@ class DetectionReachability:
     - **the weight check is a proof.** `keyword_source_weight` is compared against the highest
       weight actually running. If the gate sits above it, the keyword fast-path cannot fire at all —
       there is no loophole, because `source_weight` comes from the config and nothing else.
-    - **the cluster check is an indicator.** `count_neighbors` is a `COUNT(*)` over corpus articles
-      with no notion of which feed each came from, so a set of four feeds reaches a cluster of five
-      whenever one of them publishes near-duplicates of its own (a live-blog, a follow-up, a
-      syndicated re-post). Fewer active feeds than the threshold therefore means "only intra-feed
-      duplication can still get there", never "unreachable".
+    - **the cluster check is an indicator — unless the set counts feeds (ISSUE_106).** While
+      `cluster_unit` is `'articles'` the probe has no notion of which feed each neighbour came
+      from, so a set of four feeds reaches a cluster of five whenever one of them publishes
+      near-duplicates of its own (a live-blog, a follow-up, a syndicated re-post): fewer active
+      feeds than the threshold means "only intra-feed duplication can still get there", never
+      "unreachable". Under `'feeds'` the same comparison becomes a **proof** — three distinct feeds
+      cannot come from fewer than three pollable ones — so the wording follows the unit rather than
+      being fixed. That is the whole reason the unit is carried here.
     """
     source_set_id: str
     declared: int
@@ -271,6 +274,16 @@ class DetectionReachability:
     # live one, which is the same mistake as reading an unmeasured corpus as an empty one.
     quarantined_ids: List[str] = field(default_factory=list)
     quarantine_known: bool = False
+    # What the set's cluster size counts, and whether the path runs at all (ISSUE_106). Both are
+    # config facts the verdict cannot be stated without: the same threshold against the same feeds
+    # means something different per unit, and a switched-off path is not an unreachable one.
+    cluster_unit: str = 'articles'
+    cluster_enabled: bool = True
+
+    @property
+    def cluster_check_is_proof(self) -> bool:
+        """Whether the cluster verdict can be stated as fact rather than as an indicator."""
+        return self.cluster_unit == 'feeds'
 
     @property
     def effective(self) -> int:
@@ -283,12 +296,17 @@ class DetectionReachability:
 
     @property
     def cluster_needs_self_duplication(self) -> bool:
-        """HIGH is out of reach for the set's feeds alone — only a feed duplicating itself gets there."""
-        return self.high_cluster_size > self.effective
+        """HIGH is out of reach for the set's feeds alone.
+
+        Under `'articles'` that means only a feed duplicating itself can still get there; under
+        `'feeds'` it is simply unreachable. A **disabled** path is neither — it is off by decision,
+        which is a different statement and gets its own line.
+        """
+        return self.cluster_enabled and self.high_cluster_size > self.effective
 
     @property
     def mid_needs_self_duplication(self) -> bool:
-        return self.mid_cluster_size > self.effective
+        return self.cluster_enabled and self.mid_cluster_size > self.effective
 
     @property
     def keyword_path_dead(self) -> bool:

@@ -13,7 +13,7 @@ import psycopg
 import pytest
 
 from finiexragengine.core.rag.pgvector_store import PgVectorStore
-from finiexragengine.types.article_types import Article
+from finiexragengine.types.article_types import Article, NeighbourCount
 from finiexragengine.types.config_types.app_config_types import VectorStoreConfig
 
 _DIMS = 1536
@@ -26,9 +26,9 @@ def _vec(*leading: float) -> List[float]:
     return list(leading) + [0.0] * (_DIMS - len(leading))
 
 
-def _article(article_id: str, published_at: datetime) -> Article:
+def _article(article_id: str, published_at: datetime, source_id: str = 's') -> Article:
     return Article(
-        article_id=article_id, source_id='s', source_weight=1.0,
+        article_id=article_id, source_id=source_id, source_weight=1.0,
         url=f'https://example.test/{article_id}', title=f'title-{article_id}',
         summary='summary', language='en', published_at=published_at, fetched_at=_BASE)
 
@@ -71,7 +71,8 @@ def test_query_min_importance_excludes_null(store):
 
 def test_count_neighbors_within_window_and_distance(store):
     # The breaking detector's cluster probe (ISSUE_11): near copies within the window count;
-    # a dissimilar article and a stale one do not.
+    # a dissimilar article and a stale one do not. Both measures come back (ISSUE_106) — here the
+    # two neighbours share one feed, which is exactly the case the article count cannot see.
     old = _BASE - timedelta(days=10)
     store.upsert(
         [_article('n1', _BASE), _article('n2', _BASE),
@@ -81,7 +82,40 @@ def test_count_neighbors_within_window_and_distance(store):
     )
     count = store.count_neighbors(_vec(1.0),
                                   since=_BASE - timedelta(days=1), max_distance=0.1)
-    assert count == 2          # n1 + n2 (distance 0); far excluded (distance 1), old (window)
+    assert count.articles == 2   # n1 + n2 (distance 0); far excluded (distance 1), old (window)
+    assert count.feeds == 1      # ...and both came from the same feed
+    assert count.duplication == 2.0
+
+
+def test_count_neighbors_counts_distinct_feeds_and_scopes_to_the_ones_asked_for(store):
+    """The two halves of ISSUE_106's defect, in one fixture.
+
+    Three identical vectors from three feeds is corroboration; the same three with one feed left
+    out of `source_ids` is a smaller neighbourhood, because a set's threshold must be measured
+    against that set's own feeds. Without the scope, `articles` being one table for every source
+    set let a macro story carried elsewhere inflate this set's count.
+    """
+    store.upsert(
+        [_article('a', _BASE, source_id='coindesk'),
+         _article('b', _BASE, source_id='decrypt'),
+         _article('c', _BASE, source_id='theblock')],
+        [_vec(1.0), _vec(1.0), _vec(1.0)],
+    )
+    since = _BASE - timedelta(days=1)
+
+    everything = store.count_neighbors(_vec(1.0), since=since, max_distance=0.1)
+    assert (everything.articles, everything.feeds) == (3, 3)
+
+    scoped = store.count_neighbors(_vec(1.0), since=since, max_distance=0.1,
+                                   source_ids={'coindesk', 'decrypt'})
+    assert (scoped.articles, scoped.feeds) == (2, 2), 'the third feed leaked past the scope'
+
+
+def test_an_empty_neighbourhood_reports_no_duplication_rather_than_dividing_by_zero(store):
+    empty = store.count_neighbors(_vec(1.0), since=_BASE - timedelta(days=1), max_distance=0.1)
+
+    assert (empty.articles, empty.feeds) == (0, 0)
+    assert empty.duplication is None
 
 
 def test_flag_candidates_sets_tier_flag_and_timestamp(store, clean_db):
@@ -102,3 +136,25 @@ def test_flag_candidates_sets_tier_flag_and_timestamp(store, clean_db):
 
 def test_flag_candidates_nonexistent_id_is_noop(store):
     assert store.flag_candidates(['ghost'], importance=3, breaking=True) == 0
+
+
+def test_a_cluster_flag_records_its_evidence_and_a_keyword_flag_does_not(store, clean_db):
+    """ISSUE_106: the neighbourhood is written only where the cluster path produced the verdict.
+
+    A keyword flag leaves both columns NULL rather than writing 0 — 0 would claim an empty
+    neighbourhood was measured when none was consulted, which is the same distinction
+    `detection_trigger` draws between a category and an absence.
+    """
+    store.upsert([_article('cluster', _BASE), _article('kw', _BASE)], [_vec(1.0), _vec(1.0)])
+
+    store.flag_candidates(['cluster'], importance=2, breaking=False, trigger='cluster',
+                          neighbours=NeighbourCount(articles=4, feeds=3))
+    store.flag_candidates(['kw'], importance=3, breaking=True, trigger='keyword')
+
+    with psycopg.connect(store._database_url) as conn, conn.cursor() as cur:
+        cur.execute('SELECT article_id, detection_trigger, cluster_articles, cluster_feeds '
+                    'FROM articles ORDER BY article_id')
+        rows = {row[0]: row[1:] for row in cur.fetchall()}
+
+    assert rows['cluster'] == ('cluster', 4, 3)
+    assert rows['kw'] == ('keyword', None, None)

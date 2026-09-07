@@ -29,6 +29,9 @@ from finiexragengine.core.observability.reports.cost_report import (
     EvalPipelineInfo,
     build_cost_report,
 )
+from finiexragengine.core.observability.reports.detection_quality_report import (
+    build_detection_quality_report,
+)
 from finiexragengine.core.observability.reports.detection_sweep_report import (
     build_detection_sweep_report,
 )
@@ -354,6 +357,26 @@ def _build_detection_sweep(database_url: str, manager: AppConfigManager,
     return reports
 
 
+def _build_detection_quality(database_url: str, manager: AppConfigManager,
+                             params: ReportParams) -> Any:
+    """What the detector flagged and on what evidence — read over the corpus columns (ISSUE_106).
+
+    On the catalog for the same reason `no_data` is: it reads persisted columns and never touches
+    the query-vector cache, so there is no path from a GET into a paid embedding call.
+
+    The disabled sets are a *config* fact the corpus has no column for — the same shape as
+    `source_health`'s disabled feeds. Without it an empty cluster row would read as a gap, when for
+    `forex_news` it is a decision taken against a measurement.
+    """
+    disabled = [source_set.source_set_id
+                for source_set in manager.build_source_set_registry().list_sets()
+                if not source_set.detection.cluster_enabled]
+    return build_detection_quality_report(
+        database_url, params.since, since_label=params.window_label or '7d',
+        example_limit=manager.get_config().reports.detection_quality.examples,
+        disabled_sets=disabled)
+
+
 def _build_retrieval_drift(database_url: str, manager: AppConfigManager,
                            params: ReportParams) -> Any:
     """Whether the evidence moved when the setup changed — read over persisted envelopes.
@@ -439,6 +462,12 @@ _CATALOG: Dict[str, ReportSpec] = {
         summary='What each candidate detector would have flagged, replayed from the stored corpus: '
                 'near-duplicate articles, distinct feeds and lexical stories across a similarity '
                 'grid. Read-only — no LLM, no embedding call.'),
+    'detection_quality': ReportSpec(
+        build=_build_detection_quality, params=('window',),
+        defaults=lambda config: {'window': config.detection_quality.window},
+        summary='What the detector actually flagged and on what evidence: flags per path, the '
+                'neighbourhood each cluster flag was made on, and the duplication ratio that '
+                'separates cross-feed corroboration from one feed repeating itself.'),
     'retrieval_drift': ReportSpec(
         build=_build_retrieval_drift, params=('window',),
         defaults=lambda config: {'window': config.retrieval_drift.window},

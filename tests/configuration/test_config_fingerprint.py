@@ -320,15 +320,23 @@ def test_golden_value_pins_the_canonicalization():
     # This literal is that alarm. It may only be updated together with a deliberate decision to
     # re-baseline the archive's comparability — never to make a red test green.
     #
-    # Re-baselined once, 2026-08-29 (ISSUE_112): `ingest.text_normalizer` joined `_APP_INCLUDED`.
+    # Re-baselined 2026-08-29 (ISSUE_112): `ingest.text_normalizer` joined `_APP_INCLUDED`.
     # 56b4585dbbd9 -> ebef0b431c40. The fork is the POINT of that change, not a side effect — the
     # normaliser rewrites the text behind every vector and every prompt while every provenance
     # field stays byte-identical, which is precisely the unattributable series the fingerprint
     # exists to prevent (the ISSUE_109 lesson). A deploy of the leaf and a re-baseline of this
     # literal are the same decision.
+    #
+    # Re-baselined again 2026-09-07 (ISSUE_106): `DetectionConfig` gained `cluster_enabled` and
+    # `cluster_unit`. ebef0b431c40 -> eda3f0f68890. Detection is inside the hashed source-set half
+    # by design — what the detector flags decides `importance`, which decides what the deep
+    # retrieval tier admits, so it is series-defining. Note the shape of this one: EVERY set forks,
+    # including one that keeps the defaults, because the payload gained fields rather than changed
+    # values. That is the honest cost of putting a choice into config, and it is why the two fields
+    # were added together in one deploy instead of one now and one later.
     result = compute_config_fingerprint(PipelineConfig(**_PIPELINE),
                                         SourceSetConfig(**_SOURCE_SET), AppConfig())
-    assert result.value == 'ebef0b431c40'
+    assert result.value == 'eda3f0f68890'
     assert result.pipeline_id == 'crypto_sentiment'
     assert result.source_set_id == 'crypto_news'
     # The canonical payload travels with the hash so the registry can persist what it stood for.
