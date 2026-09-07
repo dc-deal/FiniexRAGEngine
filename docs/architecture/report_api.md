@@ -32,7 +32,7 @@ authenticated by construction rather than by remembering (#98).
 | `perf` | `window` | per-stage and per-call latency — where a pass spends its time |
 | `cost` | `window`, `recent_passes` | real spend per window against the configured credit, plus the cadence projection |
 | `no_data` | `window` | per-symbol retrieval coverage: the share of mechanical no-data passes, the nearest miss against the floor, what the deep tier carried |
-| `prompt_drift` | `window` | the urgency distribution per pipeline, prompt version and config fingerprint — did the *answers* move |
+| `prompt_drift` | `window` | the urgency distribution per pipeline, prompt version and config fingerprint — did the *answers* move, plus a weekday-matched before/after section |
 | `retrieval_drift` | `window` | the retrieval funnel per pipeline, config fingerprint and **weekday** — did the *evidence* move |
 | `corpus_text` | `window` | which text treatment produced the stored corpus, surviving carriers, and keyword hits that exist only inside markup |
 | `detection_quality` | `window` | what the detector actually flagged and on what evidence — flags per path, the neighbourhood each cluster flag was made on, the duplication ratio |

@@ -72,6 +72,10 @@ class PromptDriftReportConfig(BaseModel):
     against is the wrong default. 30 days spans the last three prompt generations.
     """
     window: str = '30d'
+    # Below this many scored passes a weekday-matched cell is marked thin rather than dropped
+    # (ISSUE_106). A **verdict threshold**, so config-only and never a call parameter — the same
+    # rule as `retrieval_drift.min_passes`, whose section this one mirrors.
+    min_scored: int = 40
 
 
 class CorpusTextReportConfig(BaseModel):

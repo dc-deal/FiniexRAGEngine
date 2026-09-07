@@ -498,3 +498,72 @@ def test_the_setup_is_rendered_so_two_rows_can_be_told_apart() -> None:
     out = format_prompt_drift_report(_aggregate_drift(rows, '30d', _HOLD, _GATES), width=200)
     assert 'setup' in out
     assert '9458492ce234' in out and 'afe4ac5a3331' in out
+
+
+# --- the weekday-matched comparison (ISSUE_106) --------------------------------------------
+
+# 2026-08-29 is a Saturday, 08-30 a Sunday, 09-01 and 09-08 Tuesdays.
+_SAT = datetime(2026, 8, 29, 9, 0, tzinfo=timezone.utc)
+
+
+def _day(fingerprint: str, day: datetime, urgencies: list, *,
+         pipeline: str = 'crypto_sentiment') -> list:
+    return [_row(pipeline, day + timedelta(minutes=10 * i), [_result('XRPUSD', urgency)],
+                 fingerprint=fingerprint)
+            for i, urgency in enumerate(urgencies)]
+
+
+def test_two_setups_on_one_weekday_are_paired_and_the_delta_runs_later_minus_earlier():
+    """The comparison the main table cannot make: it pools weekdays by design."""
+    rows = (_day('before', _SAT, [0.9, 0.9, 0.3, 0.3])            # Sat, confirm 50 %
+            + _day('after', _SAT + timedelta(hours=6), [0.9, 0.3, 0.3, 0.3]))   # Sat, 25 %
+    report = _aggregate_drift(rows, '30d', _HOLD, _GATES, min_scored=1)
+
+    assert len(report.weekday_pairs) == 1
+    pair = report.weekday_pairs[0]
+    assert (pair.weekday_label, pair.from_fingerprint, pair.to_fingerprint) == (
+        'Sat', 'before', 'after')
+    assert pair.confirm_delta == -25.0
+    assert report.comparable_weekdays == 1
+
+
+def test_setups_on_different_weekdays_are_never_paired():
+    """The whole point: the ISSUE_112 normaliser deployed on a Saturday, and read across the
+    weekend its effect looked twice as large as it was."""
+    rows = (_day('before', _SAT, [0.9, 0.9])                       # Sat
+            + _day('after', _SAT + timedelta(days=1), [0.3, 0.3]))  # Sun
+    report = _aggregate_drift(rows, '30d', _HOLD, _GATES, min_scored=1)
+
+    assert report.weekday_pairs == []
+    assert 'no weekday holds two setups yet' in format_prompt_drift_report(report)
+
+
+def test_the_pairing_orders_by_first_appearance_not_by_fingerprint_name():
+    """'zzzz' deployed first here; sorting the hex would invert the comparison."""
+    rows = (_day('zzzz', _SAT, [0.9, 0.9])
+            + _day('aaaa', _SAT + timedelta(hours=6), [0.3, 0.3]))
+    pair = _aggregate_drift(rows, '30d', _HOLD, _GATES, min_scored=1).weekday_pairs[0]
+
+    assert (pair.from_fingerprint, pair.to_fingerprint) == ('zzzz', 'aaaa')
+    assert pair.confirm_delta == -100.0
+
+
+def test_a_thin_cell_is_marked_and_kept():
+    rows = (_day('before', _SAT, [0.9, 0.3])
+            + _day('after', _SAT + timedelta(hours=6), [0.3, 0.3]))
+    report = _aggregate_drift(rows, '30d', _HOLD, _GATES, min_scored=40)
+
+    assert report.weekday_pairs[0].thin
+    assert '⚠ thin' in format_prompt_drift_report(report)
+
+
+def test_the_main_table_is_unchanged_by_the_addition():
+    """The weekday is deliberately NOT in the primary key — sevenfold rows would dismantle the
+    census the table above exists for."""
+    rows = (_day('one', _SAT, [0.9, 0.3])
+            + _day('one', _SAT + timedelta(days=1), [0.9, 0.3])
+            + _day('one', _SAT + timedelta(days=2), [0.9, 0.3]))
+    report = _aggregate_drift(rows, '30d', _HOLD, _GATES, min_scored=1)
+
+    assert report.version_count == 1, 'the setup fragmented across weekdays'
+    assert _version(report, 'crypto_sentiment', '4').scored == 6

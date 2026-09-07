@@ -282,7 +282,10 @@ def _build_prompt_drift(database_url: str, manager: AppConfigManager,
         database_url, params.since, since_label=params.window_label or '30d',
         rules=groupings_from_configs(configs),
         confirm_thresholds={config.pipeline_id: config.breaking.urgency_threshold
-                            for config in configs})
+                            for config in configs},
+        # A verdict threshold, so read from config rather than from `params` — a caller must not be
+        # able to make the same weekday cell read solid or thin.
+        min_scored=manager.get_config().reports.prompt_drift.min_scored)
 
 
 def _keyword_sets(manager: AppConfigManager) -> List[KeywordSet]:

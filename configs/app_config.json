@@ -158,7 +158,8 @@
       "window": "7d"
     },
     "prompt_drift": {
-      "window": "30d"
+      "window": "30d",
+      "min_scored": 40
     },
     "corpus_text": {
       "window": "7d",
