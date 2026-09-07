@@ -167,6 +167,7 @@ def test_shipped_prompt_hashes_are_pinned():
         ('crypto_sentiment', '4'): 'c45e07e1b260',
         ('forex_sentiment', '1'): 'f6e09cf6c039',
         ('forex_sentiment', '3'): '8d23b742645a',
+        ('crypto_sentiment', '5'): '4346e1e83a15',
         ('forex_sentiment', '4'): '86afc8942291',
     }
     actual = {key: builder.metadata(*key).content_hash for key in pinned}
@@ -221,3 +222,83 @@ def test_the_retrieval_seam_does_not_change_what_a_shipped_prompt_renders():
         # and its own before/after distribution (ISSUE_110), not something that leaks in early.
         assert 'retrieval_tier' not in through_property
         assert 'deep' not in through_property
+
+
+# --- v5 fences the retrospective channel (ISSUE_30) ----------------------------------------
+
+def _tiered(hours: float, tier: str, *, source_id: str = 's', title: str = 't',
+            summary: str = 'x') -> RetrievedArticle:
+    now = datetime.now(timezone.utc)
+    return RetrievedArticle(
+        article=Article(article_id=title, source_id=source_id, source_weight=1.0,
+                        url=f'https://example.test/{title}', title=title, summary=summary,
+                        language='en', published_at=now - timedelta(hours=hours),
+                        fetched_at=now - timedelta(hours=hours)),
+        retrieval_tier=tier)
+
+
+def _v5(retrieved) -> str:
+    builder = PromptBuilder(Path(__file__).resolve().parents[2] / 'prompts')
+    return builder.build('crypto_sentiment', '5', 'Cardano ADA',
+                         [r.article for r in retrieved], retrieved=retrieved)
+
+
+def test_v5_puts_each_article_in_the_block_its_tier_names():
+    """Asserted by content, not by counting — a swapped pair has to fail.
+
+    The production case this was built for: a 50h-old exchange-halt story reached ADAUSD's prompt
+    unlabelled, in a list the model reads as current news.
+    """
+    rendered = _v5([_tiered(2, 'recent', title='today the desk stayed long'),
+                    _tiered(50, 'deep', title='Cronos halted its chain')])
+    current, _, background = rendered.partition('## Background')
+
+    assert 'today the desk stayed long' in current
+    assert 'Cronos halted its chain' not in current
+    assert 'Cronos halted its chain' in background
+
+
+def test_v5_omits_the_background_heading_entirely_when_there_is_nothing_in_it():
+    """Roughly seven passes in eight carry no deep article, and an empty labelled block invites
+    the model to comment on its absence."""
+    rendered = _v5([_tiered(2, 'recent'), _tiered(5, 'recent')])
+
+    assert '## Background' not in rendered
+    assert '## Current news' in rendered
+
+
+def test_v5_states_every_article_age_in_hours():
+    """ISSUE_30's guard names this explicitly: absolute timestamps alone are not something a model
+    bounds relevance by."""
+    rendered = _v5([_tiered(2, 'recent'), _tiered(50, 'deep')])
+
+    assert '2h ago' in rendered
+    assert '50h ago' in rendered
+
+
+def test_v5_fences_all_three_scored_fields_by_name():
+    """A fence that names only the sentiment leaves urgency free to be dragged by an old shock —
+    which is the field the deep tier's keyword-flagged articles are most likely to move."""
+    rendered = _v5([_tiered(2, 'recent'), _tiered(50, 'deep')])
+    fence = rendered.split('## Background')[1]
+
+    assert 'not** current news' in fence
+    for field in ('sentiment_score', 'confidence', 'urgency'):
+        assert field in fence, f'{field} is not fenced'
+
+
+def test_v5_renders_unfenced_input_as_all_current_rather_than_failing():
+    """The builder's fallback, and why it is not merely defensive.
+
+    A caller that omits `retrieved` gets everything in the current block — the pre-ISSUE_30
+    semantics — instead of a StrictUndefined crash. That keeps a future call site from producing a
+    prompt that is *silently* unfenced in the other direction: an article in the background block
+    that nobody put there.
+    """
+    builder = PromptBuilder(Path(__file__).resolve().parents[2] / 'prompts')
+    article = _tiered(2, 'recent', title='no tier was supplied').article
+
+    rendered = builder.build('crypto_sentiment', '5', 'Cardano ADA', [article])
+
+    assert 'no tier was supplied' in rendered
+    assert '## Background' not in rendered

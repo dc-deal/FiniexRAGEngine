@@ -85,8 +85,12 @@ class SymbolEvaluator:
                               retrieval=context.funnel)
         # The prompt describes the asset in readable terms (the query, e.g. "Bitcoin BTC");
         # the result keys on the raw ticker `symbol` (e.g. "BTCUSD").
+        # `retrieved` carries the tier beside each article (ISSUE_30), which is what lets v5 fence
+        # the retrospective block. Passed always, not only for v5: a template that ignores it is
+        # unaffected, and a call site that forgot it would silently render an UNFENCED prompt.
         prompt = timer.time('prompt', lambda: self._prompt_builder.build(
-            self._prompt_name, self._prompt_version, query, articles))
+            self._prompt_name, self._prompt_version, query, articles,
+            retrieved=context.retrieved))
         completion = timer.time('llm', lambda: self._provider.complete_structured(
             prompt, SentimentLlmOutput.model_json_schema()))
 

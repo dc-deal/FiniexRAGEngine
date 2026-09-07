@@ -3,12 +3,12 @@
 import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from jinja2 import Environment, StrictUndefined, Template
 
 from finiexragengine.exceptions.ragengine_errors import LLMError
-from finiexragengine.types.article_types import Article
+from finiexragengine.types.article_types import Article, RetrievedArticle
 from finiexragengine.types.prompt_metadata import PromptMetadata
 
 
@@ -110,8 +110,8 @@ class PromptBuilder:
         """The prompt's front-matter identity (id/version/hash) — for the outcome record."""
         return self._load(name, version)[0]
 
-    def build(self, name: str, prompt_version: str, query: str,
-              articles: List[Article]) -> str:
+    def build(self, name: str, prompt_version: str, query: str, articles: List[Article], *,
+              retrieved: Optional[List[RetrievedArticle]] = None) -> str:
         """Render the `<name>_v<prompt_version>.md` body for `query` + its context.
 
         The parameter is the retrieval **query** ("Bitcoin BTC"), never the ticker
@@ -129,7 +129,22 @@ class PromptBuilder:
         template can anchor the LLM in time — article timestamps alone are useless for
         age-weighting without a "current time" reference. Templates that ignore `now`
         (v1) are unaffected; StrictUndefined only rejects *missing* variables.
+
+        `retrieved` pairs each article with the tier that surfaced it (ISSUE_30), which is what lets
+        v5 fence a retrospective item instead of mixing it into the current-mood list. Two
+        properties make it safe to add to a builder that also serves four shipped versions:
+
+        - **it is additive and keyword-only**, so every existing call site — and every v1–v4
+          rendering — is untouched, which the shipped-hash pin and the byte-identity test enforce;
+        - **it is always bound in the context.** A caller with no tier information gets everything
+          as `recent`, which is precisely what v1–v4 assumed anyway. Deriving it here rather than
+          letting the name go undefined means a template can reference it without a caller being
+          able to blow the render up — and, more to the point, a future call site cannot silently
+          produce an *unfenced* v5 prompt by omitting the argument.
         """
         _, compiled = self._load(name, prompt_version)
-        return compiled.render(query=query, symbol=query, articles=articles,
+        pairs = (retrieved if retrieved is not None
+                 else [RetrievedArticle(article=article, retrieval_tier='recent')
+                       for article in articles])
+        return compiled.render(query=query, symbol=query, articles=articles, retrieved=pairs,
                                now=datetime.now(timezone.utc))

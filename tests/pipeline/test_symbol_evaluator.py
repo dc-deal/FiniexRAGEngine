@@ -43,7 +43,14 @@ class _FakeRetriever:
 
 
 class _FakeBuilder:
-    def build(self, name, prompt_version, symbol, articles):
+    def __init__(self):
+        # Captured, not swallowed: the evaluator must hand the tiers to the builder or v5 renders
+        # an UNFENCED prompt, and a double that merely tolerated the keyword would let that
+        # regress silently (ISSUE_30).
+        self.retrieved_seen = None
+
+    def build(self, name, prompt_version, symbol, articles, *, retrieved=None):
+        self.retrieved_seen = retrieved
         return f'PROMPT {symbol} {len(articles)} articles'
 
     def metadata(self, name, version):
@@ -59,8 +66,8 @@ class _FakeProvider:
         return LlmCompletion(data=self._data, usage=LlmUsage(100, 20))
 
 
-def _evaluator(articles, data):
-    return SymbolEvaluator(_FakeRetriever(articles), _FakeBuilder(), _FakeProvider(data),
+def _evaluator(articles, data, tiers=None):
+    return SymbolEvaluator(_FakeRetriever(articles, tiers), _FakeBuilder(), _FakeProvider(data),
                            breaking_threshold=0.8)
 
 
@@ -181,3 +188,19 @@ def test_evidence_without_a_fetch_stamp_is_not_counted_as_fresh():
             'reasoning': 'neutral', 'urgency': 0.3}
     ev = _evaluator([undated], data).evaluate('BTCUSD', 'q')
     assert ev.result.sources and ev.result.evidence_as_of is None
+
+
+def test_the_evaluator_hands_the_retrieval_tiers_to_the_prompt_builder():
+    """ISSUE_30: without them v5 cannot fence, and the failure would be silent — a rendered prompt
+    that looks complete while a week-old article sits in the current-news block."""
+    data = {'signal': 'BUY', 'sentiment_score': 0.4, 'confidence': 0.7,
+            'reasoning': 'bullish', 'urgency': 0.2}
+    builder = _FakeBuilder()
+    evaluator = SymbolEvaluator(
+        _FakeRetriever([_article('a'), _article('b')], tiers=['recent', 'deep']),
+        builder, _FakeProvider(data), breaking_threshold=0.8)
+
+    evaluator.evaluate('BTCUSD', 'Bitcoin BTC')
+
+    assert builder.retrieved_seen is not None, 'the tiers never reached the builder'
+    assert [r.retrieval_tier for r in builder.retrieved_seen] == ['recent', 'deep']
