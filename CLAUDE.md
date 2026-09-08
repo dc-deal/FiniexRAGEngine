@@ -120,11 +120,19 @@ returns a plausible number for a question that was about production.
 
 | | dev container (what you see) | live server (where the engine runs) |
 |---|---|---|
-| Host | Linux container on the operator's laptop | Windows Server, reached by RDP |
+| Host | Linux container on the operator's laptop | Windows Server on a VPS, reached by RDP |
 | `outcomes` journal | a few hundred envelopes from test runs | the real series, weeks of continuous operation |
-| RAM | the laptop's | **16 GB** |
+| CPU | the laptop's | **4 vCPU** (AMD EPYC, virtualised — so steal time is possible and invisible from inside) |
+| RAM | the laptop's | **8 GB**, and ~5.6 of them in use before the engine's ~0.5 GB is counted |
 | Disk | hundreds of GB free | **~149 GB total, and treated as scarce** |
 | Reachable from here | yes, directly | **read-only over HTTPS** (`/v1/*` with a token; `/health` + `/build` public) — no database, no shell |
+
+**Sizing is measured, not assumed — this table was wrong for weeks.** It said 16 GB until
+2026-09-08, when a screenshot showed 8, and estimates had been made against the wrong number in
+between ("at 16 GB that is not a problem"). Four vCPUs matter for the same reason: the ingest passes
+are CPU-heavy (article normalisation and token counting over ~100–170 items every 15 s per set), so
+the machine's CPU graph shows regular bursts to 100 % that are the engine's own cadence rather than
+a fault. Re-measure before sizing anything; do not trust this paragraph over a fresh reading.
 
 **Since 2026-08-24 there is one exception, and it is narrow.** The live engine has a public TLS edge
 and per-consumer tokens (ISSUE_98), and the assistant holds its own (`claude-dev`, revocable without
@@ -334,6 +342,13 @@ Read first, in order:
   (`[OVERRIDE] …`, gated by `logging.warn_on_override`).
   Details: `docs/development/user_configs_overrides.md`.
 - **CLI entry points** in `finiexragengine/cli/` — parameter reception only, no logic.
+- **Every start command is a module command**: `python -m finiexragengine.cli.server_cli`, never
+  `python finiexragengine/cli/server_cli.py`. Running a file puts *that file's directory* on
+  `sys.path` instead of the project root, so `import finiexragengine.…` fails — and it fails only
+  where the root is not already on the path, which is why it can look fine in one shell and be
+  broken in the operator's. The CLIs' own `argparse` prog strings already say `python -m`; the docs
+  said otherwise in eleven places until 2026-09-08. This applies to anything runnable in the repo,
+  `experiments/` included (namespace packages make it work without `__init__.py`).
 - **One report, one command, one route.** A parameter must never decide *which* report you get.
   If it is its own report — its own question, its own shape — it gets its own CLI entry point and
   its own address under `/v1/reports/<name>`. A flag may **narrow** a report (window, symbol,

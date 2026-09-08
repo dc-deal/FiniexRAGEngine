@@ -89,10 +89,10 @@ def test_the_dns_half_is_timed_rather_than_bounded_by_the_timeout(monkeypatch):
     far shorter than the lookup takes, and the lookup must still complete and still be measured —
     capping it would hide exactly the figure this probe exists to produce.
     """
-    seen = {}
+    asked = []
 
     def _slow_dns(name, port):
-        seen['name'] = name
+        asked.append(name)
         time.sleep(0.05)
         return [(socket.AF_INET, socket.SOCK_STREAM, 6, '', ('1.2.3.4', 0))]
 
@@ -101,7 +101,7 @@ def test_the_dns_half_is_timed_rather_than_bounded_by_the_timeout(monkeypatch):
 
     probe = probe_connectivity('cloudflare.com', '1.1.1.1:53', timeout_seconds=0.001)
 
-    assert seen['name'] == 'cloudflare.com'
+    assert asked[0] == 'cloudflare.com', 'the control lookup asks the configured name'
     assert probe.dns_ok, 'a 1ms socket timeout must not cut a 50ms name lookup short'
     assert probe.dns_ms >= 50.0, f'the resolver time is measured, not capped ({probe.dns_ms:.0f}ms)'
 
@@ -125,3 +125,77 @@ def test_the_line_names_both_targets_and_the_verdict():
 
     assert 'cloudflare.com' in line and '1.1.1.1:53' in line
     assert 'FAIL' in line and 'dns_only' in line
+
+
+# --- the blind spot the first measured episodes exposed (2026-09-09) ------------------------------
+
+def test_the_resolver_leg_asks_a_name_the_cache_cannot_answer(monkeypatch):
+    """The flaw this probe shipped with, and the reason it reported `ok` through two outages.
+
+    It re-asks one fixed name every 15 s, so the OS keeps that entry warm and answers in ~1 ms
+    straight through a resolver failure — while eleven feeds, needing names the cache had let go,
+    could not resolve at all. A random label under the same domain has to leave the machine.
+    """
+    asked = []
+    monkeypatch.setattr(socket, 'getaddrinfo', lambda name, port: asked.append(name) or [])
+    monkeypatch.setattr(socket, 'create_connection', _connects())
+
+    probe_connectivity('cloudflare.com', '1.1.1.1:53', 1.0)
+
+    assert asked[0] == 'cloudflare.com', 'the control lookup keeps asking the plain name'
+    assert asked[1] != 'cloudflare.com' and asked[1].endswith('.cloudflare.com'), asked
+    assert len(asked[1]) > len('cloudflare.com') + 8, 'the random label must be long enough to miss'
+
+
+def test_two_probes_never_ask_the_same_resolver_name_twice(monkeypatch):
+    """Otherwise the second one is a cache hit and the leg is blind again by the next sample."""
+    asked = []
+    monkeypatch.setattr(socket, 'getaddrinfo', lambda name, port: asked.append(name) or [])
+    monkeypatch.setattr(socket, 'create_connection', _connects())
+
+    probe_connectivity('cloudflare.com', '1.1.1.1:53', 1.0)
+    probe_connectivity('cloudflare.com', '1.1.1.1:53', 1.0)
+
+    assert asked[1] != asked[3]
+
+
+def test_nxdomain_is_an_answer_and_means_the_resolver_is_alive(monkeypatch):
+    """A random label almost always comes back NXDOMAIN. That is the resolver *working*."""
+    def _nxdomain(name, port):
+        if name == 'cloudflare.com':
+            return []
+        raise socket.gaierror(11001, 'getaddrinfo failed')
+
+    monkeypatch.setattr(socket, 'getaddrinfo', _nxdomain)
+    monkeypatch.setattr(socket, 'create_connection', _connects())
+
+    probe = probe_connectivity('cloudflare.com', '1.1.1.1:53', 1.0)
+
+    assert probe.resolver_ok is True, 'a fast NXDOMAIN is an answer, not a failure'
+    assert probe.verdict == 'ok'
+
+
+def test_a_silent_resolver_is_the_verdict_even_while_everything_else_looks_fine(monkeypatch):
+    """The exact shape of 2026-09-08/09: TCP to a literal address fine, cached names fine, and
+    eleven feeds unable to resolve. Without this leg the probe called that `ok`."""
+    def _slow_only_for_the_random_label(name, port):
+        if name == 'cloudflare.com':
+            return []
+        time.sleep(2.2)
+        raise socket.gaierror(11001, 'getaddrinfo failed')
+
+    monkeypatch.setattr(socket, 'getaddrinfo', _slow_only_for_the_random_label)
+    monkeypatch.setattr(socket, 'create_connection', _connects())
+
+    probe = probe_connectivity('cloudflare.com', '1.1.1.1:53', 1.0)
+
+    assert probe.dns_ok is True and probe.tcp_ok is True     # both controls look healthy
+    assert probe.resolver_ok is False
+    assert probe.verdict == 'resolver_down'
+    assert not probe.reachable
+
+
+def test_a_probe_without_the_resolver_leg_keeps_its_old_verdicts():
+    """`resolver_ok=None` is "not asked", which must never read as "answered badly"."""
+    assert _probe(True, True).verdict == 'ok'
+    assert _probe(False, True).verdict == 'dns_only'

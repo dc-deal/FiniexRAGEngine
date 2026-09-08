@@ -24,6 +24,7 @@ failing ingest pass took 55 seconds against a 10 s per-feed deadline. Bounding i
 exactly the number worth having, so the probe measures how long the resolver took instead.
 """
 import logging
+import secrets
 import socket
 from datetime import datetime, timezone
 from time import perf_counter
@@ -36,6 +37,15 @@ logger = logging.getLogger(__name__)
 # Fallback when `connectivity_probe_tcp` is not `host:port` — a malformed setting must degrade to a
 # working probe rather than to an exception inside an outage response.
 _DEFAULT_TCP: Tuple[str, int] = ('1.1.1.1', 53)
+
+# A resolver that is alive answers a name it has never seen — with an address or with NXDOMAIN —
+# in tens of milliseconds. One that is unreachable spends the OS retry schedule and then fails.
+# So the *duration* is the signal, not the outcome, and this is the line between them.
+# 2 s, not 1: a live resolver answers in ~100 ms, and a silent one costs the OS retry
+# schedule — seconds to tens of seconds with three servers configured. Nothing real lands in
+# between, and the first (cold) query of a process was measured at 1.1 s, which a 1 s line
+# would have called an outage.
+_RESOLVER_ALIVE_SECONDS = 2.0
 
 
 def _split_target(target: str) -> Tuple[str, int]:
@@ -62,6 +72,22 @@ def probe_connectivity(dns_name: str, tcp_target: str,
         dns_ok = False
     dns_ms = (perf_counter() - dns_start) * 1000.0
 
+    # The leg that actually reaches the resolver (2026-09-09). The lookup above is a control: this
+    # probe re-asks the same name every 15 s, so the OS answers it from cache in ~1 ms and reports
+    # healthy straight through an outage — which is exactly what it did for the first two episodes
+    # it measured, while eleven feeds could not resolve anything.
+    #
+    # A random label under the same domain cannot be cached, so the query has to leave the machine.
+    # It will almost certainly come back NXDOMAIN, and that is fine: an answer is an answer. What
+    # separates a live resolver from a silent one is how long it took.
+    resolver_start = perf_counter()
+    try:
+        socket.getaddrinfo(f'{secrets.token_hex(6)}.{dns_name}', None)
+    except OSError:
+        pass
+    resolver_ms = (perf_counter() - resolver_start) * 1000.0
+    resolver_ok = resolver_ms < _RESOLVER_ALIVE_SECONDS * 1000.0
+
     host, port = _split_target(tcp_target)
     tcp_start = perf_counter()
     try:
@@ -71,11 +97,15 @@ def probe_connectivity(dns_name: str, tcp_target: str,
         tcp_ok = False
     tcp_ms = (perf_counter() - tcp_start) * 1000.0
 
-    return HostProbe(at=started, dns_ok=dns_ok, dns_ms=dns_ms, tcp_ok=tcp_ok, tcp_ms=tcp_ms)
+    return HostProbe(at=started, dns_ok=dns_ok, dns_ms=dns_ms, tcp_ok=tcp_ok, tcp_ms=tcp_ms,
+                     resolver_ok=resolver_ok, resolver_ms=resolver_ms)
 
 
 def format_probe(probe: HostProbe, dns_name: str, tcp_target: str) -> str:
     """One line, readable in a log next to the feed failures it explains."""
-    return (f'probe · dns {dns_name} {"ok" if probe.dns_ok else "FAIL"} ({probe.dns_ms:.0f}ms) · '
+    resolver = '' if probe.resolver_ok is None else (
+        f'resolver {"alive" if probe.resolver_ok else "SILENT"} ({probe.resolver_ms:.0f}ms) · ')
+    return (f'probe · dns {dns_name} {"ok" if probe.dns_ok else "FAIL"} ({probe.dns_ms:.0f}ms, '
+            f'cached) · {resolver}'
             f'tcp {tcp_target} {"ok" if probe.tcp_ok else "FAIL"} ({probe.tcp_ms:.0f}ms) · '
             f'{probe.verdict}')

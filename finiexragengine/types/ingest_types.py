@@ -340,6 +340,13 @@ class HostProbe:
     dns_ms: float
     tcp_ok: bool
     tcp_ms: float
+    # Did the RESOLVER answer at all — asked with a name it cannot have cached (2026-09-09).
+    # `None` when the probe did not take this leg. The plain `dns_ok` above is a control and
+    # nothing more: it resolves a fixed name that the probe itself re-asks every 15 s, so the OS
+    # keeps it cached and it answers in ~1 ms straight through an outage. That blind spot cost the
+    # first two measured episodes, which reported `ok` while eleven feeds could not resolve.
+    resolver_ok: Optional[bool] = None
+    resolver_ms: float = 0.0
 
     @property
     def verdict(self) -> str:
@@ -349,6 +356,10 @@ class HostProbe:
         address opens fine is a resolver fault, and every feed failure in that window is a symptom
         of it rather than eleven separate feed problems.
         """
+        # The resolver leg outranks the cached one: a name answered from cache says nothing about
+        # whether the resolver is alive, and that is the failure this probe exists to catch.
+        if self.resolver_ok is False and self.tcp_ok:
+            return 'resolver_down'
         if self.dns_ok and self.tcp_ok:
             return 'ok'
         if self.tcp_ok:
@@ -359,7 +370,7 @@ class HostProbe:
 
     @property
     def reachable(self) -> bool:
-        return self.dns_ok and self.tcp_ok
+        return self.dns_ok and self.tcp_ok and self.resolver_ok is not False
 
 
 @dataclass

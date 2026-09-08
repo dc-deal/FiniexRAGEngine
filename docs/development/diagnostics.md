@@ -328,8 +328,8 @@ written regardless of who started the server.
 here — visible, stoppable with Ctrl-C, and the live display (`--live`) is only usable that way:
 
 ```bash
-python finiexragengine/cli/server_cli.py --workers        # workers run ingest + eval
-python finiexragengine/cli/server_cli.py                  # API only: no passes, no spend
+python -m finiexragengine.cli.server_cli --workers        # workers run ingest + eval
+python -m finiexragengine.cli.server_cli                  # API only: no passes, no spend
 ```
 
 **Keep the spend in view:** a running `--workers` server pays per pass (M10, two pipelines: roughly

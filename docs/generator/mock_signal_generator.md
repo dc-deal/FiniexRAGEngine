@@ -77,17 +77,17 @@ prompt really *is* the same one, and the dataset should say so. One field per fa
 
 ```bash
 # 5-cycle fixture sample → tests/fixtures/signals/ (tracked; the IDE's contract sample)
-python experiments/mock_signal_data/generate.py
+python -m experiments.mock_signal_data.generate
 
 # the crypto week
-python experiments/mock_signal_data/generate.py \
+python -m experiments.mock_signal_data.generate \
     --pipeline-id crypto_sentiment_mock --prompt crypto \
     --start 2026-04-27T00:00:00Z --cycles 1008 --rotate daily \
     --symbols BTCUSD,ETHUSD,ETHEUR,SOLUSD,ADAUSD,XRPUSD,DASHUSD,LTCUSD,DOTUSD \
     --out data
 
 # the forex week
-python experiments/mock_signal_data/generate.py \
+python -m experiments.mock_signal_data.generate \
     --pipeline-id forex_macro_sentiment_mock --prompt forex \
     --start 2026-04-27T00:00:00Z --cycles 1008 --rotate daily \
     --symbols EURUSD,GBPUSD,USDJPY,AUDUSD,EURGBP,NZDUSD,USDCAD,USDCHF \
