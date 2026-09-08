@@ -8,6 +8,10 @@ from datetime import datetime, timezone
 from time import perf_counter
 from typing import Callable, Deque, Dict, List, Optional, Set, Tuple
 
+from finiexragengine.core.observability.connectivity_probe import (
+    format_probe,
+    probe_connectivity,
+)
 from finiexragengine.core.observability.cost_recorder import CostRecorder, PassSpend
 from finiexragengine.core.pipeline.ingestor import Ingestor
 from finiexragengine.core.pipeline.pass_executor import build_pass_executor, run_pass
@@ -18,6 +22,7 @@ from finiexragengine.core.ui.engine_stats import (
     SourcesSnapshot,
 )
 from finiexragengine.types.alert_types import AlertCallback
+from finiexragengine.types.config_types.app_config_types import DiagnosticsConfig
 from finiexragengine.types.config_types.source_set_types import SourceSetConfig
 from finiexragengine.types.ingest_types import HostEvent, IngestResult, SourcePoll
 from finiexragengine.types.trigger_types import TriggerReason
@@ -88,7 +93,8 @@ class IngestWorker:
                  on_candidates: Optional[Callable[[int], None]] = None,
                  engine_stats: Optional[EngineStats] = None,
                  on_host_event: Optional[AlertCallback] = None,
-                 pass_executor: Optional[ThreadPoolExecutor] = None) -> None:
+                 pass_executor: Optional[ThreadPoolExecutor] = None,
+                 diagnostics: Optional[DiagnosticsConfig] = None) -> None:
         self._ingestor = ingestor
         self._trigger = trigger
         # Wall-clock deadline for one pass (ISSUE_74). There is deliberately NO lock here any
@@ -112,6 +118,9 @@ class IngestWorker:
         # watchdog's alert seam, so Telegram wiring lives in exactly one place and this worker
         # only knows "there is somewhere to say it". None = log and dashboard only.
         self._on_host_event = on_host_event
+        # Connectivity probe settings (2026-09-08). None = the defaults, which is what every test
+        # and CLI path gets; `create_app` passes the configuration this process runs on.
+        self._diagnostics = diagnostics or DiagnosticsConfig()
         # Alerts that could not be delivered, with the moment they were raised (2026-09-08).
         # The condition this worker alerts on is "the host cannot reach anything" — and the alert
         # travels over that same network, so it is the message most likely to be lost exactly when
@@ -254,6 +263,10 @@ class IngestWorker:
                     self._log_source_health(result)
                     if result.host_event is not None:
                         await self._report_host_event(result.host_event)
+                    # While the back-off holds, this pass polled nothing — so without a probe the
+                    # engine spends those minutes learning nothing, and the closing event can only
+                    # report the back-off's own length (2026-09-08).
+                    await self._probe_while_backed_off(result)
                     # Feed the live dashboard from the same structured pass (ISSUE_26) — next to
                     # the log call, never parsed back from it. Skipped entirely without a display.
                     self._push_stats(result, usd, duration_ms, eventful)
@@ -367,6 +380,41 @@ class IngestWorker:
         if self._on_host_event is None:
             return
         await self._deliver(message)
+
+    async def _probe_while_backed_off(self, result: IngestResult) -> None:
+        """Measure what the host can still reach, but only while a back-off is in force.
+
+        The guard exists so eleven blameless feeds are not hammered during a host outage; a probe
+        is not a feed, and this is exactly the window in which the engine is otherwise silent. Two
+        syscalls, and only then.
+
+        On 2026-09-08 the same outage was reported as `timed out` by the feeds polled often enough
+        to stay in the OS resolver cache and as `getaddrinfo failed` by the slower ones — one cause
+        wearing two symptoms, sorted by poll cadence. Splitting the probe into a name lookup and a
+        socket to a literal address is what separates those for good: DNS failing while the socket
+        opens is a resolver fault, both failing is the path itself.
+        """
+        if not self._diagnostics.connectivity_probe_enabled:
+            return
+        if not any(poll.status == 'host_backoff' for poll in result.polls):
+            return
+        # Off the event loop: `getaddrinfo` has no timeout argument, so a dead resolver blocks for
+        # as long as the OS decides — 55-second ingest passes on 2026-09-08 were exactly that. The
+        # duration is the measurement, so it is timed rather than bounded, and it runs where a long
+        # block costs nothing (see `pass_executor.py`).
+        probe = await run_pass(
+            self._pass_executor, self._diagnostics.connectivity_probe_timeout_seconds * 4 + 60,
+            probe_connectivity, self._diagnostics.connectivity_probe_dns,
+            self._diagnostics.connectivity_probe_tcp,
+            self._diagnostics.connectivity_probe_timeout_seconds)
+        line = format_probe(probe, self._diagnostics.connectivity_probe_dns,
+                            self._diagnostics.connectivity_probe_tcp)
+        # WARNING when the host is still unreachable, INFO when it is back: the first probe that
+        # says `ok` is the one that dates the end of the outage, and it should read as good news.
+        logger.log(logging.INFO if probe.reachable else logging.WARNING,
+                   '[HOST] %s · %s', self._set_name(), line)
+        if self._engine_stats is not None:
+            self._engine_stats.push_event('SOURCE', f'{self._set_name()} {line}')
 
     async def _deliver(self, message: str) -> None:
         """Send one alert, and carry anything an earlier outage swallowed (2026-09-08).

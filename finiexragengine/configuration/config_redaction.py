@@ -71,6 +71,11 @@ PUBLIC_PATHS: Tuple[str, ...] = (
     'weekly_report.day_of_week',
     'weekly_report.timezone',
     'weekly_report.export_dir',
+    # The connectivity probe's targets (2026-09-08) — a public DNS name and a literal address the
+    # engine dials during an outage. Publishing them is the point: a reader has to know WHICH
+    # destination a probe verdict is about before the verdict means anything.
+    'diagnostics.connectivity_probe_dns',
+    'diagnostics.connectivity_probe_tcp',
     # app: per-report defaults (ISSUE_104) — window strings, one per report
     'reports.source_latency.window',
     'reports.source_quarantine.window',

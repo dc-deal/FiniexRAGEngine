@@ -115,7 +115,11 @@
     "timeout_warn_ratio": 0.7,
     "resource_gauge_enabled": true,
     "resource_retention_days": 14,
-    "resource_rss_warn_mb": 0
+    "resource_rss_warn_mb": 0,
+    "connectivity_probe_enabled": true,
+    "connectivity_probe_dns": "cloudflare.com",
+    "connectivity_probe_tcp": "1.1.1.1:53",
+    "connectivity_probe_timeout_seconds": 3.0
   },
   "stall_watchdog": {
     "enabled": true,

@@ -13,6 +13,7 @@ from finiexragengine.core.pipeline.pass_executor import build_pass_executor
 from finiexragengine.core.pipeline.pipeline_assembler import PipelineAssembler
 from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
 from finiexragengine.core.triggers.event_trigger import EventTrigger
+from finiexragengine.types.config_types.app_config_types import DiagnosticsConfig
 from finiexragengine.core.triggers.interval_trigger import IntervalTrigger
 from finiexragengine.core.ui.engine_stats import EngineStats
 from finiexragengine.exceptions.ragengine_errors import ConfigurationError
@@ -34,7 +35,8 @@ class WorkerSupervisor:
 
     def __init__(self, assembler: PipelineAssembler, registry: PipelineRegistry,
                  pass_timeout_seconds: int = 300,
-                 engine_stats: Optional[EngineStats] = None) -> None:
+                 engine_stats: Optional[EngineStats] = None,
+                 diagnostics: Optional[DiagnosticsConfig] = None) -> None:
         # Optional (ISSUE_26): the live dashboard's shared state, injected into every worker so
         # each pass pushes its snapshot/events. None = no display (the default /health-only path).
         self._engine_stats = engine_stats
@@ -70,7 +72,11 @@ class WorkerSupervisor:
                 source_set, assembler.build_ingestor(source_set_id),
                 self._interval_trigger(source_set.trigger, f'source-set {source_set_id}'),
                 pass_timeout_seconds, cost_recorder=assembler.get_cost_recorder(),
-                on_candidates=publish, engine_stats=engine_stats))
+                on_candidates=publish, engine_stats=engine_stats,
+                # The connectivity probe's settings (2026-09-08), from the configuration THIS
+                # process runs on — the same reason the stream config is passed rather than
+                # re-read: a diagnostic must not describe a setting the engine is not using.
+                diagnostics=diagnostics))
 
         for pipeline in registry.list_pipelines():
             config = pipeline.get_config()

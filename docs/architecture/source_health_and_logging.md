@@ -181,6 +181,41 @@ watchdog's existing `AlertCallback` seam (`types/alert_types.py`), wired in `api
 `WorkerSupervisor.set_host_alert`. The health store itself never learns that Telegram exists: the
 event travels out on `IngestResult` and the worker announces it.
 
+### The back-off is not also a blind spot (2026-09-08)
+
+The guard stops a set polling for `correlated_backoff_minutes`, which is right — eleven feeds
+failing together is not eleven feed problems. The cost is that the engine then stops *looking*, so
+the closing event can only report the back-off's own length. On 2026-09-08 all eight episodes were
+reported as "recovered after 5m" while the neighbouring set — under the ratio, still polling — was
+fetching 265 articles again **21 seconds** after the same failure. Every episode looked identical
+and none of them was measured.
+
+So while a back-off holds, each pass runs one **connectivity probe** instead of nothing: resolve a
+name, open a socket to a literal address, log both with their durations.
+
+```
+[HOST] forex_news probe · dns cloudflare.com FAIL (24800ms) · tcp 1.1.1.1:53 FAIL (3001ms) · blocked
+[HOST] forex_news probe · dns cloudflare.com ok (31ms) · tcp 1.1.1.1:53 ok (12ms) · ok
+```
+
+Four decisions in that shape, each from what 2026-09-08 got wrong:
+
+- **The name is one the engine does not poll.** A feed fetched every 15 s stays in the OS resolver
+  cache and answers happily through an outage. That cache is why the same event produced
+  `timed out` from the fast-polled crypto feeds and `getaddrinfo failed` from the slower
+  central-bank ones — one cause wearing two symptoms, sorted by poll cadence, which read as two
+  different faults for most of a day.
+- **The socket goes to a literal address**, so the transport is tested with no name lookup in front
+  of it. DNS failing while the socket opens is a resolver fault; both failing is the path.
+- **The DNS half is timed, not bounded.** `getaddrinfo` takes no timeout — the OS resolver's retry
+  schedule decides, and that is why a failing ingest pass took **55 seconds** against a 10 s
+  per-feed deadline. Capping the probe would hide the one number that explains it.
+- **It runs only during a back-off**, where the engine is otherwise silent and no feed is being
+  touched. Two syscalls per pass, and the first probe that says `ok` dates the end of the outage.
+
+`diagnostics.connectivity_probe_*` configures it; `connectivity_probe_enabled: false` switches it
+off, because a diagnostic is worth paying for and not worth being unable to stop.
+
 ### The alert survives the outage it reports (2026-09-08)
 
 The connectivity alert travels over the network it is *about*, so it is the message most likely to

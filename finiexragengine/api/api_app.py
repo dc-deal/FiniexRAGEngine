@@ -215,7 +215,8 @@ def create_app(attach_runners: Optional[bool] = None,
             supervisor = WorkerSupervisor(
                 assembler, registry,
                 pass_timeout_seconds=config_manager.get_config().pass_timeout_seconds,
-                engine_stats=engine_stats)
+                engine_stats=engine_stats,
+                diagnostics=config_manager.get_config().diagnostics)
     else:
         if start_workers:
             raise RuntimeError('workers need real runners — set DATABASE_URL '

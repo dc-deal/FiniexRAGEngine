@@ -326,6 +326,43 @@ class DetectionReachability:
 
 
 @dataclass
+class HostProbe:
+    """What the host could still reach while a connectivity back-off held (2026-09-08).
+
+    Lives next to `HostEvent` because it exists to explain one: the event says polling stopped, the
+    probe says whether the network was actually down and for how long. Two independent halves —
+    resolving a name, and opening a socket to a literal address — because on 2026-09-08 the two
+    failed in different proportions per feed, and the proportion turned out to be a function of the
+    OS resolver cache rather than of the fault.
+    """
+    at: datetime
+    dns_ok: bool
+    dns_ms: float
+    tcp_ok: bool
+    tcp_ms: float
+
+    @property
+    def verdict(self) -> str:
+        """What this probe alone can claim — never more than that.
+
+        `dns_only` is the interesting one: a name that will not resolve while a socket to a literal
+        address opens fine is a resolver fault, and every feed failure in that window is a symptom
+        of it rather than eleven separate feed problems.
+        """
+        if self.dns_ok and self.tcp_ok:
+            return 'ok'
+        if self.tcp_ok:
+            return 'dns_only'
+        if self.dns_ok:
+            return 'transport_only'
+        return 'blocked'
+
+    @property
+    def reachable(self) -> bool:
+        return self.dns_ok and self.tcp_ok
+
+
+@dataclass
 class IngestResult:
     """What one ingest pass did — totals plus a per-source breakdown.
 

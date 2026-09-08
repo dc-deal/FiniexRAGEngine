@@ -352,6 +352,22 @@ class DiagnosticsConfig(BaseModel):
     # weekly line is what produces the number to set this from — guessing one now would be the
     # same mistake as moving a retrieval floor on a single window.
     resource_rss_warn_mb: int = 0
+    # Host-connectivity probe (2026-09-08). While the correlated guard holds the set in its
+    # back-off, the engine polls nothing and therefore learns nothing: the closing event reports
+    # "recovered after 5m", which is the back-off's own length and not a measurement. Eight
+    # episodes in one day were all reported as exactly 5m while the neighbouring set — which never
+    # crossed the ratio and kept polling — recovered on its own within a minute. The probe fills
+    # that silence with two cheap syscalls per pass, and only while a back-off is in force.
+    connectivity_probe_enabled: bool = True
+    # A name the engine does NOT poll, deliberately: a host we fetch every 15s stays in the OS
+    # resolver cache and would answer during an outage, which is precisely the effect that made
+    # 2026-09-08 look like two different failures (see `connectivity_probe.py`).
+    connectivity_probe_dns: str = 'cloudflare.com'
+    # A literal address, so the transport is tested without a name lookup in front of it. That
+    # separation is the whole point: DNS failing while TCP works is a resolver problem, both
+    # failing is the path itself.
+    connectivity_probe_tcp: str = '1.1.1.1:53'
+    connectivity_probe_timeout_seconds: float = 3.0
 
 
 class TelegramConfig(BaseModel):

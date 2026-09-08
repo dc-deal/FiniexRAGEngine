@@ -18,8 +18,9 @@ from finiexragengine.core.pipeline.ingest_worker import IngestWorker
 from finiexragengine.core.pipeline.pipeline_runner import PipelineRunResult
 from finiexragengine.core.triggers.interval_trigger import IntervalTrigger
 from finiexragengine.exceptions.ragengine_errors import ConfigurationError
+from finiexragengine.types.config_types.app_config_types import DiagnosticsConfig
 from finiexragengine.types.config_types.source_set_types import SourceSetConfig
-from finiexragengine.types.ingest_types import IngestResult
+from finiexragengine.types.ingest_types import HostProbe, IngestResult, SourcePoll
 from finiexragengine.types.outcome_types import RunMetadata, SentimentEnvelope
 from finiexragengine.types.worker_types import WorkerState
 
@@ -456,3 +457,93 @@ def test_a_pass_that_could_not_embed_says_so_on_its_own_line():
     assert 'suspended (quota)' not in state.last_detail
     assert 'fetched 7' in state.last_detail
     assert ingestor.runs >= 2, 'the worker must keep ticking — the next pass is the retry'
+
+
+# --- 2026-09-08: the back-off must not also be a blind spot -------------------------------------
+
+
+class _BackedOffIngestor:
+    """A pass the host back-off skipped entirely — polls nothing, fetches nothing."""
+    def __init__(self, backed_off: bool = True):
+        self.runs = 0
+        self._backed_off = backed_off
+
+    def run(self) -> IngestResult:
+        self.runs += 1
+        if not self._backed_off:
+            return IngestResult(fetched=5, polls=[SourcePoll('s1', 'ok')])
+        return IngestResult(polls=[SourcePoll('s1', 'host_backoff',
+                                              until=datetime.now(timezone.utc))])
+
+
+def _probe_lines(caplog) -> List[str]:
+    return [record.getMessage() for record in caplog.records if 'probe ·' in record.getMessage()]
+
+
+def test_a_backed_off_pass_probes_the_host_instead_of_learning_nothing(caplog, monkeypatch):
+    """The guard stops the polling; it must not also stop the measuring.
+
+    Eight episodes on 2026-09-08 were each reported as "recovered after 5m" — which is the
+    back-off's own length, not the outage's. The neighbouring set, still polling because it stayed
+    under the ratio, was fetching again 21 seconds after the same failure.
+    """
+    monkeypatch.setattr(
+        'finiexragengine.core.pipeline.ingest_worker.probe_connectivity',
+        lambda dns, tcp, timeout: HostProbe(at=datetime.now(timezone.utc), dns_ok=False,
+                                            dns_ms=24_800.0, tcp_ok=False, tcp_ms=3_000.0))
+    ingestor = _BackedOffIngestor()
+
+    async def _scenario():
+        worker = _ingest_worker(ingestor)
+        task = asyncio.create_task(worker.start())
+        await _until(lambda: ingestor.runs >= 1)
+        await worker.stop()
+        await task
+
+    with caplog.at_level(logging.WARNING):
+        _run(_scenario())
+
+    lines = _probe_lines(caplog)
+    assert lines, 'a backed-off pass produced no measurement at all'
+    assert 'blocked' in lines[0] and 'FAIL' in lines[0]
+
+
+def test_an_ordinary_pass_never_probes(caplog, monkeypatch):
+    """The probe belongs to the outage window and nowhere else — otherwise it is just traffic."""
+    monkeypatch.setattr(
+        'finiexragengine.core.pipeline.ingest_worker.probe_connectivity',
+        lambda dns, tcp, timeout: pytest.fail('probed outside a back-off'))
+    ingestor = _BackedOffIngestor(backed_off=False)
+
+    async def _scenario():
+        worker = _ingest_worker(ingestor)
+        task = asyncio.create_task(worker.start())
+        await _until(lambda: ingestor.runs >= 2)
+        await worker.stop()
+        await task
+
+    with caplog.at_level(logging.WARNING):
+        _run(_scenario())
+
+    assert _probe_lines(caplog) == []
+
+
+def test_the_probe_can_be_switched_off(caplog, monkeypatch):
+    """Diagnostics are worth paying for, not worth being unable to switch off."""
+    monkeypatch.setattr(
+        'finiexragengine.core.pipeline.ingest_worker.probe_connectivity',
+        lambda dns, tcp, timeout: pytest.fail('probed while disabled'))
+    ingestor = _BackedOffIngestor()
+
+    async def _scenario():
+        worker = IngestWorker(_SET, ingestor, IntervalTrigger(0.005), 30,
+                              diagnostics=DiagnosticsConfig(connectivity_probe_enabled=False))
+        task = asyncio.create_task(worker.start())
+        await _until(lambda: ingestor.runs >= 1)
+        await worker.stop()
+        await task
+
+    with caplog.at_level(logging.WARNING):
+        _run(_scenario())
+
+    assert _probe_lines(caplog) == []
