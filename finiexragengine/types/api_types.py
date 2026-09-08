@@ -230,6 +230,36 @@ class AppliedParamInfo(BaseModel):
     clamped: bool = False       # true when a bound shortened what was asked for
 
 
+class LogEntryInfo(BaseModel):
+    """One log entry as the API returns it (2026-09-08).
+
+    `timestamp` is **UTC**, whatever the file was written in — the formatter stamps the OS clock
+    (GMT+2 on the server) while the engine itself is UTC everywhere else, and returning the raw
+    prefix would make this the one surface that disagrees with the others about what time it is.
+    """
+    timestamp: datetime
+    level: str
+    message: str
+    # Traceback lines beneath the entry. Carried with it rather than as their own rows: a stack
+    # fragment without its head is what makes a filtered log unreadable.
+    continuation: List[str] = Field(default_factory=list)
+
+
+class LogPageResponse(BaseModel):
+    """A bounded slice of one log stream, and what it had to leave out."""
+    stream: str
+    since: Optional[datetime] = None
+    until: Optional[datetime] = None
+    min_level: str = 'WARNING'
+    matched: int = 0              # entries in range BEFORE the limit — so `truncated` is checkable
+    truncated: bool = False
+    # How many lines the redaction changed. Reported rather than silent: a reader trusts a log
+    # line, so an altered one that does not announce itself is worse than a withheld one.
+    redacted_lines: int = 0
+    files_read: List[str] = Field(default_factory=list)
+    entries: List[LogEntryInfo] = Field(default_factory=list)
+
+
 class ReportEnvelope(BaseModel):
     """One report's payload plus what produced it."""
     report: str

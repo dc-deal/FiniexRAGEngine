@@ -312,6 +312,72 @@ def test_connectivity_returning_closes_the_event_and_flags_only_the_dead_feeds(l
     assert ladder_store.should_poll('ecb_press') is False
 
 
+# --- 2026-09-08: what the cross-set line in an alert is allowed to claim ---------------------
+
+def _pass_for(store, source_set, failures, successes=()):
+    """One ingest pass on a named set — the cross-set cases need both sets, not just forex."""
+    with store.pass_scope(source_set):
+        for source_id in failures:
+            store.record_failure(source_id, f'{source_id}.test', source_set,
+                                 error_type='UNREACHABLE', status=None, message='timed out',
+                                 duration_ms=10_000.0, deadline_ms=10_000.0)
+        for source_id in successes:
+            store.record_success(source_id, f'{source_id}.test', source_set)
+
+
+def _open_forex_event(store):
+    """Drive a correlated forex outage and hand back the event it opened."""
+    feeds = ['ecb_press', 'fed_press', 'boe_news', 'forexlive']
+    _pass_for(store, 'forex_news', feeds)
+    # The opening pass is the one that resolves the fleet view — a continuation would only repeat
+    # a label the operator already has.
+    return store.take_host_event()
+
+
+def test_a_set_that_failed_inside_the_window_is_counted_even_with_its_streak_reset(ladder_store):
+    """The 2026-09-08 defect: the alert read `crypto_news 1/12` for a set that was losing 8 of 11.
+
+    The count used to be `consecutive_failures > 0` — the other set's state at the instant this
+    pass ends. A feed that failed seconds ago and then answered once has a streak of zero while
+    being very much part of the same outage, so the streak undercounts exactly during the flapping
+    that a host-level failure produces. The lookback counts the failure itself instead.
+    """
+    _pass_for(ladder_store, 'crypto_news', ['cryptoslate', 'coindesk'], successes=['theblock'])
+    # ...and both come back on the next poll, clearing their streaks but not their failure times.
+    _pass_for(ladder_store, 'crypto_news', [], successes=['cryptoslate', 'coindesk', 'theblock'])
+
+    event = _open_forex_event(ladder_store)
+
+    assert event is not None and event.opened
+    assert 'forex_news 4/4' in event.fleet
+    assert 'crypto_news 2/3' in event.fleet, event.fleet    # the streak view would say 0/3
+
+
+def test_a_failure_older_than_the_window_does_not_join_someone_elses_outage(ladder_store, clean_db):
+    """Otherwise every set looks correlated with every set, forever."""
+    _pass_for(ladder_store, 'crypto_news', ['cryptoslate', 'coindesk'], successes=['theblock'])
+    with psycopg.connect(clean_db) as conn, conn.cursor() as cur:
+        # An hour ago — far outside `correlated_backoff_minutes`, and untouched by any later poll.
+        cur.execute(f"UPDATE {_TABLE} SET last_failure_at = now() - interval '1 hour' "
+                    "WHERE source_set = 'crypto_news'")
+
+    event = _open_forex_event(ladder_store)
+
+    assert 'crypto_news' not in event.fleet
+    assert event.fleet == 'forex_news 4/4, no failure reported by the other sets yet'
+
+
+def test_a_quiet_other_set_is_never_called_healthy(ladder_store):
+    """A set can be seconds away on its own clock, so silence is not evidence — and the wording
+    is the only place that can carry it: no query can see a pass that has not happened."""
+    _pass_for(ladder_store, 'crypto_news', [], successes=['cryptoslate', 'coindesk', 'theblock'])
+
+    event = _open_forex_event(ladder_store)
+
+    assert 'healthy' not in event.fleet
+    assert event.fleet.endswith('no failure reported by the other sets yet')
+
+
 def test_counters_survive_a_pass_that_never_resolves(ladder_store, clean_db):
     # The reason only the DECISION is deferred, not the accounting: a pass that dies mid-way
     # (timeout, crash) must still leave every failure recorded.

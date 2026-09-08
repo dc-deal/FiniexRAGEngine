@@ -10,6 +10,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from finiexragengine.api.endpoints.log_router import build_log_router
 from finiexragengine.api.endpoints.report_router import build_report_router
 from finiexragengine.api.token_registry import TokenRegistry
 from finiexragengine.configuration.app_config_manager import AppConfigManager
@@ -226,3 +227,52 @@ def test_the_corpus_text_report_is_served_with_its_payload(client: TestClient) -
     # the API a strictly weaker surface than the console for the same report.
     for key in ('articles', 'treatments', 'removal', 'phantoms', 'window_articles', 'keyword_sets'):
         assert key in body['data'], key
+
+
+# --- the log route (2026-09-08) --------------------------------------------------------------
+
+def test_the_log_route_is_bounded_and_names_an_unknown_stream(tmp_path):
+    """A caller picks a range, never a file — `{name}` is a closed set, not a path."""
+    log = tmp_path / 'finiex.log'
+    log.write_text('2026-09-08T11:05:03.750+02:00 ERROR mod: [HOST] connectivity\n',
+                   encoding='utf-8')
+    app = FastAPI()
+    app.include_router(build_log_router(str(log), TokenRegistry()))
+    client = TestClient(app)
+
+    # `{name}` is a path segment, so a traversal attempt cannot even match the route — and a name
+    # outside the closed set is refused rather than resolved against the filesystem.
+    assert client.get('/v1/logs/nope').status_code == 404
+    assert client.get('/v1/logs/engine/../secrets').status_code == 404
+    assert client.get('/v1/logs/engine?limit=0').status_code == 422
+    assert client.get('/v1/logs/engine?min_level=SHOUTING').status_code == 422
+
+
+def test_the_log_route_answers_in_UTC_for_a_locally_stamped_file(tmp_path):
+    """The route's whole reason to be careful: the file is GMT+2, the caller speaks UTC."""
+    log = tmp_path / 'finiex.log'
+    log.write_text('2026-09-08T11:05:03.750+02:00 ERROR mod: [HOST] connectivity\n',
+                   encoding='utf-8')
+    app = FastAPI()
+    app.include_router(build_log_router(str(log), TokenRegistry()))
+    client = TestClient(app)
+
+    hit = client.get('/v1/logs/engine'
+                     '?since=2026-09-08T09:00:00Z&until=2026-09-08T09:10:00Z').json()
+    miss = client.get('/v1/logs/engine'
+                      '?since=2026-09-08T11:00:00Z&until=2026-09-08T11:10:00Z').json()
+
+    assert hit['matched'] == 1
+    assert hit['entries'][0]['timestamp'].startswith('2026-09-08T09:05:03')
+    assert miss['matched'] == 0
+
+
+def test_the_log_route_says_file_logging_is_off_rather_than_serving_an_empty_log():
+    """`logging.file: null` is a supported mode; an empty page would read as a quiet engine."""
+    app = FastAPI()
+    app.include_router(build_log_router(None, TokenRegistry()))
+
+    response = TestClient(app).get('/v1/logs/engine')
+
+    assert response.status_code == 503
+    assert 'logging.file' in response.json()['detail']

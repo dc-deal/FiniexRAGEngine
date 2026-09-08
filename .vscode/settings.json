@@ -34,5 +34,5 @@
     "debug.console.fontFamily": "Cascadia Code PL",
     "editor.fontFamily": "Cascadia Code PL",
     "python-envs.defaultEnvManager": "ms-python.python:system",
-    "workbench.colorTheme": "Abyss"
+    "workbench.colorTheme": "Monokai"
 }

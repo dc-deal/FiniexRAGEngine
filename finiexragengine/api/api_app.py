@@ -16,6 +16,7 @@ from finiexragengine.api.endpoints.health_router import build_health_router
 from finiexragengine.api.endpoints.report_router import build_report_router
 from finiexragengine.api.endpoints.pipelines_router import build_pipelines_router
 from finiexragengine.api.endpoints.sentiment_router import build_sentiment_router
+from finiexragengine.api.endpoints.log_router import build_log_router
 from finiexragengine.api.endpoints.stream_router import build_stream_router
 from finiexragengine.api.rate_limiter import RateLimiter, build_rate_limit_dependency
 from finiexragengine.api.token_registry import TokenRegistry
@@ -416,7 +417,11 @@ def create_app(attach_runners: Optional[bool] = None,
         # The transport's engine-wide numbers, taken from the configuration THIS process runs on
         # (ISSUE_9). Passed explicitly rather than defaulted, so the listing cannot serve a value
         # the engine is not using.
-        stream=config_manager.get_config().stream))
+        stream=config_manager.get_config().stream,
+        # The path THIS process actually writes to (2026-09-08). Passed rather than re-resolved in
+        # the router for the same reason `stream` is: the route must never serve a file the engine
+        # is not using, and a caller cannot name one.
+        log_file=config_manager.get_config().logging.file))
     return app
 
 
@@ -446,7 +451,8 @@ def _build_protected_router(registry: PipelineRegistry,
                             tokens: TokenRegistry,
                             outcome_store: Optional[OutcomeStore] = None,
                             extra_routers: Optional[List[APIRouter]] = None,
-                            stream: Optional[StreamConfig] = None) -> APIRouter:
+                            stream: Optional[StreamConfig] = None,
+                            log_file: Optional[str] = None) -> APIRouter:
     """Everything a token is required for — and everything added here later, automatically.
 
     `extra_routers` carries routers assembled by the caller: the exemptions that were switched
@@ -505,4 +511,7 @@ def _build_protected_router(registry: PipelineRegistry,
     protected.include_router(build_sentiment_router(
         registry, grant, outcome_store=outcome_store,
         run_enabled=api_config.run_endpoint_enabled))
+    # The engine's own log (2026-09-08), on its own grant surface: no consumer holds `logs:*`
+    # unless someone writes it into their token, which is the model working rather than a gap.
+    protected.include_router(build_log_router(log_file, tokens))
     return protected

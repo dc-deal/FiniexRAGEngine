@@ -272,15 +272,27 @@ class SourceHealthStore:
         12/12 across two independently-configured sets says "the host"; 5/5 in one set while the
         other is healthy says "one upstream provider". Both suppress the quarantine, but they
         send the operator to different places. One small SELECT, only when an event opens.
+
+        **What this can and cannot see, corrected 2026-09-08.** The count used to read
+        `consecutive_failures > 0`, which is the other set's state *at the instant this pass ends* —
+        and the other set's ingest worker runs on its own clock, seconds away. On 2026-09-08 that
+        produced `crypto_news 1/12` for a set that lost 8 of 11 two seconds later, which read as
+        "forex-specific" and sent the operator to eleven healthy feeds.
+
+        So the count now spans a short **lookback** instead: a feed whose last failure falls inside
+        the correlated window counts, whether or not its streak survived a later success. What no
+        query can see is a set that has not polled *yet*, so the wording says how far the other set
+        has reported rather than pronouncing it healthy.
         """
         parts = [f'{source_set} {failed}/{pollable}']
+        window = timedelta(minutes=self._config.correlated_backoff_minutes)
         try:
             with self._connect() as conn, conn.cursor() as cur:
                 cur.execute(
-                    f'SELECT source_set, count(*) FILTER (WHERE consecutive_failures > 0), '
+                    f'SELECT source_set, count(*) FILTER (WHERE last_failure_at >= %s), '
                     f'count(*) FROM {self._TABLE} WHERE source_set <> %s AND source_set <> %s '
                     'GROUP BY source_set ORDER BY source_set',
-                    (source_set, ''))
+                    (datetime.now(timezone.utc) - window, source_set, ''))
                 others = cur.fetchall()
         except psycopg.Error:
             # A label is not worth failing an outage response over.
@@ -289,7 +301,9 @@ class SourceHealthStore:
             if other_failed:
                 parts.append(f'{other_set} {other_failed}/{other_total}')
         if len(parts) == 1:
-            return f'{parts[0]}, other sets healthy'
+            # Never "healthy": the other set may simply not have polled since this began, and a
+            # verdict it did not earn is what made the last one misleading.
+            return f'{parts[0]}, no failure reported by the other sets yet'
         return ' + '.join(parts)
 
     def take_host_event(self) -> Optional[HostEvent]:

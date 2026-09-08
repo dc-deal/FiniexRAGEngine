@@ -241,6 +241,59 @@ engine's behaviour no longer needs a session on the host. Deliberately **not** p
 contract a collector builds against: the shapes are diagnostic and stay free to change. Details in
 `report_api.md`.
 
+## Diagnostics: `GET /v1/logs/{name}`
+
+```
+GET /v1/logs/engine?since=&until=&min_level=&limit=      application/json
+```
+
+The engine's own log file, over a UTC time range. ISSUE_104 made every *report* answerable over
+HTTP; the log was the one diagnostic still behind RDP, and on 2026-09-08 that was the whole gap —
+four host-connectivity outages in nine hours whose cause was one word inside a traceback
+(`getaddrinfo failed`), while the reports could only say that every feed had failed at once.
+
+**A new grant surface, `logs`,** and no existing token holds it: the surface is declared once on the
+router (`Security(build_grant_dependency(tokens), scopes=['logs'])`) and the *name* is the path
+parameter, exactly as `reports:<name>` works. `{name}` is checked against a closed set (`engine`
+today) rather than being a path — a caller must never be able to name a file, which is the
+difference between a log route and an arbitrary read primitive.
+
+| parameter | |
+|---|---|
+| `since` / `until` | **UTC** bounds; both optional |
+| `min_level` | `DEBUG`…`CRITICAL`, default `WARNING` — the file carries thousands of INFO lines a night, and the question this route answers is "what went wrong" |
+| `limit` | entries returned, default 200, capped by `max_lines` (2000); the **newest** end is what a limit keeps |
+
+**The clocks differ, and the route is where that is resolved.** The engine is UTC throughout, as
+CLAUDE.md requires — but the logging formatter stamps the OS clock, and the server runs GMT+2. One
+production line carries both at once:
+
+```
+2026-09-08T04:40:43.978+02:00  …  [HOST] host connectivity — … retry 02:45:43 UTC
+└─ the formatter: local time                                   └─ the app: UTC
+```
+
+Same instant, two clocks. Because the offset is written out the conversion is lossless, so every
+line is parsed offset-aware, compared in UTC and **returned in UTC** — a `since` you took from an
+envelope, a report or `/v1/health` means what it says. A naive string comparison would be two hours
+wrong, silently, which is the exact class of error this route exists to help find.
+
+Three more properties, each because the obvious version is wrong:
+
+- **A rotated file is part of a range.** Rotation is daily at UTC midnight with 14 kept, so a window
+  reaching past midnight reads the siblings too — otherwise "query a time range" quietly means
+  "today". `files_read` names what was opened.
+- **A traceback belongs to its entry.** Continuation lines carry no timestamp, so they travel with
+  the entry above them (`continuation[]`) and a filtered window never returns a stack fragment with
+  no head — which is what would have made a filtered read useless on 2026-09-08.
+- **Redaction is counted, not silent.** DSN passwords, `Bearer …`, `sk-…` and Telegram bot tokens are
+  masked with `«redacted»`, and the answer carries `redacted_lines: N`. A reader trusts a log line,
+  so an altered one that does not say so is worse than a withheld one.
+
+It cannot spend and it has no write. `matched` (before the limit) and `truncated` say what was left
+out, so a bounded answer never reads as a complete one. No CLI: on the box `Get-Content` is already
+the better tool — *remote* is the case that was missing.
+
 ## `GET /v1/build` is the second open route
 
 It reports what code the process is running: `version`, the short `commit`, whether the working tree

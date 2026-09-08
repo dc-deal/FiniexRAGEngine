@@ -181,6 +181,45 @@ watchdog's existing `AlertCallback` seam (`types/alert_types.py`), wired in `api
 `WorkerSupervisor.set_host_alert`. The health store itself never learns that Telegram exists: the
 event travels out on `IngestResult` and the worker announces it.
 
+### The alert survives the outage it reports (2026-09-08)
+
+The connectivity alert travels over the network it is *about*, so it is the message most likely to
+be lost exactly when it matters. On 2026-09-08 two opening alarms were lost that way while the
+recovery five minutes later went through — leaving a lone *"host connectivity recovered after 5m"*
+in the operator's inbox with nothing before it, which reads as noise rather than as an incident.
+
+An undelivered alert is now **held with the moment it was raised** (a bounded in-memory deque per
+worker, 8 deep) and the queue is drained ahead of anything newer, so the incident is read in the
+order it happened rather than the order it arrived. A delayed line says so — `[delayed 5m] host
+connectivity — …` — because an alarm arriving after its own all-clear would otherwise look like a
+second outage. A failure *during* a flush re-queues from that message onward, so the half that got
+through is never replayed.
+
+Two deliberate limits, stated rather than discovered later:
+
+- **It drains on the next alert, not on a timer.** An incident whose last message failed waits for
+  the next one. The trade buys no retry loop and no scheduler; the message worth keeping is the one
+  that *opens* an outage, and an outage is always followed by its recovery.
+- **A restart drops it.** The durable record is the log and the `correlated` rows in
+  `source_quarantine_log` — an alert is a notification, not a ledger, and persisting it would mean a
+  table for a nice-to-have.
+
+### What the cross-set line may claim (corrected 2026-09-08)
+
+The alert names the fleet, not just the set (`forex_news 11/11 + crypto_news 8/11`), because 12/12
+across two independently-configured sets says *the host* while 5/5 in one set says *one upstream
+provider* — and the two send the operator to different places.
+
+That count used to be `consecutive_failures > 0`, which is the other set's state **at the instant
+this pass ends**. It undercounts precisely during the flapping a host failure produces: a feed that
+failed seconds ago and then answered once has a streak of zero. On 2026-09-08 it reported
+`crypto_news 1/12` for a set that was losing 8 of 11, sending the reader to eleven healthy feeds. It
+now counts feeds whose **`last_failure_at` falls inside the correlated window** instead.
+
+What no query can see is a set that has not polled *yet* — its worker is seconds away on its own
+clock. So the wording carries what the count cannot: with nothing to report the line reads
+*"no failure reported by the other sets yet"*, never *"other sets healthy"*.
+
 `httpx`/`httpcore` are pinned to WARNING (they log every OpenAI call at INFO). The full detail
 always persists in `source_health` regardless of console level — the report reads it there.
 
@@ -246,6 +285,15 @@ days, `logs/finiex.log`, gitignored). The console stays on for live liveness; th
 survives the scrollback and stays grep-able the morning after. Re-configuration (uvicorn reload) is
 idempotent — our handlers are tagged and replaced, never stacked. Size-based rotation is available via
 `logging.rotation = "size"` + `max_bytes`. Level is the shared `log_level`.
+
+**Two clocks in one file, and it matters downstream.** The handler rolls over at **UTC** midnight,
+so `finiex.log.2026-09-07` covers UTC 2026-09-07 — but the formatter stamps the *local* clock with
+its offset (`2026-09-08T11:05:03.750+02:00`), deliberately, because the operator reads this file next
+to a wall clock. Every other surface in the engine is UTC. Anything that filters this file by time
+therefore has to parse the offset and compare in UTC; `core/observability/log_reader.py` does, and
+`GET /v1/logs/engine` serves the result — see
+[`connect_contract.md`](connect_contract.md) and the
+[diagnostics runbook](../development/diagnostics.md).
 
 Config lives in `app_config.json` (`logging`, `source_health`, `diagnostics` blocks) and mirrors the
 Pydantic defaults exactly.

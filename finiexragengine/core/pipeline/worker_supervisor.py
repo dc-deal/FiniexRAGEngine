@@ -2,12 +2,14 @@
 import asyncio
 import functools
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import List, Optional
 
 from finiexragengine.core.pipeline.breaking_bus import BreakingBus, BreakingSubscription
 from finiexragengine.core.pipeline.eval_worker import EvalWorker
 from finiexragengine.core.pipeline.ingest_worker import IngestWorker
+from finiexragengine.core.pipeline.pass_executor import build_pass_executor
 from finiexragengine.core.pipeline.pipeline_assembler import PipelineAssembler
 from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
 from finiexragengine.core.triggers.event_trigger import EventTrigger
@@ -47,6 +49,11 @@ class WorkerSupervisor:
         # The breaking wake bus (ISSUE_11): ingest workers publish flagged candidates, eval
         # workers subscribe per source-set with their own sensitivity — in-process, no infra.
         self._bus = BreakingBus()
+        # One pool for every worker's pass body (2026-09-08), sized once the workers are known.
+        # Deliberately not the interpreter default: that one also serves the sync API endpoints,
+        # so a pass hung on a dead resolver would take the diagnostic surface with it. Built here
+        # because the supervisor is the only unit that knows how many workers there will be.
+        self._pass_executor: Optional[ThreadPoolExecutor] = None
         self._workers: List = []
         self._tasks: List[asyncio.Task] = []
         # True only between `stop_all()` and process exit — see `_worker_finished`.
@@ -80,6 +87,20 @@ class WorkerSupervisor:
                 # runner already drives this pipeline's rule during the pass (ISSUE_65), and the
                 # worker must read that same state rather than a second copy of it.
                 episode_tracker=assembler.get_episode_tracker(config)))
+
+        self._attach_pass_executor()
+
+    def _attach_pass_executor(self) -> None:
+        """Give every worker the shared pass pool, sized to how many there are (2026-09-08).
+
+        Built here rather than per worker because the size is a property of the fleet: one thread
+        for each worker's pass in flight, one for a predecessor still stuck behind its deadline.
+        Each worker constructs a private fallback when nobody hands it one, so the isolation holds
+        for the CLI and test paths too — this only replaces those with a shared, right-sized pool.
+        """
+        self._pass_executor = build_pass_executor(len(self._workers))
+        for worker in self._workers:
+            worker.set_pass_executor(self._pass_executor)
 
     def set_host_alert(self, alert: Optional[AlertCallback]) -> None:
         """Route set-wide connectivity events to an alert channel (ISSUE_84).
@@ -175,3 +196,9 @@ class WorkerSupervisor:
         for task in self._tasks:
             await task
         logger.info('workers stopped (%d)', len(self._tasks))
+        if self._pass_executor is not None:
+            # `wait=False`: a pass thread blocked on a dead socket cannot be cancelled, and waiting
+            # for it would turn a clean shutdown into the hang this pool exists to contain. The
+            # in-flight passes were already awaited above; anything still stuck is abandoned by
+            # design, exactly as the pass deadline abandons it.
+            self._pass_executor.shutdown(wait=False)

@@ -210,6 +210,9 @@ def test_no_route_with_an_identity_segment_is_ungated(clean_db: str) -> None:
                        for method in operations
                        if '{' in path]
     assert identity_routes, 'no identity routes found — the walk itself is broken'
+    # Named rather than merely swept: a router dropping out of the app would leave this walk green
+    # while the surface it gated went unreachable — and `logs` (2026-09-08) is the newest one.
+    assert ('/v1/logs/{name}', 'get') in identity_routes
 
     for path, method in identity_routes:
         # Any value will do: the grant is refused before the name is resolved, which is the point.

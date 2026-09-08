@@ -393,6 +393,9 @@ are a feed or host problem, and the latency table's `timeout` vs `refused` colum
 grep "ingest:crypto_news" finiex.log.<date> | tail -20
 ```
 
+From here, without a session on the host, the same read is `GET /v1/logs/engine` — see
+*What did the log say* below.
+
 Mind the level: a pass that stored nothing, flagged nothing and spent nothing logs at **DEBUG**, so
 on an INFO log the last visible line can be an *earlier* pass than the one that died. Cross-check
 against `last_run_at` from step 1 before concluding anything about ordering — the two disagreeing is
@@ -406,6 +409,71 @@ A worker task that ends while the engine runs is logged at ERROR with its traceb
 unretrieved in a task nobody looked at, and because the supervisor holds a strong reference the task
 was never collected, so not even CPython's "Task exception was never retrieved" appeared. The
 dashboard's ageing `last` number was the only evidence, and it looks exactly like a healthy one.
+
+## What did the log say — without a session on the host?
+
+```
+GET /v1/logs/engine?since=&until=&min_level=&limit=
+```
+
+Every *report* has been answerable over HTTP since ISSUE_104. The log was not, and on 2026-09-08
+that was the whole gap: four host-connectivity outages in nine hours, the cause a single word inside
+a traceback (`getaddrinfo failed`), and reading it meant RDP and a copied file while the incident was
+still running. The reports could say every feed failed at once; only the log could say why.
+
+**Needs the `logs:engine` grant, which no token holds by default** — including the IDE's. Contract,
+parameters and the redaction set: [`connect_contract.md`](../architecture/connect_contract.md).
+
+```bash
+python3 -c "
+import json, os, urllib.parse, urllib.request
+query = urllib.parse.urlencode({'since': '2026-09-08T02:00:00Z', 'until': '2026-09-08T10:00:00Z',
+                                'min_level': 'ERROR', 'limit': 50})
+url = 'https://finiex-rag.duckdns.org/v1/logs/engine?' + query
+token = os.environ['FINIEX_LIVE_CLIENT_TOKEN']
+page = json.load(urllib.request.urlopen(
+    urllib.request.Request(url, headers={'Authorization': 'Bearer ' + token}), timeout=20))
+print(page['matched'], 'matched *', page['files_read'], '* redacted', page['redacted_lines'])
+for entry in page['entries']:
+    print(entry['timestamp'], entry['level'], entry['message'])
+    for line in entry['continuation']:
+        print('   ', line)
+"
+```
+
+**Read `since`/`until` as UTC, always.** The file is stamped in the server's local clock (GMT+2) and
+the route converts — so the outage that reads `11:05` in the file is `09:05:05Z` here, and that is
+the value matching `/v1/health`, an envelope or a report. Asking for `11:00-11:10` would return the
+13:00 local block instead, which is the mistake to make once.
+
+Three fields decide whether an answer is complete:
+
+| field | what it tells you |
+|---|---|
+| `matched` vs `entries` | how many entries were in range before `limit` cut it — with `truncated`, you are looking at the **newest** slice, not the first |
+| `files_read` | which files answered. A range crossing UTC midnight must name a rotated sibling; if it names only `finiex.log`, the range did not reach where you thought |
+| `redacted_lines` | lines whose credentials were masked. Non-zero means the text was altered, not withheld |
+
+Worked example — the 2026-09-08 incident, retrieved after the fact across the rotation boundary:
+
+```
+matched 10 * truncated False * redacted 0 * files ['finiex.log.2026-09-07', 'finiex.log']
+  2026-09-08T09:05:05Z  [HOST] alert delivery failed
+      -> TelegramError: sendMessage failed: could not reach api.telegram.org
+  2026-09-08T08:51:14Z  [HOST] host connectivity — forex_news 11/11 unreachable in one pass
+  2026-09-08T07:30:49Z  [HOST] host connectivity — forex_news 11/11 unreachable in one pass
+  2026-09-08T03:30:52Z  [HOST] host connectivity — forex_news 11/11 unreachable in one pass
+  2026-09-08T02:40:43Z  [HOST] host connectivity — forex_news 11/11 unreachable in one pass
+```
+
+Note the first line: the alert channel failed *inside* the outage it was reporting, which is why an
+undelivered alert is now queued and flushed with the next one (`[delayed 5m] ...`, see
+[`source_health_and_logging.md`](../architecture/source_health_and_logging.md)).
+
+**`min_level` is a floor, not a selector.** `WARNING` (the default) is the incident view; `INFO`
+brings in the per-pass lines, and a quiet pass logs at `DEBUG` — so on an `INFO` read the last
+visible line for a worker can be an *earlier* pass than the one that died. Same trap as step 3
+above, and the same cross-check: `last_run_at` from `/v1/health`.
 
 ## Which instance am I looking at?
 
@@ -604,6 +672,30 @@ timestamps: over hours a falling urgency is correct decay, not drift. Measured 2
 ~6,200 pairs: mean `urgency` drift **0.032**, `signal` flips **2.8 %** of adjacent pairs (0 % on
 thinly-covered symbols, 6.8 % on BTCUSD). Small everywhere — the breaking gate is simply the one
 place where a third of a lattice step becomes a categorical error.
+
+## Reference — every route reachable from here
+
+The live engine answers over HTTPS at `https://finiex-rag.duckdns.org`; the assistant's own bearer
+token lives in `.env` as `FINIEX_LIVE_CLIENT_TOKEN`. This is the complete read surface — there is no
+database and no shell, and `POST /run` is not registered in production, so nothing here can spend.
+
+| Route | Grant | Answers |
+|---|---|---|
+| `GET /v1/health` | *open* | alive, worker cadences and last runs, `journal_id`, budget, stall state |
+| `GET /v1/build` | *open* | version, commit, dirty-at-startup, process start — **which code is actually running** |
+| `GET /v1/pipelines` | `pipelines:<id>` | the constellations this token may see: symbols, trigger type, cadence — plus the stream settings |
+| `GET /v1/pipelines/{id}/latest` | `pipelines:<id>` | the newest persisted envelope, served from the store |
+| `GET /v1/pipelines/{id}/envelopes?since=&epoch=` | `pipelines:<id>` | a bounded range of that pipeline's series |
+| `GET /v1/stream/{id}` | `pipelines:<id>` | the same series as SSE, live |
+| `GET /v1/reports` | `reports:<name>` | the catalog — **only** the reports this token may fetch |
+| `GET /v1/reports/{name}` | `reports:<name>` | one diagnostic surface as JSON (`report_api.md`) |
+| `GET /v1/logs/{name}` | `logs:<name>` | the engine log over a **UTC** range, redacted (`engine` is the only stream) |
+
+Two things a reading has to respect. **A `403` is a grant, not a bug** — access is by name, so a
+surface added later is unreachable until someone writes it into a token; and a scoped caller gets
+`403` rather than `404` for an unknown name, so the endpoint is not an existence oracle.
+**And the dev container answers the same routes with different data** — `journal_id` is the only
+mechanical way to tell them apart (production `138c68e48b15`, dev `9c3fa4c80d95`).
 
 ## Reference — the diagnostic stores
 
