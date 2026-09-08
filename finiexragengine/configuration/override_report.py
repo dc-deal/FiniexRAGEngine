@@ -20,7 +20,9 @@ leaf key; from the last `[id]` segment on for patch-by-id lists; a bare `sources
 collapses to `x` — a source-set file is nothing but sources). Two leaves that would
 collapse to the same label (`telegram.enabled` / `weekly_report.enabled`) keep their
 full path instead. String values are never quoted, just `~changed`/`~added` — the full
-text lives in the override file. More than six leaves collapse to `+N more`.
+text lives in the override file. More than six leaves collapse to `+N more` — **except a flagged
+key, which is never cut**: it is the only part of the line that reports a defect rather than a
+difference, and the cap used to be able to hide it.
 
 Spam guard: `emit_override_report` logs each file's line at most once per process —
 worker/API boot and every CLI say it exactly once (console + rotating file via the
@@ -166,8 +168,18 @@ def format_override_report(file_label: str, entries: List[OverrideEntry]) -> str
         else:
             parts.append(f'{path} {_compact(entry.base_value)}'
                          f'→{_compact(entry.override_value)}')
-    if len(parts) > _MAX_LEAVES:
-        parts = parts[:_MAX_LEAVES - 1] + [f'+{len(parts) - (_MAX_LEAVES - 1)} more']
+    # A flag is the one thing on this line that says something is *wrong* rather than merely
+    # different — and until 2026-09-08 the cap could drop it, because it sliced in file order.
+    # Production's `weekly_report.report_command` (a key that belongs on `telegram`, so the
+    # override did nothing at all) sat at position 16 and spent its whole life inside `+11 more`:
+    # the report flagged it correctly and then hid the flag. Flags are never cut now; the ordinary
+    # leaves absorb the cap instead, and a file full of typos gets a long line exactly once.
+    flagged = [part for part, entry in zip(parts, entries) if entry.unknown]
+    ordinary = [part for part, entry in zip(parts, entries) if not entry.unknown]
+    room = max(_MAX_LEAVES - len(flagged), 1)
+    if len(ordinary) > room:
+        ordinary = ordinary[:room - 1] + [f'+{len(ordinary) - (room - 1)} more']
+    parts = flagged + ordinary
     label = file_label.removeprefix('user_configs/')
     return f'[OVERRIDE] {label} · ' + ' · '.join(parts)
 

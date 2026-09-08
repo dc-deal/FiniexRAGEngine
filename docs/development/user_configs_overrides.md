@@ -111,6 +111,12 @@ Every applied override is logged once per process, one line per override file, l
 - **Typo detection:** the Pydantic configs drop unknown keys silently, so a typo'd
   override key would otherwise do nothing without a trace. The report checks each leaf
   against the *validated* merged config and flags misses as `⚠ floor_distanze?`.
+- **A flag is never cut by the cap** (2026-09-08), and it leads the line. The cap used to slice in
+  file order, so a flag sitting past position five disappeared into `+N more` — the report found
+  the defect and then hid it. Production ran that way for weeks: `weekly_report.report_command`
+  (a key that belongs on `telegram`, so the override did nothing) was entry sixteen of sixteen, and
+  it surfaced only when `/v1/configs/app` was read leaf by leaf. A file full of typos now gets a
+  long line, exactly once, which is the correct amount of noise for that many real defects.
 - **Gate:** `logging.warn_on_override` in `app_config.json` (default `true`).
 - **Boot order:** the app-config report happens before `configure_logging` (the manager is
   constructed first), so it is buffered and replayed into the log once handlers exist. Without
