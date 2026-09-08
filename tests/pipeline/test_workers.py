@@ -419,3 +419,40 @@ def test_an_orderly_shutdown_is_not_reported_as_a_death():
 
     asyncio.run(_drive())
     assert state.stopped_at is None and state.stopped_reason == ''
+
+
+# --- 2026-09-08: an unreachable embedding provider is degraded, not invisible -------------------
+
+
+class _EmbedFailedIngestor:
+    """A pass that fetched, could not embed, and said so on its result rather than raising."""
+    def __init__(self):
+        self.runs = 0
+
+    def run(self) -> IngestResult:
+        self.runs += 1
+        return IngestResult(fetched=7, embedded=0, stored=0, embed_failed=True)
+
+
+def test_a_pass_that_could_not_embed_says_so_on_its_own_line():
+    """The condition used to arrive as a crash; it must not arrive as silence instead.
+
+    The words matter as much as the visibility: a quota suspend sends the operator to billing and
+    an unreachable provider sends them to the network, and the pass line is where that is decided.
+    """
+    ingestor = _EmbedFailedIngestor()
+
+    async def _scenario():
+        worker = _ingest_worker(ingestor)
+        task = asyncio.create_task(worker.start())
+        await _until(lambda: ingestor.runs >= 2)
+        await worker.stop()
+        await task
+        return worker.get_state()
+
+    state = _run(_scenario())
+    assert state.last_status == 'ok'           # the pass completed — it did not crash
+    assert 'embedding unreachable' in state.last_detail
+    assert 'suspended (quota)' not in state.last_detail
+    assert 'fetched 7' in state.last_detail
+    assert ingestor.runs >= 2, 'the worker must keep ticking — the next pass is the retry'

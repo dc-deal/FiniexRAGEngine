@@ -130,7 +130,16 @@ returns a plausible number for a question that was about production.
 and per-consumer tokens (ISSUE_98), and the assistant holds its own (`claude-dev`, revocable without
 touching the Testing IDE's). So a handful of production questions are now answerable *from
 production*: is the engine alive, what do its workers report, what did the last pass actually
-produce, what does a served envelope contain field by field. Those may be answered directly.
+produce, what does a served envelope contain field by field — and, since 2026-09-08, **what the
+engine's own log said over a UTC range** (`GET /v1/logs/{name}`, grant `logs:engine`). Those may be
+answered directly.
+
+The full route table — every address, its grant, and what it answers — lives in
+`docs/development/diagnostics.md` ("Reference — every route reachable from here"). Read it before a
+remote diagnosis rather than guessing an address. The log route carries one trap worth knowing here:
+`since`/`until` are **UTC**, while the file itself is stamped in the server's local clock (GMT+2) and
+the route converts — so an outage that reads `11:05` in the raw file is `09:05:05Z` over the API, and
+the UTC value is the one that matches `/v1/health`, an envelope or a report.
 
 **Everything else is unchanged, and the two consequences below still govern.** PostgreSQL is not
 exposed and will not be: every aggregate, every historical count, every "how often since X" is still

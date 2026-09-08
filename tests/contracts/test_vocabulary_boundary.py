@@ -11,14 +11,20 @@ re-open running stories as fresh episodes.
 
 `trigger_reason` and `RunError.type` already had this split; these four did not.
 """
+import typing
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from finiexragengine.core.observability.reports.ingest_report import _STATUS_LABELS
 from finiexragengine.core.outcome.outcome_store import OutcomeStore
 from finiexragengine.core.pipeline.envelope_contract import hold_result
 from finiexragengine.core.sources.article_normalizer import ArticleNormalizer
-from finiexragengine.types.ingest_types import DETECTION_TRIGGERS, TEXT_NORMALIZER_PROFILES
+from finiexragengine.types.ingest_types import (
+    DETECTION_TRIGGERS,
+    TEXT_NORMALIZER_PROFILES,
+    PollStatus,
+)
 from finiexragengine.types.article_types import RETRIEVAL_TIERS
 from finiexragengine.types.outcome_types import (
     DATA_ORIGINS,
@@ -133,3 +139,22 @@ def test_a_citation_archived_before_the_field_existed_still_loads():
 
     parsed = SentimentEnvelope(**line)
     assert parsed.result[0].sources[0].retrieval_tier is None
+
+
+def test_every_poll_status_has_a_display_label():
+    """The deploy hazard this file exists to catch, one vocabulary over (2026-09-08).
+
+    `build_ingest_report` renders `_STATUS_LABELS[poll.status]` — a **KeyError**, not a fallback.
+    So a `PollStatus` added without a label is a report that crashes the first time that status
+    occurs, which by construction is during whatever incident produced it, on the production
+    machine, where nothing here runs. `embed_failed` was added that way and this is what makes the
+    next one impossible.
+    """
+    declared = set()
+    for member in typing.get_args(PollStatus):
+        # `PollStatus` embeds `PollOutcome`, so one arg is itself a Literal.
+        declared |= set(typing.get_args(member)) if typing.get_args(member) else {member}
+
+    assert declared == set(_STATUS_LABELS), (
+        f'poll statuses without a display label: {sorted(declared - set(_STATUS_LABELS))}; '
+        f'labels for statuses that no longer exist: {sorted(set(_STATUS_LABELS) - declared)}')

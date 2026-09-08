@@ -26,13 +26,17 @@ Three more properties this unit owns, each because the obvious version is wrong:
   — which is exactly the shape that would have been useless on 2026-09-08.
 - **Redaction is counted, not silent.** A log line can carry a DSN password or a bearer token in an
   unhandled traceback. Those are replaced, and the answer says how many lines it changed: a reader
-  trusts a line, so an altered one that does not say so is worse than a withheld one.
+  trusts a line, so an altered one that does not say so is worse than a withheld one. The patterns
+  themselves live in `utils/redaction.py` — one vocabulary for every surface that publishes text,
+  because the copy that is not updated is the one that leaks.
 """
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
+from finiexragengine.utils.redaction import redact
 
 # `2026-09-08T04:40:43.978+02:00 ERROR logger.name: message`
 _ENTRY = re.compile(
@@ -42,21 +46,6 @@ _ENTRY = re.compile(
 # Ordered, so `min_level` is a floor rather than an exact match.
 _LEVELS: Tuple[str, ...] = ('DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL')
 _LEVEL_RANK: Dict[str, int] = {name: index for index, name in enumerate(_LEVELS)}
-
-# What must never leave the process, and the reason each pattern is here rather than a general
-# "looks secret" heuristic — a heuristic would either miss these or redact half the log.
-_REDACTIONS: Tuple[Tuple[str, re.Pattern], ...] = (
-    # A psycopg failure can echo the DSN it was given, password and all.
-    ('dsn', re.compile(r'(?P<head>[a-z+]+://[^\s:/@]+:)[^\s@]+(?P<tail>@)')),
-    # An HTTP client traceback can carry the Authorization header it sent.
-    ('bearer', re.compile(r'(?i)(?P<head>bearer\s+)[A-Za-z0-9._\-]{8,}')),
-    # OpenAI keys, in a URL or a repr.
-    ('openai_key', re.compile(r'sk-[A-Za-z0-9._\-]{8,}')),
-    # Telegram puts the bot token in the PATH, so any URL echo leaks it.
-    ('telegram_token', re.compile(r'(?P<head>/bot)\d{6,}:[A-Za-z0-9_\-]{8,}')),
-)
-_MASK = '«redacted»'
-
 
 @dataclass
 class LogEntry:
@@ -86,17 +75,6 @@ class LogPage:
     def truncated(self) -> bool:
         """True when the range held more than `limit` — the caller is seeing the newest slice."""
         return self.matched > len(self.entries)
-
-
-def redact(line: str) -> Tuple[str, bool]:
-    """Mask anything credential-shaped; report whether the line was changed."""
-    out = line
-    for _name, pattern in _REDACTIONS:
-        out = pattern.sub(
-            lambda match: ''.join(filter(None, (match.groupdict().get('head'), _MASK,
-                                                match.groupdict().get('tail')))),
-            out)
-    return out, out != line
 
 
 def parse_timestamp(raw: str) -> Optional[datetime]:

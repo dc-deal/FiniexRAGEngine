@@ -64,6 +64,16 @@ class OverrideEntry:
     base_value: Any = _ABSENT    # _ABSENT = key missing in the tracked file
     unknown: bool = False        # not in the validated config -> ignored by Pydantic (typo?)
 
+    @property
+    def added(self) -> bool:
+        """The tracked file had no such key at all — the sentinel, without exporting it.
+
+        `_ABSENT` has to stay distinct from an explicit JSON `null`, and a consumer outside this
+        module should be able to ask the question without importing a private sentinel to compare
+        against (the config views publish this distinction, ISSUE_104's config surface).
+        """
+        return self.base_value is _ABSENT
+
 
 def collect_overrides(base: Dict[str, Any], override: Dict[str, Any],
                       validated: Dict[str, Any],

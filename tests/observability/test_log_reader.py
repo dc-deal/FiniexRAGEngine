@@ -11,7 +11,6 @@ from finiexragengine.core.observability.log_reader import (
     files_for_range,
     parse_timestamp,
     read_log,
-    redact,
 )
 
 
@@ -161,23 +160,6 @@ def test_a_range_with_nothing_in_it_is_an_empty_page_not_an_error(tmp_path):
 
 
 # --- redaction, and it announces itself -------------------------------------------------------
-
-def test_every_credential_shape_is_masked_and_the_surrounding_text_survives():
-    cases = [
-        ('connection to postgresql://finiex:hunter2@db:5432/rag failed', 'hunter2'),
-        ('headers={"Authorization": "Bearer abc123DEF456ghi"}', 'abc123DEF456ghi'),
-        ('openai.AuthenticationError: key sk-proj-AbCdEf123456 rejected', 'sk-proj-AbCdEf123456'),
-        ('POST https://api.telegram.org/bot8012345678:AAF-xyz_123/sendMessage', 'AAF-xyz_123'),
-    ]
-    for line, secret in cases:
-        masked, changed = redact(line)
-        assert changed, line
-        assert secret not in masked, f'{secret} survived in {masked}'
-        assert '«redacted»' in masked
-    # The surrounding text is what makes the line useful — masking must not eat it.
-    masked, _ = redact('connection to postgresql://finiex:hunter2@db:5432/rag failed')
-    assert masked.startswith('connection to postgresql://finiex:') and masked.endswith('failed')
-
 
 def test_an_ordinary_line_is_untouched_and_not_counted(tmp_path):
     log = _write(tmp_path / 'finiex.log',

@@ -294,6 +294,66 @@ It cannot spend and it has no write. `matched` (before the limit) and `truncated
 out, so a bounded answer never reads as a complete one. No CLI: on the box `Get-Content` is already
 the better tool — *remote* is the case that was missing.
 
+## Diagnostics: `GET /v1/configs/{name}`
+
+```
+GET /v1/configs                 → the documents this caller may read
+GET /v1/configs/{name}?id=      → one document, effective and redacted
+```
+
+The configuration **this process is running**, for the three domains that have one: `app`,
+`pipelines`, `source_sets`. It exists because the layer that differs between two machines is the one
+nothing exposed — `user_configs/` is gitignored, so which feeds a machine has switched off, which
+model variant is disabled and which detection thresholds it actually uses were readable only on the
+host. The `[OVERRIDE]` boot line is a notice rather than an answer: capped at six leaves, and it
+never prints a string value.
+
+A new grant surface `configs`, held by nobody until it is written into a token. Three names rather
+than one per pipeline, so pipeline ids and source-set ids never share a namespace; `?id=` narrows
+within a document and never selects a different one.
+
+**Effective means this process, not this disk.** The views are built at boot over the objects the
+engine loaded — the app config manager, the pipeline registry, and the source-set registry the
+ingest workers themselves poll from. Nothing is re-read per request, for the same reason `/v1/build`
+samples its commit once: a file edited after startup must not make this surface disagree with the
+engine that is running.
+
+**Every string is classified before it can be served.** Two layers, and the second is the guard:
+
+- **by path** — `configuration/config_redaction.py` names each string leaf as public or secret. The
+  secret list is three entries (`api.tokens.*.token`, `telegram.bot_token`, `telegram.chat_id`),
+  because the credentials that matter are not in the config models at all: `DATABASE_URL` and
+  `OPENAI_API_KEY` are environment variables. A string the policy does not name is **masked** and
+  reported as `unclassified`, and `tests/contracts/test_config_exposure.py` fails the build until
+  someone classifies it — so an unclassified field is a short-lived state, not a leak.
+- **by pattern** — the same scrubber the log route uses (`utils/redaction.py`), for the credential
+  that reaches a field nobody expected to hold one: a feed URL carrying its own key in the query
+  string is masked although `sources[].url` is legitimately public.
+
+Both halves report what they touched (`redacted`, `unclassified`, `scrubbed`), and the projection
+lives in `configuration/abstract_config_view.py` rather than the router — a config document is
+exactly the payload where "the route remembered to sanitize" is not a property worth resting on.
+
+The answer also carries `overrides`: which leaves the gitignored overlay moved, with their previous
+values, `added` for a key the tracked file never had, and `unknown` for one the schema does not know
+(Pydantic ignores unknown keys, so a typo'd override silently does nothing — and the payload says
+so). Those values pass the same projection: `user_configs/app_config.json` is precisely the file the
+bearer tokens live in.
+
+Two details that only became visible once this ran against production:
+
+- **An `unknown` key's strings are masked but never counted as `unclassified`.** It names no field
+  in any model, so it cannot be classified and no contract test can cover it — while a key misfiled
+  by hand is exactly where a secret ends up by accident. The `unknown: true` flag is the signal;
+  keeping it out of the census leaves `unclassified` meaning one thing only.
+- **An unset credential is published as `""`, not as a mask.** Masking an empty field turns "no bot
+  token on this machine" into "a bot token you may not see" — one payload for two states an
+  operator needs to tell apart, and nothing is protected by hiding an empty string.
+
+It cannot spend and has no write. An unknown `{name}` is a 403 for a scoped caller — authorisation
+before resolution, so the endpoint is not an existence oracle — while an unknown `?id=` is a 404,
+because absence is only informative to someone entitled to the thing that is absent.
+
 ## `GET /v1/build` is the second open route
 
 It reports what code the process is running: `version`, the short `commit`, whether the working tree

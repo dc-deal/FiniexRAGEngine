@@ -193,8 +193,15 @@ class IngestWorker:
             else:
                 usd = spend.usd
                 self._state.last_status = 'ok'
-                # Prefix a suspended pass (provider quota, ISSUE_47) so it is visible, not silent.
-                prefix = f'{reason} · ' + ('suspended (quota) · ' if result.suspended else '')
+                # Prefix a degraded pass so it is visible, not silent — and name WHICH kind:
+                # a quota suspend (ISSUE_47) is a billing problem, an unreachable embedding
+                # provider (2026-09-08) is a network one, and one word decides where the operator
+                # looks first.
+                prefix = f'{reason} · '
+                if result.suspended:
+                    prefix += 'suspended (quota) · '
+                if result.embed_failed:
+                    prefix += 'embedding unreachable · '
                 # Tokens belong in `last_detail`, not only in the log call: this one string is
                 # what the log line, the activity stream AND /health all render (ISSUE_79). Split
                 # across two places it produced three different versions of the same pass.
@@ -231,6 +238,7 @@ class IngestWorker:
                 # workers' INFO passes remain the regular liveness heartbeat either way.
                 eventful = (result.stored or result.candidates or usd
                             or result.failed_sources or result.suspended
+                            or result.embed_failed
                             or result.truncated or result.rejected)
                 duration_ms = (perf_counter() - started) * 1000.0
                 # Reporting the pass is guarded separately from running it: the work is already
@@ -303,6 +311,12 @@ class IngestWorker:
             stats.push_event('INGEST', f'{source_set_id} {self._state.last_detail}')
         if result.suspended:
             stats.push_event('BUDGET', 'embedding suspended — provider quota')
+        if result.embed_failed:
+            # INGEST, not BUDGET: nothing was refused and nothing was billed. The articles this
+            # pass fetched are held for the next one (the validators were rewound), so the line
+            # says what happened rather than implying a loss.
+            stats.push_event('INGEST', f'{source_set_id} embedding provider unreachable — '
+                                       f'fetched articles held for the next pass')
         # BREAKING (detected side): cumulative HIGH-tier candidates flagged by ingest (ISSUE_11).
         if result.candidates:
             stats.add_breaking_detected(result.candidates, at=now)
@@ -333,7 +347,11 @@ class IngestWorker:
                        f'— normal polling resumed ({self._set_name()})')
             logger.warning('[HOST] %s', message)
         elif event.opened:
-            message = (f'host connectivity — {event.fleet} unreachable in one pass, '
+            # The fleet string carries its own qualifiers now (2026-09-08): the set's own half is
+            # this pass, the other sets' halves are a lookback over every feed they have on record.
+            # A single trailing "unreachable in one pass" used to claim both, which is how two
+            # correct numbers came to look like one inconsistent measure.
+            message = (f'host connectivity — {event.fleet}; '
                        f'no quarantine applied, retry '
                        f'{event.backoff_until.strftime("%H:%M:%S")} UTC')
             logger.error('[HOST] %s', message)

@@ -20,7 +20,13 @@ PollOutcome = Literal['ok', 'failed']
 # flavour of `quarantined` (ISSUE_84): the feed did nothing wrong, the whole set is paused because
 # the local connectivity failed, and a surface that says "QUARANTINED" there tells the operator to
 # look at the feed — which is exactly the wrong place.
-PollStatus = Literal[PollOutcome, 'quarantined', 'floor_skipped', 'suspended', 'host_backoff']
+# `embed_failed` (2026-09-08) is deliberately NOT a flavour of `suspended`, for the same reason
+# `host_backoff` is not a flavour of `quarantined`: `suspended` means the provider refused on
+# quota and the answer is billing, while this means the provider could not be reached at all and
+# the answer is the network. A surface that says SUSPENDED during a DNS outage sends the operator
+# to the wrong page.
+PollStatus = Literal[PollOutcome, 'quarantined', 'floor_skipped', 'suspended', 'host_backoff',
+                     'embed_failed']
 
 # WHICH text treatment produced an article's stored text, its vector and the prompt that read it
 # (ISSUE_112). A closed vocabulary rather than free text for the same reason as `DetectionTrigger`:
@@ -340,6 +346,10 @@ class IngestResult:
     candidates: int = 0             # breaking candidates flagged this pass (HIGH tier, ISSUE_11)
     max_tier: int = 0               # highest importance tier written this pass — drives the eval wake (ISSUE_11)
     suspended: bool = False         # paid embedding suspended this pass (provider quota, ISSUE_47)
+    # The embedding provider could not be reached and the pass stopped at that source (2026-09-08).
+    # Distinct from `suspended`: nothing was refused, nothing was billed, and the fix is not a
+    # budget one. Carried so the worker line and the live display can say which of the two it was.
+    embed_failed: bool = False
     polls: List[SourcePoll] = field(default_factory=list)
     # Source-health outcomes for this pass (ISSUE_11) — let the worker pick a log level so
     # repeated identical failures are denoised (WARN once, DEBUG the repeats, WARN on flag).

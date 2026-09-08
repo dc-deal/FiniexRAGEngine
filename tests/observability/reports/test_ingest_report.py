@@ -95,3 +95,27 @@ def test_empty_pass_still_lists_every_source():
     assert [row.status for row in report.rows] == \
         ['disabled', 'not polled', 'not polled', 'not polled']
     assert 'forexlive' in rendered
+
+
+def test_a_pass_stopped_at_the_embed_stage_renders_and_does_not_read_as_a_feed_problem():
+    """The row for 2026-09-08's condition, through the path that would raise a KeyError.
+
+    `build_ingest_report` looks its label up as `_STATUS_LABELS[poll.status]`, so an unlabelled
+    status is a crash the first time it occurs — on the machine, during the incident that produced
+    it. The label is guarded by `tests/contracts/test_vocabulary_boundary.py`; this asserts the row
+    a reader actually sees, and that it points at neither the feed nor the budget.
+    """
+    result = IngestResult(fetched=12, embedded=0, stored=0, embed_failed=True, polls=[
+        SourcePoll('forexlive', 'embed_failed',
+                   ingest=SourceIngest(fetched=12, embedded=0, stored=0),
+                   detail='embedding provider unreachable — fetched, not embedded'),
+    ])
+
+    report = build_ingest_report('forex_news', result, _source_set())
+    row = next(row for row in report.rows if row.source_id == 'forexlive')
+
+    assert row.status == 'EMBED UNREACHABLE'
+    assert 'QUARANTIN' not in row.status and 'SUSPEND' not in row.status
+    # The feed answered — the pass counts its fetch, and the sources behind it were never reached.
+    assert report.polled == 1
+    assert 'unreachable' in format_ingest_report(report)

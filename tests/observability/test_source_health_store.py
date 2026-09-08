@@ -349,8 +349,10 @@ def test_a_set_that_failed_inside_the_window_is_counted_even_with_its_streak_res
     event = _open_forex_event(ladder_store)
 
     assert event is not None and event.opened
-    assert 'forex_news 4/4' in event.fleet
-    assert 'crypto_news 2/3' in event.fleet, event.fleet    # the streak view would say 0/3
+    assert 'forex_news 4/4 unreachable this pass' in event.fleet
+    # Each half names its own measure: 'this pass' for the set that fired, a lookback over every
+    # known feed for the others — two correct numbers used to read as one inconsistent one.
+    assert 'crypto_news 2/3 known failing in 5m' in event.fleet, event.fleet   # streak view: 0/3
 
 
 def test_a_failure_older_than_the_window_does_not_join_someone_elses_outage(ladder_store, clean_db):
@@ -364,7 +366,8 @@ def test_a_failure_older_than_the_window_does_not_join_someone_elses_outage(ladd
     event = _open_forex_event(ladder_store)
 
     assert 'crypto_news' not in event.fleet
-    assert event.fleet == 'forex_news 4/4, no failure reported by the other sets yet'
+    assert event.fleet == ('forex_news 4/4 unreachable this pass, '
+                           'no failure reported by the other sets yet')
 
 
 def test_a_quiet_other_set_is_never_called_healthy(ladder_store):

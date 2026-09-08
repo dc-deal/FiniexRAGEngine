@@ -283,8 +283,17 @@ class SourceHealthStore:
         the correlated window counts, whether or not its streak survived a later success. What no
         query can see is a set that has not polled *yet*, so the wording says how far the other set
         has reported rather than pronouncing it healthy.
+
+        **The two halves are different measures, and each now says which.** The set's own number is
+        `failed/pollable` *in this pass*; the other set's is `failed/known` over the lookback, where
+        "known" is every row `source_health` holds for it — including a feed disabled in the config,
+        because `enabled` lives in the configuration and this store deliberately never reads it. On
+        2026-09-08 that produced `forex_news 11/11 + crypto_news 12/12` for two sets that each have
+        eleven pollable feeds and one disabled one: two correct numbers that looked like one
+        inconsistent measure. Labelling them is the fix; making them agree would mean teaching the
+        store about config it has no business knowing.
         """
-        parts = [f'{source_set} {failed}/{pollable}']
+        parts = [f'{source_set} {failed}/{pollable} unreachable this pass']
         window = timedelta(minutes=self._config.correlated_backoff_minutes)
         try:
             with self._connect() as conn, conn.cursor() as cur:
@@ -297,9 +306,10 @@ class SourceHealthStore:
         except psycopg.Error:
             # A label is not worth failing an outage response over.
             return parts[0]
+        minutes = self._config.correlated_backoff_minutes
         for other_set, other_failed, other_total in others:
             if other_failed:
-                parts.append(f'{other_set} {other_failed}/{other_total}')
+                parts.append(f'{other_set} {other_failed}/{other_total} known failing in {minutes}m')
         if len(parts) == 1:
             # Never "healthy": the other set may simply not have polled since this began, and a
             # verdict it did not earn is what made the last one misleading.

@@ -206,9 +206,24 @@ Two deliberate limits, stated rather than discovered later:
 
 ### What the cross-set line may claim (corrected 2026-09-08)
 
-The alert names the fleet, not just the set (`forex_news 11/11 + crypto_news 8/11`), because 12/12
-across two independently-configured sets says *the host* while 5/5 in one set says *one upstream
-provider* — and the two send the operator to different places.
+The alert names the fleet, not just the set, because 12/12 across two independently-configured sets
+says *the host* while 5/5 in one set says *one upstream provider* — and the two send the operator to
+different places.
+
+**The two halves are different measures, so each says which** (2026-09-08):
+
+```
+[HOST] host connectivity — forex_news 11/11 unreachable this pass
+                         + crypto_news 12/12 known failing in 5m; no quarantine applied, retry …
+```
+
+The set's own number is `failed/pollable` **in this pass**. The other set's is `failed/known` over
+the lookback, where *known* is every row `source_health` holds for it — including a feed disabled in
+the configuration, because `enabled` lives in the config and this store deliberately never reads it.
+That is why two sets with eleven pollable feeds and one disabled feed each report `11/11` for
+themselves and `12/12` for the other: two correct numbers that looked like one inconsistent measure
+until they were labelled. Making them agree would mean teaching the store about configuration it has
+no business knowing.
 
 That count used to be `consecutive_failures > 0`, which is the other set's state **at the instant
 this pass ends**. It undercounts precisely during the flapping a host failure produces: a feed that

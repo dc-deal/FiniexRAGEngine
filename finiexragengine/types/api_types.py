@@ -322,3 +322,55 @@ class EnvelopeRange(BaseModel):
     # from the journal export (#62) instead of discovering a hole later.
     truncated: bool = False
     oldest_available_seq: Optional[int] = None
+
+
+class OverrideInfo(BaseModel):
+    """One leaf the gitignored `user_configs/` overlay moved (2026-09-08).
+
+    `added` and `was: null` are different statements — the tracked file having no such key, versus
+    it holding an explicit `null` — and collapsing them would hide the more interesting one.
+    `unknown` marks a key the validated config does not have: Pydantic ignores unknown keys, so a
+    typo'd override silently does nothing, and the answer says so rather than showing it as applied.
+    """
+    path: str
+    value: Any
+    was: Any = None
+    added: bool = False
+    unknown: bool = False
+
+
+class ConfigDocumentResponse(BaseModel):
+    """One config domain as it is published: effective values, provenance, and what was masked."""
+    name: str
+    summary: str
+    generated_at: datetime
+    # The files or directories this document was merged from, tracked layer first — so a reader can
+    # see that an overlay exists even when it changed nothing.
+    layers: List[str] = Field(default_factory=list)
+    # The effective documents keyed by id, serialized by the config views and deliberately untyped
+    # here: these are the engine's own configuration shapes and must stay free to change, the same
+    # reasoning `ReportEnvelope.data` carries.
+    documents: Dict[str, Any] = Field(default_factory=dict)
+    overrides: Dict[str, List[OverrideInfo]] = Field(default_factory=dict)
+    # Paths whose value was replaced because the policy calls them a credential.
+    redacted: List[str] = Field(default_factory=list)
+    # Paths masked because nobody has classified them yet — a different, and much shorter-lived,
+    # statement: a contract test fails as soon as a model grows a string the policy does not name.
+    unclassified: List[str] = Field(default_factory=list)
+    # Strings a credential *pattern* changed rather than the path policy — a secret that reached a
+    # field nobody expected to hold one, such as a feed URL carrying its own key.
+    scrubbed: List[str] = Field(default_factory=list)
+
+
+class ConfigCatalogEntry(BaseModel):
+    """One config document as the catalog lists it."""
+    name: str
+    summary: str
+    layers: List[str] = Field(default_factory=list)
+    # The ids `?id=` accepts — so a caller narrows to something that exists instead of guessing.
+    ids: List[str] = Field(default_factory=list)
+
+
+class ConfigCatalog(BaseModel):
+    """The config documents THIS caller may read — filtered, never complete."""
+    configs: List[ConfigCatalogEntry] = Field(default_factory=list)

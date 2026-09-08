@@ -46,7 +46,7 @@ class _Clock:
 def _opened(failed: int = 11) -> HostEvent:
     return HostEvent(source_set='forex_news', failed=failed, pollable=11, started_at=_T0,
                      backoff_until=_T0 + timedelta(minutes=5),
-                     fleet=f'forex_news {failed}/11', opened=True)
+                     fleet=f'forex_news {failed}/11 unreachable this pass', opened=True)
 
 
 def _resumed(after: float = 300.0) -> HostEvent:

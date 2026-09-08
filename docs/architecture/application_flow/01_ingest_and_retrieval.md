@@ -467,13 +467,36 @@ Top-down, each new article flows through these units in order:
    next person who wants to widen the concurrency should not have to re-establish it.
 
    **One hazard pre-fetching introduces, and it is not obvious.** A successful fetch advances the
-   feed's `ETag` / `Last-Modified`. The budget-suspend branch abandons every source after the one
-   that ran out of quota, and the invariant it rests on is *"the un-embedded articles reappear next
-   pass"* — which pre-fetching would silently break: an abandoned source would answer `304` next
-   pass and its articles would be gone for good, a loss the sequential form could not produce
-   because it never reached them. Hence `AbstractSource.reset_conditional_get()`: the suspend path
-   rewinds the validators of every source it fetched but never accounted for, so the next pass
+   feed's `ETag` / `Last-Modified`. A pass that stops at the embed stage abandons every source
+   after the one that stopped it, and the invariant it rests on is *"the un-embedded articles
+   reappear next pass"* — which pre-fetching would silently break: an abandoned source would answer
+   `304` next pass and its articles would be gone for good, a loss the sequential form could not
+   produce because it never reached them. Hence `AbstractSource.reset_conditional_get()`: the stop
+   path rewinds the validators of every source it fetched but never accounted for, so the next pass
    re-pulls them for real.
+
+   **Two conditions stop a pass there, and until 2026-09-08 only one of them was handled.**
+   `Ingestor._stop_after_embed` is the shared exit:
+
+   | | `suspended` | `embed_failed` |
+   |---|---|---|
+   | cause | the provider refused on quota (ISSUE_47) | the provider could not be reached at all |
+   | billed | nothing | nothing |
+   | where the operator looks | billing | the network |
+
+   They are kept apart in the reporting for the same reason `host_backoff` is not a flavour of
+   `quarantined`: a line reading SUSPENDED during a DNS outage sends someone to the wrong page. On
+   2026-09-08 the second one was not caught at all — `EmbeddingError: Connection error.` unwound
+   `run()`, so **none** of the accounting ran and **no** validator was rewound. Every source that
+   pass had already fetched kept an advanced `ETag`, answered `304` on the next pass, and its
+   articles were never stored: silent, permanent, and against *"store the full raw corpus; never
+   discard at ingest"*. It fired once in the 14 days of retained logs, which is the frequency of a
+   defect worth fixing rather than the size of one worth ignoring.
+
+   The same change also rewinds **the source that stopped the pass**, which the suspend path had
+   deliberately excluded on the grounds that its poll entry records what happened. It does — and a
+   record is not an article. That source is in exactly the position of the ones behind it; a
+   re-fetch is unpaid, and a lost article is permanent.
 
 2. **Fetch — `core/sources/rss_source.py` (`RssSource.fetch`).**
    Actively pulls the RSS feed, maps each entry to an `Article` (title + summary only),

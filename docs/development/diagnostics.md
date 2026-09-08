@@ -673,6 +673,35 @@ timestamps: over hours a falling urgency is correct decay, not drift. Measured 2
 thinly-covered symbols, 6.8 % on BTCUSD). Small everywhere — the breaking gate is simply the one
 place where a third of a lattice step becomes a categorical error.
 
+## What is this machine actually running?
+
+```
+GET /v1/configs/source_sets?id=crypto_news
+```
+
+Not what the repository says — what *this process* loaded. The two differ by the gitignored
+`user_configs/` overlay, and that difference is rarely cosmetic: a feed switched off on one egress IP
+changes what every detection threshold in the same file means, and a `high_cluster_size` of 5 reads
+differently against 7 active feeds than against 21 declared ones.
+
+The answer carries four things worth reading in this order:
+
+| field | what it tells you |
+|---|---|
+| `documents` | the effective values — the merge result, not either layer |
+| `overrides` | which leaves the overlay moved, and what they were before. `added` means the tracked file never had the key; `unknown` means the schema does not know it, so the override **did nothing** (Pydantic ignores unknown keys — a typo'd `floor_distanze` is invisible without this) |
+| `layers` | the files it was merged from. An overlay that is absent and one that changed nothing are different states, and only the first is missing from this list |
+| `redacted` / `unclassified` / `scrubbed` | what was masked and why — a credential by policy, a string nobody has classified yet, or a value a pattern caught in a field that is normally public |
+
+**`unclassified` should always be empty.** It means a config model grew a string the exposure policy
+does not name; the value is masked, and `tests/contracts/test_config_exposure.py` is already red.
+An override naming a key the schema does not have is *not* this: it shows as `unknown: true` on its
+own leaf, its strings are masked anyway (a misfiled key is where a secret lands by accident), and it
+stays out of the census — otherwise every typo would send a reader after a test that is green.
+
+Needs `configs:app`, `configs:pipelines` or `configs:source_sets` — three separate names, so a
+consumer can be given the feed catalogue without being given the token list.
+
 ## Reference — every route reachable from here
 
 The live engine answers over HTTPS at `https://finiex-rag.duckdns.org`; the assistant's own bearer
@@ -690,6 +719,7 @@ database and no shell, and `POST /run` is not registered in production, so nothi
 | `GET /v1/reports` | `reports:<name>` | the catalog — **only** the reports this token may fetch |
 | `GET /v1/reports/{name}` | `reports:<name>` | one diagnostic surface as JSON (`report_api.md`) |
 | `GET /v1/logs/{name}` | `logs:<name>` | the engine log over a **UTC** range, redacted (`engine` is the only stream) |
+| `GET /v1/configs` · `/{name}` | `configs:<name>` | the **effective** configuration this process runs — `app`, `pipelines`, `source_sets` — `user_configs/` included, credentials masked |
 
 Two things a reading has to respect. **A `403` is a grant, not a bug** — access is by name, so a
 surface added later is unreachable until someone writes it into a token; and a scoped caller gets

@@ -41,6 +41,7 @@ class AppConfigManager:
                  user_config_path: Optional[Path] = None) -> None:
         base_path = config_path or _CONFIG_PATH
         user_path = user_config_path or _USER_CONFIG_PATH
+        self._paths: List[Path] = [base_path, user_path]
         base = json.loads(base_path.read_text(encoding='utf-8'))
         data = base
         # Overlay operator/secret overrides when present (gitignored, optional).
@@ -52,13 +53,47 @@ class AppConfigManager:
         # Override visibility (once per process, gated by logging.warn_on_override):
         # WHAT the user file changes, leaf by leaf — a forgotten override or a typo'd
         # key must never steer a run silently.
+        #
+        # Kept as well as emitted (2026-09-08): the boot line is capped at six leaves and never
+        # prints a string value, which makes it a notice rather than an answer. The config view
+        # publishes the full list, so the entries have to survive the constructor — the registries
+        # already keep theirs, and this was the one layer that dropped them on the floor.
+        self._override_entries: List[OverrideEntry] = []
         if user_data is not None:
-            self._emit_overrides('user_configs/app_config.json',
-                                 collect_overrides(base, user_data,
-                                                   self._config.model_dump()))
+            self._override_entries = collect_overrides(base, user_data,
+                                                       self._config.model_dump())
+            self._emit_overrides('user_configs/app_config.json', self._override_entries)
 
     def get_config(self) -> AppConfig:
         return self._config
+
+    def override_entries(self) -> List[OverrideEntry]:
+        """What `user_configs/app_config.json` moved, leaf by leaf — empty when there is no overlay.
+
+        Named like `PipelineRegistry.override_entries()` / `SourceSetRegistry.override_entries()`
+        on purpose: three layers, one question, one spelling.
+        """
+        return list(self._override_entries)
+
+    def config_paths(self) -> List[str]:
+        """The files the effective app config was merged from, tracked layer first.
+
+        Reported by the config view so a reader can see that an overlay exists even when it changed
+        nothing — an absent file and an inert one are different states.
+        """
+        labels: List[str] = []
+        for path in self._paths:
+            if not path.exists():
+                continue
+            # A test (or a second deployment layout) may pass a path outside the repo; naming the
+            # file is still the useful half, and a raised ValueError here would be absurd.
+            # `as_posix()`, not `str()`: the engine runs on Windows and the served value would
+            # otherwise read `configs\app_config.json` while the pipeline and source-set views —
+            # whose layers are declared constants — read `configs/pipelines/`. One document, two
+            # separators, decided by which machine answered. Found on the live surface, 2026-09-08.
+            labels.append(path.relative_to(_PROJECT_ROOT).as_posix()
+                          if path.is_relative_to(_PROJECT_ROOT) else path.name)
+        return labels
 
     def get_pipelines_dir(self) -> Path:
         return _PIPELINES_DIR

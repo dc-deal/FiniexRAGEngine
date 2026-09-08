@@ -4,7 +4,7 @@ import logging
 import os
 import socket
 from contextlib import asynccontextmanager
-from typing import AsyncIterator, List, Optional
+from typing import AsyncIterator, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, FastAPI
 
@@ -20,7 +20,13 @@ from finiexragengine.api.endpoints.log_router import build_log_router
 from finiexragengine.api.endpoints.stream_router import build_stream_router
 from finiexragengine.api.rate_limiter import RateLimiter, build_rate_limit_dependency
 from finiexragengine.api.token_registry import TokenRegistry
+from finiexragengine.api.endpoints.config_router import build_config_router
+from finiexragengine.configuration.abstract_config_view import AbstractConfigView
 from finiexragengine.configuration.app_config_manager import AppConfigManager
+from finiexragengine.configuration.app_config_view import AppConfigView
+from finiexragengine.configuration.pipeline_config_view import PipelineConfigView
+from finiexragengine.configuration.source_set_config_view import SourceSetConfigView
+from finiexragengine.configuration.source_set_registry import SourceSetRegistry
 from finiexragengine.core.alerts.telegram_client import TelegramClient
 from finiexragengine.core.alerts.telegram_command_poller import TelegramCommandPoller
 from finiexragengine.core.alerts.telegram_weekly_format import render_weekly_messages
@@ -149,6 +155,7 @@ def create_app(attach_runners: Optional[bool] = None,
     # The stream's two units (ISSUE_9): the journal tailer and the replay policy. None without a
     # database — a stream over no journal has nothing to tail and would answer every connect with a
     # cold start that is not true.
+    source_sets: Optional[SourceSetRegistry] = None
     stream_dispatcher: Optional[StreamDispatcher] = None
     stream_replay: Optional[StreamReplay] = None
     # Live dashboard's shared state (ISSUE_26): built only in live mode, injected into every
@@ -186,8 +193,11 @@ def create_app(attach_runners: Optional[bool] = None,
         # a degraded feature, and blocking boot on it would take the engine down over a quarantined
         # feed. Read through the registry factory, so the `user_configs/` overlay is honoured — a
         # per-machine `enabled: false` is precisely what moves these counts.
-        log_detection_preflight(
-            config_manager.build_source_set_registry().list_sets())
+        # Built once and KEPT (2026-09-08): the preflight was reading it and dropping it, and
+        # `/v1/configs/source_sets` has to answer from the catalogue this process loaded rather
+        # than from a fresh read of files that may have moved since boot.
+        source_sets = config_manager.build_source_set_registry()
+        log_detection_preflight(source_sets.list_sets())
         # The live stream's journal tailer (ISSUE_9). Built whenever there is a store and the
         # transport is enabled — deliberately NOT gated on `start_workers`: the stream is a read
         # surface over the journal, so it serves a journal another process writes. That is what lets
@@ -421,8 +431,29 @@ def create_app(attach_runners: Optional[bool] = None,
         # The path THIS process actually writes to (2026-09-08). Passed rather than re-resolved in
         # the router for the same reason `stream` is: the route must never serve a file the engine
         # is not using, and a caller cannot name one.
-        log_file=config_manager.get_config().logging.file))
+        log_file=config_manager.get_config().logging.file,
+        # The effective configuration, as views over the objects this process booted with
+        # (2026-09-08). Built here because only `create_app` knows which registries the engine
+        # actually loaded; the views own the redaction, so nothing downstream can skip it.
+        config_views=_build_config_views(config_manager, registry, source_sets)))
     return app
+
+
+def _build_config_views(config_manager: AppConfigManager,
+                        registry: PipelineRegistry,
+                        source_sets: Optional[SourceSetRegistry]
+                        ) -> Dict[str, AbstractConfigView]:
+    """The three config documents, over the objects this process runs on (2026-09-08).
+
+    `source_sets` is None in scaffold-mock mode (no database, so no ingest catalogue was loaded).
+    The document is then simply absent from the catalog rather than served from a second read: a
+    surface that says "what this engine runs" must not answer for something it never loaded.
+    """
+    views: List[AbstractConfigView] = [AppConfigView(config_manager),
+                                       PipelineConfigView(registry)]
+    if source_sets is not None:
+        views.append(SourceSetConfigView(source_sets))
+    return {view.NAME: view for view in views}
 
 
 def _build_public_router(api_config: ApiConfig, routers: List[APIRouter]) -> APIRouter:
@@ -452,7 +483,9 @@ def _build_protected_router(registry: PipelineRegistry,
                             outcome_store: Optional[OutcomeStore] = None,
                             extra_routers: Optional[List[APIRouter]] = None,
                             stream: Optional[StreamConfig] = None,
-                            log_file: Optional[str] = None) -> APIRouter:
+                            log_file: Optional[str] = None,
+                            config_views: Optional[Dict[str, AbstractConfigView]] = None
+                            ) -> APIRouter:
     """Everything a token is required for — and everything added here later, automatically.
 
     `extra_routers` carries routers assembled by the caller: the exemptions that were switched
@@ -514,4 +547,9 @@ def _build_protected_router(registry: PipelineRegistry,
     # The engine's own log (2026-09-08), on its own grant surface: no consumer holds `logs:*`
     # unless someone writes it into their token, which is the model working rather than a gap.
     protected.include_router(build_log_router(log_file, tokens))
+    # The effective configuration (2026-09-08), on its own grant surface for the same reason the
+    # log is: `configs:*` is written into a token deliberately or it is not reachable. Mounted even
+    # when there are no views, so the surface exists and answers 404 per name rather than
+    # disappearing — a route that vanishes with a boot mode is one the scope sweep cannot see.
+    protected.include_router(build_config_router(config_views or {}, tokens))
     return protected

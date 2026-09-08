@@ -11,7 +11,11 @@ from finiexragengine.core.pipeline.ingestor import Ingestor
 from finiexragengine.core.rag.abstract_embedder import AbstractEmbedder
 from finiexragengine.core.rag.abstract_vector_store import AbstractVectorStore
 from finiexragengine.core.sources.abstract_source import AbstractSource
-from finiexragengine.exceptions.ragengine_errors import BudgetExceededError, SourceFetchError
+from finiexragengine.exceptions.ragengine_errors import (
+    BudgetExceededError,
+    EmbeddingError,
+    SourceFetchError,
+)
 from finiexragengine.types.article_types import Article, ScoredArticle
 from finiexragengine.types.config_types.source_set_types import SourceConfig
 from finiexragengine.types.embedding_types import EmbedResult
@@ -527,10 +531,13 @@ def test_a_budget_suspend_rewinds_the_feeds_it_fetched_but_never_stored():
                       fetch_workers=3).run()
 
     assert result.suspended is True
-    # The source that suspended is accounted for and keeps its own validators — its poll entry
-    # records what happened. The two after it have no entry at all, so they must be re-pulled.
-    assert first.rewinds == 0
-    assert (second.rewinds, third.rewinds) == (1, 1)
+    # 2026-09-08: the source that stopped the pass is rewound too. It used to be excluded on the
+    # grounds that its poll entry records what happened — it does, and a record is not an article.
+    # Its fetched-but-unstored items are in exactly the position of the two behind it, a re-fetch
+    # is unpaid, and a lost article is permanent.
+    assert (first.rewinds, second.rewinds, third.rewinds) == (1, 1, 1)
+    # The two behind it still get no poll entry at all: they were never accounted for, and the
+    # report renders them from the declared catalogue as 'not polled'.
     assert [poll.source_id for poll in result.polls] == ['first']
 
 
@@ -589,3 +596,113 @@ def test_the_embedded_text_is_the_normalised_text():
     Ingestor([source], embedder, _FakeStore()).run()
 
     assert embedder.texts == ['Hack confirmed. Funds & keys lost']
+
+
+# --- 2026-09-08: the embedding provider is unreachable, not out of quota ------------------------
+
+
+class _UnreachableEmbedder(AbstractEmbedder):
+    """The production shape: `EmbeddingError: embedding request failed: Connection error.`
+
+    Logged by the live engine at 08:51:13 on 2026-09-08, during the DNS outage that took every
+    outbound destination with it — including api.openai.com.
+    """
+
+    def embed(self, texts: List[str]) -> EmbedResult:
+        raise EmbeddingError('embedding request failed: Connection error.')
+
+
+class _OnceThenConditional(_FakeSource):
+    """Serves its articles once, then answers empty — a feed behind a conditional GET.
+
+    This is what makes the loss provable rather than argued: after a successful fetch the real
+    source holds an ETag, and until something rewinds it the feed returns 304 and the pass sees
+    nothing. `reset_conditional_get` is the rewind, so this fake serves again only after one.
+    """
+
+    def __init__(self, source_id: str, articles: List[Article]) -> None:
+        super().__init__(source_id, articles)
+        self._served = False
+        self.rewinds = 0
+
+    def reset_conditional_get(self) -> None:
+        self.rewinds += 1
+        self._served = False
+
+    def _fetch_articles(self) -> List[Article]:
+        if self._served:
+            return []                       # 304 — nothing new since the validator we hold
+        self._served = True
+        return self._articles
+
+
+def test_an_unreachable_embedding_provider_stops_the_pass_instead_of_unwinding_it():
+    """The defect, at its own seam. Until 2026-09-08 this escaped `run()` entirely."""
+    source = _FakeSource('s1', [_article('a1')])
+
+    result = Ingestor([source], _UnreachableEmbedder(), _FakeStore()).run()
+
+    assert result.embed_failed is True
+    assert result.suspended is False            # nothing was refused and nothing was billed
+    assert result.stored == 0
+    assert result.fetched == 1                  # the free half happened and still counts
+    assert [(poll.source_id, poll.status) for poll in result.polls] == [('s1', 'embed_failed')]
+    assert 'unreachable' in result.polls[0].detail
+
+
+def test_the_articles_of_a_stopped_pass_are_seen_again_by_the_next_pass():
+    """The point of the whole fix, and the only case that proves it.
+
+    Pass one fetches, cannot embed and stops. Pass two must see those articles again — which only
+    happens if the first pass rewound the conditional-GET validator. Without the rewind the feed
+    answers 304 forever and the articles are gone with no error anywhere.
+    """
+    source = _OnceThenConditional('s1', [_article('a1'), _article('a2')])
+    store = _FakeStore()
+
+    first = Ingestor([source], _UnreachableEmbedder(), store).run()
+    assert first.embed_failed is True and first.stored == 0
+
+    second = Ingestor([source], _CountingEmbedder(), store).run()
+
+    assert second.fetched == 2, 'the feed answered 304 — the validator was never rewound'
+    assert second.stored == 2
+    assert source.rewinds == 1
+
+
+def test_an_unreachable_provider_rewinds_the_feeds_pre_fetched_behind_it_too():
+    """Pooled fetching pulls every due source before the first embed runs."""
+    first = _RewindableSource('first', [_article('a1')])
+    second = _RewindableSource('second', [_article('a2')])
+    third = _RewindableSource('third', [_article('a3')])
+
+    result = Ingestor([first, second, third], _UnreachableEmbedder(), _FakeStore(),
+                      fetch_workers=3).run()
+
+    assert result.embed_failed is True
+    assert (first.rewinds, second.rewinds, third.rewinds) == (1, 1, 1)
+
+
+def test_the_stop_is_still_loud(caplog):
+    """Handling the condition must not make it quieter than the crash it replaces.
+
+    Before this change the operator got an ERROR with a traceback — and a silently emptied feed.
+    The trade is the traceback, not the visibility.
+    """
+    with caplog.at_level('ERROR'):
+        Ingestor([_FakeSource('s1', [_article('a1')])], _UnreachableEmbedder(), _FakeStore()).run()
+
+    messages = [record.getMessage() for record in caplog.records if record.levelname == 'ERROR']
+    assert any('embedding provider unreachable' in message for message in messages), messages
+    assert any('1 article(s) held for the next pass' in message for message in messages), messages
+
+
+def test_a_source_with_nothing_new_never_reaches_the_embed_stage():
+    """No spend, no stop, no rewind — the common case must be untouched by all of this."""
+    source = _RewindableSource('s1', [])
+
+    result = Ingestor([source], _UnreachableEmbedder(), _FakeStore()).run()
+
+    assert result.embed_failed is False
+    assert source.rewinds == 0
+    assert [poll.status for poll in result.polls] == ['ok']

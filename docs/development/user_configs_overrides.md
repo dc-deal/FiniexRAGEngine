@@ -119,6 +119,23 @@ Every applied override is logged once per process, one line per override file, l
 - `coverage_cli` additionally marks its header with `(+ user override)` when the
   effective pipeline config diverges from the tracked one.
 
+## Reading the overlay from somewhere else (2026-09-08)
+
+The startup report says *that* a leaf moved; `GET /v1/configs/{name}` says what the merge produced.
+That closes the gap this whole layer creates: an override is by definition invisible in the
+repository, so a machine's real configuration used to be answerable only on the machine.
+
+```
+GET /v1/configs/source_sets?id=crypto_news   → documents + overrides + layers
+```
+
+Two things it deliberately does not do. It does not re-read the files — the views are built at boot
+over the objects the engine loaded, so the answer describes the running process rather than the
+current disk. And it does not publish secrets: the three credential leaves are masked by policy, and
+the *override entries* pass the same projection, because `user_configs/app_config.json` is exactly
+the file the bearer tokens and the bot token live in. Contract:
+[connect_contract.md](../architecture/connect_contract.md).
+
 ## Conventions
 
 - **Secrets live only here or in `.env`** — never in a tracked file, never in an issue.

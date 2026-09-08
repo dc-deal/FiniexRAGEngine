@@ -18,6 +18,8 @@ from finiexragengine.api.endpoints.report_router import build_report_router
 from finiexragengine.api.endpoints.stream_router import build_stream_router
 from finiexragengine.api.token_registry import TokenRegistry
 from finiexragengine.configuration.app_config_manager import AppConfigManager
+from finiexragengine.configuration.app_config_view import AppConfigView
+from finiexragengine.configuration.source_set_config_view import SourceSetConfigView
 from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
 from finiexragengine.api.grant_auth import build_grant_dependency
 from finiexragengine.core.outcome.outcome_store import OutcomeStore
@@ -73,6 +75,35 @@ def test_the_listing_shows_only_what_this_caller_can_fetch(client: TestClient) -
 
     assert narrow == {'source_health', 'breaking'}
     assert 'cost' in wide and narrow < wide
+
+
+def test_the_config_catalog_shows_only_what_this_caller_may_read(clean_db: str) -> None:
+    """The same rule one surface over (2026-09-08): a listing never advertises a 403.
+
+    Built through `_build_protected_router` rather than the config router alone, because the filter
+    reads `request.state.consumer` — which the bearer layer sets. A standalone router sees no
+    consumer, permits everything, and would make this assertion vacuous.
+    """
+    api_config = ApiConfig(tokens={
+        'ide': {'token': _NARROW, 'grants': ['configs:source_sets'], 'note': 'Testing IDE'},
+        'claude-dev': {'token': _WIDE, 'grants': ['*'], 'note': 'assistant'}})
+    tokens = TokenRegistry(api_config.tokens)
+    manager = AppConfigManager()
+    views = {'app': AppConfigView(manager),
+             'source_sets': SourceSetConfigView(manager.build_source_set_registry())}
+    app = FastAPI()
+    app.include_router(_build_protected_router(_pipelines(), api_config, tokens,
+                                               config_views=views))
+    client = TestClient(app)
+
+    narrow = client.get('/v1/configs', headers=_as(_NARROW)).json()['configs']
+    wide = client.get('/v1/configs', headers=_as(_WIDE)).json()['configs']
+
+    assert [entry['name'] for entry in narrow] == ['source_sets']
+    assert {entry['name'] for entry in wide} == {'app', 'source_sets'}
+    # And the document itself is refused, not merely hidden from the listing.
+    assert client.get('/v1/configs/app', headers=_as(_NARROW)).status_code == 403
+    assert client.get('/v1/configs/app', headers=_as(_WIDE)).status_code == 200
 
 
 def test_a_report_outside_the_scope_is_refused_and_the_refusal_is_debuggable(
@@ -211,8 +242,10 @@ def test_no_route_with_an_identity_segment_is_ungated(clean_db: str) -> None:
                        if '{' in path]
     assert identity_routes, 'no identity routes found — the walk itself is broken'
     # Named rather than merely swept: a router dropping out of the app would leave this walk green
-    # while the surface it gated went unreachable — and `logs` (2026-09-08) is the newest one.
-    assert ('/v1/logs/{name}', 'get') in identity_routes
+    # while the surface it gated went unreachable. Both 2026-09-08 surfaces are listed for that
+    # reason — `configs` mounts with an empty view map here, and must still be gated.
+    for route in (('/v1/logs/{name}', 'get'), ('/v1/configs/{name}', 'get')):
+        assert route in identity_routes, route
 
     for path, method in identity_routes:
         # Any value will do: the grant is refused before the name is resolved, which is the point.

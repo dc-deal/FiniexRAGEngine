@@ -13,11 +13,16 @@ from finiexragengine.core.pipeline.breaking_detector import BreakingDetector
 from finiexragengine.core.rag.abstract_embedder import AbstractEmbedder
 from finiexragengine.core.rag.abstract_vector_store import AbstractVectorStore
 from finiexragengine.core.sources.abstract_source import AbstractSource
-from finiexragengine.exceptions.ragengine_errors import BudgetExceededError, SourceFetchError
+from finiexragengine.exceptions.ragengine_errors import (
+    BudgetExceededError,
+    EmbeddingError,
+    SourceFetchError,
+)
 from finiexragengine.types.article_types import Article
 from finiexragengine.types.ingest_types import (
     IngestResult,
     PollSample,
+    PollStatus,
     SourceIngest,
     SourcePoll,
 )
@@ -140,6 +145,42 @@ class Ingestor:
             plan.append((source, None))
         return plan
 
+    def _stop_after_embed(self, result: IngestResult, entry: SourceIngest,
+                          plan: List[Tuple[AbstractSource, Optional[SourcePoll]]],
+                          index: int, source_id: str, status: PollStatus,
+                          detail: str) -> None:
+        """End a pass at the embed stage without losing what it already fetched (2026-09-08).
+
+        Two conditions reach here — the provider refused on quota, or it could not be reached at
+        all — and the *pass* is in the same state either way: fetched, health recorded, nothing
+        embedded, nothing billed. One helper, so the two cannot drift apart; drifting apart is
+        exactly how the second condition came to have no rewind at all.
+
+        **The rewind is the load-bearing part.** A successful fetch advances the feed's
+        ETag/Last-Modified, so a source pulled by the fetch phase and then abandoned answers 304 on
+        the next pass and its articles are gone — a loss the sequential form could not produce,
+        because it never reached those feeds.
+
+        `plan[index:]` covers the source that stopped the pass **as well as** every source
+        pre-fetched behind it. That is a change of decision, made deliberately: the stopping source
+        used to keep its validators on the grounds that its poll entry records what happened. It
+        does — and a record is not an article. It is in exactly the same position as the sources
+        after it, a re-fetch is unpaid, and a lost article is permanent.
+
+        The sources after it get no poll entry at all, which stays honest: they were never
+        accounted for, and the report renders them from the declared catalogue as 'not polled'.
+        """
+        entry.embedded = 0
+        result.polls.append(SourcePoll(source_id, status, ingest=entry, detail=detail))
+        # The fetch half of this source's work still happened and still counts — the pass line must
+        # not read as though nothing was pulled.
+        result.fetched += entry.fetched
+        result.normalised += entry.normalised
+        result.dropped_chars += entry.dropped_chars
+        for pending, pending_poll in plan[index:]:
+            if pending_poll is None:
+                pending.reset_conditional_get()
+
     def _fetch_all(self, due: List[AbstractSource],
                    timer: StageTimer) -> Dict[str, _FetchOutcome]:
         """Pull every due source — pooled when the set asks for it (ISSUE_107).
@@ -258,28 +299,33 @@ class Ingestor:
                     embedded = timer.time('embed', lambda: self._embedder.embed(texts))
                 except BudgetExceededError:
                     # Paid work suspended (provider quota, ISSUE_47): skip embedding this pass.
-                    # Fetch + health already ran; the un-embedded articles reappear next pass, so
-                    # nothing is lost while the feed window still holds them. Stop the pass here —
-                    # every remaining source would suspend too. The sources after this one get no
-                    # poll entry at all, which is honest: they were never accounted for. The report
-                    # renders them from the declared catalogue as 'not polled'.
+                    # Fetch + health already ran; the un-embedded articles reappear next pass
+                    # because the validators are rewound below. Stop the pass here — every
+                    # remaining source would suspend too.
                     result.suspended = True
-                    entry.embedded = 0
-                    result.polls.append(SourcePoll(
-                        source_id, 'suspended', ingest=entry,
-                        detail='paid work suspended (provider quota) — fetched, not embedded'))
-                    result.fetched += entry.fetched
-                    result.normalised += entry.normalised
-                    result.dropped_chars += entry.dropped_chars
-                    # "Reappear next pass" is the invariant this whole branch rests on, and
-                    # pre-fetching would have quietly broken it (ISSUE_107): a successful fetch
-                    # advances the feed's ETag/Last-Modified, so a source pulled here but never
-                    # embedded would answer 304 next pass and its articles would be lost for good —
-                    # a loss the sequential form could not produce, because it never reached them.
-                    # Rewinding the validators makes the next pass re-pull them for real.
-                    for pending, pending_poll in plan[index + 1:]:
-                        if pending_poll is None:
-                            pending.reset_conditional_get()
+                    self._stop_after_embed(
+                        result, entry, plan, index, source_id, 'suspended',
+                        'paid work suspended (provider quota) — fetched, not embedded')
+                    break
+                except EmbeddingError as exc:
+                    # The provider could not be reached (2026-09-08). Until then this escaped the
+                    # pass entirely: on that day's DNS outage `EmbeddingError: Connection error.`
+                    # unwound `run()`, so none of the accounting below ran and none of the
+                    # validators were rewound — every source this pass had already fetched kept an
+                    # advanced ETag and answered 304 next pass, with its articles never stored.
+                    # Silent, permanent, and against the corpus rule ("never discard at ingest").
+                    #
+                    # Handled exactly like the quota stop, because the *pass* is in the same state:
+                    # fetched, not embedded, nothing billed. Kept apart in the reporting, because
+                    # the operator's next move is different — this is the network, not the budget.
+                    # Still logged at ERROR: what changes is that the pass finishes its accounting,
+                    # not that the condition becomes quiet.
+                    result.embed_failed = True
+                    logger.error('[%s] embedding provider unreachable — pass stopped, %d article(s) '
+                                 'held for the next pass: %s', source_id, len(fresh), exc)
+                    self._stop_after_embed(
+                        result, entry, plan, index, source_id, 'embed_failed',
+                        f'embedding provider unreachable — fetched, not embedded ({exc})')
                     break
                 # Stamp what the embedding actually saw onto each article, then keep only the ones
                 # the provider accepted (ISSUE_79). A rejected item is dropped from this pass

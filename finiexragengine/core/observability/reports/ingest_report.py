@@ -29,6 +29,10 @@ _STATUS_LABELS: Dict[str, str] = {
     # anything. Upper case (it wants attention) but deliberately worded away from the feed —
     # 'QUARANTINED' here would send the operator to the wrong place.
     'host_backoff': 'HOST BACK-OFF',
+    # 2026-09-08: the embedding provider was unreachable, so the pass stopped here. Upper case
+    # (it wants attention) and worded away from both the feed and the budget — the feed answered
+    # fine and nothing was billed.
+    'embed_failed': 'EMBED UNREACHABLE',
 }
 _DISABLED = 'disabled'
 _NOT_POLLED = 'not polled'

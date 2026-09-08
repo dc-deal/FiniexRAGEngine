@@ -173,6 +173,64 @@ See [docs/development/migrations.md](docs/development/migrations.md).
 
 ---
 
+## Remote operation — what can be answered without a session on the host
+
+The engine runs unattended on a server; the people and tools that need to ask it questions are
+somewhere else. So the diagnostics are **routes, not a shell**: everything an operator or a
+collector needs is a read over HTTPS, and nothing that answers can change the engine or spend money.
+
+| Route | Grant | Answers |
+|---|---|---|
+| `GET /v1/health` | *open* | alive, worker cadences and last runs, journal identity, budget, stall state |
+| `GET /v1/build` | *open* | version, commit, whether the tree was dirty, process start — **which code is actually running** |
+| `GET /v1/pipelines` | `pipelines:<id>` | the constellations a token may see: symbols, trigger, cadence |
+| `GET /v1/pipelines/{id}/latest` | `pipelines:<id>` | the newest persisted envelope, served from the store |
+| `GET /v1/pipelines/{id}/envelopes` | `pipelines:<id>` | a bounded range of the series (`?since=`, `?epoch=`) |
+| `GET /v1/stream/{id}` | `pipelines:<id>` | the same series live, as SSE |
+| `GET /v1/reports` · `/{name}` | `reports:<name>` | the engine's own metrics surfaces as JSON — health, quarantine history, latency, the breaking funnel |
+| `GET /v1/logs/{name}` | `logs:<name>` | the engine's log over a **UTC** time range, redacted |
+| `GET /v1/configs` · `/{name}` | `configs:<name>` | the **effective** configuration this process runs, `user_configs/` overlay included, credentials masked |
+
+The last two exist because of one incident. On 2026-09-08 four host-connectivity outages had their
+cause in a single word inside a traceback (`getaddrinfo failed`), and reading it required RDP while
+the incident was still running. The reports could say every feed had failed at once; only the log
+could say why — and only the configuration could say what the machine was actually running while it
+happened.
+
+### What keeps this safe
+
+- **Read-only by construction.** `POST /v1/pipelines/{id}/run` is the one route that turns a request
+  into provider spend, and it is **not registered in production**
+  (`api.run_endpoint_enabled`, default off). There is no write route and no database exposure.
+- **TLS at the edge, loopback behind it.** The server binds `127.0.0.1`; a reverse proxy terminates
+  HTTPS. The engine never speaks to the internet directly.
+- **Access is granted by name, never by omission.** Every consumer token declares `grants` —
+  `<surface>:<name>`, and the field is *mandatory*: a token without it fails at boot rather than
+  defaulting to everything. A surface added later is unreachable until someone writes its name into
+  a token, which is why `logs` and `configs` reach nobody by default. The surface half is bound to
+  the route by FastAPI's own `SecurityScopes`, and a test walks every registered route to assert a
+  token holding nothing is refused — the declaration is checked, not trusted.
+- **A listing never advertises what it would refuse.** `/v1/reports` and `/v1/configs` return only
+  what the caller may fetch, so a scope cannot be mapped by probing.
+- **Credentials cannot ride out on a payload.** Two layers, and the second is the guard: log lines
+  and config values pass a shared pattern scrubber (`utils/redaction.py` — DSNs, bearer tokens,
+  `sk-…` keys, Telegram bot tokens, API keys in a feed URL's query string), and every *string* a
+  config model can publish is classified by hand as public or secret. A contract test walks the
+  models and fails the build when a field is added that nobody classified — an unclassified string
+  is masked at runtime until someone decides. The two credentials that matter most are not in the
+  config at all: `DATABASE_URL` and `OPENAI_API_KEY` are environment variables.
+- **An altered answer says so.** The log route reports `redacted_lines`; the config route names
+  every masked path. A withheld value is honest; a silently changed one is not.
+- **Rate limits** on the open route (60/min) and on failed authentication (10/min), per client.
+- **Tokens are revocable individually** and carry a `note` saying who holds them; `active: false` is
+  a kill switch that does not require deleting the entry.
+
+The full contract — the scheme, token lifetime and rotation, and what each route may claim — is
+[docs/architecture/connect_contract.md](docs/architecture/connect_contract.md); the question-indexed
+runbook is [docs/development/diagnostics.md](docs/development/diagnostics.md).
+
+---
+
 ## Inspecting the vector store (pgAdmin)
 
 The dev stack ships a browser database admin at **http://localhost:5050** (pgAdmin,
