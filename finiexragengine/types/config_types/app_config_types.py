@@ -14,7 +14,8 @@ from finiexragengine.types.ingest_types import TextNormalizerProfile
 # The surfaces a grant can name. A closed vocabulary on purpose: this is the *producing* seam —
 # an operator writing the config — so a typo like `report:source_health` must fail at boot rather
 # than turn into a silent denial nobody can see (CLAUDE.md, closed vocabularies).
-GRANT_SURFACES: Tuple[str, ...] = ('reports', 'pipelines', 'logs', 'configs')
+GRANT_SURFACES: Tuple[str, ...] = ('reports', 'pipelines', 'logs', 'configs',
+                                  'diagnose')
 
 
 class ConsumerToken(BaseModel):

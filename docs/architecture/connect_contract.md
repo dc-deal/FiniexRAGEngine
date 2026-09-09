@@ -354,6 +354,46 @@ It cannot spend and has no write. An unknown `{name}` is a 403 for a scoped call
 before resolution, so the endpoint is not an existence oracle — while an unknown `?id=` is a 404,
 because absence is only informative to someone entitled to the thing that is absent.
 
+## Diagnostics: `GET /v1/diagnose/{name}`
+
+```
+GET /v1/diagnose/feed?source_id=…      → one configured feed, fetched and diagnosed live
+```
+
+The feed doctor (ISSUE_11) — a raw GET plus the same feedparser path the ingest worker takes,
+classified with the taxonomy source-health records. It exists on this surface because a parse error
+names a line and a column **in the bytes that machine received**, and those are not the bytes this
+container fetches: on 2026-09-09 `boj_press` was well-formed here (318 lines, 14,722 bytes, line 11
+just 51 characters — there is no column 69) and unparseable there. The difference was a response
+that never arrived intact, and nothing reachable remotely could say so.
+
+New grant surface `diagnose`; `diagnose:feed` reaches nobody by default.
+
+**This is the first route that reaches *outward* on request.** Every other one reads the journal,
+the health tables or a local file. That is a genuine change of kind, so what bounds it is written
+down rather than assumed:
+
+- **`source_id` is required and has no default.** The CLI's default is *all* feeds — 39 of them at
+  two requests each — and as a GET that shape is a 78-request amplifier that also perturbs the very
+  feeds whose health it reports on. One call is one feed is **two outbound requests**, less than the
+  engine's own 15-second poll already costs.
+- **It is resolved against the configured catalogue** — the source-set registry this process
+  loaded. A caller names a feed the engine already polls and can never name a URL, which is what
+  separates a diagnostic from an open proxy. An unknown id is a `404` and nothing leaves the
+  process; scaffold-mock mode (no catalogue) is a `503` that says so.
+- **A 10-second deadline**, half the unit's own default, because a sync endpoint runs in the pool
+  that serves every other `def` route.
+- **A disabled feed stays probeable**, deliberately: asking whether a switched-off feed has become
+  reachable again is precisely a question about a feed nobody is polling.
+
+**Redaction, and it names the field.** `head` carries the first bytes of the remote body — the
+answer to "what did that machine actually receive", and therefore arbitrary content this engine did
+not write. It, the URL and the parser/transport messages pass the shared scrubber
+(`utils/redaction.py`), and the response lists `redacted: ["head", "url"]` rather than a count: with
+four candidate fields, *which* was altered is the useful half.
+
+It cannot spend and it has no write.
+
 ## `GET /v1/build` is the second open route
 
 It reports what code the process is running: `version`, the short `commit`, whether the working tree

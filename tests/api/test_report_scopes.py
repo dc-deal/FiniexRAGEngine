@@ -244,7 +244,8 @@ def test_no_route_with_an_identity_segment_is_ungated(clean_db: str) -> None:
     # Named rather than merely swept: a router dropping out of the app would leave this walk green
     # while the surface it gated went unreachable. Both 2026-09-08 surfaces are listed for that
     # reason — `configs` mounts with an empty view map here, and must still be gated.
-    for route in (('/v1/logs/{name}', 'get'), ('/v1/configs/{name}', 'get')):
+    for route in (('/v1/logs/{name}', 'get'), ('/v1/configs/{name}', 'get'),
+                  ('/v1/diagnose/{name}', 'get')):
         assert route in identity_routes, route
 
     for path, method in identity_routes:

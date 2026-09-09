@@ -8,7 +8,9 @@
       "Bash(timeout 900 python -m pytest tests/rag/ tests/pipeline/ -q --tb=short)",
       "Bash(timeout 900 python -m pytest tests/pipeline/ tests/rag/ -q --tb=short)",
       "Bash(timeout 900 python -m pytest tests/pipeline/ -q --tb=short)",
-      "Bash(timeout 900 python -m pytest tests/observability/test_log_reader.py tests/api/test_report_api.py -q --tb=short)"
+      "Bash(timeout 900 python -m pytest tests/observability/test_log_reader.py tests/api/test_report_api.py -q --tb=short)",
+      "Bash(python -)",
+      "Bash(python -c ' *)"
     ]
   }
 }

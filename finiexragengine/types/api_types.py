@@ -374,3 +374,19 @@ class ConfigCatalogEntry(BaseModel):
 class ConfigCatalog(BaseModel):
     """The config documents THIS caller may read — filtered, never complete."""
     configs: List[ConfigCatalogEntry] = Field(default_factory=list)
+
+
+class FeedDiagnosisResponse(BaseModel):
+    """One feed, probed live and diagnosed (2026-09-09).
+
+    `diagnosis` is deliberately untyped — the same reasoning `ReportEnvelope.data` carries. It is
+    `FeedDiagnosis` serialized by `utils.dataclass_json`, an internal diagnostic shape that must
+    stay free to change; typing it here would turn every field of it into an API contract.
+    """
+    name: str
+    generated_at: datetime
+    source_id: str
+    diagnosis: Any
+    # Fields whose text a credential pattern changed before it left the process. `head` is the
+    # reason this list exists: it carries bytes the remote host wrote, not this engine.
+    redacted: List[str] = Field(default_factory=list)

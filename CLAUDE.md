@@ -167,6 +167,16 @@ every route the assistant can reach is a read.
 tokens an engine *accepts*). The two are one character apart and mean opposite things. `.env` is
 gitignored; `.env.example` carries the key with an empty value.
 
+**On a feed problem, consult the feed doctor before concluding anything.** A parse error names a
+line and a column *in the bytes that machine received*, and those are not the bytes this container
+fetches. On 2026-09-09 `boj_press` failed repeatedly with `not well-formed (invalid token)` at line
+11 column 69, while the same feed fetched from here was clean — 318 lines, 14,722 bytes, line 11
+only 51 characters long, so column 69 does not exist in it. The conclusion drawn from the container
+("the feed ships broken XML") was wrong about the cause and wrong in method; the probe run in the
+right place answered `200 · 14,722 bytes · 44 entries · OK`, and the real failure had been a
+truncated response. `GET /v1/diagnose/feed?source_id=…` answers it remotely,
+`python -m finiexragengine.cli.feed_doctor_cli --source <id>` on the machine.
+
 Two consequences, both learned the hard way:
 
 - **Never answer a question about production from the dev journal.** "Does the journal predate

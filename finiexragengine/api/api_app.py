@@ -21,6 +21,7 @@ from finiexragengine.api.endpoints.stream_router import build_stream_router
 from finiexragengine.api.rate_limiter import RateLimiter, build_rate_limit_dependency
 from finiexragengine.api.token_registry import TokenRegistry
 from finiexragengine.api.endpoints.config_router import build_config_router
+from finiexragengine.api.endpoints.diagnose_router import build_diagnose_router
 from finiexragengine.configuration.abstract_config_view import AbstractConfigView
 from finiexragengine.configuration.app_config_manager import AppConfigManager
 from finiexragengine.configuration.app_config_view import AppConfigView
@@ -436,7 +437,10 @@ def create_app(attach_runners: Optional[bool] = None,
         # The effective configuration, as views over the objects this process booted with
         # (2026-09-08). Built here because only `create_app` knows which registries the engine
         # actually loaded; the views own the redaction, so nothing downstream can skip it.
-        config_views=_build_config_views(config_manager, registry, source_sets)))
+        config_views=_build_config_views(config_manager, registry, source_sets),
+        # The feed catalogue this process polls (2026-09-09) — the diagnose route resolves a
+        # `source_id` against it, so a caller names a configured feed and never a URL.
+        source_sets=source_sets))
     return app
 
 
@@ -485,8 +489,8 @@ def _build_protected_router(registry: PipelineRegistry,
                             extra_routers: Optional[List[APIRouter]] = None,
                             stream: Optional[StreamConfig] = None,
                             log_file: Optional[str] = None,
-                            config_views: Optional[Dict[str, AbstractConfigView]] = None
-                            ) -> APIRouter:
+                            config_views: Optional[Dict[str, AbstractConfigView]] = None,
+                            source_sets: Optional[SourceSetRegistry] = None) -> APIRouter:
     """Everything a token is required for — and everything added here later, automatically.
 
     `extra_routers` carries routers assembled by the caller: the exemptions that were switched
@@ -553,4 +557,8 @@ def _build_protected_router(registry: PipelineRegistry,
     # when there are no views, so the surface exists and answers 404 per name rather than
     # disappearing — a route that vanishes with a boot mode is one the scope sweep cannot see.
     protected.include_router(build_config_router(config_views or {}, tokens))
+    # The feed doctor (2026-09-09), on its own grant surface. The first route that reaches
+    # *outward* on request rather than reading the store — bounded to one named, configured feed
+    # per call, which is what keeps it a diagnostic instead of a proxy.
+    protected.include_router(build_diagnose_router(source_sets, tokens))
     return protected

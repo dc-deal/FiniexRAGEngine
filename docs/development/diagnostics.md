@@ -702,6 +702,35 @@ stays out of the census — otherwise every typo would send a reader after a tes
 Needs `configs:app`, `configs:pipelines` or `configs:source_sets` — three separate names, so a
 consumer can be given the feed catalogue without being given the token list.
 
+## Is this feed broken, or is it broken *there*?
+
+```
+GET /v1/diagnose/feed?source_id=boj_press
+```
+
+**Consult this before concluding anything about a feed.** A parse error names a line and a column
+in the bytes *that machine* received, and those are not the bytes this container fetches. On
+2026-09-09 `boj_press` failed repeatedly with `not well-formed (invalid token)` at line 11 column
+69, while the same feed fetched from the dev container was clean — 318 lines, 14,722 bytes, line 11
+only 51 characters long, so column 69 does not exist in it. The conclusion drawn from here ("the
+Bank of Japan ships broken XML") was wrong about the cause *and* wrong in method. The probe run on
+the machine answered in one line: `200 · 14722 bytes · 44 entries · OK`. The failure had been a
+truncated response, and it disappeared with a DNS change.
+
+What the answer is worth reading for:
+
+| field | what it settles |
+|---|---|
+| `http_status` + `body_bytes` | a byte count far from the usual one is a truncated or substituted response, not a feed problem |
+| `head` | the first bytes as received. `<!DOCTYPE html>` here is a bot-wall or an error page, and no parser setting will fix it |
+| `entries` + `bozo` | `bozo` with entries is tolerated by the ingest path already; **`bozo` with zero entries** is what fails a poll |
+| `verdict` + `suspicious` | the same classification source-health records, so the row and the probe cannot disagree |
+| `newest_age_hours` vs `max_age_hours` | staleness against the feed's *own* declared expectation where it has one (`age_basis`) |
+
+Needs `diagnose:feed`. On the machine the same answer is
+`python -m finiexragengine.cli.feed_doctor_cli --source <id>` — which also takes no `--source` and
+probes all 39, something the route deliberately cannot do.
+
 ## Reference — every route reachable from here
 
 The live engine answers over HTTPS at `https://finiex-rag.duckdns.org`; the assistant's own bearer
@@ -720,6 +749,7 @@ database and no shell, and `POST /run` is not registered in production, so nothi
 | `GET /v1/reports/{name}` | `reports:<name>` | one diagnostic surface as JSON (`report_api.md`) |
 | `GET /v1/logs/{name}` | `logs:<name>` | the engine log over a **UTC** range, redacted (`engine` is the only stream) |
 | `GET /v1/configs` · `/{name}` | `configs:<name>` | the **effective** configuration this process runs — `app`, `pipelines`, `source_sets` — `user_configs/` included, credentials masked |
+| `GET /v1/diagnose/{name}` | `diagnose:<name>` | one **configured** feed, fetched and parsed live — the raw bytes that machine receives (`feed` is the only probe) |
 
 Two things a reading has to respect. **A `403` is a grant, not a bug** — access is by name, so a
 surface added later is unreachable until someone writes it into a token; and a scoped caller gets
