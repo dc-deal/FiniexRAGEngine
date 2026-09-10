@@ -18,6 +18,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'experiments' / 'ne
 import netwatch                                                  # noqa: E402
 
 
+class _Sock:
+    """What `socket.create_connection` returns — closing is all it has to do."""
+    def __enter__(self) -> '_Sock':
+        return self
+
+    def __exit__(self, *exc: object) -> bool:
+        return False
+
+
+def _connects():
+    """A `create_connection` stand-in that succeeds."""
+    return lambda address, timeout=None: _Sock()
+
+
 # --- the words, which have to match the engine's own probe ---------------------------------------
 
 @pytest.mark.parametrize('tcp_ok, dns_ok, state', [
@@ -199,3 +213,56 @@ def test_a_real_reply_is_read_as_reachable(monkeypatch):
     monkeypatch.setattr(netwatch.subprocess, 'run', lambda *args, **kwargs: _Completed())
 
     assert netwatch._icmp_probe('1.1.1.1', 1.0) is True
+
+
+# --- the hole that reads like calm (2026-09-10) ----------------------------------------------------
+
+def test_a_stall_announces_itself_instead_of_looking_like_a_quiet_night(tmp_path, monkeypatch):
+    """The defect this file exists to prevent repeating.
+
+    On 2026-09-09 the watcher froze at 19:18 and resumed at 08:51 — a Windows console in QuickEdit
+    mode blocks the next `print()` while text is selected, and one stray click suspended the whole
+    loop. The log then showed 13.5 hours without a single line, which is indistinguishable from
+    thirteen quiet hours and was very nearly read as exactly that.
+
+    A record that cannot say "I was not measuring here" is worse than one with fewer samples.
+    """
+    log = tmp_path / 'netwatch.log'
+    monkeypatch.setattr(socket, 'getaddrinfo', lambda name, port: [])
+    monkeypatch.setattr(socket, 'create_connection', _connects())
+
+    # A clock that jumps a quarter of an hour between the first and second sample, and a sleep that
+    # ends the loop once the gap has been written.
+    clock = iter([0.0, 0.0, 900.0, 900.0, 900.0, 900.0])
+    monkeypatch.setattr(netwatch.time, 'monotonic', lambda: next(clock, 900.0))
+
+    calls = {'n': 0}
+
+    def _sleep(_seconds):
+        calls['n'] += 1
+        if calls['n'] >= 2:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(netwatch.time, 'sleep', _sleep)
+
+    netwatch.watch(log, 'cloudflare.com', '1.1.1.1:53', timeout=1.0,
+                   heartbeat_seconds=60.0, max_mb=0)
+
+    written = log.read_text(encoding='utf-8')
+    assert 'GAP' in written, written
+    assert 'UNMEASURED' in written, 'the gap must say the window carries no evidence'
+    assert '900s' in written, 'and how long it was blind for'
+
+
+def test_the_console_is_off_by_default_when_a_log_file_is_given(tmp_path, monkeypatch, capsys):
+    """A convenience must not be able to stop the measurement — see the stall above."""
+    log = tmp_path / 'netwatch.log'
+    monkeypatch.setattr(socket, 'getaddrinfo', lambda name, port: [])
+    monkeypatch.setattr(socket, 'create_connection', _connects())
+    monkeypatch.setattr(netwatch.time, 'sleep', lambda _s: (_ for _ in ()).throw(KeyboardInterrupt))
+
+    netwatch.watch(log, 'cloudflare.com', '1.1.1.1:53', timeout=1.0,
+                   heartbeat_seconds=60.0, max_mb=0)
+
+    assert capsys.readouterr().out == '', 'nothing may be written to the console by default'
+    assert log.read_text(encoding='utf-8').strip(), 'while the file still carries the record'

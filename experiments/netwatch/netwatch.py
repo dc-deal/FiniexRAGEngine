@@ -181,14 +181,22 @@ def _describe(tcp_ok: bool, dns_ok: Optional[bool], icmp_ok: Optional[bool] = No
 
 
 def watch(log_path: Path, dns_name: str, tcp_target: str, timeout: float,
-          heartbeat_seconds: float, max_mb: float) -> None:
+          heartbeat_seconds: float, max_mb: float, echo: bool = False) -> None:
     host, _, port = tcp_target.rpartition(':')
     dns = _DnsProbe(dns_name)
     last_state = ''
     next_heartbeat = 0.0
 
     def emit(line: str) -> None:
-        print(line, flush=True)
+        # Console output is OFF by default when writing to a file, and that is a defect fix rather
+        # than a preference (2026-09-10). A Windows console in QuickEdit mode blocks the next write
+        # for as long as text is selected — one stray click, and `print()` suspends this whole loop.
+        # It happened: the watcher froze at 19:18 and resumed at 08:51 the next morning, leaving a
+        # 13.5-hour hole that reads exactly like a quiet night and is nothing of the kind. The log
+        # file is the record; the console is a convenience, and a convenience must not be able to
+        # stop the measurement.
+        if echo:
+            print(line, flush=True)
         # Appending per line rather than holding a handle: the file stays readable (and copyable)
         # while this runs, which is how it will actually be used.
         with log_path.open('a', encoding='utf-8') as handle:
@@ -196,9 +204,21 @@ def watch(log_path: Path, dns_name: str, tcp_target: str, timeout: float,
 
     emit(f'{_stamp(datetime.now(timezone.utc))} netwatch start · tcp {tcp_target} · '
          f'dns {dns_name} · timeout {timeout}s · heartbeat {heartbeat_seconds:.0f}s')
+    # Wall-clock of the previous sample, so a stall announces itself instead of looking like calm.
+    last_sample = time.monotonic()
     try:
         while True:
             now = time.monotonic()
+            # A hole in the record is indistinguishable from an uneventful stretch — unless the
+            # record says so. Anything past two heartbeats means this process was not running, and
+            # reading that silence as "no outages" is the exact mistake it invites.
+            stalled = now - last_sample
+            if stalled > heartbeat_seconds * 2:
+                emit(f'{_stamp(datetime.now(timezone.utc))} GAP             '
+                     f'no samples for {stalled:.0f}s — the watcher was not running, '
+                     f'this window is UNMEASURED')
+                last_state = ''          # force the next sample to print, whatever it finds
+            last_sample = now
             tcp_ok, tcp_ms = _tcp_probe(host, int(port), timeout)
             dns_ok, dns_ms = dns.sample(timeout)
             # Only when the connection failed — see `_icmp_probe` for why this is not paid for in
@@ -238,8 +258,12 @@ def main(argv: Optional[list] = None) -> int:
     parser.add_argument('--heartbeat', type=float, default=60.0,
                         help='seconds between "still the same" lines (0 = every sample)')
     parser.add_argument('--max-mb', type=float, default=50.0, help='stop when the log reaches this (0 = no cap)')
+    parser.add_argument('--echo', action='store_true',
+                        help='also print to the console — off by default, because a Windows '
+                             'console in QuickEdit mode suspends the writer on a stray click')
     args = parser.parse_args(argv)
-    watch(Path(args.log), args.dns, args.tcp, args.timeout, args.heartbeat, args.max_mb)
+    watch(Path(args.log), args.dns, args.tcp, args.timeout, args.heartbeat, args.max_mb,
+          echo=args.echo)
     return 0
 
 
