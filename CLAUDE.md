@@ -107,6 +107,10 @@ Before committing to a design for a non-trivial feature or change:
   **A red result is decided, never absorbed.** Each failure is either fixed before the tag or
   recorded as a named platform gap with its reason — a version that ships over an unexplained red
   is a version whose own evidence nobody read.
+- **The server deploy is stop → pull → `pip install -r requirements.txt` → migrate → start.** The
+  pip step arrived with `finiex_auth` and is not optional: a pull without it runs whatever package
+  version happens to be installed, or none. `/v1/build` reports `auth_package_version` and
+  `auth_package_editable`; an editable install in production is a finding.
 - **Roadmap #1** ticks a batch's checkbox only when it merges; the version's 🏷️ line is the
   batch's Definition of Done.
 
@@ -374,6 +378,13 @@ Read first, in order:
   instead of defaulting to everything. So a surface added later is unreachable by a consumer until
   someone writes its name into their token. Granting is an act; it is never inherited from a
   default nobody chose.
+  - **The model lives in the shared `finiex_auth` package** — its own public repo
+    (`dc-deal/finiex-modules-auth`), pinned by tag in `requirements.txt`, one implementation with
+    the Testing IDE. This engine owns only its vocabulary (`GRANT_SURFACES` on its
+    `ConsumerToken(ConsumerTokenBase)` subclass) and its loader (`api/token_loader.py`: the
+    `FINIEX_API_TOKENS` name, the precedence, the error type). A change to the model is a change to
+    two services: it is made in the package, tagged, announced on the bus, and pinned here only
+    after this suite has run and its pass count is stated.
   - **A grant names a thing, not a route.** `reports:source_health` keeps meaning what it means
     across a rename or a `/v2`; a path-shaped rule would silently stop matching and answer a
     consumer who did nothing wrong with a 403. Comparison is exact — no wildcard matching against
@@ -388,7 +399,8 @@ Read first, in order:
     that way — the surface is per-router information — so a **new domain router that omits
     `Security(..., scopes=[...])` would be authenticated but ungated**, reachable by any valid
     token. That is the failure mode to watch when adding a router, and it is the reason
-    `tests/api/test_report_scopes.py` walks every registered identity route and asserts a token holding
+    `tests/api/test_report_scopes.py` runs the package's walk (`finiex_auth.route_walk`) over every
+    registered identity route, naming the routes this engine must have, and asserts a token holding
     nothing is refused: the declaration is not trusted, it is checked. **A new router means a new
     surface in `GRANT_SURFACES` and a `Security` declaration — or the suite says so.**
   - **`active: false` is a kill switch**, not documentation: a consumer can be switched off without
