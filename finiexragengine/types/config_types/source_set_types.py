@@ -84,10 +84,12 @@ class DetectionConfig(BaseModel):
       neighbourhoods at *every* similarity over a full week, while loosening the article count to
       0.65 would fire 27 HIGH flags a week out of `actionforex`'s daily template.
 
-    The honest ceiling, so nobody plans against the wrong number: at roughly 1.2 flags a day the
-    cluster path contributes about a sixth of what the keyword path already does. Its more valuable
-    half is **retention** — `importance >= 2` is what admits an older article to the deep retrieval
-    tier, and that channel is otherwise fed by keyword-HIGH alone.
+    The honest ceiling, so nobody plans against the wrong number: the sweep put this at roughly 1.2
+    flags a day, about a sixth of what the keyword path already does. **Measured in production over
+    3.9 days (2026-09-08 to 09-12): 3.3 flags a day**, nearly three times that — so the sixth is a
+    floor, not a ceiling. Its more valuable half is still **retention** — `importance >= 2` is what
+    admits an older article to the deep retrieval tier, and that channel is otherwise fed by
+    keyword-HIGH alone.
     """
     # Pairwise cosine to count as the same story — and MEASURED 2026-09-01 to be the gate that
     # makes the whole cluster path inert, not the tier sizes below it. Production, 400 seeds: the
@@ -126,10 +128,16 @@ class DetectionConfig(BaseModel):
     # that pair admits 7 genuine multi-outlet stories while the article count at the same threshold
     # admits 12 — the gap is one feed's own near-duplicates, which corroborate nothing.
     #
-    # Note what feed counting cannot reach: `high_cluster_size` of 5 distinct feeds did not occur at
-    # ANY similarity in that sample, so HIGH keeps coming from the keyword path alone. That is
-    # recorded rather than fixed by lowering the number — a threshold set to fire without evidence
-    # of what it fires on is the defect this issue was opened about.
+    # The sweep predicted that feed counting could not reach `high_cluster_size`: 5 distinct feeds
+    # did not occur at ANY similarity in that sample. **Production disproved it on 2026-09-12** —
+    # 13 flags over 3.9 days, one of them a five-feed cluster (`duplication 1.047`, so genuine
+    # corroboration rather than echo). The sweep was not wrong, it was under-powered: at a true rate
+    # near 1-in-13, seeing none across its 7 flags was the more likely outcome (~56 %).
+    #
+    # The threshold therefore stays at 5, and now on evidence rather than on principle. It was kept
+    # before because a threshold set to fire without evidence of what it fires on is the defect this
+    # issue was opened about; it is kept now because it fires on its own, roughly every four days,
+    # on the strongest evidence this path can produce.
     cluster_unit: ClusterUnit = 'articles'
     # >= this many units (see `cluster_unit`) in the window -> importance MID (2).
     mid_cluster_size: int = 3

@@ -60,7 +60,7 @@
   ],
   "prompt": {
     "name": "crypto_sentiment",
-    "version": "4"
+    "version": "5"
   },
   "llm": {
     "models": [
