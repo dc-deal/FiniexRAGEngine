@@ -3,7 +3,7 @@ import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional, Pattern, Set
+from typing import Dict, List, Optional, Pattern, Set, Tuple
 
 from finiexragengine.core.rag.abstract_vector_store import AbstractVectorStore
 from finiexragengine.types.article_types import Article, NeighbourCount
@@ -60,9 +60,15 @@ class BreakingDetector:
         # Word-boundary match (not naive substring): "SEC" must not fire on "seconds", and a
         # phrase like "rate decision" matches as a unit. None when no keywords are configured.
         self._keyword_pattern: Optional[Pattern] = None
+        # Surface form -> the CONFIGURED term (ISSUE_106). The pattern is case-insensitive, so a
+        # match carries the text as the feed wrote it — 'Emergency' for a configured 'emergency'.
+        # Recording that would split one term across two rows in `detection_quality`, so every hit
+        # is mapped back to the spelling the operator declared before it is persisted.
+        self._keyword_terms: Dict[str, str] = {}
         if config.keywords:
             alternation = '|'.join(re.escape(keyword) for keyword in config.keywords)
             self._keyword_pattern = re.compile(rf'\b(?:{alternation})\b', re.IGNORECASE)
+            self._keyword_terms = {keyword.lower(): keyword for keyword in config.keywords}
 
     def detect(self, fresh: List[Article], vectors: List[List[float]]) -> DetectionResult:
         """Score every fresh article for breaking; flag the ones that cross a tier."""
@@ -73,7 +79,10 @@ class BreakingDetector:
         # pgvector <=> is cosine *distance* (1 - similarity); a cluster member sits within this.
         max_distance = 1.0 - cfg.cluster_similarity
         since = datetime.now(timezone.utc) - timedelta(minutes=cfg.cluster_window_minutes)
-        high_examples = []   # (title, cluster_size) — a few, to judge detection quality in the log
+        # (title, cluster_size, terms) — a few, to judge detection quality in the log. The terms
+        # ride along because `GET /v1/logs/engine` made the log remotely readable: a flag is then
+        # traceable to the word that made it without waiting for a report to be run.
+        high_examples: List[Tuple[str, int, Tuple[str, ...]]] = []
         for article, vector in zip(fresh, vectors):
             # The neighbourhood already in the corpus within the window (this article and its
             # just-stored siblings included) — one query, no rows materialized, no LLM. Skipped
@@ -87,8 +96,10 @@ class BreakingDetector:
             # density, which one feed can reach on its own.
             cluster_size = (neighbours.feeds if cfg.cluster_unit == 'feeds'
                             else neighbours.articles)
-            verdict = self._tier(cluster_size, article.source_weight,
-                                 self._has_keyword(article))
+            matched = self._matched_keywords(article)
+            # `_tier` still takes a bool: which tier this is remains a decision, not an attribution,
+            # so the terms travel to the store rather than into the tier logic.
+            verdict = self._tier(cluster_size, article.source_weight, bool(matched))
             if verdict is None:
                 continue   # routine article — left untagged (NULL importance)
             tier = verdict.tier
@@ -99,13 +110,19 @@ class BreakingDetector:
             # draws — and it is what lets `detection_quality` read the duplication ratio of the
             # flags the cluster path actually made.
             measured = neighbours if verdict.trigger == CLUSTER else None
+            # The vocabulary travels by the mirror-image rule (migration 014): only when the KEYWORD
+            # path produced the verdict. An article can match a term and still be flagged by the
+            # cluster path — recording the terms there would credit a vocabulary that decided
+            # nothing, which is the same false claim an empty array would make.
+            fired = matched if verdict.trigger == KEYWORD else None
             self._store.flag_candidates([article.article_id], tier, breaking,
-                                        trigger=verdict.trigger, neighbours=measured)
+                                        trigger=verdict.trigger, neighbours=measured,
+                                        keywords=fired)
             result.by_trigger[verdict.trigger] = result.by_trigger.get(verdict.trigger, 0) + 1
             if breaking:
                 result.candidates += 1
                 if len(high_examples) < 3:
-                    high_examples.append((article.title, cluster_size))
+                    high_examples.append((article.title, cluster_size, matched))
             else:
                 result.mid += 1
             result.max_tier = max(result.max_tier, tier)
@@ -118,8 +135,12 @@ class BreakingDetector:
                         result.candidates, result.mid, split or 'nothing',
                         cfg.cluster_window_minutes, cfg.cluster_similarity)
             # Sample the flagged HIGH stories so an overnight review can spot false positives.
-            for title, size in high_examples:
-                logger.info('[breaking]   HIGH: %r (cluster %d)', title[:72], size)
+            for title, size, terms in high_examples:
+                # Named rather than counted: 'cluster 5' and "the word 'hack' appeared" are
+                # different justifications, and the line that samples false positives should say
+                # which one it is. No terms is the cluster path's own flag, not an empty match.
+                evidence = f"keywords {', '.join(terms)}" if terms else f'cluster {size}'
+                logger.info('[breaking]   HIGH: %r (%s)', title[:72], evidence)
             if result.candidates > len(high_examples):
                 logger.info('[breaking]   … +%d more HIGH', result.candidates - len(high_examples))
         return result
@@ -146,7 +167,21 @@ class BreakingDetector:
             return _TierVerdict(MID, CLUSTER)
         return None
 
-    def _has_keyword(self, article: Article) -> bool:
+    def _matched_keywords(self, article: Article) -> Tuple[str, ...]:
+        """Every configured term this article matches — the evidence a keyword flag is made on.
+
+        Returns the terms rather than a boolean (ISSUE_106, migration 014). The tier decision only
+        needs "did anything match", but the *record* needs which: a vocabulary is tuned per term,
+        and "the keyword path made 56 flags" is not a sentence anyone can act on.
+
+        **All matches, not the first.** `search` returns the earliest match in *text* order, which
+        bears no relation to the config — under first-match attribution a term that always
+        co-occurs with another reads as never having fired, and that is exactly the question this
+        is for. Deduped and sorted so the stored array is comparable between rows.
+        """
         if self._keyword_pattern is None:
-            return False
-        return self._keyword_pattern.search(f'{article.title} {article.summary}') is not None
+            return ()
+        found = self._keyword_pattern.findall(f'{article.title} {article.summary}')
+        # Back to the configured spelling: the pattern is case-insensitive, so `findall` hands back
+        # the feed's own casing and the same term would otherwise split across rows in the report.
+        return tuple(sorted({self._keyword_terms.get(hit.lower(), hit) for hit in found}))

@@ -223,6 +223,29 @@ none was consulted. `detection_quality` reads them back as the **duplication rat
 what it was credited for. That turns "was this flag justified" from a replay into a read, which is
 the difference between judging a threshold change in days and judging it in a session.
 
+**The keyword path carries the same evidence** (migration 014). `detection_keywords` holds every
+configured term that matched, written only where the keyword path produced the verdict — NULL on a
+cluster flag, by the mirror of the rule above. The defect it closes is identical in shape: the match
+was computed to decide a tier and discarded, so "the keyword path made 56 flags" was answerable and
+"`SEC` fires on one feed while `halt trading` has never fired" was not — and a vocabulary is tuned
+per term or not at all.
+
+Two properties are worth knowing before reading the column:
+
+- **All matches, not the first.** `re.search` returns the earliest match in *text* order, which
+  bears no relation to the config; under first-match attribution a term that always co-occurs with
+  an earlier one reads as dead.
+- **The configured spelling, not the feed's.** The pattern is case-insensitive, so a match carries
+  the article's own casing. It is mapped back before storage, or `Emergency` and `emergency` would
+  be two rows with half the flags each.
+
+`detection_quality` renders it per term — flags, tiers, and the **distinct feeds** the term ever
+fired on. That count is the keyword analogue of the duplication ratio: a term confined to one
+publisher is that feed's template rather than vocabulary, which is exactly what the bare token `SEC`
+turned out to be. Configured terms with no flag in the window are named too, because a term that
+*cannot* match looks identical to one whose event has not happened — `monetary policy decision`
+matches zero rows against the ECB's own `Monetary policy decisions`, and nothing reports a miss.
+
 Two surfaces, deliberately: `detection_sweep` replays the corpus and says what a setting *would* do;
 `detection_quality` reads the archive and says what the running one *did*.
 

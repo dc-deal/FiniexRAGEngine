@@ -29,7 +29,8 @@ class _FakeStore(AbstractVectorStore):
     def __init__(self, cluster_size: int, feeds: int = None) -> None:
         self._neighbours = NeighbourCount(articles=cluster_size,
                                           feeds=cluster_size if feeds is None else feeds)
-        self.flagged: List[tuple] = []            # (article_ids, importance, breaking, trigger)
+        # (article_ids, importance, breaking, trigger, neighbours, keywords)
+        self.flagged: List[tuple] = []
         self.neighbour_calls: List[dict] = []     # so "was the probe made at all" is assertable
 
     def existing_ids(self, article_ids: List[str]) -> Set[str]:
@@ -47,11 +48,12 @@ class _FakeStore(AbstractVectorStore):
         return self._neighbours
 
     def flag_candidates(self, article_ids, importance, breaking, trigger='',
-                        neighbours=None) -> int:
-        # `trigger` and `neighbours` are captured, not ignored: which path raised the tier and on
-        # what evidence are the facts ISSUE_106 exists to persist, and a double that dropped them
-        # would let the write regress unnoticed.
-        self.flagged.append((list(article_ids), importance, breaking, trigger, neighbours))
+                        neighbours=None, keywords=None) -> int:
+        # `trigger`, `neighbours` and `keywords` are captured, not ignored: which path raised the
+        # tier and on what evidence are the facts ISSUE_106 exists to persist, and a double that
+        # dropped them would let the write regress unnoticed.
+        self.flagged.append((list(article_ids), importance, breaking, trigger, neighbours,
+                             keywords))
         return len(article_ids)
 
 
@@ -70,13 +72,14 @@ def test_small_cluster_is_not_flagged():
 
 def test_mid_cluster_flags_mid_not_candidate():
     store, result = _detect(3, _article('a'))       # == mid_cluster_size
-    assert store.flagged == [(['a'], MID, False, 'cluster', NeighbourCount(3, 3))]
+    # A cluster flag records no vocabulary: NULL, never an empty tuple (migration 014).
+    assert store.flagged == [(['a'], MID, False, 'cluster', NeighbourCount(3, 3), None)]
     assert result.max_tier == MID and result.candidates == 0 and result.mid == 1
 
 
 def test_high_cluster_flags_candidate():
     store, result = _detect(5, _article('a'))       # == high_cluster_size
-    assert store.flagged == [(['a'], HIGH, True, 'cluster', NeighbourCount(5, 5))]
+    assert store.flagged == [(['a'], HIGH, True, 'cluster', NeighbourCount(5, 5), None)]
     assert result.max_tier == HIGH and result.candidates == 1
 
 
@@ -84,8 +87,10 @@ def test_keyword_on_trusted_source_flags_high_without_a_cluster():
     # A single high-weight source + a breaking keyword -> HIGH immediately (fast-path).
     store, result = _detect(1, _article('Exchange hit by exploit', weight=1.0),
                             keywords=['exploit'], keyword_source_weight=0.9)
-    # The keyword path consulted no neighbourhood, so it claims none: NULL, never 0.
-    assert store.flagged == [(['Exchange hit by exploit'], HIGH, True, 'keyword', None)]
+    # The keyword path consulted no neighbourhood, so it claims none: NULL, never 0 — and it DOES
+    # record the term that fired it, which is the other half of the same rule (migration 014).
+    assert store.flagged == [(['Exchange hit by exploit'], HIGH, True, 'keyword', None,
+                              ('exploit',))]
     assert result.candidates == 1
 
 
@@ -209,3 +214,53 @@ def test_the_probe_is_scoped_to_the_set_that_configured_the_threshold():
     store, _ = _detect(3, _article('a'), source_ids={'coindesk', 'decrypt'})
 
     assert store.neighbour_calls == [{'source_ids': {'coindesk', 'decrypt'}}]
+
+
+# --- which TERM fired (ISSUE_106, migration 014) ------------------------------------------
+
+def test_every_matching_term_is_recorded_not_only_the_first():
+    """The case first-match attribution would lose, and the reason the column is an array.
+
+    `re.search` returns the earliest match in *text* order, which bears no relation to the config.
+    Under first-match attribution a term that always co-occurs with an earlier one reads as never
+    having fired — and "which terms are dead" is the whole question this column exists to answer.
+    """
+    store, _ = _detect(1, _article('Exchange hit by exploit', weight=1.0,
+                                   summary='The SEC opened a probe into the hack'),
+                       keywords=['exploit', 'SEC', 'hack'], keyword_source_weight=0.9)
+
+    assert store.flagged[0][5] == ('SEC', 'exploit', 'hack')      # deduped and sorted
+
+
+def test_a_term_is_recorded_in_the_spelling_the_operator_CONFIGURED():
+    """Not the casing the feed happened to use.
+
+    The pattern is case-insensitive, so `findall` hands back the article's own text. Recording that
+    would split one configured term across two rows in `detection_quality` — 'Emergency' and
+    'emergency' would look like two pieces of vocabulary with half the flags each.
+    """
+    store, _ = _detect(1, _article('EMERGENCY meeting called', weight=1.0),
+                       keywords=['emergency'], keyword_source_weight=0.9)
+
+    assert store.flagged[0][5] == ('emergency',)
+
+
+def test_a_cluster_flag_records_no_vocabulary_even_when_a_term_matched():
+    """An overlap is attributed to the cluster path, so the vocabulary decided nothing there.
+
+    Recording the terms anyway would credit a word for a flag the burst produced — the mirror of
+    the rule that keeps `cluster_articles` NULL on a keyword flag. NULL means "not consulted"; it
+    must never become "consulted and irrelevant".
+    """
+    store, result = _detect(6, _article('Exchange halt confirmed by six outlets', weight=1.0),
+                            keywords=['halt'], keyword_source_weight=0.9, high_cluster_size=5)
+
+    assert result.by_trigger == {'cluster': 1}
+    assert store.flagged[0][5] is None
+
+
+def test_a_set_with_no_vocabulary_configured_records_nothing_rather_than_empty():
+    """No keywords at all is not the same as a vocabulary that matched nothing."""
+    store, _ = _detect(5, _article('Five outlets carry the same story'), high_cluster_size=5)
+
+    assert store.flagged[0][5] is None

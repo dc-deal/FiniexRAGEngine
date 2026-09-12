@@ -27,10 +27,11 @@ on the report catalog rather than beside `coverage`.
 import json
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 import psycopg
 
+from finiexragengine.core.observability.reports.corpus_text_report import KeywordSet
 from finiexragengine.exceptions.ragengine_errors import VectorStoreError
 
 # Above this, a flagged neighbourhood was mostly one feed repeating itself. Not a hard verdict — the
@@ -119,11 +120,73 @@ class SourceRow:
 
 
 @dataclass
+class TermRow:
+    """One vocabulary term's behaviour over the window (migration 014).
+
+    The keyword path's answer to the duplication ratio. `duplication` asks whether a cluster was
+    corroboration or one feed repeating itself; the equivalent question for a keyword is whether a
+    term is *vocabulary* or one publisher's house style — a term firing only on `sec_press` is a
+    property of that feed's template, not a crisis signal, and #46 measured exactly that (the bare
+    token `SEC` fires on 25 of 25 SEC press releases, which is why `sec_press` runs parked at 0.8).
+    """
+    term: str
+    flags: int = 0
+    high: int = 0
+    mid: int = 0
+    # Distinct feeds this term ever fired on — a set, because the same feed firing it forty times
+    # is one publisher, and counting rows would hide that behind a large number.
+    feeds: Set[str] = field(default_factory=set)
+
+    @property
+    def feed_count(self) -> int:
+        return len(self.feeds)
+
+    @property
+    def single_feed(self) -> bool:
+        """Fired, but never outside one publisher — marked, deliberately not judged.
+
+        Same treatment as `_DUPLICATION_SUSPECT`: the marker raises the suspicion and the operator
+        reads the feed name. A term can legitimately be single-feed (a central bank is the only
+        publisher of its own decision), so this must never read as a verdict.
+        """
+        return self.flags > 0 and len(self.feeds) == 1
+
+    @property
+    def only_feed(self) -> Optional[str]:
+        return next(iter(self.feeds)) if len(self.feeds) == 1 else None
+
+
+@dataclass
+class SilentTerm:
+    """A configured term the window recorded no flag for (migration 014).
+
+    Named with its source set, because the vocabularies are per set and a forex term reading
+    "never fired" over a crypto-heavy window would otherwise look like a defect. Silence is not a
+    verdict either: a crisis word *should* be silent in a calm week. It is reported because the
+    alternative — a term that is silent because it can never match — is invisible without it, and
+    that is the failure `monetary policy decision` vs `Monetary policy decisions` produces.
+    """
+    source_set_id: str
+    term: str
+
+
+@dataclass
 class DetectionQualityReport:
     since_label: str
     rows: List[TriggerRow] = field(default_factory=list)
     sources: List[SourceRow] = field(default_factory=list)
     examples: List[FlagExample] = field(default_factory=list)
+    # The keyword path's evidence (migration 014) — what the cluster path has had since 013.
+    terms: List[TermRow] = field(default_factory=list)
+    silent_terms: List[SilentTerm] = field(default_factory=list)
+    # How many terms each set declares, so silence can be reported as a SHARE. "10 of 10 silent"
+    # is a different statement from "10 silent" when nobody knows the denominator, and it is the
+    # one that says a whole vocabulary contributed nothing.
+    vocabulary_size: Dict[str, int] = field(default_factory=dict)
+    # Keyword flags carrying no recorded vocabulary: made before the column existed. Counted
+    # separately from `unattributed` above, which is about the *path* rather than the term — a
+    # flag can know which path fired it and not which word did.
+    terms_unrecorded: int = 0
     # Sets whose cluster path is switched off, so an empty cluster row reads as a decision rather
     # than as a threshold somebody should go fix (ISSUE_106).
     cluster_disabled_sets: List[str] = field(default_factory=list)
@@ -151,20 +214,32 @@ def _median(values: Sequence[int]) -> Optional[float]:
 def build_detection_quality_report(database_url: str, since: datetime, *,
                                    since_label: str = '7d', example_limit: int = 5,
                                    disabled_sets: Sequence[str] = (),
+                                   keyword_sets: Sequence[KeywordSet] = (),
                                    articles_table: str = 'articles'
                                    ) -> DetectionQualityReport:
-    """Read the flags in the window and fold them into per-path accumulators."""
+    """Read the flags in the window and fold them into per-path accumulators.
+
+    `keyword_sets` carries the configured vocabulary, which the store cannot supply: a term that
+    never fired leaves no row, so "declared and silent" is only visible by comparing the flags
+    against the config. Carried in rather than resolved here for the reason every other report
+    takes its config in — the registry factories are the only load path that honours the
+    `user_configs/` overlay, and a report resolving its own would describe a configuration that
+    did not run.
+    """
     try:
         with psycopg.connect(database_url) as conn, conn.cursor() as cur:
             # No corpus yet = nothing flagged; a clean empty report, not a crash.
             cur.execute('SELECT count(*) FROM information_schema.tables WHERE table_name = %s',
                         (articles_table,))
             if not cur.fetchone()[0]:
-                return DetectionQualityReport(since_label,
-                                              cluster_disabled_sets=list(disabled_sets))
+                return DetectionQualityReport(
+                    since_label, cluster_disabled_sets=list(disabled_sets),
+                    silent_terms=_silent_terms({}, keyword_sets),
+                    vocabulary_size={ks.source_set_id: len(ks.keywords)
+                                     for ks in keyword_sets if ks.keywords})
             cur.execute(
                 f'SELECT article_id, source_id, title, detection_trigger, importance, '
-                f'       cluster_articles, cluster_feeds, flagged_at '
+                f'       cluster_articles, cluster_feeds, flagged_at, detection_keywords '
                 f'  FROM {articles_table} '
                 f' WHERE flagged_at >= %s ORDER BY flagged_at DESC',
                 (since,))
@@ -172,12 +247,26 @@ def build_detection_quality_report(database_url: str, since: datetime, *,
     except psycopg.Error as exc:
         raise VectorStoreError(f'detection-quality report failed: {exc}') from exc
 
-    return aggregate_detection_quality(rows, since_label, example_limit, disabled_sets)
+    return aggregate_detection_quality(rows, since_label, example_limit, disabled_sets,
+                                       keyword_sets)
+
+
+def _silent_terms(fired: Dict[str, TermRow],
+                  keyword_sets: Sequence[KeywordSet]) -> List[SilentTerm]:
+    """Configured terms with no flag in the window, named with the set that declares them."""
+    return sorted(
+        (SilentTerm(source_set_id=keyword_set.source_set_id, term=term)
+         for keyword_set in keyword_sets
+         for term in keyword_set.keywords
+         if term not in fired),
+        key=lambda row: (row.source_set_id, row.term))
 
 
 def aggregate_detection_quality(rows: List[Tuple[Any, ...]], since_label: str,
                                 example_limit: int = 5,
-                                disabled_sets: Sequence[str] = ()) -> DetectionQualityReport:
+                                disabled_sets: Sequence[str] = (),
+                                keyword_sets: Sequence[KeywordSet] = ()
+                                ) -> DetectionQualityReport:
     """Fold flagged rows into the report — the DB-free core, and the tested one.
 
     Rows arrive newest first (`ORDER BY flagged_at DESC`), which is also the order the examples
@@ -187,9 +276,10 @@ def aggregate_detection_quality(rows: List[Tuple[Any, ...]], since_label: str,
     report = DetectionQualityReport(since_label, cluster_disabled_sets=list(disabled_sets))
     by_trigger: Dict[str, TriggerRow] = {}
     per_source: Dict[str, int] = {}
+    by_term: Dict[str, TermRow] = {}
 
     for (article_id, source_id, title, trigger, importance,
-         cluster_articles, cluster_feeds, flagged_at) in rows:
+         cluster_articles, cluster_feeds, flagged_at, keywords) in rows:
         if not trigger:
             # Flagged before migration 011 existed. An absence, never a category — folding it into
             # a path would invent evidence for whichever one is being judged.
@@ -200,10 +290,28 @@ def aggregate_detection_quality(rows: List[Tuple[Any, ...]], since_label: str,
             row = TriggerRow(trigger=trigger)
             by_trigger[trigger] = row
         row.flags += 1
-        if importance is not None and importance >= 3:
+        high = importance is not None and importance >= 3
+        if high:
             row.high += 1
         else:
             row.mid += 1
+        # The keyword path's evidence, before the neighbourhood check below: a keyword flag has no
+        # neighbourhood by construction, so folding terms in after that `continue` would record
+        # nothing at all — the exact shape of the defect this column closes.
+        if trigger == 'keyword':
+            if not keywords:
+                # Flagged before migration 014. An absence, never "matched no term" — a keyword
+                # flag by definition matched one, and we simply did not write it down.
+                report.terms_unrecorded += 1
+            for term in keywords or ():
+                term_row = by_term.get(term)
+                if term_row is None:
+                    term_row = TermRow(term=term)
+                    by_term[term] = term_row
+                term_row.flags += 1
+                term_row.high += int(high)
+                term_row.mid += int(not high)
+                term_row.feeds.add(source_id)
         if cluster_feeds is None or cluster_articles is None:
             continue                    # no neighbourhood was consulted for this flag
         row.feeds.append(int(cluster_feeds))
@@ -220,6 +328,10 @@ def aggregate_detection_quality(rows: List[Tuple[Any, ...]], since_label: str,
     report.sources = sorted((SourceRow(source_id=sid, flags=count)
                              for sid, count in per_source.items()),
                             key=lambda row: (-row.flags, row.source_id))
+    report.terms = sorted(by_term.values(), key=lambda row: (-row.flags, row.term))
+    report.silent_terms = _silent_terms(by_term, keyword_sets)
+    report.vocabulary_size = {keyword_set.source_set_id: len(keyword_set.keywords)
+                              for keyword_set in keyword_sets if keyword_set.keywords}
     return report
 
 
@@ -242,6 +354,10 @@ def format_detection_quality_report(report: DetectionQualityReport) -> str:
 
     if not report.rows:
         lines.append('nothing was flagged in this window — neither path fired')
+        # The vocabulary section still renders: a window where NOTHING fired is exactly when
+        # "which of my terms is silent" is the question, and returning here would suppress the
+        # answer precisely in the case that prompts it.
+        lines.extend(_term_lines(report))
         return '\n'.join(lines)
 
     lines.append(f'{"trigger":10s} {"flags":>6s} {"MID":>5s} {"HIGH":>5s} | '
@@ -277,4 +393,74 @@ def format_detection_quality_report(report: DetectionQualityReport) -> str:
             lines.append(f'  [{example.source_id:14.14s}] {example.title[:44]:44.44s} '
                          f'{example.cluster_feeds} feeds / {example.cluster_articles} art '
                          f'({_num(example.duplication, 1)}x){mark}')
+
+    lines.extend(_term_lines(report))
     return '\n'.join(lines)
+
+
+def _term_lines(report: DetectionQualityReport) -> List[str]:
+    """The keyword path's per-term breakdown (migration 014) — what a vocabulary decision needs.
+
+    Rendered only when there is something to say. The section is deliberately separate from the
+    trigger table above: that one compares the two *paths*, this one compares the terms *inside*
+    one path, and folding them together would put two different populations in one column.
+    """
+    if not report.terms and not report.silent_terms and not report.terms_unrecorded:
+        return []
+    lines = ['-' * 86,
+             'keyword vocabulary — which term fired, and whether it is vocabulary or one '
+             'publisher\'s template']
+    if report.terms_unrecorded:
+        # Same distinction the `unattributed` count draws one level up: these flags know their
+        # path and not their word, because they predate the column.
+        lines.append(f'{report.terms_unrecorded} keyword flag(s) carry no recorded term — '
+                     f'flagged before the column existed, not "matched nothing"')
+    if report.terms:
+        # No MID/HIGH columns: `_tier` returns HIGH for every keyword verdict, so those two would
+        # be a constant 0 and a copy of `flags` — three columns carrying one number, and two of
+        # them reading as measurements. The fact itself is worth stating once, below.
+        lines.append(f'{"term":26s} {"flags":>6s} {"feeds":>6s}')
+        for row in report.terms:
+            mark = f'  ⚠ only {row.only_feed}' if row.single_feed else ''
+            lines.append(f'{row.term:26.26s} {row.flags:6d} {row.feed_count:6d}{mark}')
+        lines.append('every keyword flag is HIGH by construction (`_tier`), so each row above is '
+                     'a breaking wake — this path is what takes the engine off its cadence')
+    if report.silent_terms:
+        # Silence is reported, never judged: a crisis word SHOULD be quiet in a calm week. What it
+        # makes visible is the other kind — a term that cannot match at all, which is otherwise
+        # indistinguishable from one whose event simply has not happened.
+        lines.extend(_silence_lines(report))
+    return lines
+
+
+# How many silent terms one set names before the line collapses to `+N more` — per SET, not per
+# report. Pooled, the first set's vocabulary fills the cap and every later set vanishes behind the
+# counter: sorted by (set, term), eight names meant `crypto_news` only and `forex_news` was
+# invisible. Same `+N more` idiom as the `[OVERRIDE]` and preflight lines.
+_NAMED_SILENT = 6
+
+
+def _silence_lines(report: DetectionQualityReport) -> List[str]:
+    """Configured terms with no flag, grouped per source set and reported as a share."""
+    by_set: Dict[str, List[str]] = {}
+    for row in report.silent_terms:
+        by_set.setdefault(row.source_set_id, []).append(row.term)
+    lines: List[str] = []
+    for source_set_id, terms in sorted(by_set.items()):
+        declared = report.vocabulary_size.get(source_set_id, len(terms))
+        shown = ', '.join(terms[:_NAMED_SILENT])
+        rest = len(terms) - min(len(terms), _NAMED_SILENT)
+        # "10 of 10" is the statement; a bare count cannot say a WHOLE vocabulary contributed
+        # nothing, which is the reading that should prompt a look at the feeds.
+        lines.append(f'{source_set_id} · {len(terms)} of {declared} configured term(s) silent: '
+                     f'{shown}' + (f' +{rest} more' if rest else ''))
+    if report.terms_unrecorded and not report.terms:
+        # The claim names its population, like `_count_label` and `measured` elsewhere. Without
+        # this the transition reads as a vocabulary collapse: every term looks silent while the
+        # column is simply not populated for the flags this window holds.
+        lines.append('⚠ every keyword flag in this window predates the term column, so NOTHING '
+                     'could be attributed — this silence is the migration, not the vocabulary')
+    else:
+        lines.append('a quiet window explains silence; a term that can never match looks '
+                     'identical here, so check the spelling against a feed before trusting it')
+    return lines

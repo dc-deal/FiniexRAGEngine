@@ -370,6 +370,11 @@ def _build_detection_quality(database_url: str, manager: AppConfigManager,
     The disabled sets are a *config* fact the corpus has no column for — the same shape as
     `source_health`'s disabled feeds. Without it an empty cluster row would read as a gap, when for
     `forex_news` it is a decision taken against a measurement.
+
+    The vocabulary is the second such fact (migration 014): a term that never fired leaves no row,
+    so "declared and silent" exists only in the comparison between config and corpus. `_keyword_sets`
+    is reused rather than re-derived — one resolution, so this report and `corpus_text` cannot
+    disagree about what the running vocabulary was.
     """
     disabled = [source_set.source_set_id
                 for source_set in manager.build_source_set_registry().list_sets()
@@ -377,7 +382,7 @@ def _build_detection_quality(database_url: str, manager: AppConfigManager,
     return build_detection_quality_report(
         database_url, params.since, since_label=params.window_label or '7d',
         example_limit=manager.get_config().reports.detection_quality.examples,
-        disabled_sets=disabled)
+        disabled_sets=disabled, keyword_sets=_keyword_sets(manager))
 
 
 def _build_retrieval_drift(database_url: str, manager: AppConfigManager,

@@ -1,6 +1,6 @@
 """pgvector-backed vector store (PostgreSQL)."""
 from datetime import datetime
-from typing import Any, List, Optional, Set
+from typing import Any, List, Optional, Sequence, Set
 
 import psycopg
 from pgvector.psycopg import register_vector
@@ -183,7 +183,8 @@ class PgVectorStore(AbstractVectorStore):
 
     def flag_candidates(self, article_ids: List[str], importance: int, breaking: bool,
                         trigger: str = '',
-                        neighbours: Optional[NeighbourCount] = None) -> int:
+                        neighbours: Optional[NeighbourCount] = None,
+                        keywords: Optional[Sequence[str]] = None) -> int:
         """Stamp an importance tier (+ breaking-candidate + detection time) on articles (ISSUE_11).
 
         Idempotent: re-flagging a known cluster on a later pass just re-writes the same values.
@@ -202,6 +203,14 @@ class PgVectorStore(AbstractVectorStore):
         the capture-at-the-call principle applied to detection — the counts are computed to make a
         decision and were then discarded, which left "was this flag justified" answerable only by
         replaying the corpus. `detection_quality` reads them back as the duplication ratio.
+
+        `keywords` is the keyword path's evidence, by the mirror-image rule (migration 014):
+        supplied only when THAT path produced the verdict, so a cluster flag leaves the column NULL
+        rather than `{}` — an empty array would claim a vocabulary was consulted and matched
+        nothing. Same principle, same defect being closed: the match was computed to decide a tier
+        and thrown away, which made "which term did this" unanswerable afterwards, and a vocabulary
+        is tuned per term or not at all. `None` leaves the column untouched, so a re-flag by the
+        other path never erases what an earlier pass recorded.
         """
         if not article_ids:
             return 0
@@ -211,15 +220,20 @@ class PgVectorStore(AbstractVectorStore):
                 trigger_set = ', detection_trigger = %s' if trigger else ''
                 cluster_set = (', cluster_articles = %s, cluster_feeds = %s'
                                if neighbours is not None else '')
+                keyword_set = ', detection_keywords = %s' if keywords is not None else ''
                 values: List[Any] = [importance, breaking]
                 if trigger:
                     values.append(trigger)
                 if neighbours is not None:
                     values += [neighbours.articles, neighbours.feeds]
+                if keywords is not None:
+                    # psycopg adapts a Python list to TEXT[] natively — no join, no helper, and no
+                    # quoting question about a term containing a comma.
+                    values.append(list(keywords))
                 values.append(article_ids)
                 cur.execute(
                     f'UPDATE {table} SET importance = %s, breaking_candidate = %s'
-                    f'{trigger_set}{cluster_set}, flagged_at = now() '
+                    f'{trigger_set}{cluster_set}{keyword_set}, flagged_at = now() '
                     f'WHERE article_id = ANY(%s)',
                     tuple(values))
                 return cur.rowcount

@@ -158,3 +158,47 @@ def test_a_cluster_flag_records_its_evidence_and_a_keyword_flag_does_not(store, 
 
     assert rows['cluster'] == ('cluster', 4, 3)
     assert rows['kw'] == ('keyword', None, None)
+
+
+def test_a_keyword_flag_records_its_vocabulary_and_a_cluster_flag_does_not(store, clean_db):
+    """Migration 014 — the mirror of the test above, written against the real column.
+
+    The unit tests prove the detector *passes* the terms; this proves the store *stores* them:
+    psycopg adapting a Python list to `TEXT[]`, a multi-word term surviving intact, and the clause
+    staying out of the statement when no vocabulary is supplied.
+    """
+    store.upsert([_article('kw', _BASE), _article('cluster', _BASE)], [_vec(1.0), _vec(1.0)])
+
+    store.flag_candidates(['kw'], importance=3, breaking=True, trigger='keyword',
+                          keywords=('monetary policy decisions', 'SEC'))
+    store.flag_candidates(['cluster'], importance=2, breaking=False, trigger='cluster',
+                          neighbours=NeighbourCount(articles=4, feeds=3))
+
+    with psycopg.connect(store._database_url) as conn, conn.cursor() as cur:
+        cur.execute('SELECT article_id, detection_keywords FROM articles ORDER BY article_id')
+        rows = dict(cur.fetchall())
+
+    # Order is preserved and a term containing spaces is one element, not three.
+    assert rows['kw'] == ['monetary policy decisions', 'SEC']
+    assert rows['cluster'] is None
+
+
+def test_a_later_pass_by_the_other_path_never_erases_a_recorded_vocabulary(store, clean_db):
+    """`None` leaves the column untouched — the same rule `trigger` follows.
+
+    A re-flag is idempotent by design (the detector re-scores a known cluster every pass), so a
+    cluster flag arriving after a keyword flag must not blank the evidence that explained the
+    original one.
+    """
+    store.upsert([_article('a', _BASE)], [_vec(1.0)])
+    store.flag_candidates(['a'], importance=3, breaking=True, trigger='keyword',
+                          keywords=('hack',))
+    store.flag_candidates(['a'], importance=3, breaking=True, trigger='cluster',
+                          neighbours=NeighbourCount(articles=5, feeds=5))
+
+    with psycopg.connect(store._database_url) as conn, conn.cursor() as cur:
+        cur.execute('SELECT detection_trigger, detection_keywords, cluster_feeds '
+                    'FROM articles WHERE article_id = %s', ('a',))
+        trigger, keywords, feeds = cur.fetchone()
+
+    assert (trigger, keywords, feeds) == ('cluster', ['hack'], 5)
