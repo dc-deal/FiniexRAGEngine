@@ -213,6 +213,10 @@ class BuildInfo(BaseModel):
     # in-place edit is plausible, and this is the difference between "which deploy is live" and
     # "...and has anyone touched it".
     dirty: Optional[bool] = None
+    # The shared auth package (`finiex_auth`) and whether it is an EDITABLE install — the dev state
+    # in which a change is live with no pin, no bump and no commit. `None` when not installed.
+    auth_package_version: Optional[str] = None
+    auth_package_editable: Optional[bool] = None
     # When this process started. Answers the question the hash cannot: did my restart take effect?
     started_at: datetime
 

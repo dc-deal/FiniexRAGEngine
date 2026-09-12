@@ -27,8 +27,8 @@ Three more properties this unit owns, each because the obvious version is wrong:
 - **Redaction is counted, not silent.** A log line can carry a DSN password or a bearer token in an
   unhandled traceback. Those are replaced, and the answer says how many lines it changed: a reader
   trusts a line, so an altered one that does not say so is worse than a withheld one. The patterns
-  themselves live in `utils/redaction.py` — one vocabulary for every surface that publishes text,
-  because the copy that is not updated is the one that leaks.
+  themselves live in `finiex_auth.redaction` — one vocabulary for every surface that publishes
+  text, shared with the Testing IDE, because the copy that is not updated is the one that leaks.
 """
 import re
 from dataclasses import dataclass, field
@@ -36,7 +36,8 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from finiexragengine.utils.redaction import redact
+from finiex_auth.redaction import redact
+
 
 # `2026-09-08T04:40:43.978+02:00 ERROR logger.name: message`
 _ENTRY = re.compile(

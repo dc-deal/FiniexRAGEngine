@@ -2,9 +2,9 @@
 from typing import Callable, Optional
 
 from fastapi import APIRouter, Request, Security
+from finiex_auth.token_registry import TokenRegistry
 
 from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
-from finiexragengine.api.token_registry import TokenRegistry
 from finiexragengine.types.api_types import PipelineInfo, PipelinesResponse, StreamInfo
 from finiexragengine.types.config_types.app_config_types import StreamConfig
 

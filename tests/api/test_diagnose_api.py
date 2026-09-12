@@ -14,10 +14,10 @@ from pathlib import Path
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from finiex_auth.token_registry import TokenRegistry
 
 from finiexragengine.api.endpoints import diagnose_router as router_module
 from finiexragengine.api.endpoints.diagnose_router import build_diagnose_router
-from finiexragengine.api.token_registry import TokenRegistry
 from finiexragengine.configuration.source_set_registry import SourceSetRegistry
 from finiexragengine.core.sources.feed_doctor import FeedDiagnosis
 

@@ -17,6 +17,6 @@
         }
     },
     "forwardPorts": [8100],
-    "postCreateCommand": "sh .devcontainer/restore_home.sh",
+    "postCreateCommand": "sh .devcontainer/restore_home.sh && if [ -f /finiex-auth/pyproject.toml ]; then pip install -q -e /finiex-auth; fi",
     "remoteUser": "root"
 }

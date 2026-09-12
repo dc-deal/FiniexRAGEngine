@@ -326,7 +326,7 @@ engine that is running.
   `OPENAI_API_KEY` are environment variables. A string the policy does not name is **masked** and
   reported as `unclassified`, and `tests/contracts/test_config_exposure.py` fails the build until
   someone classifies it — so an unclassified field is a short-lived state, not a leak.
-- **by pattern** — the same scrubber the log route uses (`utils/redaction.py`), for the credential
+- **by pattern** — the same scrubber the log route uses (`finiex_auth.redaction`), for the credential
   that reaches a field nobody expected to hold one: a feed URL carrying its own key in the query
   string is masked although `sources[].url` is legitimately public.
 
@@ -389,7 +389,7 @@ down rather than assumed:
 **Redaction, and it names the field.** `head` carries the first bytes of the remote body — the
 answer to "what did that machine actually receive", and therefore arbitrary content this engine did
 not write. It, the URL and the parser/transport messages pass the shared scrubber
-(`utils/redaction.py`), and the response lists `redacted: ["head", "url"]` rather than a count: with
+(`finiex_auth.redaction`), and the response lists `redacted: ["head", "url"]` rather than a count: with
 four candidate fields, *which* was altered is the useful half.
 
 It cannot spend and it has no write.

@@ -14,9 +14,9 @@ from typing import Annotated, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request, Security
 from pydantic import Field
+from finiex_auth.grant_auth import build_grant_dependency
+from finiex_auth.token_registry import TokenRegistry
 
-from finiexragengine.api.grant_auth import build_grant_dependency
-from finiexragengine.api.token_registry import TokenRegistry
 from finiexragengine.configuration.app_config_manager import AppConfigManager
 from finiexragengine.core.observability.reports import report_catalog
 from finiexragengine.exceptions.ragengine_errors import FiniexRagError

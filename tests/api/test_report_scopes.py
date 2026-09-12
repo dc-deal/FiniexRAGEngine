@@ -12,16 +12,17 @@ from typing import Any
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from finiex_auth.grant_auth import build_grant_dependency
+from finiex_auth.route_walk import assert_no_identity_route_is_ungated
+from finiex_auth.token_registry import TokenRegistry
 
 from finiexragengine.api.api_app import _build_protected_router
 from finiexragengine.api.endpoints.report_router import build_report_router
 from finiexragengine.api.endpoints.stream_router import build_stream_router
-from finiexragengine.api.token_registry import TokenRegistry
 from finiexragengine.configuration.app_config_manager import AppConfigManager
 from finiexragengine.configuration.app_config_view import AppConfigView
 from finiexragengine.configuration.source_set_config_view import SourceSetConfigView
 from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
-from finiexragengine.api.grant_auth import build_grant_dependency
 from finiexragengine.core.outcome.outcome_store import OutcomeStore
 from finiexragengine.core.outcome.stream_dispatcher import StreamDispatcher
 from finiexragengine.core.outcome.stream_replay import StreamReplay
@@ -42,7 +43,7 @@ def _pipelines() -> PipelineRegistry:
 def _app(clean_db: str) -> FastAPI:
     """The whole surface as `create_app` assembles it: one registry, guard plus reports.
 
-    The registry is constructed directly rather than through `TokenRegistry.load`, because the
+    The registry is constructed directly rather than through `load_token_registry`, because the
     suite sets `FINIEX_API_TOKENS` for every test and **the environment wins** — resolution
     precedence is `test_api_auth.py`'s subject, and letting it apply here would quietly replace the
     scoped tokens these tests are about with an unscoped one.
@@ -236,20 +237,15 @@ def test_no_route_with_an_identity_segment_is_ungated(clean_db: str) -> None:
         ]))
     client = TestClient(app)
 
-    identity_routes = [(path, method)
-                       for path, operations in app.openapi()['paths'].items()
-                       for method in operations
-                       if '{' in path]
-    assert identity_routes, 'no identity routes found — the walk itself is broken'
-    # Named rather than merely swept: a router dropping out of the app would leave this walk green
-    # while the surface it gated went unreachable. Both 2026-09-08 surfaces are listed for that
-    # reason — `configs` mounts with an empty view map here, and must still be gated.
-    for route in (('/v1/logs/{name}', 'get'), ('/v1/configs/{name}', 'get'),
-                  ('/v1/diagnose/{name}', 'get')):
-        assert route in identity_routes, route
-
-    for path, method in identity_routes:
+    # The walk itself lives in `finiex_auth`, shared with the Testing IDE; which routes this app
+    # is meant to have stays here. Named rather than merely swept: a router dropping out of the
+    # app would leave the walk green while the surface it gated went unreachable. Both 2026-09-08
+    # surfaces are listed for that reason — `configs` mounts with an empty view map here, and
+    # must still be gated.
+    walked = assert_no_identity_route_is_ungated(
+        app, client, _as('holds-nothing'),
+        required=[('/v1/logs/{name}', 'get'), ('/v1/configs/{name}', 'get'),
+                  ('/v1/diagnose/{name}', 'get')],
         # Any value will do: the grant is refused before the name is resolved, which is the point.
-        url = path.replace('{pipeline_id}', 'crypto_sentiment').replace('{name}', 'source_health')
-        response = client.request(method.upper(), url, headers=_as('holds-nothing'))
-        assert response.status_code == 403, f'{method.upper()} {path} is not gated'
+        fill=lambda name: 'crypto_sentiment' if name == 'pipeline_id' else 'source_health')
+    assert len(walked) >= 3

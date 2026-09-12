@@ -5,6 +5,7 @@ ways that answer can go wrong — a deployment with no git at all, and a value t
 working tree instead of the running process.
 """
 from datetime import datetime, timezone
+from typing import Optional
 
 import pytest
 
@@ -59,3 +60,61 @@ def test_the_start_time_is_the_sample_time() -> None:
     after = datetime.now(timezone.utc)
 
     assert before <= info.started_at <= after
+
+
+# --- the shared auth package (finiex_auth) -------------------------------------------------------
+
+class _Distribution:
+    """Stands in for an installed distribution: a version and an optional `direct_url.json`."""
+
+    def __init__(self, version: str, direct_url: Optional[str]) -> None:
+        self.version = version
+        self._direct_url = direct_url
+
+    def read_text(self, name: str) -> Optional[str]:
+        return self._direct_url if name == 'direct_url.json' else None
+
+
+def _installed(monkeypatch: pytest.MonkeyPatch, distribution: Optional[_Distribution]) -> None:
+    def _lookup(name: str) -> _Distribution:
+        if distribution is None:
+            raise build_info.importlib.metadata.PackageNotFoundError(name)
+        return distribution
+    monkeypatch.setattr(build_info.importlib.metadata, 'distribution', _lookup)
+
+
+def test_an_editable_auth_package_is_reported_as_editable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The development state no pin watches: a change is live the moment it is saved."""
+    _installed(monkeypatch, _Distribution(
+        '0.1.0', '{"dir_info": {"editable": true}, "url": "file:///finiex-auth"}'))
+
+    info = build_info.sample_build_info('9.9.9')
+
+    assert (info.auth_package_version, info.auth_package_editable) == ('0.1.0', True)
+
+
+def test_a_pinned_git_install_is_reported_as_not_editable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The production state: the tag in requirements.txt, installed from the repository."""
+    _installed(monkeypatch, _Distribution(
+        '0.1.0', '{"url": "https://github.com/dc-deal/finiex-modules-auth.git", '
+                 '"vcs_info": {"vcs": "git", "requested_revision": "v0.1.0", "commit_id": "abc"}}'))
+
+    info = build_info.sample_build_info('9.9.9')
+
+    assert (info.auth_package_version, info.auth_package_editable) == ('0.1.0', False)
+
+
+def test_a_missing_or_unreadable_auth_package_never_breaks_the_sample(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """Like every field here: `None` says "not determinable", and nothing raises."""
+    _installed(monkeypatch, None)
+    info = build_info.sample_build_info('9.9.9')
+    assert (info.auth_package_version, info.auth_package_editable) == (None, None)
+
+    _installed(monkeypatch, _Distribution('0.1.0', 'not json'))
+    info = build_info.sample_build_info('9.9.9')
+    assert (info.auth_package_version, info.auth_package_editable) == ('0.1.0', None)
+
+    _installed(monkeypatch, _Distribution('0.1.0', None))      # from an index: nothing editable
+    info = build_info.sample_build_info('9.9.9')
+    assert (info.auth_package_version, info.auth_package_editable) == ('0.1.0', False)

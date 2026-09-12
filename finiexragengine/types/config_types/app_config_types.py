@@ -6,6 +6,7 @@ from datetime import date
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 from pydantic import BaseModel, Field, field_validator
+from finiex_auth.consumer_token_base import ConsumerTokenBase
 
 from finiexragengine.types.config_types.report_config_types import ReportsConfig
 from finiexragengine.types.ingest_types import TextNormalizerProfile
@@ -18,46 +19,14 @@ GRANT_SURFACES: Tuple[str, ...] = ('reports', 'pipelines', 'logs', 'configs',
                                   'diagnose')
 
 
-class ConsumerToken(BaseModel):
-    """One consumer's credential: who holds it, what it may reach, and whether it is in force.
+class ConsumerToken(ConsumerTokenBase):
+    """One consumer's credential — the shared model (`finiex_auth`), over this engine's surfaces.
 
-    `grants` is **required**, and that is the point. A token without declared rights would have to
-    default to something, and every safe-by-omission default is a default someone eventually relies
-    on without noticing. Declaring it makes granting an act rather than an oversight: a surface
-    added later is reachable by a consumer only once someone writes its name here.
-
-    A grant is `<surface>:<name>` — `reports:source_health`, `pipelines:crypto_sentiment` — with
-    `<surface>:*` for a whole surface and a bare `*` for everything. **Domain names, not routes.**
-    `source_health` is a stable concept; `/v1/reports/source_health` is merely its current address,
-    and binding a grant to an address means a later `/v2` or a rename silently stops matching — a
-    403 for a consumer who did nothing wrong. Names also compare exactly: no wildcard matching
-    against paths, which is where authorization defects live.
-
-    `active` is a kill switch, not documentation. A consumer can be switched off without deleting
-    their token — during an incident, or to keep a superseded token in place through a rotation.
-    An inactive entry never enters the registry, so an example one cannot authenticate.
-
-    `note` records who holds this token. It costs one line and answers the question that otherwise
-    arrives during a rotation, months later: *who is `ide2`, and may I revoke it?*
+    Grammar, mandatory grants, the kill switch and `note` are the package's, documented there and
+    shared with the Testing IDE (ISSUE_104). What this engine owns is the vocabulary: a grant naming
+    a surface outside `GRANT_SURFACES` fails when the config is parsed, at boot.
     """
-    token: str
-    grants: List[str]
-    active: bool = True
-    note: str = ''
-
-    @field_validator('grants')
-    @classmethod
-    def _grants_name_a_known_surface(cls, value: List[str]) -> List[str]:
-        for grant in value:
-            if grant == '*':
-                continue
-            surface, separator, name = grant.partition(':')
-            if not separator or not name or surface not in GRANT_SURFACES:
-                raise ValueError(
-                    f'grant {grant!r} is not "<surface>:<name>" over a known surface. '
-                    f'Surfaces: {", ".join(GRANT_SURFACES)}. Use e.g. "reports:source_health", '
-                    f'"reports:*", "pipelines:crypto_sentiment", or "*" for everything')
-        return value
+    GRANT_SURFACES = GRANT_SURFACES
 
 
 class ApiConfig(BaseModel):

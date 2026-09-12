@@ -21,9 +21,9 @@ from datetime import datetime, timezone
 from typing import Dict, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request, Security
+from finiex_auth.grant_auth import build_grant_dependency
+from finiex_auth.token_registry import TokenRegistry
 
-from finiexragengine.api.grant_auth import build_grant_dependency
-from finiexragengine.api.token_registry import TokenRegistry
 from finiexragengine.configuration.abstract_config_view import AbstractConfigView
 from finiexragengine.types.api_types import (
     ConfigCatalog,

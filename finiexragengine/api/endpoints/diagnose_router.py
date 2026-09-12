@@ -29,15 +29,15 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException, Query, Security
+from finiex_auth.grant_auth import build_grant_dependency
+from finiex_auth.redaction import redact
+from finiex_auth.token_registry import TokenRegistry
 
-from finiexragengine.api.grant_auth import build_grant_dependency
-from finiexragengine.api.token_registry import TokenRegistry
 from finiexragengine.configuration.source_set_registry import SourceSetRegistry
 from finiexragengine.core.sources.feed_doctor import diagnose_feed
 from finiexragengine.types.api_types import FeedDiagnosisResponse
 from finiexragengine.types.config_types.source_set_types import SourceConfig
 from finiexragengine.utils.dataclass_json import to_jsonable
-from finiexragengine.utils.redaction import redact
 
 logger = logging.getLogger(__name__)
 

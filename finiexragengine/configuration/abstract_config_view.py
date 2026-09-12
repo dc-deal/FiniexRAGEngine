@@ -15,7 +15,7 @@ Two layers guard every string, and they answer different questions:
 
 - **the path policy** (`config_redaction.py`) — is this *field* a secret? Decided per field, written
   down, and enforced by a contract test that fails when a model grows a string nobody classified;
-- **the pattern scrubber** (`utils/redaction.py`) — does this *value* look like a credential? The
+- **the pattern scrubber** (`finiex_auth.redaction`) — does this *value* look like a credential? The
   same vocabulary the log route uses, for the case the first layer cannot foresee: a feed URL
   carrying its own API key in a field that is legitimately public.
 
@@ -28,11 +28,11 @@ from datetime import date, datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel
+from finiex_auth.redaction import MASK, redact
 
 from finiexragengine.configuration.config_redaction import classify
 from finiexragengine.configuration.override_report import OverrideEntry
 from finiexragengine.types.config_view_types import ConfigDocument, OverrideLeaf
-from finiexragengine.utils.redaction import MASK, redact
 
 # `sources[fxstreet].enabled` -> `sources.fxstreet.enabled`. The override report anchors patched
 # list items by id, the redaction policy addresses segments — one grammar has to give, and it is

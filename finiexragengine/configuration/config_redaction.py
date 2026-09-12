@@ -56,7 +56,7 @@ PUBLIC_PATHS: Tuple[str, ...] = (
     # which is precisely why a remote reader needs them.
     'llm.provider',
     'llm.allowed_models.*',
-    'llm.base_url',                     # scrubbed by `utils.redaction` if it ever carries userinfo
+    'llm.base_url',                     # scrubbed by `finiex_auth.redaction` if it carries userinfo
     'embedding.provider',
     'embedding.model',
     'embedding.encoding',
@@ -113,7 +113,7 @@ PUBLIC_PATHS: Tuple[str, ...] = (
     'sources.*.source_id',
     'sources.*.type',
     'sources.*.url',                    # a feed key riding in the query string is scrubbed by
-                                        # `utils.redaction`, which is the second layer's whole job
+                                        # `finiex_auth.redaction` — the second layer's whole job
     'sources.*.comment',
 )
 

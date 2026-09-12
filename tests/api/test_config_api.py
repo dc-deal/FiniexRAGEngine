@@ -12,9 +12,9 @@ from typing import Dict, List
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from finiex_auth.token_registry import TokenRegistry
 
 from finiexragengine.api.endpoints.config_router import build_config_router
-from finiexragengine.api.token_registry import TokenRegistry
 from finiexragengine.configuration.app_config_manager import AppConfigManager
 from finiexragengine.configuration.app_config_view import AppConfigView
 from finiexragengine.configuration.source_set_config_view import SourceSetConfigView

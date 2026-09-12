@@ -9,10 +9,10 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from finiex_auth.token_registry import TokenRegistry
 
 from finiexragengine.api.endpoints.log_router import build_log_router
 from finiexragengine.api.endpoints.report_router import build_report_router
-from finiexragengine.api.token_registry import TokenRegistry
 from finiexragengine.configuration.app_config_manager import AppConfigManager
 from finiexragengine.core.observability.reports import report_catalog
 from finiexragengine.types.report_types import ReportParams

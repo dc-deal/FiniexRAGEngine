@@ -213,7 +213,7 @@ happened.
 - **A listing never advertises what it would refuse.** `/v1/reports` and `/v1/configs` return only
   what the caller may fetch, so a scope cannot be mapped by probing.
 - **Credentials cannot ride out on a payload.** Two layers, and the second is the guard: log lines
-  and config values pass a shared pattern scrubber (`utils/redaction.py` — DSNs, bearer tokens,
+  and config values pass a shared pattern scrubber (`finiex_auth.redaction`, shared with the Testing IDE — DSNs, bearer tokens,
   `sk-…` keys, Telegram bot tokens, API keys in a feed URL's query string), and every *string* a
   config model can publish is classified by hand as public or secret. A contract test walks the
   models and fails the build when a field is added that nobody classified — an unclassified string

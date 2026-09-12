@@ -7,9 +7,11 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, FastAPI
+from finiex_auth.bearer_auth import build_bearer_dependency
+from finiex_auth.grant_auth import build_grant_dependency
+from finiex_auth.rate_limiter import RateLimiter, build_rate_limit_dependency
+from finiex_auth.token_registry import TokenRegistry
 
-from finiexragengine.api.bearer_auth import build_bearer_dependency
-from finiexragengine.api.grant_auth import build_grant_dependency
 from finiexragengine.api.endpoints.build_router import build_build_router
 from finiexragengine.api.endpoints.envelopes_router import build_envelopes_router
 from finiexragengine.api.endpoints.health_router import build_health_router
@@ -18,8 +20,7 @@ from finiexragengine.api.endpoints.pipelines_router import build_pipelines_route
 from finiexragengine.api.endpoints.sentiment_router import build_sentiment_router
 from finiexragengine.api.endpoints.log_router import build_log_router
 from finiexragengine.api.endpoints.stream_router import build_stream_router
-from finiexragengine.api.rate_limiter import RateLimiter, build_rate_limit_dependency
-from finiexragengine.api.token_registry import TokenRegistry
+from finiexragengine.api.token_loader import load_token_registry
 from finiexragengine.api.endpoints.config_router import build_config_router
 from finiexragengine.api.endpoints.diagnose_router import build_diagnose_router
 from finiexragengine.configuration.abstract_config_view import AbstractConfigView
@@ -406,7 +407,7 @@ def create_app(attach_runners: Optional[bool] = None,
     # asks it what a verified consumer may read (ISSUE_104). Built here rather than inside the
     # protected router so both see the identical object — a second load could disagree with the
     # first about who exists.
-    tokens = TokenRegistry.load(api_config.tokens)
+    tokens = load_token_registry(api_config.tokens)
     protected_extra = [router for router, is_public in exempt if not is_public]
     if database_url:
         protected_extra.append(build_report_router(
@@ -497,7 +498,7 @@ def _build_protected_router(registry: PipelineRegistry,
     *off* (a disabled exemption is simply a protected route) and the report surface, which exists
     only when a database is configured.
     """
-    # Environment wins, the config overlay fills in — see `TokenRegistry.load`. The source is
+    # Environment wins, the config overlay fills in — see `load_token_registry`. The source is
     # announced below rather than inferred: a value in `user_configs` silently shadowed by a stale
     # environment variable is precisely the kind of no-op that costs an afternoon to find.
     if api_config.require_auth and tokens.is_empty():

@@ -20,9 +20,9 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, Security
+from finiex_auth.grant_auth import build_grant_dependency
+from finiex_auth.token_registry import TokenRegistry
 
-from finiexragengine.api.grant_auth import build_grant_dependency
-from finiexragengine.api.token_registry import TokenRegistry
 from finiexragengine.core.observability.log_reader import read_log
 from finiexragengine.types.api_types import LogEntryInfo, LogPageResponse
 from finiexragengine.utils.dataclass_json import to_jsonable
