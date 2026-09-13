@@ -17,12 +17,14 @@ from finiex_auth.route_walk import assert_no_identity_route_is_ungated
 from finiex_auth.token_registry import TokenRegistry
 
 from finiexragengine.api.api_app import _build_protected_router
+from finiexragengine.api.endpoints.archive_router import build_archive_router
 from finiexragengine.api.endpoints.report_router import build_report_router
 from finiexragengine.api.endpoints.stream_router import build_stream_router
 from finiexragengine.configuration.app_config_manager import AppConfigManager
 from finiexragengine.configuration.app_config_view import AppConfigView
 from finiexragengine.configuration.source_set_config_view import SourceSetConfigView
 from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
+from finiexragengine.core.outcome.outcome_exporter import OutcomeArchiveExporter
 from finiexragengine.core.outcome.outcome_store import OutcomeStore
 from finiexragengine.core.outcome.stream_dispatcher import StreamDispatcher
 from finiexragengine.core.outcome.stream_replay import StreamReplay
@@ -242,6 +244,8 @@ def test_no_route_with_an_identity_segment_is_ungated(clean_db: str) -> None:
                 StreamDispatcher(store, clean_db),
                 StreamReplay(store, stream_config.replay_window_hours),
                 _pipelines(), stream_config, build_grant_dependency(tokens)),
+            build_archive_router(OutcomeArchiveExporter(clean_db), _pipelines(),
+                                 build_grant_dependency(tokens)),
         ]))
     client = TestClient(app)
 
@@ -253,7 +257,11 @@ def test_no_route_with_an_identity_segment_is_ungated(clean_db: str) -> None:
     walked = assert_no_identity_route_is_ungated(
         app, client, _as('holds-nothing'),
         required=[('/v1/logs/{name}', 'get'), ('/v1/configs/{name}', 'get'),
-                  ('/v1/diagnose/{name}', 'get')],
+                  ('/v1/diagnose/{name}', 'get'),
+                  # 2026-09-13: the series beyond the replay window — the same `pipelines:<id>`
+                  # grant as `/latest`, so a token holding nothing must be refused here too.
+                  ('/v1/pipelines/{pipeline_id}/archive', 'get'),
+                  ('/v1/pipelines/{pipeline_id}/archive/days', 'get')],
         # Any value will do: the grant is refused before the name is resolved, which is the point.
         fill=lambda name: 'crypto_sentiment' if name == 'pipeline_id' else 'source_health')
     assert len(walked) >= 3

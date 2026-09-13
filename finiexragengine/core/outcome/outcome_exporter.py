@@ -58,6 +58,25 @@ class ExportResult:
     total_lines: int = 0
 
 
+@dataclass
+class ArchiveSlice:
+    """One stream's archive lines inside a bounded window — what the archive route serves.
+
+    `exceeded` means the window holds more lines than the caller's cap. The route then refuses the
+    whole window rather than serving part of it, so `lines` stays empty in that case.
+    """
+    lines: List[Dict[str, Any]] = field(default_factory=list)
+    exceeded: bool = False
+
+
+@dataclass
+class ArchiveDay:
+    """One UTC day of a stream's archive: how many lines, and whether the daily handover took it."""
+    day: str
+    lines: int
+    exported: bool
+
+
 class OutcomeArchiveExporter:
     """Reads `outcomes` and writes the rotated JSONL archive layout. Pure read + file write."""
 
@@ -155,18 +174,64 @@ class OutcomeArchiveExporter:
 
         grouped: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
         for pipeline_id, ts, envelope in rows:
-            env = envelope if isinstance(envelope, dict) else json.loads(envelope)
             ts = ts.astimezone(timezone.utc)
-            # collected_msc = analysis time in epoch-ms (no collector receive-time exists
-            # for a DB export; consistent with the validated mock), plus the time-base
-            # declaration. Prepended so the line is exactly `{collected_msc, timebase,
-            # ...envelope}` — the shape #9/#141 expect. On this path `collected_msc` equals
-            # `available_msc` to within the persistence call, which is itself the honest
-            # statement that no independent arrival clock exists here.
-            line = {'collected_msc': int(ts.timestamp() * 1000),
-                    'collected_msc_timebase': 'utc', **env}
-            grouped.setdefault((pipeline_id, bucket_name(ts, boundary)), []).append(line)
+            grouped.setdefault((pipeline_id, bucket_name(ts, boundary)), []).append(
+                _archive_line(ts, envelope))
         return grouped
+
+    def lines_between(self, pipeline: str, start: datetime, end: datetime,
+                      max_lines: int) -> ArchiveSlice:
+        """One stream's archive lines with `start <= ts < end`, oldest first — read-only.
+
+        The archive route's read, deliberately not `export()`: it writes no file and never touches
+        `archive_export_log`, so pulling a window over HTTP cannot mark a day as handed over — the
+        incremental export keeps deciding from its own record. Ordered like the file export
+        (ts, id) and built by the same `_archive_line`, so a full UTC day read here equals that
+        day's exported file line for line.
+
+        Reads at most `max_lines + 1` rows: one more than the cap is enough to know the window is
+        too large, and a table that grows for years is never read unbounded.
+        """
+        try:
+            with psycopg.connect(self._database_url) as conn, conn.cursor() as cur:
+                if not _table_exists(cur, self._table):
+                    return ArchiveSlice()
+                cur.execute(
+                    f'SELECT ts, envelope FROM {self._table} '
+                    'WHERE pipeline_id = %s AND ts >= %s AND ts < %s ORDER BY ts, id LIMIT %s',
+                    (pipeline, start, end, max_lines + 1))
+                rows = cur.fetchall()
+        except psycopg.Error as exc:
+            raise VectorStoreError(f'archive window read failed: {exc}') from exc
+        if len(rows) > max_lines:
+            return ArchiveSlice(exceeded=True)
+        return ArchiveSlice(lines=[_archive_line(ts, envelope) for ts, envelope in rows])
+
+    def day_counts(self, pipeline: str) -> List[ArchiveDay]:
+        """Lines per UTC day for one stream, oldest first, with the daily handover flag — read-only.
+
+        `exported` is READ from `archive_export_log` (daily boundary), so a caller can see which
+        days the incremental export has already handed over; this never changes that record.
+        """
+        try:
+            with psycopg.connect(self._database_url) as conn, conn.cursor() as cur:
+                if not _table_exists(cur, self._table):
+                    return []
+                # The UTC calendar day — the same bucket `bucket_name(ts, 'daily')` names.
+                cur.execute(
+                    f"SELECT to_char(ts AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day, count(*) "
+                    f'FROM {self._table} WHERE pipeline_id = %s GROUP BY day ORDER BY day',
+                    (pipeline,))
+                counts = cur.fetchall()
+                exported: Set[str] = set()
+                if _table_exists(cur, 'archive_export_log'):
+                    cur.execute('SELECT bucket FROM archive_export_log '
+                                'WHERE stream_id = %s AND boundary = %s', (pipeline, 'daily'))
+                    exported = {row[0] for row in cur.fetchall()}
+        except psycopg.Error as exc:
+            raise VectorStoreError(f'archive day index read failed: {exc}') from exc
+        return [ArchiveDay(day=day, lines=lines, exported=day in exported)
+                for day, lines in counts]
 
     def _flagged_buckets(self, boundary: Boundary) -> Set[Tuple[str, str]]:
         """The (stream, bucket) pairs already exported for this boundary — the incremental skip
@@ -196,6 +261,26 @@ class OutcomeArchiveExporter:
                     [(stream, bucket, boundary, lines) for stream, bucket, lines in written])
         except psycopg.Error as exc:
             raise VectorStoreError(f'writing archive export log failed: {exc}') from exc
+
+
+def _archive_line(ts: datetime, envelope: Any) -> Dict[str, Any]:
+    """One archive line — THE line shape, shared by the file export and the archive route.
+
+    collected_msc = analysis time in epoch-ms (no collector receive-time exists for a DB export;
+    consistent with the validated mock), plus the time-base declaration. Prepended so the line is
+    exactly `{collected_msc, timebase, ...envelope}` — the shape #9/#141 expect. On this path
+    `collected_msc` equals `available_msc` to within the persistence call, which is itself the
+    honest statement that no independent arrival clock exists here.
+    """
+    env = envelope if isinstance(envelope, dict) else json.loads(envelope)
+    ts = ts.astimezone(timezone.utc)
+    return {'collected_msc': int(ts.timestamp() * 1000), 'collected_msc_timebase': 'utc', **env}
+
+
+def _table_exists(cur: psycopg.Cursor, table: str) -> bool:
+    """A missing table (fresh DB, migration pending) means nothing was produced — never a crash."""
+    cur.execute('SELECT count(*) FROM information_schema.tables WHERE table_name = %s', (table,))
+    return cur.fetchone()[0] > 0
 
 
 def _parse_day(day: str) -> datetime:

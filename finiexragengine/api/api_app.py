@@ -12,6 +12,7 @@ from finiex_auth.grant_auth import build_grant_dependency
 from finiex_auth.rate_limiter import RateLimiter, build_rate_limit_dependency
 from finiex_auth.token_registry import TokenRegistry
 
+from finiexragengine.api.endpoints.archive_router import build_archive_router
 from finiexragengine.api.endpoints.build_router import build_build_router
 from finiexragengine.api.endpoints.envelopes_router import build_envelopes_router
 from finiexragengine.api.endpoints.health_router import build_health_router
@@ -41,7 +42,7 @@ from finiexragengine.core.observability.reports.weekly_report import collect_wee
 from finiexragengine.core.observability.resource_gauge import ResourceGauge
 from finiexragengine.core.observability.resource_sample_store import ResourceSampleStore
 from finiexragengine.core.observability.stall_watchdog import StallWatchdog
-from finiexragengine.core.outcome.outcome_exporter import auto_export_weekly
+from finiexragengine.core.outcome.outcome_exporter import OutcomeArchiveExporter, auto_export_weekly
 from finiexragengine.core.outcome.outcome_store import OutcomeStore
 from finiexragengine.core.outcome.stream_dispatcher import StreamDispatcher
 from finiexragengine.core.outcome.stream_replay import StreamReplay
@@ -424,6 +425,12 @@ def create_app(attach_runners: Optional[bool] = None,
         # fetched. Shares the unit, so the two surfaces cannot disagree about a cursor.
         protected_extra.append(build_envelopes_router(
             stream_replay, registry, build_grant_dependency(tokens)))
+    # The series beyond the stream's replay window, in bounded windows (2026-09-13): the path a
+    # retrospective takes instead of `export_cli` plus a file copy. It needs only the journal, not
+    # the stream, and it is read-only against the export handover's `archive_export_log`.
+    if database_url:
+        protected_extra.append(build_archive_router(
+            OutcomeArchiveExporter(database_url), registry, build_grant_dependency(tokens)))
     app.include_router(_build_protected_router(
         registry, api_config, tokens, outcome_store=outcome_store,
         extra_routers=protected_extra,

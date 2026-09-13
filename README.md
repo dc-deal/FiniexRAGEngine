@@ -186,6 +186,7 @@ collector needs is a read over HTTPS, and nothing that answers can change the en
 | `GET /v1/pipelines` | `pipelines:<id>` | the constellations a token may see: symbols, trigger, cadence |
 | `GET /v1/pipelines/{id}/latest` | `pipelines:<id>` | the newest persisted envelope, served from the store |
 | `GET /v1/pipelines/{id}/envelopes` | `pipelines:<id>` | a bounded range of the series (`?since=`, `?epoch=`) |
+| `GET /v1/pipelines/{id}/archive` · `/archive/days` | `pipelines:<id>` | the series in a **UTC** window (`?from=`, `?to=`, ≤ 24 h, ≤ 500 lines) as NDJSON in the export's line shape — beyond the replay window, today included; plus lines per day |
 | `GET /v1/stream/{id}` | `pipelines:<id>` | the same series live, as SSE |
 | `GET /v1/reports` · `/{name}` | `reports:<name>` | the engine's own metrics surfaces as JSON — health, quarantine history, latency, the breaking funnel |
 | `GET /v1/logs/{name}` | `logs:<name>` | the engine's log over a **UTC** time range, redacted |

@@ -744,6 +744,8 @@ database and no shell, and `POST /run` is not registered in production, so nothi
 | `GET /v1/pipelines` | `pipelines:<id>` | the constellations this token may see: symbols, trigger type, cadence — plus the stream settings |
 | `GET /v1/pipelines/{id}/latest` | `pipelines:<id>` | the newest persisted envelope, served from the store |
 | `GET /v1/pipelines/{id}/envelopes?since=&epoch=` | `pipelines:<id>` | a bounded range of that pipeline's series |
+| `GET /v1/pipelines/{id}/archive?from=&to=` | `pipelines:<id>` | the series in a **UTC** window of at most 24 h and 500 lines, as NDJSON in the export's line shape — beyond the stream's 24 h replay window, and today's day while it grows; more lines are refused (`422`), never cut |
+| `GET /v1/pipelines/{id}/archive/days` | `pipelines:<id>` | lines per UTC day, whether the day is still open, and whether the daily handover already exported it (read, never written) |
 | `GET /v1/stream/{id}` | `pipelines:<id>` | the same series as SSE, live |
 | `GET /v1/reports` | `reports:<name>` | the catalog — **only** the reports this token may fetch |
 | `GET /v1/reports/{name}` | `reports:<name>` | one diagnostic surface as JSON (`report_api.md`) |

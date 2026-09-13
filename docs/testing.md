@@ -204,6 +204,7 @@ Five suites, split by what they can actually assert.
 | `tests/outcome/test_stream_session.py` | one connection's frame sequence: retry → replay → `live` → frames and keep-alives, the terminal codes, and the cold-stream epoch |
 | `tests/api/test_stream_endpoint.py` | what only HTTP decides — the status codes, the parameter refusals, and the two control codes that close the connection |
 | `tests/api/test_envelope_range.py` | the range endpoint, and the mapping rule: terminal on the stream ⇒ `409` here, non-terminal marker ⇒ a body field |
+| `tests/api/test_archive_router.py` | the archive window: bounded twice and refused rather than cut, start-inclusive / end-exclusive UTC, a full day byte-identical to the exported file, the day index with its handover flag — and `archive_export_log` untouched by any request |
 
 **Why the sequence is not driven over HTTP.** An SSE stream never ends, and a test client cannot
 close one before the server's response generator finishes — it deadlocks (it did, for two minutes,

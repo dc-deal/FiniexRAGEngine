@@ -328,6 +328,24 @@ class EnvelopeRange(BaseModel):
     oldest_available_seq: Optional[int] = None
 
 
+class ArchiveDayEntry(BaseModel):
+    """One UTC day of a stream's archive, in `GET /v1/pipelines/{id}/archive/days`."""
+    day: str                 # 'YYYY-MM-DD', UTC — the export's daily bucket name
+    lines: int
+    # Today's UTC day, still growing: its lines keep arriving, while a closed day never changes.
+    open: bool
+    # Whether the daily handover (`export_cli --incremental`, the weekly auto-export) has taken this
+    # day — READ from `archive_export_log`, which the archive routes never write.
+    exported: bool
+
+
+class ArchiveDays(BaseModel):
+    """`GET /v1/pipelines/{id}/archive/days` — where the series starts and how big each day is, so a
+    caller can plan its bounded `/archive` windows before pulling anything."""
+    pipeline_id: str
+    days: List[ArchiveDayEntry] = Field(default_factory=list)
+
+
 class OverrideInfo(BaseModel):
     """One leaf the gitignored `user_configs/` overlay moved (2026-09-08).
 

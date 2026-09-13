@@ -235,6 +235,27 @@ Neither route can spend. The stream reads the journal forward; the range endpoin
 
 Field-by-field contract: [`signal_stream_contract.md`](signal_stream_contract.md).
 
+## The archive: the series beyond the replay window
+
+```
+GET /v1/pipelines/{pipeline_id}/archive?from=&to=    application/x-ndjson
+GET /v1/pipelines/{pipeline_id}/archive/days         application/json
+```
+
+The range endpoint above reaches back only as far as the stream's replay window (24 h). Older
+envelopes — and a whole day in one read — come from the archive: a UTC window of at most 24 hours
+and at most 500 lines, one envelope per line in exactly the shape of the JSONL export
+(`{collected_msc, collected_msc_timebase, …envelope}`), so a full UTC day equals that day's
+exported file line for line. A window holding more is refused with `422` and the count, never cut.
+A window reaching into the present is allowed — the current day, still growing — and says so in
+`X-Archive-Window-Open: true`. `/archive/days` lists the lines per UTC day before anything is
+pulled.
+
+Same grant as `/latest`: `pipelines:<pipeline_id>`. **Read-only against the export handover:**
+neither route writes `archive_export_log`, so pulling a day over HTTP never marks it as handed
+over. The incremental export (`export_cli --incremental`, the weekly auto-export) keeps deciding
+from its own record, and `/archive/days` only reads that record (`exported`).
+
 ## Diagnostics: `GET /v1/reports`
 
 Token-gated like everything else. It serves the engine's own metrics surfaces — source health and
