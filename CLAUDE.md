@@ -391,9 +391,10 @@ Read first, in order:
     caller-supplied paths, which is where authorization defects live.
   - **Bound to the route by FastAPI's own mechanism.** The *surface* is declared once per domain
     router (`Security(dependency, scopes=['reports'])` — `SecurityScopes`), the *name* is the
-    route's first path parameter. A collection route has no identity segment and is therefore
-    filtered in its handler rather than gated, so a caller entitled to some of what it lists still
-    gets an answer.
+    route's first path parameter. A collection route has no identity segment, so it is gated at the
+    surface only: a token holding nothing on that surface is refused (`403`), and a caller entitled
+    to some of what it lists gets an answer filtered in its handler. The floor keeps a forgotten
+    filter from leaking a whole list to a token the surface was never granted to.
   - **Know the one weakness: this half is NOT inherited.** Authentication sits on the single shared
     protected router, so every route inherits it and nobody can forget it. Authorization cannot work
     that way — the surface is per-router information — so a **new domain router that omits
