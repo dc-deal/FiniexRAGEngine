@@ -189,7 +189,12 @@ def test_an_unknown_consumer_is_denied_rather_than_defaulted() -> None:
 
 
 def test_an_empty_scope_reads_nothing(clean_db: str) -> None:
-    """A token can exist and be allowed nothing — useful for one that only calls /latest."""
+    """A token can exist and be allowed nothing — useful for one that only calls /latest.
+
+    Holding nothing on `reports`, it is refused the listing itself rather than handed an empty one:
+    the floor `finiex_auth` puts under every collection route, so a listing that forgot to filter
+    would still leak nothing to it.
+    """
     api_config = ApiConfig(tokens={'signals': {'token': 'signals-token',
                                               'grants': ['pipelines:*']}})
     tokens = TokenRegistry(api_config.tokens)      # direct, for the reason in `_app`
@@ -199,7 +204,10 @@ def test_an_empty_scope_reads_nothing(clean_db: str) -> None:
         extra_routers=[build_report_router(clean_db, AppConfigManager(), tokens)]))
     client = TestClient(app)
 
-    assert client.get('/v1/reports', headers=_as('signals-token')).json()['reports'] == []
+    listing = client.get('/v1/reports', headers=_as('signals-token'))
+    assert listing.status_code == 403
+    assert listing.json()['detail'] == ("token 'signals' holds nothing on 'reports' · holds: "
+                                        'pipelines:*')
     assert client.get('/v1/reports/source_health',
                       headers=_as('signals-token')).status_code == 403
     # ...but the signal path it exists for is untouched.

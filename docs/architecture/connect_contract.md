@@ -189,9 +189,11 @@ custody, not ceremony.
 | `/v1/health` (the only route without a token) | 60 requests/minute |
 | failed authentication attempts | 10/minute |
 
-Both are **per originating client**, keyed on the first entry of `X-Forwarded-For` — which the proxy
-sets, and which is trustworthy here specifically because the engine binds loopback: the only route
-in is through the proxy.
+Both are **per originating client**, keyed on the address uvicorn resolves for the connection. It
+applies `X-Forwarded-For` only when the connection comes from `127.0.0.1` — where the proxy connects
+from, since the engine binds loopback — so the key is the proxy's client, and a header a caller
+writes itself is never believed. A rejected token is logged with that address
+(`[AUTH] rejected GET /v1/pipelines from 203.0.113.7`).
 
 A successful call is never throttled by the failure limit, so a busy consumer cannot rate-limit
 itself by working. Exceeding a limit answers `429` with `Retry-After: 60`.

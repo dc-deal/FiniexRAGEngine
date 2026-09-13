@@ -191,7 +191,9 @@ feed diagnostics may legitimately belong to a collector. So each token declares 
 `connect_contract.md` — and this surface honours them in both directions:
 
 - **`GET /v1/reports` lists only what the caller can fetch** — a listing that advertised the rest
-  would turn every scope into a discovery of a `403`;
+  would turn every scope into a discovery of a `403`. A token holding nothing on `reports` is
+  refused the listing itself with a `403`: the floor `finiex_auth` puts under every collection
+  route, so a listing that forgot to filter would still leak nothing to it;
 - **`GET /v1/reports/{name}` answers `403`** for a report outside the scope, naming what the token
   *may* read. Deliberately not a `404`: the report exists, a partner can read this document anyway,
   and a denial they can debug saves a round of questions.
