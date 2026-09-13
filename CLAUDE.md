@@ -171,6 +171,19 @@ every route the assistant can reach is a read.
 tokens an engine *accepts*). The two are one character apart and mean opposite things. `.env` is
 gitignored; `.env.example` carries the key with an empty value.
 
+**Market bars come from the Testing IDE's API: an analysis input for the assistant, never a pipeline
+input.** The engine holds no price, and "RAG belongs on unstructured text only" stays in force; bars
+exist here so a threshold can be checked against what the market did, not only against internal
+consistency. The IDE serves them at `http://host.docker.internal:8000/api/v1/…` to our own consumer
+token (`ragengine`: `bars:*` + `brokers:*`, nothing on `reports` — the IDE's run artifacts belong to
+a private strategy, and the token is refused them). It lives in `.env` as `FINIEX_IDE_CLIENT_TOKEN`,
+distinct from `FINIEX_LIVE_CLIENT_TOKEN`, which is the live engine's. Brokers `kraken_spot` (crypto)
+and `mt5` (FX); timeframes M1…D1, no M10 — aggregate from M5. A bar's timestamp is UTC unix seconds
+at its open, and a truncated answer says so in its `x-bar-*` headers. **Availability is intermittent
+by design:** the operator starts the IDE's API by hand on the laptop, not on the server, so it is
+reachable from the dev container only, and an unreachable endpoint means "ask the operator to start
+it", never a defect.
+
 **On a feed problem, consult the feed doctor before concluding anything.** A parse error names a
 line and a column *in the bytes that machine received*, and those are not the bytes this container
 fetches. On 2026-09-09 `boj_press` failed repeatedly with `not well-formed (invalid token)` at line
