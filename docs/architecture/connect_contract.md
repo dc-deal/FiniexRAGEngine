@@ -189,9 +189,11 @@ custody, not ceremony.
 | `/v1/health` (the only route without a token) | 60 requests/minute |
 | failed authentication attempts | 10/minute |
 
-Both are **per originating client**, keyed on the first entry of `X-Forwarded-For` — which the proxy
-sets, and which is trustworthy here specifically because the engine binds loopback: the only route
-in is through the proxy.
+Both are **per originating client**, keyed on the address uvicorn resolves for the connection. It
+applies `X-Forwarded-For` only when the connection comes from `127.0.0.1` — where the proxy connects
+from, since the engine binds loopback — so the key is the proxy's client, and a header a caller
+writes itself is never believed. A rejected token is logged with that address
+(`[AUTH] rejected GET /v1/pipelines from 203.0.113.7`).
 
 A successful call is never throttled by the failure limit, so a busy consumer cannot rate-limit
 itself by working. Exceeding a limit answers `429` with `Retry-After: 60`.
@@ -212,6 +214,48 @@ cost log accounts for it. This route was the one hole in that property.
 
 A caller who wants the latest signal uses `GET /v1/pipelines/{id}/latest`, which never spends.
 
+## The live stream and the range endpoint
+
+```
+GET /v1/stream/{pipeline_id}                              text/event-stream
+GET /v1/pipelines/{pipeline_id}/envelopes?since=&epoch=   application/json
+```
+
+Token-gated like everything else, and gated **by name**: both carry `{pipeline_id}` as a path
+segment, so the grant checked is `pipelines:<pipeline_id>` — the same one that governs `/latest`. A
+stream is the pipeline's series through another transport, not a separate surface.
+
+The pipeline is a path segment rather than `?pipeline=` for that reason. Authorization derives the
+grant from the matched route's first path parameter, so a query-parameter form would be
+*authenticated but ungated*: reachable by any valid token, including one holding nothing.
+
+Neither route can spend. The stream reads the journal forward; the range endpoint is one bounded
+`SELECT`. The only route in the engine that converts a request into provider spend is
+`POST /v1/pipelines/{id}/run`, and it is not registered in production.
+
+Field-by-field contract: [`signal_stream_contract.md`](signal_stream_contract.md).
+
+## The archive: the series beyond the replay window
+
+```
+GET /v1/pipelines/{pipeline_id}/archive?from=&to=    application/x-ndjson
+GET /v1/pipelines/{pipeline_id}/archive/days         application/json
+```
+
+The range endpoint above reaches back only as far as the stream's replay window (24 h). Older
+envelopes — and a whole day in one read — come from the archive: a UTC window of at most 24 hours
+and at most 500 lines, one envelope per line in exactly the shape of the JSONL export
+(`{collected_msc, collected_msc_timebase, …envelope}`), so a full UTC day equals that day's
+exported file line for line. A window holding more is refused with `422` and the count, never cut.
+A window reaching into the present is allowed — the current day, still growing — and says so in
+`X-Archive-Window-Open: true`. `/archive/days` lists the lines per UTC day before anything is
+pulled.
+
+Same grant as `/latest`: `pipelines:<pipeline_id>`. **Read-only against the export handover:**
+neither route writes `archive_export_log`, so pulling a day over HTTP never marks it as handed
+over. The incremental export (`export_cli --incremental`, the weekly auto-export) keeps deciding
+from its own record, and `/archive/days` only reads that record (`exported`).
+
 ## Diagnostics: `GET /v1/reports`
 
 Token-gated like everything else. It serves the engine's own metrics surfaces — source health and
@@ -219,6 +263,159 @@ quarantine history, fetch latency, the breaking funnel — as JSON, so a questio
 engine's behaviour no longer needs a session on the host. Deliberately **not** part of the frame
 contract a collector builds against: the shapes are diagnostic and stay free to change. Details in
 `report_api.md`.
+
+## Diagnostics: `GET /v1/logs/{name}`
+
+```
+GET /v1/logs/engine?since=&until=&min_level=&limit=      application/json
+```
+
+The engine's own log file, over a UTC time range. ISSUE_104 made every *report* answerable over
+HTTP; the log was the one diagnostic still behind RDP, and on 2026-09-08 that was the whole gap —
+four host-connectivity outages in nine hours whose cause was one word inside a traceback
+(`getaddrinfo failed`), while the reports could only say that every feed had failed at once.
+
+**A new grant surface, `logs`,** and no existing token holds it: the surface is declared once on the
+router (`Security(build_grant_dependency(tokens), scopes=['logs'])`) and the *name* is the path
+parameter, exactly as `reports:<name>` works. `{name}` is checked against a closed set (`engine`
+today) rather than being a path — a caller must never be able to name a file, which is the
+difference between a log route and an arbitrary read primitive.
+
+| parameter | |
+|---|---|
+| `since` / `until` | **UTC** bounds; both optional |
+| `min_level` | `DEBUG`…`CRITICAL`, default `WARNING` — the file carries thousands of INFO lines a night, and the question this route answers is "what went wrong" |
+| `limit` | entries returned, default 200, capped by `max_lines` (2000); the **newest** end is what a limit keeps |
+
+**The clocks differ, and the route is where that is resolved.** The engine is UTC throughout, as
+CLAUDE.md requires — but the logging formatter stamps the OS clock, and the server runs GMT+2. One
+production line carries both at once:
+
+```
+2026-09-08T04:40:43.978+02:00  …  [HOST] host connectivity — … retry 02:45:43 UTC
+└─ the formatter: local time                                   └─ the app: UTC
+```
+
+Same instant, two clocks. Because the offset is written out the conversion is lossless, so every
+line is parsed offset-aware, compared in UTC and **returned in UTC** — a `since` you took from an
+envelope, a report or `/v1/health` means what it says. A naive string comparison would be two hours
+wrong, silently, which is the exact class of error this route exists to help find.
+
+Three more properties, each because the obvious version is wrong:
+
+- **A rotated file is part of a range.** Rotation is daily at UTC midnight with 14 kept, so a window
+  reaching past midnight reads the siblings too — otherwise "query a time range" quietly means
+  "today". `files_read` names what was opened.
+- **A traceback belongs to its entry.** Continuation lines carry no timestamp, so they travel with
+  the entry above them (`continuation[]`) and a filtered window never returns a stack fragment with
+  no head — which is what would have made a filtered read useless on 2026-09-08.
+- **Redaction is counted, not silent.** DSN passwords, `Bearer …`, `sk-…` and Telegram bot tokens are
+  masked with `«redacted»`, and the answer carries `redacted_lines: N`. A reader trusts a log line,
+  so an altered one that does not say so is worse than a withheld one.
+
+It cannot spend and it has no write. `matched` (before the limit) and `truncated` say what was left
+out, so a bounded answer never reads as a complete one. No CLI: on the box `Get-Content` is already
+the better tool — *remote* is the case that was missing.
+
+## Diagnostics: `GET /v1/configs/{name}`
+
+```
+GET /v1/configs                 → the documents this caller may read
+GET /v1/configs/{name}?id=      → one document, effective and redacted
+```
+
+The configuration **this process is running**, for the three domains that have one: `app`,
+`pipelines`, `source_sets`. It exists because the layer that differs between two machines is the one
+nothing exposed — `user_configs/` is gitignored, so which feeds a machine has switched off, which
+model variant is disabled and which detection thresholds it actually uses were readable only on the
+host. The `[OVERRIDE]` boot line is a notice rather than an answer: capped at six leaves, and it
+never prints a string value.
+
+A new grant surface `configs`, held by nobody until it is written into a token. Three names rather
+than one per pipeline, so pipeline ids and source-set ids never share a namespace; `?id=` narrows
+within a document and never selects a different one.
+
+**Effective means this process, not this disk.** The views are built at boot over the objects the
+engine loaded — the app config manager, the pipeline registry, and the source-set registry the
+ingest workers themselves poll from. Nothing is re-read per request, for the same reason `/v1/build`
+samples its commit once: a file edited after startup must not make this surface disagree with the
+engine that is running.
+
+**Every string is classified before it can be served.** Two layers, and the second is the guard:
+
+- **by path** — `configuration/config_redaction.py` names each string leaf as public or secret. The
+  secret list is three entries (`api.tokens.*.token`, `telegram.bot_token`, `telegram.chat_id`),
+  because the credentials that matter are not in the config models at all: `DATABASE_URL` and
+  `OPENAI_API_KEY` are environment variables. A string the policy does not name is **masked** and
+  reported as `unclassified`, and `tests/contracts/test_config_exposure.py` fails the build until
+  someone classifies it — so an unclassified field is a short-lived state, not a leak.
+- **by pattern** — the same scrubber the log route uses (`finiex_auth.redaction`), for the credential
+  that reaches a field nobody expected to hold one: a feed URL carrying its own key in the query
+  string is masked although `sources[].url` is legitimately public.
+
+Both halves report what they touched (`redacted`, `unclassified`, `scrubbed`), and the projection
+lives in `configuration/abstract_config_view.py` rather than the router — a config document is
+exactly the payload where "the route remembered to sanitize" is not a property worth resting on.
+
+The answer also carries `overrides`: which leaves the gitignored overlay moved, with their previous
+values, `added` for a key the tracked file never had, and `unknown` for one the schema does not know
+(Pydantic ignores unknown keys, so a typo'd override silently does nothing — and the payload says
+so). Those values pass the same projection: `user_configs/app_config.json` is precisely the file the
+bearer tokens live in.
+
+Two details that only became visible once this ran against production:
+
+- **An `unknown` key's strings are masked but never counted as `unclassified`.** It names no field
+  in any model, so it cannot be classified and no contract test can cover it — while a key misfiled
+  by hand is exactly where a secret ends up by accident. The `unknown: true` flag is the signal;
+  keeping it out of the census leaves `unclassified` meaning one thing only.
+- **An unset credential is published as `""`, not as a mask.** Masking an empty field turns "no bot
+  token on this machine" into "a bot token you may not see" — one payload for two states an
+  operator needs to tell apart, and nothing is protected by hiding an empty string.
+
+It cannot spend and has no write. An unknown `{name}` is a 403 for a scoped caller — authorisation
+before resolution, so the endpoint is not an existence oracle — while an unknown `?id=` is a 404,
+because absence is only informative to someone entitled to the thing that is absent.
+
+## Diagnostics: `GET /v1/diagnose/{name}`
+
+```
+GET /v1/diagnose/feed?source_id=…      → one configured feed, fetched and diagnosed live
+```
+
+The feed doctor (ISSUE_11) — a raw GET plus the same feedparser path the ingest worker takes,
+classified with the taxonomy source-health records. It exists on this surface because a parse error
+names a line and a column **in the bytes that machine received**, and those are not the bytes this
+container fetches: on 2026-09-09 `boj_press` was well-formed here (318 lines, 14,722 bytes, line 11
+just 51 characters — there is no column 69) and unparseable there. The difference was a response
+that never arrived intact, and nothing reachable remotely could say so.
+
+New grant surface `diagnose`; `diagnose:feed` reaches nobody by default.
+
+**This is the first route that reaches *outward* on request.** Every other one reads the journal,
+the health tables or a local file. That is a genuine change of kind, so what bounds it is written
+down rather than assumed:
+
+- **`source_id` is required and has no default.** The CLI's default is *all* feeds — 39 of them at
+  two requests each — and as a GET that shape is a 78-request amplifier that also perturbs the very
+  feeds whose health it reports on. One call is one feed is **two outbound requests**, less than the
+  engine's own 15-second poll already costs.
+- **It is resolved against the configured catalogue** — the source-set registry this process
+  loaded. A caller names a feed the engine already polls and can never name a URL, which is what
+  separates a diagnostic from an open proxy. An unknown id is a `404` and nothing leaves the
+  process; scaffold-mock mode (no catalogue) is a `503` that says so.
+- **A 10-second deadline**, half the unit's own default, because a sync endpoint runs in the pool
+  that serves every other `def` route.
+- **A disabled feed stays probeable**, deliberately: asking whether a switched-off feed has become
+  reachable again is precisely a question about a feed nobody is polling.
+
+**Redaction, and it names the field.** `head` carries the first bytes of the remote body — the
+answer to "what did that machine actually receive", and therefore arbitrary content this engine did
+not write. It, the URL and the parser/transport messages pass the shared scrubber
+(`finiex_auth.redaction`), and the response lists `redacted: ["head", "url"]` rather than a count: with
+four candidate fields, *which* was altered is the useful half.
+
+It cannot spend and it has no write.
 
 ## `GET /v1/build` is the second open route
 

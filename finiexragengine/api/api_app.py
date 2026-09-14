@@ -4,20 +4,32 @@ import logging
 import os
 import socket
 from contextlib import asynccontextmanager
-from typing import AsyncIterator, List, Optional
+from typing import AsyncIterator, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, FastAPI
+from finiex_auth.bearer_auth import build_bearer_dependency
+from finiex_auth.grant_auth import build_grant_dependency
+from finiex_auth.rate_limiter import RateLimiter, build_rate_limit_dependency
+from finiex_auth.token_registry import TokenRegistry
 
-from finiexragengine.api.bearer_auth import build_bearer_dependency
-from finiexragengine.api.grant_auth import build_grant_dependency
+from finiexragengine.api.endpoints.archive_router import build_archive_router
 from finiexragengine.api.endpoints.build_router import build_build_router
+from finiexragengine.api.endpoints.envelopes_router import build_envelopes_router
 from finiexragengine.api.endpoints.health_router import build_health_router
 from finiexragengine.api.endpoints.report_router import build_report_router
 from finiexragengine.api.endpoints.pipelines_router import build_pipelines_router
 from finiexragengine.api.endpoints.sentiment_router import build_sentiment_router
-from finiexragengine.api.rate_limiter import RateLimiter, build_rate_limit_dependency
-from finiexragengine.api.token_registry import TokenRegistry
+from finiexragengine.api.endpoints.log_router import build_log_router
+from finiexragengine.api.endpoints.stream_router import build_stream_router
+from finiexragengine.api.token_loader import load_token_registry
+from finiexragengine.api.endpoints.config_router import build_config_router
+from finiexragengine.api.endpoints.diagnose_router import build_diagnose_router
+from finiexragengine.configuration.abstract_config_view import AbstractConfigView
 from finiexragengine.configuration.app_config_manager import AppConfigManager
+from finiexragengine.configuration.app_config_view import AppConfigView
+from finiexragengine.configuration.pipeline_config_view import PipelineConfigView
+from finiexragengine.configuration.source_set_config_view import SourceSetConfigView
+from finiexragengine.configuration.source_set_registry import SourceSetRegistry
 from finiexragengine.core.alerts.telegram_client import TelegramClient
 from finiexragengine.core.alerts.telegram_command_poller import TelegramCommandPoller
 from finiexragengine.core.alerts.telegram_weekly_format import render_weekly_messages
@@ -30,8 +42,10 @@ from finiexragengine.core.observability.reports.weekly_report import collect_wee
 from finiexragengine.core.observability.resource_gauge import ResourceGauge
 from finiexragengine.core.observability.resource_sample_store import ResourceSampleStore
 from finiexragengine.core.observability.stall_watchdog import StallWatchdog
-from finiexragengine.core.outcome.outcome_exporter import auto_export_weekly
+from finiexragengine.core.outcome.outcome_exporter import OutcomeArchiveExporter, auto_export_weekly
 from finiexragengine.core.outcome.outcome_store import OutcomeStore
+from finiexragengine.core.outcome.stream_dispatcher import StreamDispatcher
+from finiexragengine.core.outcome.stream_replay import StreamReplay
 from finiexragengine.core.pipeline.detection_preflight import log_detection_preflight
 from finiexragengine.core.pipeline.pipeline_assembler import PipelineAssembler
 from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
@@ -39,7 +53,7 @@ from finiexragengine.core.pipeline.worker_supervisor import WorkerSupervisor
 from finiexragengine.core.ui.engine_stats import EngineStats
 from finiexragengine.core.ui.live_display import LiveDisplay
 from finiexragengine.exceptions.ragengine_errors import ConfigurationError
-from finiexragengine.types.config_types.app_config_types import ApiConfig
+from finiexragengine.types.config_types.app_config_types import ApiConfig, StreamConfig
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +155,12 @@ def create_app(attach_runners: Optional[bool] = None,
     outcome_store = None
     supervisor = None
     budget_guard = None
+    # The stream's two units (ISSUE_9): the journal tailer and the replay policy. None without a
+    # database — a stream over no journal has nothing to tail and would answer every connect with a
+    # cold start that is not true.
+    source_sets: Optional[SourceSetRegistry] = None
+    stream_dispatcher: Optional[StreamDispatcher] = None
+    stream_replay: Optional[StreamReplay] = None
     # Live dashboard's shared state (ISSUE_26): built only in live mode, injected into every
     # worker so each pass pushes its snapshot/events; None otherwise (zero overhead). Keys are
     # pre-registered from the same ids the supervisor builds workers from, so the dashboard's
@@ -176,13 +196,30 @@ def create_app(attach_runners: Optional[bool] = None,
         # a degraded feature, and blocking boot on it would take the engine down over a quarantined
         # feed. Read through the registry factory, so the `user_configs/` overlay is honoured — a
         # per-machine `enabled: false` is precisely what moves these counts.
-        log_detection_preflight(
-            config_manager.build_source_set_registry().list_sets())
+        # Built once and KEPT (2026-09-08): the preflight was reading it and dropping it, and
+        # `/v1/configs/source_sets` has to answer from the catalogue this process loaded rather
+        # than from a fresh read of files that may have moved since boot.
+        source_sets = config_manager.build_source_set_registry()
+        log_detection_preflight(source_sets.list_sets())
+        # The live stream's journal tailer (ISSUE_9). Built whenever there is a store and the
+        # transport is enabled — deliberately NOT gated on `start_workers`: the stream is a read
+        # surface over the journal, so it serves a journal another process writes. That is what lets
+        # a dev instance serve the live contract to a consumer without making a single paid call.
+        stream_config = config_manager.get_config().stream
+        if stream_config.enabled:
+            stream_dispatcher = StreamDispatcher(
+                outcome_store, database_url,
+                notify_channel=stream_config.notify_channel,
+                fallback_poll_seconds=stream_config.fallback_poll_seconds,
+                subscriber_queue_size=stream_config.subscriber_queue_size)
+            stream_replay = StreamReplay(outcome_store, stream_config.replay_window_hours,
+                                         stream_config.max_replay_frames)
         if start_workers:
             supervisor = WorkerSupervisor(
                 assembler, registry,
                 pass_timeout_seconds=config_manager.get_config().pass_timeout_seconds,
-                engine_stats=engine_stats)
+                engine_stats=engine_stats,
+                diagnostics=config_manager.get_config().diagnostics)
     else:
         if start_workers:
             raise RuntimeError('workers need real runners — set DATABASE_URL '
@@ -283,6 +320,12 @@ def create_app(attach_runners: Optional[bool] = None,
         # event loop exists, stopped on shutdown after in-flight passes finish.
         live_task: Optional[asyncio.Task] = None
         watchdog_task: Optional[asyncio.Task] = None
+        stream_task: Optional[asyncio.Task] = None
+        # The dispatcher first: a subscriber attaching in the first milliseconds of the process must
+        # find a tail already running, and it costs nothing when nobody is watching (a stream with no
+        # subscriptions is not read at all).
+        if stream_dispatcher is not None:
+            stream_task = asyncio.create_task(stream_dispatcher.run(), name='stream-dispatcher')
         if supervisor is not None:
             await supervisor.start_all()
         # Watch the workers from the moment they exist (ISSUE_75) — a stall during the very first
@@ -310,6 +353,13 @@ def create_app(attach_runners: Optional[bool] = None,
                 await watchdog_task
         if supervisor is not None:
             await supervisor.stop_all()
+        # After the workers: nothing new commits from here, so the tail can end having delivered
+        # everything the last pass produced.
+        if stream_dispatcher is not None:
+            await stream_dispatcher.stop()
+            if stream_task is not None:
+                stream_task.cancel()
+                await asyncio.gather(stream_task, return_exceptions=True)
         # Stop the display last, so it shows the drained state, then releases the terminal.
         if live_display is not None:
             await live_display.stop()
@@ -343,7 +393,8 @@ def create_app(attach_runners: Optional[bool] = None,
     # "moves it behind the token" removed the only protection an anonymous caller met.
     health = build_health_router(config_manager, supervisor=supervisor,
                                  budget_guard=budget_guard, stall_watchdog=stall_watchdog,
-                                 resource_gauge=resource_gauge, outcome_store=outcome_store)
+                                 resource_gauge=resource_gauge, outcome_store=outcome_store,
+                                 stream_dispatcher=stream_dispatcher)
     # Sampled once, here, so it describes the code THIS process imported rather than whatever the
     # working tree holds at request time (see `build_info.sample_build_info`).
     build = build_build_router(sample_build_info(config_manager.get_config().version))
@@ -357,16 +408,65 @@ def create_app(attach_runners: Optional[bool] = None,
     # asks it what a verified consumer may read (ISSUE_104). Built here rather than inside the
     # protected router so both see the identical object — a second load could disagree with the
     # first about who exists.
-    tokens = TokenRegistry.load(api_config.tokens)
+    tokens = load_token_registry(api_config.tokens)
     protected_extra = [router for router, is_public in exempt if not is_public]
     if database_url:
         protected_extra.append(build_report_router(
             database_url, config_manager, tokens,
             max_window_days=api_config.reports_max_window_days))
+    # The stream rides the protected router like everything else (ISSUE_98), and carries its own
+    # `Security(..., scopes=['pipelines'])` so the grant is checked against `{pipeline_id}`.
+    if stream_dispatcher is not None and stream_replay is not None:
+        protected_extra.append(build_stream_router(
+            stream_dispatcher, stream_replay, registry,
+            config_manager.get_config().stream, build_grant_dependency(tokens)))
+        # The same replay policy over plain HTTP (ISSUE_9 §2): the collector's catch-up path, and the
+        # reason `/latest` is not it — everything superseded between two polls is otherwise never
+        # fetched. Shares the unit, so the two surfaces cannot disagree about a cursor.
+        protected_extra.append(build_envelopes_router(
+            stream_replay, registry, build_grant_dependency(tokens)))
+    # The series beyond the stream's replay window, in bounded windows (2026-09-13): the path a
+    # retrospective takes instead of `export_cli` plus a file copy. It needs only the journal, not
+    # the stream, and it is read-only against the export handover's `archive_export_log`.
+    if database_url:
+        protected_extra.append(build_archive_router(
+            OutcomeArchiveExporter(database_url), registry, build_grant_dependency(tokens)))
     app.include_router(_build_protected_router(
         registry, api_config, tokens, outcome_store=outcome_store,
-        extra_routers=protected_extra))
+        extra_routers=protected_extra,
+        # The transport's engine-wide numbers, taken from the configuration THIS process runs on
+        # (ISSUE_9). Passed explicitly rather than defaulted, so the listing cannot serve a value
+        # the engine is not using.
+        stream=config_manager.get_config().stream,
+        # The path THIS process actually writes to (2026-09-08). Passed rather than re-resolved in
+        # the router for the same reason `stream` is: the route must never serve a file the engine
+        # is not using, and a caller cannot name one.
+        log_file=config_manager.get_config().logging.file,
+        # The effective configuration, as views over the objects this process booted with
+        # (2026-09-08). Built here because only `create_app` knows which registries the engine
+        # actually loaded; the views own the redaction, so nothing downstream can skip it.
+        config_views=_build_config_views(config_manager, registry, source_sets),
+        # The feed catalogue this process polls (2026-09-09) — the diagnose route resolves a
+        # `source_id` against it, so a caller names a configured feed and never a URL.
+        source_sets=source_sets))
     return app
+
+
+def _build_config_views(config_manager: AppConfigManager,
+                        registry: PipelineRegistry,
+                        source_sets: Optional[SourceSetRegistry]
+                        ) -> Dict[str, AbstractConfigView]:
+    """The three config documents, over the objects this process runs on (2026-09-08).
+
+    `source_sets` is None in scaffold-mock mode (no database, so no ingest catalogue was loaded).
+    The document is then simply absent from the catalog rather than served from a second read: a
+    surface that says "what this engine runs" must not answer for something it never loaded.
+    """
+    views: List[AbstractConfigView] = [AppConfigView(config_manager),
+                                       PipelineConfigView(registry)]
+    if source_sets is not None:
+        views.append(SourceSetConfigView(source_sets))
+    return {view.NAME: view for view in views}
 
 
 def _build_public_router(api_config: ApiConfig, routers: List[APIRouter]) -> APIRouter:
@@ -394,14 +494,18 @@ def _build_protected_router(registry: PipelineRegistry,
                             api_config: ApiConfig,
                             tokens: TokenRegistry,
                             outcome_store: Optional[OutcomeStore] = None,
-                            extra_routers: Optional[List[APIRouter]] = None) -> APIRouter:
+                            extra_routers: Optional[List[APIRouter]] = None,
+                            stream: Optional[StreamConfig] = None,
+                            log_file: Optional[str] = None,
+                            config_views: Optional[Dict[str, AbstractConfigView]] = None,
+                            source_sets: Optional[SourceSetRegistry] = None) -> APIRouter:
     """Everything a token is required for — and everything added here later, automatically.
 
     `extra_routers` carries routers assembled by the caller: the exemptions that were switched
     *off* (a disabled exemption is simply a protected route) and the report surface, which exists
     only when a database is configured.
     """
-    # Environment wins, the config overlay fills in — see `TokenRegistry.load`. The source is
+    # Environment wins, the config overlay fills in — see `load_token_registry`. The source is
     # announced below rather than inferred: a value in `user_configs` silently shadowed by a stale
     # environment variable is precisely the kind of no-op that costs an afternoon to find.
     if api_config.require_auth and tokens.is_empty():
@@ -446,8 +550,23 @@ def _build_protected_router(registry: PipelineRegistry,
     # dependency above runs first (outer router before inner), so `request.state.consumer` is set
     # by the time a grant is checked.
     grant = build_grant_dependency(tokens)
-    protected.include_router(build_pipelines_router(registry, tokens, grant))
+    # `stream` is required by the listing router on purpose; this helper defaults it only for
+    # callers that do not exercise the field (the auth and scope suites), never for `create_app`.
+    protected.include_router(build_pipelines_router(
+        registry, stream if stream is not None else StreamConfig(), tokens, grant))
     protected.include_router(build_sentiment_router(
         registry, grant, outcome_store=outcome_store,
         run_enabled=api_config.run_endpoint_enabled))
+    # The engine's own log (2026-09-08), on its own grant surface: no consumer holds `logs:*`
+    # unless someone writes it into their token, which is the model working rather than a gap.
+    protected.include_router(build_log_router(log_file, tokens))
+    # The effective configuration (2026-09-08), on its own grant surface for the same reason the
+    # log is: `configs:*` is written into a token deliberately or it is not reachable. Mounted even
+    # when there are no views, so the surface exists and answers 404 per name rather than
+    # disappearing — a route that vanishes with a boot mode is one the scope sweep cannot see.
+    protected.include_router(build_config_router(config_views or {}, tokens))
+    # The feed doctor (2026-09-09), on its own grant surface. The first route that reaches
+    # *outward* on request rather than reading the store — bounded to one named, configured feed
+    # per call, which is what keeps it a diagnostic instead of a proxy.
+    protected.include_router(build_diagnose_router(source_sets, tokens))
     return protected

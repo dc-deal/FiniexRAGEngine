@@ -72,6 +72,21 @@ class PromptDriftReportConfig(BaseModel):
     against is the wrong default. 30 days spans the last three prompt generations.
     """
     window: str = '30d'
+    # Below this many scored passes a weekday-matched cell is marked thin rather than dropped
+    # (ISSUE_106). A **verdict threshold**, so config-only and never a call parameter — the same
+    # rule as `retrieval_drift.min_passes`, whose section this one mirrors.
+    min_scored: int = 40
+
+
+class CorpusTextReportConfig(BaseModel):
+    # Narrows the FLOW half only (what was fetched in the window). The census, the removal and the
+    # phantom table are corpus-wide by nature — a text treatment is a property of the stored row,
+    # not of a time slice — and the rendering says which is which, because two numbers under one
+    # heading with different populations is the mistake this report exists to prevent elsewhere.
+    window: str = '7d'
+    # Phantom examples printed per feed. Enough to recognise the mechanism (a CDN filename, a slug
+    # inside an <a href>), few enough that the table stays readable.
+    examples: int = 3
 
 
 class PerfReportConfig(BaseModel):
@@ -90,6 +105,61 @@ class CostReportConfig(BaseModel):
     recent_passes: int = 20
 
 
+class DetectionSweepReportConfig(BaseModel):
+    """The replay grid (ISSUE_106) — a corpus read, so it belongs on the catalog like the rest.
+
+    `similarities` is the grid the sweep walks, and the live value belongs in it: a grid whose first
+    row is not the running configuration cannot show what changing it would buy. Declared here rather
+    than as a literal so an operator can widen it without a code change.
+    """
+    window: str = '7d'
+    # Seeds scored per source-set. The sample takes the MOST RECENT articles, so it also decides how
+    # far back the window reaches in practice — 400 seeds covered 1.1 days of the crypto corpus on
+    # 2026-09-01 while `--since 3d` was asked for, and the report says the span it actually got.
+    sample: int = 400
+    similarities: List[float] = Field(default_factory=lambda: [0.85, 0.75, 0.65, 0.55])
+
+
+class RetrievalDriftReportConfig(BaseModel):
+    """Did the evidence move when the setup changed — the retrieval-side sibling of `prompt_drift`.
+
+    Two weeks by default, and the reason is the grouping: rows are keyed by weekday, so a shorter
+    window cannot hold two of the same weekday and the report's central comparison has nothing to
+    compare. A deploy almost always changes the weekday as well as the configuration, and reading
+    across that difference is what produced two wrong diagnoses on 2026-09-01.
+    """
+    window: str = '14d'
+    # Below this many symbol-passes a cell is marked thin rather than dropped — a verdict threshold,
+    # so it is config-only and never a call parameter (same rule as `source_health.silence_days`):
+    # a caller must not be able to make the same cell look solid or thin.
+    min_passes: int = 40
+
+
+class DetectionQualityReportConfig(BaseModel):
+    """What the detector flagged and on what evidence (ISSUE_106) — the archive counterpart to
+    `detection_sweep`'s replay.
+
+    The sweep answers *what a setting would do* by re-scoring the corpus; this answers *what the
+    running one did*, from the neighbourhood counts the detector recorded at flag time. Two
+    questions, so two reports — and the pairing is the point: a replay cannot be wrong about the
+    past, and a record cannot be wrong about the present.
+    """
+    window: str = '7d'
+    # How many recent cluster flags are named. Titles, because the grid alone once said 0.65
+    # "works" and only reading the headlines showed it firing on a daily template.
+    examples: int = 5
+
+
+class KeywordSweepReportConfig(BaseModel):
+    """The vocabulary replay (ISSUE_121) — a corpus read, on the catalog like the rest.
+
+    Wider than the 7d most reports default to, deliberately: a central-bank term fires around a
+    scheduled decision, and a week can contain none of them. A fortnight is what makes the
+    difference between "this term is wrong" and "its event has not happened yet" readable.
+    """
+    window: str = '14d'
+
+
 class ReportsConfig(BaseModel):
     """One config object per report, keyed by the name the catalog and the API use."""
     source_health: SourceHealthReportConfig = Field(default_factory=SourceHealthReportConfig)
@@ -100,5 +170,13 @@ class ReportsConfig(BaseModel):
     breaking_timeline: BreakingTimelineReportConfig = Field(
         default_factory=BreakingTimelineReportConfig)
     prompt_drift: PromptDriftReportConfig = Field(default_factory=PromptDriftReportConfig)
+    corpus_text: CorpusTextReportConfig = Field(default_factory=CorpusTextReportConfig)
     perf: PerfReportConfig = Field(default_factory=PerfReportConfig)
     cost: CostReportConfig = Field(default_factory=CostReportConfig)
+    detection_sweep: DetectionSweepReportConfig = Field(
+        default_factory=DetectionSweepReportConfig)
+    retrieval_drift: RetrievalDriftReportConfig = Field(
+        default_factory=RetrievalDriftReportConfig)
+    detection_quality: DetectionQualityReportConfig = Field(
+        default_factory=DetectionQualityReportConfig)
+    keyword_sweep: KeywordSweepReportConfig = Field(default_factory=KeywordSweepReportConfig)

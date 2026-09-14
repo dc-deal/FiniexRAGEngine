@@ -12,12 +12,23 @@ from typing import Any
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from finiex_auth.grant_auth import build_grant_dependency
+from finiex_auth.route_walk import assert_no_identity_route_is_ungated
+from finiex_auth.token_registry import TokenRegistry
 
 from finiexragengine.api.api_app import _build_protected_router
+from finiexragengine.api.endpoints.archive_router import build_archive_router
 from finiexragengine.api.endpoints.report_router import build_report_router
-from finiexragengine.api.token_registry import TokenRegistry
+from finiexragengine.api.endpoints.stream_router import build_stream_router
 from finiexragengine.configuration.app_config_manager import AppConfigManager
+from finiexragengine.configuration.app_config_view import AppConfigView
+from finiexragengine.configuration.source_set_config_view import SourceSetConfigView
 from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
+from finiexragengine.core.outcome.outcome_exporter import OutcomeArchiveExporter
+from finiexragengine.core.outcome.outcome_store import OutcomeStore
+from finiexragengine.core.outcome.stream_dispatcher import StreamDispatcher
+from finiexragengine.core.outcome.stream_replay import StreamReplay
+from finiexragengine.types.config_types.app_config_types import StreamConfig
 from finiexragengine.types.config_types.app_config_types import ApiConfig
 
 _NARROW = 'narrow-consumer-token'
@@ -34,7 +45,7 @@ def _pipelines() -> PipelineRegistry:
 def _app(clean_db: str) -> FastAPI:
     """The whole surface as `create_app` assembles it: one registry, guard plus reports.
 
-    The registry is constructed directly rather than through `TokenRegistry.load`, because the
+    The registry is constructed directly rather than through `load_token_registry`, because the
     suite sets `FINIEX_API_TOKENS` for every test and **the environment wins** — resolution
     precedence is `test_api_auth.py`'s subject, and letting it apply here would quietly replace the
     scoped tokens these tests are about with an unscoped one.
@@ -67,6 +78,35 @@ def test_the_listing_shows_only_what_this_caller_can_fetch(client: TestClient) -
 
     assert narrow == {'source_health', 'breaking'}
     assert 'cost' in wide and narrow < wide
+
+
+def test_the_config_catalog_shows_only_what_this_caller_may_read(clean_db: str) -> None:
+    """The same rule one surface over (2026-09-08): a listing never advertises a 403.
+
+    Built through `_build_protected_router` rather than the config router alone, because the filter
+    reads `request.state.consumer` — which the bearer layer sets. A standalone router sees no
+    consumer, permits everything, and would make this assertion vacuous.
+    """
+    api_config = ApiConfig(tokens={
+        'ide': {'token': _NARROW, 'grants': ['configs:source_sets'], 'note': 'Testing IDE'},
+        'claude-dev': {'token': _WIDE, 'grants': ['*'], 'note': 'assistant'}})
+    tokens = TokenRegistry(api_config.tokens)
+    manager = AppConfigManager()
+    views = {'app': AppConfigView(manager),
+             'source_sets': SourceSetConfigView(manager.build_source_set_registry())}
+    app = FastAPI()
+    app.include_router(_build_protected_router(_pipelines(), api_config, tokens,
+                                               config_views=views))
+    client = TestClient(app)
+
+    narrow = client.get('/v1/configs', headers=_as(_NARROW)).json()['configs']
+    wide = client.get('/v1/configs', headers=_as(_WIDE)).json()['configs']
+
+    assert [entry['name'] for entry in narrow] == ['source_sets']
+    assert {entry['name'] for entry in wide} == {'app', 'source_sets'}
+    # And the document itself is refused, not merely hidden from the listing.
+    assert client.get('/v1/configs/app', headers=_as(_NARROW)).status_code == 403
+    assert client.get('/v1/configs/app', headers=_as(_WIDE)).status_code == 200
 
 
 def test_a_report_outside_the_scope_is_refused_and_the_refusal_is_debuggable(
@@ -151,7 +191,12 @@ def test_an_unknown_consumer_is_denied_rather_than_defaulted() -> None:
 
 
 def test_an_empty_scope_reads_nothing(clean_db: str) -> None:
-    """A token can exist and be allowed nothing — useful for one that only calls /latest."""
+    """A token can exist and be allowed nothing — useful for one that only calls /latest.
+
+    Holding nothing on `reports`, it is refused the listing itself rather than handed an empty one:
+    the floor `finiex_auth` puts under every collection route, so a listing that forgot to filter
+    would still leak nothing to it.
+    """
     api_config = ApiConfig(tokens={'signals': {'token': 'signals-token',
                                               'grants': ['pipelines:*']}})
     tokens = TokenRegistry(api_config.tokens)      # direct, for the reason in `_app`
@@ -161,7 +206,10 @@ def test_an_empty_scope_reads_nothing(clean_db: str) -> None:
         extra_routers=[build_report_router(clean_db, AppConfigManager(), tokens)]))
     client = TestClient(app)
 
-    assert client.get('/v1/reports', headers=_as('signals-token')).json()['reports'] == []
+    listing = client.get('/v1/reports', headers=_as('signals-token'))
+    assert listing.status_code == 403
+    assert listing.json()['detail'] == ("token 'signals' holds nothing on 'reports' · holds: "
+                                        'pipelines:*')
     assert client.get('/v1/reports/source_health',
                       headers=_as('signals-token')).status_code == 403
     # ...but the signal path it exists for is untouched.
@@ -182,19 +230,38 @@ def test_no_route_with_an_identity_segment_is_ungated(clean_db: str) -> None:
     api_config = ApiConfig(tokens={'empty': {'token': 'holds-nothing', 'grants': []}})
     tokens = TokenRegistry(api_config.tokens)
     app = FastAPI()
+    # Every domain router that carries an identity segment belongs in this app, or the walk below
+    # cannot see it. The stream (ISSUE_9) is the newest one, and it is the reason its address is
+    # `/v1/stream/{pipeline_id}` rather than `?pipeline=`: a query-parameter route would be
+    # authenticated, ungated, and invisible to exactly this test.
+    store = OutcomeStore(clean_db)
+    stream_config = StreamConfig()
     app.include_router(_build_protected_router(
         _pipelines(), api_config, tokens,
-        extra_routers=[build_report_router(clean_db, AppConfigManager(), tokens)]))
+        extra_routers=[
+            build_report_router(clean_db, AppConfigManager(), tokens),
+            build_stream_router(
+                StreamDispatcher(store, clean_db),
+                StreamReplay(store, stream_config.replay_window_hours),
+                _pipelines(), stream_config, build_grant_dependency(tokens)),
+            build_archive_router(OutcomeArchiveExporter(clean_db), _pipelines(),
+                                 build_grant_dependency(tokens)),
+        ]))
     client = TestClient(app)
 
-    identity_routes = [(path, method)
-                       for path, operations in app.openapi()['paths'].items()
-                       for method in operations
-                       if '{' in path]
-    assert identity_routes, 'no identity routes found — the walk itself is broken'
-
-    for path, method in identity_routes:
+    # The walk itself lives in `finiex_auth`, shared with the Testing IDE; which routes this app
+    # is meant to have stays here. Named rather than merely swept: a router dropping out of the
+    # app would leave the walk green while the surface it gated went unreachable. Both 2026-09-08
+    # surfaces are listed for that reason — `configs` mounts with an empty view map here, and
+    # must still be gated.
+    walked = assert_no_identity_route_is_ungated(
+        app, client, _as('holds-nothing'),
+        required=[('/v1/logs/{name}', 'get'), ('/v1/configs/{name}', 'get'),
+                  ('/v1/diagnose/{name}', 'get'),
+                  # 2026-09-13: the series beyond the replay window — the same `pipelines:<id>`
+                  # grant as `/latest`, so a token holding nothing must be refused here too.
+                  ('/v1/pipelines/{pipeline_id}/archive', 'get'),
+                  ('/v1/pipelines/{pipeline_id}/archive/days', 'get')],
         # Any value will do: the grant is refused before the name is resolved, which is the point.
-        url = path.replace('{pipeline_id}', 'crypto_sentiment').replace('{name}', 'source_health')
-        response = client.request(method.upper(), url, headers=_as('holds-nothing'))
-        assert response.status_code == 403, f'{method.upper()} {path} is not gated'
+        fill=lambda name: 'crypto_sentiment' if name == 'pipeline_id' else 'source_health')
+    assert len(walked) >= 3

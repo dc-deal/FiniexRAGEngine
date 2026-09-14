@@ -74,8 +74,8 @@ reaches the prompt after ISSUE_24) and each scope's oldest article (`from …` �
 counting really starts; an "all-time" over a week-old corpus is just a week).
 
 ```bash
-python finiexragengine/cli/coverage_cli.py                 # crypto_sentiment (default)
-python finiexragengine/cli/coverage_cli.py --pipeline forex_events --floor 0.60   # what-if tuning
+python -m finiexragengine.cli.coverage_cli                 # crypto_sentiment (default)
+python -m finiexragengine.cli.coverage_cli --pipeline forex_events --floor 0.60   # what-if tuning
 ```
 
 The default floor is the pipeline's **active** `retrieval.floor_distance`, so `n≤f`
@@ -129,7 +129,7 @@ Every paid API call (embedding news, embedding a query, later the LLM eval) writ
 time** (frozen, so a later price change never rewrites history; the token count is the ground truth).
 
 ```bash
-python finiexragengine/cli/cost_cli.py
+python -m finiexragengine.cli.cost_cli
 ```
 
 The report has **two clearly separated parts** so real and estimated numbers are never confused
@@ -195,7 +195,7 @@ where the pain points show up — and `ts + section + model + pipeline_id + dura
 single slow call traceable after the fact.
 
 ```bash
-python finiexragengine/cli/perf_cli.py --since 7d      # or 30d, or all
+python -m finiexragengine.cli.perf_cli --since 7d      # or 30d, or all
 ```
 
 ```

@@ -1,9 +1,13 @@
 """Smoke tests for the bootable API shell (scaffold)."""
 from datetime import datetime, timezone
+
+import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from finiexragengine.configuration.app_config_manager import AppConfigManager
 from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
+from finiexragengine.types.config_types.pipeline_config_types import TriggerConfig
 from finiexragengine.types.worker_types import WorkerState
 
 
@@ -92,16 +96,20 @@ def test_pipelines_report_the_cadence_in_seconds(client: TestClient) -> None:
     assert 'M10' not in str(crypto.values())          # the token stays out of the response
 
 
-def test_an_unparseable_timeframe_reports_as_absent_not_as_an_error(monkeypatch) -> None:
-    """The listing must stay answerable when one pipeline is misconfigured.
+def test_an_unparseable_timeframe_never_reaches_the_listing() -> None:
+    """The listing cannot be asked about a bad timeframe, because the config refuses one first.
 
-    Raising here would make a bad timeframe surface at the wrong place — a listing endpoint failing
-    for the whole registry, rather than the supervisor refusing to schedule that one worker.
+    This used to be the listing's own problem: it converted `trigger.timeframe` itself and reported
+    an unparseable one as absent, so the endpoint stayed answerable while the misconfiguration
+    surfaced later at the supervisor. That converter was a second derivation of a number `/health`
+    already served from `TriggerConfig.cadence_seconds`, so it is gone (ISSUE_9) — and the guarantee
+    it approximated is now the stronger one it should always have been: an unknown frame fails at
+    load, where every entry point meets it, rather than degrading at one read.
     """
-    from finiexragengine.api.endpoints import pipelines_router
-    assert pipelines_router._cadence_seconds('M10') == 600
-    assert pipelines_router._cadence_seconds(None) is None
-    assert pipelines_router._cadence_seconds('M7') is None
+    assert TriggerConfig(timeframe='M10').cadence_seconds == 600
+    assert TriggerConfig(interval_seconds=300).cadence_seconds == 300     # no frame -> raw interval
+    with pytest.raises(ValidationError):
+        TriggerConfig(timeframe='M7')
 
 
 def test_health_reports_no_journal_id_without_a_store(client: TestClient) -> None:

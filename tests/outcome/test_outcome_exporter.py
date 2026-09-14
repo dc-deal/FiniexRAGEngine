@@ -173,3 +173,24 @@ def test_auto_export_weekly_is_incremental_across_runs(seeded, tmp_path):
     assert {f.bucket for f in first.files} == {'2026-07-20', '2026-07-21'}
     second = auto_export_weekly(cfg, seeded, now=_NOW)
     assert second.files == [] and second.skipped_flagged     # nothing new the next run
+
+
+def test_a_skipped_open_bucket_carries_when_it_closes(seeded, tmp_path):
+    """The message said the bucket was growing and not when it would stop, so an operator on UTC+2
+    read "still growing: 2026-08-28" at 00:59 local and concluded the export had fallen a day
+    behind. The result now carries the instant, so the CLI can say it instead of implying it."""
+    result = OutcomeArchiveExporter(seeded).export(tmp_path, now=_NOW)
+
+    assert result.skipped_open == ['2026-07-22']
+    assert result.open_closes_at == datetime(2026, 7, 23, tzinfo=timezone.utc)
+    assert result.open_closes_at > _NOW, 'the open bucket cannot close in the past'
+
+
+def test_nothing_skipped_means_no_closing_time(seeded, tmp_path):
+    """`None` rather than a computed-but-meaningless instant: a field that is always populated
+    invites a reader to render it when there is nothing to render."""
+    result = OutcomeArchiveExporter(seeded).export(tmp_path, now=_NOW, include_open=True)
+
+    assert result.skipped_open == []
+    assert result.open_closes_at is None
+

@@ -15,6 +15,15 @@
     "rate_limit_per_minute": 60,
     "auth_failures_per_minute": 10
   },
+  "stream": {
+    "enabled": true,
+    "heartbeat_seconds": 20,
+    "replay_window_hours": 24,
+    "max_replay_frames": 200,
+    "subscriber_queue_size": 64,
+    "notify_channel": "finiex_outcomes",
+    "fallback_poll_seconds": 5
+  },
   "llm": {
     "provider": "openai",
     "temperature": 0.1,
@@ -33,6 +42,9 @@
     "encoding": null,
     "timeout_seconds": 60
   },
+  "ingest": {
+    "text_normalizer": "v1"
+  },
   "vector_store": {
     "backend": "pgvector",
     "retrieval_top_k": 12,
@@ -40,6 +52,7 @@
   },
   "pricing": {
     "currency": "USD",
+    "checked": "2026-08-28",
     "models": {
       "text-embedding-3-small": {
         "input_per_1k": 2e-05,
@@ -102,7 +115,11 @@
     "timeout_warn_ratio": 0.7,
     "resource_gauge_enabled": true,
     "resource_retention_days": 14,
-    "resource_rss_warn_mb": 0
+    "resource_rss_warn_mb": 0,
+    "connectivity_probe_enabled": true,
+    "connectivity_probe_dns": "cloudflare.com",
+    "connectivity_probe_tcp": "1.1.1.1:53",
+    "connectivity_probe_timeout_seconds": 3.0
   },
   "stall_watchdog": {
     "enabled": true,
@@ -145,7 +162,12 @@
       "window": "7d"
     },
     "prompt_drift": {
-      "window": "30d"
+      "window": "30d",
+      "min_scored": 40
+    },
+    "corpus_text": {
+      "window": "7d",
+      "examples": 3
     },
     "perf": {
       "window": "7d"
@@ -157,6 +179,27 @@
         "all"
       ],
       "recent_passes": 20
+    },
+    "detection_sweep": {
+      "window": "7d",
+      "sample": 400,
+      "similarities": [
+        0.85,
+        0.75,
+        0.65,
+        0.55
+      ]
+    },
+    "retrieval_drift": {
+      "window": "14d",
+      "min_passes": 40
+    },
+    "detection_quality": {
+      "window": "7d",
+      "examples": 5
+    },
+    "keyword_sweep": {
+      "window": "14d"
     }
   }
 }

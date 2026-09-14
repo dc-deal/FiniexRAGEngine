@@ -12,7 +12,9 @@ import logging
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from finiex_auth.token_registry import TokenRegistry
 
+from finiexragengine.api.token_loader import load_token_registry
 from finiexragengine.api.api_app import (
     _build_protected_router,
     _build_public_router,
@@ -20,10 +22,7 @@ from finiexragengine.api.api_app import (
 )
 from finiexragengine.api.endpoints.build_router import build_build_router
 from finiexragengine.api.endpoints.health_router import build_health_router
-from finiexragengine.api.token_registry import TokenRegistry
 from finiexragengine.core.observability.build_info import sample_build_info
-from finiexragengine.api.rate_limiter import RateLimiter, client_key
-from finiexragengine.api.token_registry import TokenRegistry
 from finiexragengine.configuration.app_config_manager import AppConfigManager
 from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
 from finiexragengine.exceptions.ragengine_errors import ConfigurationError
@@ -42,7 +41,7 @@ def _registry() -> PipelineRegistry:
 
 def _tokens(api_config: ApiConfig) -> TokenRegistry:
     """The registry `create_app` builds and hands to both the guard and the report surface."""
-    return TokenRegistry.load(api_config.tokens)
+    return load_token_registry(api_config.tokens)
 
 
 def _protected_app(**config: object) -> FastAPI:
@@ -179,14 +178,8 @@ def test_boot_refuses_to_serve_an_unauthenticated_api(monkeypatch: pytest.Monkey
 
 # --- the token registry ---------------------------------------------------------------------
 
-def test_the_registry_keeps_hashes_and_not_tokens() -> None:
-    registry = TokenRegistry({'ide': _TOKEN})
-    assert registry.verify(_TOKEN) == 'ide'
-    assert registry.verify(_TOKEN + 'x') is None
-    assert registry.names() == ['ide']
-    # The plaintext is nowhere in the object — a dump of it is not a credential.
-    assert _TOKEN not in repr(vars(registry))
-
+# The registry itself — digests, exact grants, the kill switch — is tested in `finiex_auth`.
+# What stays here is this engine's loader: its variable, its precedence, its error type.
 
 def test_a_malformed_token_variable_fails_loudly(monkeypatch: pytest.MonkeyPatch) -> None:
     """An empty registry and a broken one must not look the same.
@@ -198,37 +191,20 @@ def test_a_malformed_token_variable_fails_loudly(monkeypatch: pytest.MonkeyPatch
     for broken in ('no-separator-here', ':missing-name', 'name:', 'ide:a,ide:b'):
         monkeypatch.setenv('FINIEX_API_TOKENS', broken)
         with pytest.raises(ConfigurationError):
-            TokenRegistry.load()
+            load_token_registry()
 
     monkeypatch.setenv('FINIEX_API_TOKENS', ' ide : one , collector : two ')
-    parsed = TokenRegistry.load()
+    parsed = load_token_registry()
     assert parsed.names() == ['collector', 'ide']       # whitespace tolerated, order normalised
 
     monkeypatch.delenv('FINIEX_API_TOKENS')
-    assert TokenRegistry.load().is_empty()
+    assert load_token_registry().is_empty()
 
 
 # --- the rate limiter -----------------------------------------------------------------------
 
-def test_the_limiter_admits_the_configured_rate_and_then_refuses() -> None:
-    limiter = RateLimiter(per_minute=3)
-    assert [limiter.allow('client-a') for _ in range(4)] == [True, True, True, False]
-    # A different client has its own bucket — the limit is per caller, not global.
-    assert limiter.allow('client-b') is True
-    # Zero disables it: a deployment can turn the limit off without removing the wiring.
-    assert all(RateLimiter(per_minute=0).allow('anyone') for _ in range(100))
-
-
-def test_the_bucket_is_keyed_on_the_originating_client_not_the_proxy() -> None:
-    """Behind the reverse proxy every request arrives from 127.0.0.1.
-
-    Keying on the peer would put every caller in the world into one bucket — a global limit
-    wearing the costume of a per-client one, which fails exactly when several consumers are active.
-    """
-    assert client_key('203.0.113.7, 70.41.3.18', '127.0.0.1') == '203.0.113.7'
-    assert client_key(None, '127.0.0.1') == '127.0.0.1'
-    assert client_key('', None) == 'unknown'
-
+# The limiter and its client key are tested in `finiex_auth`; what stays here is the wiring:
+# failed attempts throttled on this engine's real protected router.
 
 def test_repeated_failures_are_throttled_before_they_become_a_guessing_machine(
         monkeypatch: pytest.MonkeyPatch) -> None:
@@ -252,17 +228,17 @@ def test_the_environment_wins_and_the_config_fills_in(monkeypatch: pytest.Monkey
     puts them in the overlay. Both work; which one answered is never a guess.
     """
     monkeypatch.setenv('FINIEX_API_TOKENS', 'from-env:env-token')
-    registry = TokenRegistry.load({'from-config': 'config-token'})
+    registry = load_token_registry({'from-config': 'config-token'})
     assert registry.names() == ['from-env']
     assert registry.verify('config-token') is None      # the shadowed source is not merged in
     assert registry.source() == 'environment'
 
     monkeypatch.delenv('FINIEX_API_TOKENS')
-    registry = TokenRegistry.load({'from-config': 'config-token'})
+    registry = load_token_registry({'from-config': 'config-token'})
     assert registry.verify('config-token') == 'from-config'
     assert registry.source() == 'user_configs'
 
-    assert TokenRegistry.load({}).source() == 'none'
+    assert load_token_registry({}).source() == 'none'
 
 
 def test_config_tokens_reach_the_protected_router(monkeypatch: pytest.MonkeyPatch) -> None:

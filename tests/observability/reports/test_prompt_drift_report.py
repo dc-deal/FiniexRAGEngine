@@ -33,10 +33,16 @@ def _result(symbol: str, urgency: float, *, threshold: float = 0.8, basis: str =
 
 
 def _row(pipeline: str, ts: datetime, results: list, *, version: str = '4',
-         prompt_hash: str = 'c45e07e1b260', model: str = 'gpt-4o-mini') -> tuple:
-    return (pipeline, {'timestamp': ts.isoformat(), 'prompt_version': version,
-                       'prompt_id': 'sentiment-crypto', 'prompt_hash': prompt_hash,
-                       'metadata': {'model': model}, 'result': results})
+         prompt_hash: str = 'c45e07e1b260', model: str = 'gpt-4o-mini',
+         fingerprint: str = '') -> tuple:
+    envelope = {'timestamp': ts.isoformat(), 'prompt_version': version,
+                'prompt_id': 'sentiment-crypto', 'prompt_hash': prompt_hash,
+                'metadata': {'model': model}, 'result': results}
+    # Absent by default so the existing cases keep describing one setup; the ISSUE_112 cases below
+    # set it explicitly, which is also how a pre-ISSUE_85 envelope arrives.
+    if fingerprint:
+        envelope['config_fingerprint'] = fingerprint
+    return (pipeline, envelope)
 
 
 def _series(urgencies: list, *, pipeline: str = 'crypto_sentiment', version: str = '4',
@@ -424,3 +430,140 @@ def test_the_projected_read_is_output_identical_to_reading_whole_envelopes(clean
     assert v3.scored == 1 and v3.mechanical == 1
     assert v3.top_unit_label == 'ETHUSD/ETHEUR'
     assert _version(projected, 'crypto_sentiment', '4').scored == 1      # the error one is excluded
+
+
+# --- the setup half of the key (ISSUE_112) ------------------------------------------------------
+
+def _setup(report, pipeline_id: str, fingerprint: str):
+    block = next(p for p in report.pipelines if p.pipeline_id == pipeline_id)
+    return next(v for v in block.versions if v.config_fingerprint == fingerprint)
+
+
+def test_one_version_under_two_setups_is_two_rows() -> None:
+    """The blind spot this closes, taken from production rather than invented.
+
+    Sampling 152 crypto envelopes on 2026-08-29 found `afe4ac5a3331` and `9458492ce234` both
+    running under `prompt_version: 4` — pooled into a single row by the version-only key. The
+    normaliser of ISSUE_112 makes that the normal case: it rewrites the text behind every vector
+    and every prompt without touching the template, so the version cannot separate the series and
+    the fingerprint is the only thing that can.
+    """
+    rows = (_series([0.8, 0.8, 0.7, 0.2], version='4', fingerprint='9458492ce234')
+            + _series([0.2, 0.3, 0.2, 0.2], version='4', fingerprint='afe4ac5a3331',
+                      start_minute=10))
+    report = _aggregate_drift(rows, '30d', _HOLD, _GATES)
+
+    before = _setup(report, 'crypto_sentiment', '9458492ce234')
+    after = _setup(report, 'crypto_sentiment', 'afe4ac5a3331')
+    assert len(report.pipelines[0].versions) == 2
+    assert before.prompt_version == after.prompt_version == '4'
+    # The whole point: the collapse is visible instead of averaged into one healthy-looking row.
+    assert before.confirm_share == 0.5
+    assert after.confirm_share == 0.0
+
+
+def test_the_pooled_row_would_have_hidden_the_move() -> None:
+    """The counter-example, so the assertion above is not merely a shape check.
+
+    Same passes under ONE setup read as a single 25 % confirm share — the number that would have
+    been reported before, and the reason a text change could move the series unseen.
+    """
+    rows = (_series([0.8, 0.8, 0.7, 0.2], version='4', fingerprint='same')
+            + _series([0.2, 0.3, 0.2, 0.2], version='4', fingerprint='same', start_minute=10))
+    report = _aggregate_drift(rows, '30d', _HOLD, _GATES)
+    assert len(report.pipelines[0].versions) == 1
+    assert report.pipelines[0].versions[0].confirm_share == 0.25
+
+
+def test_two_versions_under_one_setup_stay_two_rows() -> None:
+    """The other axis must not regress — the version split is what ISSUE_110 built."""
+    rows = (_series([0.8, 0.8], version='3', fingerprint='afe4ac5a3331')
+            + _series([0.2, 0.2], version='4', fingerprint='afe4ac5a3331', start_minute=10))
+    report = _aggregate_drift(rows, '30d', _HOLD, _GATES)
+    assert [v.prompt_version for v in report.pipelines[0].versions] == ['3', '4']
+
+
+def test_an_envelope_without_a_fingerprint_gets_its_own_row() -> None:
+    """A pre-ISSUE_85 envelope is an absence, never folded into whichever setup ran next."""
+    rows = (_series([0.8, 0.8], version='4')
+            + _series([0.2, 0.2], version='4', fingerprint='afe4ac5a3331', start_minute=10))
+    report = _aggregate_drift(rows, '30d', _HOLD, _GATES)
+    assert {v.config_fingerprint for v in report.pipelines[0].versions} == {
+        '(none)', 'afe4ac5a3331'}
+
+
+def test_the_setup_is_rendered_so_two_rows_can_be_told_apart() -> None:
+    rows = (_series([0.8, 0.8], version='4', fingerprint='9458492ce234')
+            + _series([0.2, 0.2], version='4', fingerprint='afe4ac5a3331', start_minute=10))
+    out = format_prompt_drift_report(_aggregate_drift(rows, '30d', _HOLD, _GATES), width=200)
+    assert 'setup' in out
+    assert '9458492ce234' in out and 'afe4ac5a3331' in out
+
+
+# --- the weekday-matched comparison (ISSUE_106) --------------------------------------------
+
+# 2026-08-29 is a Saturday, 08-30 a Sunday, 09-01 and 09-08 Tuesdays.
+_SAT = datetime(2026, 8, 29, 9, 0, tzinfo=timezone.utc)
+
+
+def _day(fingerprint: str, day: datetime, urgencies: list, *,
+         pipeline: str = 'crypto_sentiment') -> list:
+    return [_row(pipeline, day + timedelta(minutes=10 * i), [_result('XRPUSD', urgency)],
+                 fingerprint=fingerprint)
+            for i, urgency in enumerate(urgencies)]
+
+
+def test_two_setups_on_one_weekday_are_paired_and_the_delta_runs_later_minus_earlier():
+    """The comparison the main table cannot make: it pools weekdays by design."""
+    rows = (_day('before', _SAT, [0.9, 0.9, 0.3, 0.3])            # Sat, confirm 50 %
+            + _day('after', _SAT + timedelta(hours=6), [0.9, 0.3, 0.3, 0.3]))   # Sat, 25 %
+    report = _aggregate_drift(rows, '30d', _HOLD, _GATES, min_scored=1)
+
+    assert len(report.weekday_pairs) == 1
+    pair = report.weekday_pairs[0]
+    assert (pair.weekday_label, pair.from_fingerprint, pair.to_fingerprint) == (
+        'Sat', 'before', 'after')
+    assert pair.confirm_delta == -25.0
+    assert report.comparable_weekdays == 1
+
+
+def test_setups_on_different_weekdays_are_never_paired():
+    """The whole point: the ISSUE_112 normaliser deployed on a Saturday, and read across the
+    weekend its effect looked twice as large as it was."""
+    rows = (_day('before', _SAT, [0.9, 0.9])                       # Sat
+            + _day('after', _SAT + timedelta(days=1), [0.3, 0.3]))  # Sun
+    report = _aggregate_drift(rows, '30d', _HOLD, _GATES, min_scored=1)
+
+    assert report.weekday_pairs == []
+    assert 'no weekday holds two setups yet' in format_prompt_drift_report(report)
+
+
+def test_the_pairing_orders_by_first_appearance_not_by_fingerprint_name():
+    """'zzzz' deployed first here; sorting the hex would invert the comparison."""
+    rows = (_day('zzzz', _SAT, [0.9, 0.9])
+            + _day('aaaa', _SAT + timedelta(hours=6), [0.3, 0.3]))
+    pair = _aggregate_drift(rows, '30d', _HOLD, _GATES, min_scored=1).weekday_pairs[0]
+
+    assert (pair.from_fingerprint, pair.to_fingerprint) == ('zzzz', 'aaaa')
+    assert pair.confirm_delta == -100.0
+
+
+def test_a_thin_cell_is_marked_and_kept():
+    rows = (_day('before', _SAT, [0.9, 0.3])
+            + _day('after', _SAT + timedelta(hours=6), [0.3, 0.3]))
+    report = _aggregate_drift(rows, '30d', _HOLD, _GATES, min_scored=40)
+
+    assert report.weekday_pairs[0].thin
+    assert '⚠ thin' in format_prompt_drift_report(report)
+
+
+def test_the_main_table_is_unchanged_by_the_addition():
+    """The weekday is deliberately NOT in the primary key — sevenfold rows would dismantle the
+    census the table above exists for."""
+    rows = (_day('one', _SAT, [0.9, 0.3])
+            + _day('one', _SAT + timedelta(days=1), [0.9, 0.3])
+            + _day('one', _SAT + timedelta(days=2), [0.9, 0.3]))
+    report = _aggregate_drift(rows, '30d', _HOLD, _GATES, min_scored=1)
+
+    assert report.version_count == 1, 'the setup fragmented across weekdays'
+    assert _version(report, 'crypto_sentiment', '4').scored == 6

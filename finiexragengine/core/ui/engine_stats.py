@@ -45,7 +45,9 @@ class SourcesSnapshot:
     # local connectivity failed — which is a different sentence from "these feeds are broken",
     # and the row has to say so or it sends the operator to the wrong place.
     host_backoff_until: Optional[datetime] = None
-    host_detail: str = ''                        # e.g. 'forex_news 7/7 + crypto_news 5/5'
+    # e.g. 'forex_news 7/7 unreachable this pass + crypto_news 5/12 known failing in 5m' —
+    # each half names its own denominator and window (see SourceHealthStore._fleet_view).
+    host_detail: str = ''
 
 
 @dataclass(frozen=True)

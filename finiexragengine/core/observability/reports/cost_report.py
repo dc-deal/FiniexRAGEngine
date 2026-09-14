@@ -9,7 +9,7 @@ Two clearly separated parts, so real and estimated numbers are never confused:
   (⚠️ + "est" / "~"); these are estimates of a continuous run, **not** real consumption.
 """
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 
 import psycopg
@@ -82,10 +82,26 @@ class CostReport:
     prediction: Optional[Prediction]
     spent_all_usd: float
     credit_usd: float = 0.0                    # configured account credit (0 = not set)
+    # When the price table this report derives USD from was last held against the vendor's rates
+    # (ISSUE_67 prerequisite). `None` = not recorded, which the render says out loud rather than
+    # passing off as current — every figure above is only as good as that basis.
+    prices_checked: Optional[date] = None
 
     @property
     def remaining_usd(self) -> float:
         return self.credit_usd - self.spent_all_usd
+
+    @property
+    def prices_checked_days_ago(self) -> Optional[int]:
+        """Age of the price basis in days — the part that makes the date actionable.
+
+        A bare date leaves the reader doing the arithmetic; the age is what tells them whether to
+        care. No threshold is applied here on purpose: a staleness verdict would be a policy nobody
+        chose, and ISSUE_67 is the mechanism meant to check rather than remind.
+        """
+        if self.prices_checked is None:
+            return None
+        return (datetime.now(timezone.utc).date() - self.prices_checked).days
 
 
 def _window_bound(expression: str, now: datetime) -> Tuple[str, Optional[datetime]]:
@@ -165,7 +181,8 @@ def build_cost_report(database_url: str, *,
                       credit_usd: float = 0.0, recent_passes: int = 20,
                       windows: Optional[List[str]] = None,
                       cost_table: str = 'cost_log',
-                      outcomes_table: str = 'outcomes') -> CostReport:
+                      outcomes_table: str = 'outcomes',
+                      prices_checked: Optional[date] = None) -> CostReport:
     """Assemble the real-spend windows + the config-driven prediction.
 
     `windows` declares the set to compare — the comparison across windows *is* this report's
@@ -182,7 +199,8 @@ def build_cost_report(database_url: str, *,
             # A fresh DB where no CostRecorder ever created the table = 'nothing spent yet'.
             if not _table_exists(cur, cost_table):
                 empty = [RealWindow(label, 0, 0, 0.0) for label, _ in windows]
-                return CostReport(empty, None, 0.0, credit_usd)
+                return CostReport(empty, None, 0.0, credit_usd,
+                                  prices_checked=prices_checked)
             real = [_window(cur, cost_table, label, since) for label, since in windows]
             # All-time spend is read on its own rather than picked out of the displayed set:
             # `remaining_usd` is credit minus everything ever spent, which stays true whichever
@@ -193,7 +211,8 @@ def build_cost_report(database_url: str, *,
                                            recent_passes)
     except psycopg.Error as exc:
         raise VectorStoreError(f'cost report failed: {exc}') from exc
-    return CostReport(real, prediction, spent_all, credit_usd)
+    return CostReport(real, prediction, spent_all, credit_usd,
+                      prices_checked=prices_checked)
 
 
 def _fmt_usd(usd: float) -> str:
@@ -205,7 +224,15 @@ def format_cost_report(report: CostReport) -> str:
     """Render REAL (part A) then PREDICTION (part B), with the estimate clearly marked."""
     wide = '-' * 60
     wide_pred = '-' * 99
-    lines = ['Cost Report', '', '=== REAL spend (billing log — actual USD) ' + '=' * 18,
+    # Say how old the basis is, always. Every USD figure below is derived from a hand-maintained
+    # price table, and a derived number whose basis has no date cannot be audited.
+    age = report.prices_checked_days_ago
+    if report.prices_checked is None:
+        basis = 'prices: NO verification date recorded — the derived USD cannot be dated'
+    else:
+        when = 'today' if age == 0 else f'{age} day{"" if age == 1 else "s"} ago'
+        basis = f'prices verified {report.prices_checked.isoformat()} ({when})'
+    lines = ['Cost Report', basis, '', '=== REAL spend (billing log — actual USD) ' + '=' * 18,
              f'{"window":12} {"calls":>6} {"tokens":>11} {"USD":>14}', wide]
     for window in report.real:
         lines.append(f'{window.label:12} {window.calls:>6} {window.tokens:>11,} '

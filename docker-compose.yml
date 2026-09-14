@@ -13,6 +13,12 @@ services:
       # harmless instead of Docker materialising a root-owned directory beside the checkout.
       # `:-` not `-`: an EMPTY value (as shipped in .env.example) must fall back too.
       - ${FINIEX_BUS_PATH:-./.devcontainer/bus_placeholder}:/bus
+      # The shared auth package (`finiex_auth`) — a sibling checkout, mounted for an EDITABLE
+      # install while it is developed alongside this engine (`pip install -e /finiex-auth`). Same
+      # indirection as the bus, so this public file carries no private path. The fallback stub
+      # keeps a fresh clone starting but is deliberately NOT installable: without the checkout,
+      # the package comes from the pinned tag in requirements.txt, which is the production path.
+      - ${FINIEX_AUTH_PATH:-./.devcontainer/auth_placeholder}:/finiex-auth
       - ~/.gitconfig:/root/.gitconfig:ro
       - ~/.ssh:/root/.ssh:ro
     environment:

@@ -85,8 +85,12 @@ class SymbolEvaluator:
                               retrieval=context.funnel)
         # The prompt describes the asset in readable terms (the query, e.g. "Bitcoin BTC");
         # the result keys on the raw ticker `symbol` (e.g. "BTCUSD").
+        # `retrieved` carries the tier beside each article (ISSUE_30), which is what lets v5 fence
+        # the retrospective block. Passed always, not only for v5: a template that ignores it is
+        # unaffected, and a call site that forgot it would silently render an UNFENCED prompt.
         prompt = timer.time('prompt', lambda: self._prompt_builder.build(
-            self._prompt_name, self._prompt_version, query, articles))
+            self._prompt_name, self._prompt_version, query, articles,
+            retrieved=context.retrieved))
         completion = timer.time('llm', lambda: self._provider.complete_structured(
             prompt, SentimentLlmOutput.model_json_schema()))
 
@@ -106,9 +110,14 @@ class SymbolEvaluator:
             # model's, and dropping one because the other disagreed would hide exactly the
             # disagreement worth seeing.
             breaking_reason=scored.breaking_reason,
-            sources=[ArticleRef(article_id=a.article_id, url=a.url, title=a.title,
-                                published_at=a.published_at, fetched_at=a.fetched_at)
-                     for a in articles],
+            # Built from `context.retrieved`, not from `articles` (ISSUE_30): the tier that
+            # surfaced each citation travels with it, so "did the retrospective channel contribute
+            # to this call" is answerable from the envelope instead of inferred from article ages.
+            sources=[ArticleRef(article_id=r.article.article_id, url=r.article.url,
+                                title=r.article.title, published_at=r.article.published_at,
+                                fetched_at=r.article.fetched_at,
+                                retrieval_tier=r.retrieval_tier)
+                     for r in context.retrieved],
             evidence_as_of=_evidence_as_of(articles))
         return SymbolEval(result=result, prompt=prompt, prompt_metadata=prompt_metadata,
                           usage=completion.usage, articles=articles,

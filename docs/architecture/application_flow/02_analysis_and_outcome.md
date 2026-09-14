@@ -48,6 +48,9 @@ Top-down, one symbol's retrieved context flows through:
 6. **Enrich to the outcome — `core/pipeline/symbol_evaluator.py` (`SymbolEvaluator.evaluate`).**
    The engine wraps the scored fields into the full result: `symbol` (known), `sources` — the real
    retrieved articles as `ArticleRef[]` **provenance** (the LLM never invents article ids, ISSUE_2),
+   each carrying the `retrieval_tier` (`recent` | `deep`) that surfaced it (ISSUE_30, built from
+   `RetrievedContext.retrieved` rather than from the bare article list, so the deep tier's
+   contribution is auditable per citation instead of only countable in the funnel),
    and `is_breaking` from `urgency` vs the constellation's breaking threshold (the gate is *confirmed*
    here — the LLM read a real story as urgent, ISSUE_11). The returned `SymbolEval` also carries the
    **raw model output** (`completion.data`, ISSUE_36 — irreconstructable after the call; the outcome

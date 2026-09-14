@@ -27,6 +27,7 @@ from finiexragengine.core.rag.pgvector_store import PgVectorStore
 from finiexragengine.core.rag.query_vector_cache import QueryVectorCache
 from finiexragengine.core.rag.retriever import Retriever
 from finiexragengine.core.schema.schema_guard import verify_schema_current
+from finiexragengine.core.sources.article_normalizer import ArticleNormalizer
 from finiexragengine.core.sources.source_factory import build_source
 from finiexragengine.exceptions.ragengine_errors import (
     ConfigurationError,
@@ -238,8 +239,14 @@ class PipelineAssembler:
                               dimensions=self._cfg.embedding.dimensions,
                               embedding_model=self._cfg.embedding.model)
         # Breaking detection (ISSUE_11): LLM-free cluster-burst + keyword flagging over the shared
-        # corpus, scoped to this set's `detection` block (clustering is across the set's feeds).
-        detector = BreakingDetector(store, source_set.detection)
+        # corpus, scoped to this set's `detection` block. The active feed ids make the second half
+        # of that scoping real (ISSUE_106) — the comment here claimed "across the set's feeds" while
+        # the query counted the whole corpus, so a macro story carried by another set inflated this
+        # set's cluster size against this set's thresholds. `active_sources()` is the one definition
+        # of what runs, the same one the ingestor and `SourceReach` read.
+        detector = BreakingDetector(
+            store, source_set.detection,
+            source_ids={source.source_id for source in source_set.active_sources()})
         # Source health (ISSUE_11): every poll is recorded; a persistently failing feed is flagged
         # and quarantined. One store per ingestor (long-lived on the worker → in-memory quarantine).
         health_store = SourceHealthStore(self._database_url, self._cfg.source_health)
@@ -250,9 +257,14 @@ class PipelineAssembler:
         poll_log = (SourcePollLog(self._database_url,
                                   retention_days=diagnostics.poll_log_retention_days)
                     if diagnostics.poll_log_enabled else None)
+        # One normaliser for the whole set (ISSUE_112): the profile is an app-level declaration, not
+        # a per-feed one, and it is pure — so a single instance is shared by every source rather
+        # than rebuilt per feed. An unknown profile raises here, at assembly, which is where a
+        # configuration error belongs.
+        normalizer = ArticleNormalizer(self._cfg.ingest.text_normalizer)
         # A disabled source is never built, so it is never polled and produces no health event —
         # the same "defined but toggled off" semantics a disabled model variant has.
-        return Ingestor([build_source(source, source_set.fetch_timeout_seconds)
+        return Ingestor([build_source(source, source_set.fetch_timeout_seconds, normalizer)
                          for source in source_set.active_sources()],
                         news_embedder, store, breaking_detector=detector,
                         health_store=health_store, source_set_id=source_set_id,

@@ -172,3 +172,44 @@ def test_emit_logs_once_per_process(caplog):
     blocks = [r for r in caplog.records if '[OVERRIDE]' in r.getMessage()]
     assert len(blocks) == 1
     assert 'b 1→2' in blocks[0].getMessage()
+
+
+def test_a_flagged_key_is_never_cut_by_the_cap():
+    """The report flagged it correctly and then hid the flag (2026-09-08).
+
+    Production's `user_configs/app_config.json` carries `weekly_report.report_command` — a key that
+    lives on `telegram`, so Pydantic drops it and the override does nothing. It was entry sixteen of
+    sixteen, and the cap slices in file order, so the one leaf reporting a *defect* spent its whole
+    life inside `+11 more` while five ordinary ones were shown. Found by reading the effective
+    config over `/v1/configs/app`, which is a roundabout way to learn what the boot line was for.
+    """
+    entries = ([OverrideEntry(f'section.leaf{index}', index, 0) for index in range(15)]
+               + [OverrideEntry('weekly_report.report_command', '/report', unknown=True)])
+
+    line = format_override_report('user_configs/app_config.json', entries)
+
+    assert '⚠ report_command?' in line
+    assert '+' in line and 'more' in line, 'the ordinary leaves still absorb the cap'
+    # The flag leads: the line is scanned left to right, and this is the only part of it that says
+    # something is wrong rather than merely different.
+    assert line.index('⚠') < line.index('leaf0')
+
+
+def test_several_flags_all_survive_even_past_the_cap():
+    """A file full of typos gets a long line — exactly once, at boot. Every one is a real defect."""
+    entries = [OverrideEntry(f'section.typo{index}', index, unknown=True) for index in range(9)]
+
+    line = format_override_report('user_configs/app_config.json', entries)
+
+    assert line.count('⚠') == 9
+    assert 'more' not in line
+
+
+def test_a_line_without_flags_caps_exactly_as_before():
+    """The change must not move the ordinary case — that is the one every boot renders."""
+    entries = [OverrideEntry(f'section.leaf{index}', index, 0) for index in range(10)]
+
+    line = format_override_report('user_configs/app_config.json', entries)
+
+    assert '+5 more' in line
+    assert line.count('·') == 6      # the file label plus five leaves

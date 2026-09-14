@@ -1,9 +1,9 @@
 """Abstract base for the vector store backing the RAG layer."""
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import List, Optional, Set
+from typing import List, Optional, Sequence, Set
 
-from finiexragengine.types.article_types import Article, ScoredArticle
+from finiexragengine.types.article_types import Article, NeighbourCount, ScoredArticle
 
 
 class AbstractVectorStore(ABC):
@@ -56,18 +56,22 @@ class AbstractVectorStore(ABC):
         """
         ...
 
-    def count_neighbors(self, vector: List[float], since: datetime,
-                        max_distance: float) -> int:
-        """Count stored articles within `max_distance` of `vector`, published at/after `since`.
+    def count_neighbors(self, vector: List[float], since: datetime, max_distance: float,
+                        source_ids: Optional[Set[str]] = None) -> NeighbourCount:
+        """Neighbourhood around `vector` in the window — articles AND distinct feeds (ISSUE_106).
 
         The breaking detector's cluster-size probe (ISSUE_11) — a burst of near-duplicate
         stories across feeds is the LLM-free breaking signal. `max_distance` = 1 − similarity.
-        A store without vector search returns 0 (no cluster ever); the pgvector store overrides.
+        `source_ids` scopes the count to one set's feeds; `None` counts corpus-wide.
+        A store without vector search returns zeroes (no cluster ever); the pgvector store
+        overrides.
         """
-        return 0
+        return NeighbourCount(articles=0, feeds=0)
 
-    def flag_candidates(self, article_ids: List[str], importance: int,
-                        breaking: bool, trigger: str = '') -> int:
+    def flag_candidates(self, article_ids: List[str], importance: int, breaking: bool,
+                        trigger: str = '',
+                        neighbours: Optional[NeighbourCount] = None,
+                        keywords: Optional[Sequence[str]] = None) -> int:
         """Stamp importance tier + breaking-candidate flag + detection time on articles (ISSUE_11).
 
         Idempotent; returns the number of rows updated. Populated by the breaking detector,
@@ -77,5 +81,9 @@ class AbstractVectorStore(ABC):
         `trigger` is WHICH path raised the tier (ISSUE_106) — `cluster` or `keyword`, from the
         `DetectionTrigger` vocabulary. `''` writes nothing, so a caller that does not know (or a
         store predating the column) leaves it NULL rather than guessing a category.
+
+        `neighbours` and `keywords` are the two paths' evidence, each supplied only by the path that
+        actually produced the verdict (migrations 013 / 014). `None` writes nothing, by the same
+        rule as `trigger` above: an absence is not a category.
         """
         return 0

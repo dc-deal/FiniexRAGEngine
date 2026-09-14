@@ -63,6 +63,39 @@ class ResourceInfo(BaseModel):
     over_ceiling: bool = False
 
 
+class DispatcherStreamInfo(BaseModel):
+    """One stream as the push path sees it (ISSUE_9 follow-up)."""
+    pipeline_id: str
+    # How far the DISPATCHER has pushed — not where the producer is. That distinction is the point:
+    # this is the number that stops moving when the tail breaks, which is why it belongs here and
+    # why it does not belong on the wire as a liveness signal (the heartbeat reports the producer).
+    pushed_seq: int
+    subscribers: int = 0
+    last_advance_at: Optional[str] = None
+
+
+class DispatcherInfo(BaseModel):
+    """The live stream's push path (ISSUE_9 follow-up) — requested by the consumer.
+
+    Without it the only way to notice a stalled tail is to hold a connection longer than the cadence
+    and count what did not arrive. That is a fourteen-minute diagnosis for a fact the process knows
+    immediately, and it is how a tail that could not open its listener served connect and replay
+    correctly while pushing nothing for 22 hours.
+
+    Kept out of `stall.stalled`, which watches *workers*: a dispatcher is not a worker, and one field
+    meaning two things is how a monitor comes to read the wrong one.
+    """
+    enabled: bool = True
+    # False while the LISTEN connection is down. The engine reconnects on its own, so a single false
+    # reading is not an incident — a false reading that persists is.
+    listening: bool = False
+    # Why it is down, when it is. Recorded as well as logged, because the condition that produced
+    # this field went unnoticed for 22 hours precisely because it existed only in a log.
+    listener_error: Optional[str] = None
+    channel: str = ''
+    streams: List[DispatcherStreamInfo] = []
+
+
 HEALTH_STATUSES: Tuple[str, ...] = ('ok', 'degraded')
 
 
@@ -103,6 +136,9 @@ class HealthResponse(BaseModel):
     stall: Optional[StallInfo] = None
     # Present only with workers running — the gauge rides the watchdog's tick (ISSUE_89).
     resources: Optional[ResourceInfo] = None
+    # The live stream's push path (ISSUE_9). Present whenever the transport is enabled — which is
+    # independent of `--workers`, because the stream is a read surface over the journal.
+    stream: Optional[DispatcherInfo] = None
 
 
 class PipelineInfo(BaseModel):
@@ -113,17 +149,47 @@ class PipelineInfo(BaseModel):
     trigger_type: str
     # The eval cadence in SECONDS, not as the `M10` token (ISSUE_9). A consumer computes a staleness
     # threshold with the number; the token is a rendering of it, and shipping both would leave one
-    # of them unread. `None` when the trigger carries no timeframe.
+    # of them unread.
     #
     # Exposed because a consumer's staleness contract is derived from it: silence longer than one
     # cadence is what tells them the producer stopped, so the threshold that blocks their order
     # entry rested on a hand-copied constant. Note the direction that makes it usable — an
     # out-of-band pass makes the OBSERVED interval shorter than nominal, never longer, so the
     # cadence is an upper bound on normal quiet.
-    cadence_seconds: Optional[int] = None
+    #
+    # Always present, and no longer `Optional`: it is `TriggerConfig.cadence_seconds`, which
+    # resolves a timeframe first and falls back to the raw interval, so there is no configuration
+    # that yields nothing. The nullable form went with the router's own second derivation of this
+    # number — and a field documented as "absent when …" that can no longer be absent is exactly
+    # the stale claim a reader plans around.
+    cadence_seconds: int
+
+
+class StreamInfo(BaseModel):
+    """The stream's engine-wide numbers, served once per response (ISSUE_9).
+
+    **Response level, not on each pipeline row** — and the placement is the point. Both values are
+    properties of the engine, so a copy per pipeline would claim to be a per-stream property;
+    someone would eventually set two of them differently and the engine would honour neither the
+    second value nor the reader's expectation. `pass_timeout_seconds` on `/health` is engine-level
+    for exactly this reason. If either ever becomes genuinely per-stream it moves to the row, which
+    is a visible contract change rather than a stable name quietly changing meaning.
+
+    Both fields are **required**. The consumer asked to depend on their presence: they intend to let
+    the served value govern and keep only their own multiple (a 3x connection watchdog), so a null
+    here would put a branch in their code for a state the engine cannot be in.
+    """
+    # Keep-alive cadence, so their watchdog is read rather than hand-copied — a change on our side
+    # would otherwise arrive as a false outage.
+    heartbeat_seconds: int
+    # How far back `?since=`/`?history=N` may reach on the stream and the range endpoint.
+    replay_window_hours: int
 
 
 class PipelinesResponse(BaseModel):
+    # Engine-wide facts about the transport (ISSUE_9). Every value that varies per stream lives on
+    # the row below; everything that has exactly one value lives here, once.
+    stream: StreamInfo
     pipelines: List[PipelineInfo]
 
 
@@ -147,6 +213,10 @@ class BuildInfo(BaseModel):
     # in-place edit is plausible, and this is the difference between "which deploy is live" and
     # "...and has anyone touched it".
     dirty: Optional[bool] = None
+    # The shared auth package (`finiex_auth`) and whether it is an EDITABLE install — the dev state
+    # in which a change is live with no pin, no bump and no commit. `None` when not installed.
+    auth_package_version: Optional[str] = None
+    auth_package_editable: Optional[bool] = None
     # When this process started. Answers the question the hash cannot: did my restart take effect?
     started_at: datetime
 
@@ -162,6 +232,36 @@ class AppliedParamInfo(BaseModel):
     value: Any
     source: str                 # 'config' | 'request'
     clamped: bool = False       # true when a bound shortened what was asked for
+
+
+class LogEntryInfo(BaseModel):
+    """One log entry as the API returns it (2026-09-08).
+
+    `timestamp` is **UTC**, whatever the file was written in — the formatter stamps the OS clock
+    (GMT+2 on the server) while the engine itself is UTC everywhere else, and returning the raw
+    prefix would make this the one surface that disagrees with the others about what time it is.
+    """
+    timestamp: datetime
+    level: str
+    message: str
+    # Traceback lines beneath the entry. Carried with it rather than as their own rows: a stack
+    # fragment without its head is what makes a filtered log unreadable.
+    continuation: List[str] = Field(default_factory=list)
+
+
+class LogPageResponse(BaseModel):
+    """A bounded slice of one log stream, and what it had to leave out."""
+    stream: str
+    since: Optional[datetime] = None
+    until: Optional[datetime] = None
+    min_level: str = 'WARNING'
+    matched: int = 0              # entries in range BEFORE the limit — so `truncated` is checkable
+    truncated: bool = False
+    # How many lines the redaction changed. Reported rather than silent: a reader trusts a log
+    # line, so an altered one that does not announce itself is worse than a withheld one.
+    redacted_lines: int = 0
+    files_read: List[str] = Field(default_factory=list)
+    entries: List[LogEntryInfo] = Field(default_factory=list)
 
 
 class ReportEnvelope(BaseModel):
@@ -193,3 +293,122 @@ class ReportCatalogEntry(BaseModel):
 class ReportCatalog(BaseModel):
     reports: List[ReportCatalogEntry]
     max_window_days: int
+
+
+class EnvelopeRange(BaseModel):
+    """`GET /v1/pipelines/{id}/envelopes` — a bounded range of the series (ISSUE_9 §2).
+
+    The collector's catch-up path, and the reason it exists rather than a flag on `/latest`:
+    `/latest` returns only the newest envelope per pipeline, so everything produced between two polls
+    that is no longer newest at poll time is never fetched — systematically the out-of-band breaking
+    passes, which are overtaken by the next scheduled pass within one cadence period.
+
+    **The mapping rule between this surface and the stream is worth stating once**: a condition that
+    is *terminal* on the stream (`epoch_changed`, `cursor_ahead`) is a **409** here, because in both
+    cases the caller's cursor is unusable and returning rows would be actively wrong. A condition
+    that is a *non-terminal marker* on the stream (`replay_truncated`) is a **body field** here,
+    because a truncated range still carries data the caller wants. Two renderings, one decision — the
+    decision itself lives in `StreamReplay`.
+    """
+    pipeline_id: str
+    # The epoch these envelopes belong to. Part of the archive key `(pipeline_id, stream_epoch, seq)`,
+    # so a caller writing them down needs it even when it never changes.
+    stream_epoch: int
+    # The stream's current position, so a paging caller knows whether to ask again without guessing
+    # from the row count.
+    head_seq: int
+    # The stored JSON, verbatim — never re-validated on the way out, for the same reason a stream
+    # frame is not: a model default would rewrite an archived line and the parity claim would become
+    # a claim about the model.
+    envelopes: List[Dict[str, Any]] = Field(default_factory=list)
+    # True when the requested `since` was older than `replay_window_hours`. Never silent: the field
+    # below names the oldest position still held, so the caller learns exactly what it must fetch
+    # from the journal export (#62) instead of discovering a hole later.
+    truncated: bool = False
+    oldest_available_seq: Optional[int] = None
+
+
+class ArchiveDayEntry(BaseModel):
+    """One UTC day of a stream's archive, in `GET /v1/pipelines/{id}/archive/days`."""
+    day: str                 # 'YYYY-MM-DD', UTC — the export's daily bucket name
+    lines: int
+    # Today's UTC day, still growing: its lines keep arriving, while a closed day never changes.
+    open: bool
+    # Whether the daily handover (`export_cli --incremental`, the weekly auto-export) has taken this
+    # day — READ from `archive_export_log`, which the archive routes never write.
+    exported: bool
+
+
+class ArchiveDays(BaseModel):
+    """`GET /v1/pipelines/{id}/archive/days` — where the series starts and how big each day is, so a
+    caller can plan its bounded `/archive` windows before pulling anything."""
+    pipeline_id: str
+    days: List[ArchiveDayEntry] = Field(default_factory=list)
+
+
+class OverrideInfo(BaseModel):
+    """One leaf the gitignored `user_configs/` overlay moved (2026-09-08).
+
+    `added` and `was: null` are different statements — the tracked file having no such key, versus
+    it holding an explicit `null` — and collapsing them would hide the more interesting one.
+    `unknown` marks a key the validated config does not have: Pydantic ignores unknown keys, so a
+    typo'd override silently does nothing, and the answer says so rather than showing it as applied.
+    """
+    path: str
+    value: Any
+    was: Any = None
+    added: bool = False
+    unknown: bool = False
+
+
+class ConfigDocumentResponse(BaseModel):
+    """One config domain as it is published: effective values, provenance, and what was masked."""
+    name: str
+    summary: str
+    generated_at: datetime
+    # The files or directories this document was merged from, tracked layer first — so a reader can
+    # see that an overlay exists even when it changed nothing.
+    layers: List[str] = Field(default_factory=list)
+    # The effective documents keyed by id, serialized by the config views and deliberately untyped
+    # here: these are the engine's own configuration shapes and must stay free to change, the same
+    # reasoning `ReportEnvelope.data` carries.
+    documents: Dict[str, Any] = Field(default_factory=dict)
+    overrides: Dict[str, List[OverrideInfo]] = Field(default_factory=dict)
+    # Paths whose value was replaced because the policy calls them a credential.
+    redacted: List[str] = Field(default_factory=list)
+    # Paths masked because nobody has classified them yet — a different, and much shorter-lived,
+    # statement: a contract test fails as soon as a model grows a string the policy does not name.
+    unclassified: List[str] = Field(default_factory=list)
+    # Strings a credential *pattern* changed rather than the path policy — a secret that reached a
+    # field nobody expected to hold one, such as a feed URL carrying its own key.
+    scrubbed: List[str] = Field(default_factory=list)
+
+
+class ConfigCatalogEntry(BaseModel):
+    """One config document as the catalog lists it."""
+    name: str
+    summary: str
+    layers: List[str] = Field(default_factory=list)
+    # The ids `?id=` accepts — so a caller narrows to something that exists instead of guessing.
+    ids: List[str] = Field(default_factory=list)
+
+
+class ConfigCatalog(BaseModel):
+    """The config documents THIS caller may read — filtered, never complete."""
+    configs: List[ConfigCatalogEntry] = Field(default_factory=list)
+
+
+class FeedDiagnosisResponse(BaseModel):
+    """One feed, probed live and diagnosed (2026-09-09).
+
+    `diagnosis` is deliberately untyped — the same reasoning `ReportEnvelope.data` carries. It is
+    `FeedDiagnosis` serialized by `utils.dataclass_json`, an internal diagnostic shape that must
+    stay free to change; typing it here would turn every field of it into an API contract.
+    """
+    name: str
+    generated_at: datetime
+    source_id: str
+    diagnosis: Any
+    # Fields whose text a credential pattern changed before it left the process. `head` is the
+    # reason this list exists: it carries bytes the remote host wrote, not this engine.
+    redacted: List[str] = Field(default_factory=list)

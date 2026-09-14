@@ -2,59 +2,31 @@
 
 Defaults mirror configs/app_config.json exactly (operator-visible, tunable).
 """
+from datetime import date
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 from pydantic import BaseModel, Field, field_validator
+from finiex_auth.consumer_token_base import ConsumerTokenBase
 
 from finiexragengine.types.config_types.report_config_types import ReportsConfig
+from finiexragengine.types.ingest_types import TextNormalizerProfile
 
 
 # The surfaces a grant can name. A closed vocabulary on purpose: this is the *producing* seam —
 # an operator writing the config — so a typo like `report:source_health` must fail at boot rather
 # than turn into a silent denial nobody can see (CLAUDE.md, closed vocabularies).
-GRANT_SURFACES: Tuple[str, ...] = ('reports', 'pipelines')
+GRANT_SURFACES: Tuple[str, ...] = ('reports', 'pipelines', 'logs', 'configs',
+                                  'diagnose')
 
 
-class ConsumerToken(BaseModel):
-    """One consumer's credential: who holds it, what it may reach, and whether it is in force.
+class ConsumerToken(ConsumerTokenBase):
+    """One consumer's credential — the shared model (`finiex_auth`), over this engine's surfaces.
 
-    `grants` is **required**, and that is the point. A token without declared rights would have to
-    default to something, and every safe-by-omission default is a default someone eventually relies
-    on without noticing. Declaring it makes granting an act rather than an oversight: a surface
-    added later is reachable by a consumer only once someone writes its name here.
-
-    A grant is `<surface>:<name>` — `reports:source_health`, `pipelines:crypto_sentiment` — with
-    `<surface>:*` for a whole surface and a bare `*` for everything. **Domain names, not routes.**
-    `source_health` is a stable concept; `/v1/reports/source_health` is merely its current address,
-    and binding a grant to an address means a later `/v2` or a rename silently stops matching — a
-    403 for a consumer who did nothing wrong. Names also compare exactly: no wildcard matching
-    against paths, which is where authorization defects live.
-
-    `active` is a kill switch, not documentation. A consumer can be switched off without deleting
-    their token — during an incident, or to keep a superseded token in place through a rotation.
-    An inactive entry never enters the registry, so an example one cannot authenticate.
-
-    `note` records who holds this token. It costs one line and answers the question that otherwise
-    arrives during a rotation, months later: *who is `ide2`, and may I revoke it?*
+    Grammar, mandatory grants, the kill switch and `note` are the package's, documented there and
+    shared with the Testing IDE (ISSUE_104). What this engine owns is the vocabulary: a grant naming
+    a surface outside `GRANT_SURFACES` fails when the config is parsed, at boot.
     """
-    token: str
-    grants: List[str]
-    active: bool = True
-    note: str = ''
-
-    @field_validator('grants')
-    @classmethod
-    def _grants_name_a_known_surface(cls, value: List[str]) -> List[str]:
-        for grant in value:
-            if grant == '*':
-                continue
-            surface, separator, name = grant.partition(':')
-            if not separator or not name or surface not in GRANT_SURFACES:
-                raise ValueError(
-                    f'grant {grant!r} is not "<surface>:<name>" over a known surface. '
-                    f'Surfaces: {", ".join(GRANT_SURFACES)}. Use e.g. "reports:source_health", '
-                    f'"reports:*", "pipelines:crypto_sentiment", or "*" for everything')
-        return value
+    GRANT_SURFACES = GRANT_SURFACES
 
 
 class ApiConfig(BaseModel):
@@ -167,6 +139,16 @@ class EmbeddingConfig(BaseModel):
     timeout_seconds: int = 60
 
 
+class IngestConfig(BaseModel):
+    """Acquisition-side settings that shape what enters the corpus (ISSUE_112)."""
+    # The declared text treatment applied where an `Article` is built. Series-defining, so it is a
+    # `config_fingerprint` leaf: it changes the vectors AND the prompt text while every provenance
+    # field stays byte-identical, which is exactly the unattributable series ISSUE_109 exists to
+    # prevent. Values move forward only — a corrected treatment is the next profile, never an edit
+    # to this one, because archived rows stamped 'v1' record what produced their vectors.
+    text_normalizer: TextNormalizerProfile = 'v1'
+
+
 class VectorStoreConfig(BaseModel):
     # No `table` key: the corpus table name is owned by the migrations (ISSUE_14), not by
     # config — a config value here could only ever disagree with the schema that exists.
@@ -195,6 +177,18 @@ _DEFAULT_MODEL_PRICES = {
 class PricingConfig(BaseModel):
     """Per-model token prices — the reproducible basis for deriving USD from usage."""
     currency: str = 'USD'
+    # When the table below was last held against the vendor's published rates. There is no pricing
+    # API, so the table is hand-maintained — and a hand-maintained number with no date cannot be
+    # audited: every USD figure this engine reports is derived from it, and nothing said how old
+    # the basis was. A real `date` rather than a string, so a typo fails at load and the report can
+    # render the *age*, which is the part that makes it actionable. `None` is a valid state and
+    # means "not recorded" — never "current". Global rather than per model: one opens the vendor's
+    # price page once, and four dates would be three rotting ones.
+    #
+    # Verdicts are deliberately NOT derived from this (no STALE threshold): picking a staleness
+    # number here would be inventing a policy, and ISSUE_67's pricing probe is the mechanism that
+    # is supposed to *check* rather than to *remind*. This field is provenance, nothing more.
+    checked: Optional[date] = date(2026, 8, 28)
     models: Dict[str, ModelPrice] = Field(
         default_factory=lambda: dict(_DEFAULT_MODEL_PRICES))
 
@@ -328,6 +322,22 @@ class DiagnosticsConfig(BaseModel):
     # weekly line is what produces the number to set this from — guessing one now would be the
     # same mistake as moving a retrieval floor on a single window.
     resource_rss_warn_mb: int = 0
+    # Host-connectivity probe (2026-09-08). While the correlated guard holds the set in its
+    # back-off, the engine polls nothing and therefore learns nothing: the closing event reports
+    # "recovered after 5m", which is the back-off's own length and not a measurement. Eight
+    # episodes in one day were all reported as exactly 5m while the neighbouring set — which never
+    # crossed the ratio and kept polling — recovered on its own within a minute. The probe fills
+    # that silence with two cheap syscalls per pass, and only while a back-off is in force.
+    connectivity_probe_enabled: bool = True
+    # A name the engine does NOT poll, deliberately: a host we fetch every 15s stays in the OS
+    # resolver cache and would answer during an outage, which is precisely the effect that made
+    # 2026-09-08 look like two different failures (see `connectivity_probe.py`).
+    connectivity_probe_dns: str = 'cloudflare.com'
+    # A literal address, so the transport is tested without a name lookup in front of it. That
+    # separation is the whole point: DNS failing while TCP works is a resolver problem, both
+    # failing is the path itself.
+    connectivity_probe_tcp: str = '1.1.1.1:53'
+    connectivity_probe_timeout_seconds: float = 3.0
 
 
 class TelegramConfig(BaseModel):
@@ -372,6 +382,55 @@ class WeeklyReportConfig(BaseModel):
     export_dir: str = 'data/signal_export'   # archive root: <dir>/<stream_id>/<bucket>.jsonl
 
 
+class StreamConfig(BaseModel):
+    """`GET /v1/stream/{pipeline_id}` — the live signal transport (ISSUE_9).
+
+    Two of these leaves are **served to the consumer** on `GET /v1/pipelines`
+    (`heartbeat_seconds`, `replay_window_hours`), because a threshold they compute from a number we
+    own must be read rather than hand-copied: a value they configure locally is a second answer to a
+    question the producer already answers, and a change on our side would reach them as a false
+    outage. The rest is internal.
+
+    Bounded, unlike the rest of this file. Every leaf here has a value that is not merely unusual
+    but broken — `heartbeat_seconds: 0` is a send loop, `replay_window_hours: 0` truncates every
+    replay — and the bounds are what let a future config reload refuse such a value instead of
+    applying it (#115).
+    """
+    # The transport itself, so an operator can take it down without unmounting a route.
+    enabled: bool = True
+    # Keep-alive cadence on EVERY view, including the ~10-minute cadence view: without it a
+    # consumer's connection watchdog would have to exceed the pass interval, and a dead socket
+    # would go unnoticed for longer than a pass. The consumer sets their watchdog at a multiple of
+    # this (3x today), which is why it is served rather than assumed.
+    heartbeat_seconds: int = Field(default=20, ge=1, le=300)
+    # How far back `?since=` and `?history=N` may reach. Beyond a week a gap is an archive question
+    # (#62's journal export), not a replay one — hence the ceiling rather than an open range.
+    replay_window_hours: int = Field(default=24, ge=1, le=168)
+    # The VOLUME bound, and it is not redundant with the window above: the window bounds *age*, and
+    # when it holds nothing — a quiet weekend, a stream that stopped days ago — it clamps nothing at
+    # all, so a cursor far in the past would replay the whole tail in one burst. Found on the wire
+    # against the dev journal: 164 envelopes at ~34 kB is 5.5 MB, and the same shape on a
+    # production-length series is orders of magnitude worse. A replay is bounded by construction
+    # rather than by the window happening to be non-empty; the caller learns it was clamped from the
+    # `replay_truncated` marker, whose `oldest_available_seq` names where the replay actually starts.
+    #
+    # 200 has a measured origin rather than a round-number one. A production frame is **38.3 kB**
+    # (crypto, 9 rows, 87 source refs) / 36.9 kB (forex) — measured over the live API on 2026-08-27,
+    # not the ~13.5 kB the contract text carried — so the window's own volume at M10 is 144 frames
+    # ≈ 5.5 MB. A cap several times that would defeat its purpose: 200 sits just above one M10 day
+    # with headroom, at ~7.7 MB per reconnect burst.
+    max_replay_frames: int = Field(default=200, ge=1, le=10000)
+    # Per-subscriber frame buffer. A full queue DROPS that subscriber (#9 RC-6): a slow consumer
+    # must never delay a pass, and the resulting `seq` gap is visible and recoverable via `?since`.
+    subscriber_queue_size: int = Field(default=64, ge=1, le=4096)
+    # The Postgres LISTEN/NOTIFY channel the outcome store notifies on commit. One channel for
+    # every stream; the payload carries the `pipeline_id`.
+    notify_channel: str = 'finiex_outcomes'
+    # Belt to NOTIFY's braces: the dispatcher sweeps forward on this interval as well, so a
+    # notification lost with a dropped connection delays a frame instead of stalling a stream.
+    fallback_poll_seconds: int = Field(default=5, ge=1, le=300)
+
+
 class AppConfig(BaseModel):
     version: str = '0.3.3'
     schema_version: str = '1.0'
@@ -402,8 +461,10 @@ class AppConfig(BaseModel):
     journal_names: Dict[str, str] = Field(
         default_factory=lambda: {'EXAMPLE_ID': 'example-only — map real ids in user_configs'})
     api: ApiConfig = Field(default_factory=ApiConfig)
+    stream: StreamConfig = Field(default_factory=StreamConfig)
     llm: LlmConfig = Field(default_factory=LlmConfig)
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
+    ingest: IngestConfig = Field(default_factory=IngestConfig)
     vector_store: VectorStoreConfig = Field(default_factory=VectorStoreConfig)
     pricing: PricingConfig = Field(default_factory=PricingConfig)
     cost: CostConfig = Field(default_factory=CostConfig)

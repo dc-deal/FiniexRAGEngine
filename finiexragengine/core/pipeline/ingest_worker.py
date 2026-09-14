@@ -1,13 +1,20 @@
 """Ingest worker — clocks one source-set's acquisition (ISSUE_10)."""
 import asyncio
 import logging
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from datetime import datetime, timezone
 from time import perf_counter
-from typing import Callable, Dict, List, Optional, Set
+from typing import Callable, Deque, Dict, List, Optional, Set, Tuple
 
+from finiexragengine.core.observability.connectivity_probe import (
+    format_probe,
+    probe_connectivity,
+)
 from finiexragengine.core.observability.cost_recorder import CostRecorder, PassSpend
 from finiexragengine.core.pipeline.ingestor import Ingestor
+from finiexragengine.core.pipeline.pass_executor import build_pass_executor, run_pass
 from finiexragengine.core.triggers.abstract_trigger import AbstractTrigger
 from finiexragengine.core.ui.engine_stats import (
     EngineStats,
@@ -15,6 +22,7 @@ from finiexragengine.core.ui.engine_stats import (
     SourcesSnapshot,
 )
 from finiexragengine.types.alert_types import AlertCallback
+from finiexragengine.types.config_types.app_config_types import DiagnosticsConfig
 from finiexragengine.types.config_types.source_set_types import SourceSetConfig
 from finiexragengine.types.ingest_types import HostEvent, IngestResult, SourcePoll
 from finiexragengine.types.trigger_types import TriggerReason
@@ -25,6 +33,12 @@ logger = logging.getLogger(__name__)
 
 # A feed polled less than this many times its expected cadence reads as stuck, not merely slow.
 _OVERDUE_FACTOR = 2.0
+
+# How many undelivered connectivity alerts are held for a later attempt. Small on purpose: a
+# connectivity event produces at most two messages per episode (opened, resumed), so this covers
+# several back-to-back outages — four in nine hours on 2026-09-08 — while a longer queue would
+# only replay history nobody still needs when the channel returns.
+_PENDING_ALERTS = 8
 
 
 def _overdue_feeds(last_ok: Dict[str, datetime], expected: Dict[str, int],
@@ -78,7 +92,9 @@ class IngestWorker:
                  cost_recorder: Optional[CostRecorder] = None,
                  on_candidates: Optional[Callable[[int], None]] = None,
                  engine_stats: Optional[EngineStats] = None,
-                 on_host_event: Optional[AlertCallback] = None) -> None:
+                 on_host_event: Optional[AlertCallback] = None,
+                 pass_executor: Optional[ThreadPoolExecutor] = None,
+                 diagnostics: Optional[DiagnosticsConfig] = None) -> None:
         self._ingestor = ingestor
         self._trigger = trigger
         # Wall-clock deadline for one pass (ISSUE_74). There is deliberately NO lock here any
@@ -86,6 +102,11 @@ class IngestWorker:
         # worker hostage for nine days on 2026-08-01. Self-overlap is impossible without it —
         # the trigger awaits the pass before computing its next wait.
         self._pass_timeout_seconds = pass_timeout_seconds
+        # The pool the pass body runs in (2026-09-08). NOT the interpreter default, which also
+        # serves every sync API endpoint — see `pass_executor.py` for what that cost. A caller
+        # without one (tests, the CLI paths) gets a private pool rather than the shared default,
+        # so the property holds everywhere and not only where the supervisor wires it.
+        self._pass_executor = pass_executor or build_pass_executor(1)
         self._cost_recorder = cost_recorder
         # Optional (ISSUE_11): called with the highest importance tier flagged this pass, to
         # nudge the eval workers on this set out-of-band (the breaking bus). None = no wake.
@@ -97,6 +118,19 @@ class IngestWorker:
         # watchdog's alert seam, so Telegram wiring lives in exactly one place and this worker
         # only knows "there is somewhere to say it". None = log and dashboard only.
         self._on_host_event = on_host_event
+        # Connectivity probe settings (2026-09-08). None = the defaults, which is what every test
+        # and CLI path gets; `create_app` passes the configuration this process runs on.
+        self._diagnostics = diagnostics or DiagnosticsConfig()
+        # Alerts that could not be delivered, with the moment they were raised (2026-09-08).
+        # The condition this worker alerts on is "the host cannot reach anything" — and the alert
+        # travels over that same network, so it is the message most likely to be lost exactly when
+        # it matters. Twice that day it was, and the operator was left with a lone "recovered after
+        # 5m" and no preceding alarm, which reads as noise rather than as an incident.
+        #
+        # In memory and bounded on purpose: a restart drops it. The durable record is the log and
+        # the correlated-event rows in `source_quarantine` — this is a notification, not a ledger,
+        # and a table for it would be infrastructure for a nice-to-have.
+        self._pending_alerts: Deque[Tuple[datetime, str]] = deque(maxlen=_PENDING_ALERTS)
         # Per-feed expected cadence (its own poll_interval / politeness, else the set's interval)
         # + the last successful poll, so a stuck slow feed can be flagged overdue on the dashboard.
         set_interval = source_set.trigger.interval_seconds
@@ -110,6 +144,14 @@ class IngestWorker:
 
     def get_state(self) -> WorkerState:
         return self._state
+
+    def set_pass_executor(self, executor: ThreadPoolExecutor) -> None:
+        """Adopt the fleet-wide pass pool (2026-09-08) in place of this worker's private one.
+
+        A setter rather than a constructor argument because the pool's size is a property of how
+        many workers there are, which the supervisor only knows once it has built them all.
+        """
+        self._pass_executor = executor
 
     def set_host_alert(self, alert: Optional[AlertCallback]) -> None:
         """Give connectivity events a voice (ISSUE_84), once a channel exists.
@@ -142,8 +184,8 @@ class IngestWorker:
                 # thread so the event loop keeps serving the API while we work. The deadline
                 # abandons the *await*, not the thread (a blocked thread cannot be cancelled):
                 # the worker resumes next tick instead of staying dead until a restart.
-                result = await asyncio.wait_for(asyncio.to_thread(self._ingestor.run),
-                                                timeout=self._pass_timeout_seconds)
+                result = await run_pass(self._pass_executor, self._pass_timeout_seconds,
+                                        self._ingestor.run)
             # Every branch opens its detail with the pass's reason (ISSUE_87) — the ingest twin of
             # the eval worker's line, and the only place an ingest pass can show it at all.
             except asyncio.TimeoutError:
@@ -160,8 +202,15 @@ class IngestWorker:
             else:
                 usd = spend.usd
                 self._state.last_status = 'ok'
-                # Prefix a suspended pass (provider quota, ISSUE_47) so it is visible, not silent.
-                prefix = f'{reason} · ' + ('suspended (quota) · ' if result.suspended else '')
+                # Prefix a degraded pass so it is visible, not silent — and name WHICH kind:
+                # a quota suspend (ISSUE_47) is a billing problem, an unreachable embedding
+                # provider (2026-09-08) is a network one, and one word decides where the operator
+                # looks first.
+                prefix = f'{reason} · '
+                if result.suspended:
+                    prefix += 'suspended (quota) · '
+                if result.embed_failed:
+                    prefix += 'embedding unreachable · '
                 # Tokens belong in `last_detail`, not only in the log call: this one string is
                 # what the log line, the activity stream AND /health all render (ISSUE_79). Split
                 # across two places it produced three different versions of the same pass.
@@ -175,6 +224,12 @@ class IngestWorker:
                     self._state.last_detail += f' · {result.truncated} truncated'
                 if result.rejected:
                     self._state.last_detail += f' · {result.rejected} rejected'
+                # What the normaliser removed on the way in (ISSUE_112), same non-zero idiom. A
+                # silent 36.7 % token overhead is precisely how this went unnoticed for the
+                # project's whole life — a run reports its own effect.
+                if result.normalised:
+                    self._state.last_detail += (f' · normalised {result.normalised} '
+                                                f'({result.dropped_chars:,} chars)')
                 # Surface breaking candidates in the pass line when any were flagged (ISSUE_11).
                 if result.candidates:
                     self._state.last_detail += f' · flagged {result.candidates} breaking'
@@ -192,6 +247,7 @@ class IngestWorker:
                 # workers' INFO passes remain the regular liveness heartbeat either way.
                 eventful = (result.stored or result.candidates or usd
                             or result.failed_sources or result.suspended
+                            or result.embed_failed
                             or result.truncated or result.rejected)
                 duration_ms = (perf_counter() - started) * 1000.0
                 # Reporting the pass is guarded separately from running it: the work is already
@@ -207,6 +263,10 @@ class IngestWorker:
                     self._log_source_health(result)
                     if result.host_event is not None:
                         await self._report_host_event(result.host_event)
+                    # While the back-off holds, this pass polled nothing — so without a probe the
+                    # engine spends those minutes learning nothing, and the closing event can only
+                    # report the back-off's own length (2026-09-08).
+                    await self._probe_while_backed_off(result)
                     # Feed the live dashboard from the same structured pass (ISSUE_26) — next to
                     # the log call, never parsed back from it. Skipped entirely without a display.
                     self._push_stats(result, usd, duration_ms, eventful)
@@ -264,6 +324,12 @@ class IngestWorker:
             stats.push_event('INGEST', f'{source_set_id} {self._state.last_detail}')
         if result.suspended:
             stats.push_event('BUDGET', 'embedding suspended — provider quota')
+        if result.embed_failed:
+            # INGEST, not BUDGET: nothing was refused and nothing was billed. The articles this
+            # pass fetched are held for the next one (the validators were rewound), so the line
+            # says what happened rather than implying a loss.
+            stats.push_event('INGEST', f'{source_set_id} embedding provider unreachable — '
+                                       f'fetched articles held for the next pass')
         # BREAKING (detected side): cumulative HIGH-tier candidates flagged by ingest (ISSUE_11).
         if result.candidates:
             stats.add_breaking_detected(result.candidates, at=now)
@@ -294,7 +360,11 @@ class IngestWorker:
                        f'— normal polling resumed ({self._set_name()})')
             logger.warning('[HOST] %s', message)
         elif event.opened:
-            message = (f'host connectivity — {event.fleet} unreachable in one pass, '
+            # The fleet string carries its own qualifiers now (2026-09-08): the set's own half is
+            # this pass, the other sets' halves are a lookback over every feed they have on record.
+            # A single trailing "unreachable in one pass" used to claim both, which is how two
+            # correct numbers came to look like one inconsistent measure.
+            message = (f'host connectivity — {event.fleet}; '
                        f'no quarantine applied, retry '
                        f'{event.backoff_until.strftime("%H:%M:%S")} UTC')
             logger.error('[HOST] %s', message)
@@ -309,10 +379,74 @@ class IngestWorker:
             self._engine_stats.push_event('SOURCE', message)
         if self._on_host_event is None:
             return
-        try:
-            await self._on_host_event(message)
-        except Exception:   # noqa: BLE001 — an undelivered alert must not fail the pass
-            logger.exception('[HOST] alert delivery failed')
+        await self._deliver(message)
+
+    async def _probe_while_backed_off(self, result: IngestResult) -> None:
+        """Measure what the host can still reach, but only while a back-off is in force.
+
+        The guard exists so eleven blameless feeds are not hammered during a host outage; a probe
+        is not a feed, and this is exactly the window in which the engine is otherwise silent. Two
+        syscalls, and only then.
+
+        On 2026-09-08 the same outage was reported as `timed out` by the feeds polled often enough
+        to stay in the OS resolver cache and as `getaddrinfo failed` by the slower ones — one cause
+        wearing two symptoms, sorted by poll cadence. Splitting the probe into a name lookup and a
+        socket to a literal address is what separates those for good: DNS failing while the socket
+        opens is a resolver fault, both failing is the path itself.
+        """
+        if not self._diagnostics.connectivity_probe_enabled:
+            return
+        if not any(poll.status == 'host_backoff' for poll in result.polls):
+            return
+        # Off the event loop: `getaddrinfo` has no timeout argument, so a dead resolver blocks for
+        # as long as the OS decides — 55-second ingest passes on 2026-09-08 were exactly that. The
+        # duration is the measurement, so it is timed rather than bounded, and it runs where a long
+        # block costs nothing (see `pass_executor.py`).
+        probe = await run_pass(
+            self._pass_executor, self._diagnostics.connectivity_probe_timeout_seconds * 4 + 60,
+            probe_connectivity, self._diagnostics.connectivity_probe_dns,
+            self._diagnostics.connectivity_probe_tcp,
+            self._diagnostics.connectivity_probe_timeout_seconds)
+        line = format_probe(probe, self._diagnostics.connectivity_probe_dns,
+                            self._diagnostics.connectivity_probe_tcp)
+        # WARNING when the host is still unreachable, INFO when it is back: the first probe that
+        # says `ok` is the one that dates the end of the outage, and it should read as good news.
+        logger.log(logging.INFO if probe.reachable else logging.WARNING,
+                   '[HOST] %s · %s', self._set_name(), line)
+        if self._engine_stats is not None:
+            self._engine_stats.push_event('SOURCE', f'{self._set_name()} {line}')
+
+    async def _deliver(self, message: str) -> None:
+        """Send one alert, and carry anything an earlier outage swallowed (2026-09-08).
+
+        The alert channel shares the failure mode it reports on: it travels over the network that
+        is down. On 2026-09-08 two messages were lost that way, and because the *recovery* five
+        minutes later went through, the operator's inbox held a lone "recovered after 5m" with no
+        preceding alarm — which reads as noise, and is worse than silence.
+
+        So an undelivered message is held rather than dropped, and the queue is drained ahead of
+        anything newer: the incident is read in the order it happened, not the order it arrived.
+        Each delayed line says how late it is, because a timestamped alarm arriving after its own
+        all-clear would otherwise look like a second outage.
+        """
+        raised = datetime.now(timezone.utc)
+        queued = list(self._pending_alerts) + [(raised, message)]
+        self._pending_alerts.clear()
+        for index, (when, text) in enumerate(queued):
+            late = (raised - when).total_seconds()
+            body = f'[delayed {format_age(late)}] {text}' if late >= 60 else text
+            try:
+                await self._on_host_event(body)   # type: ignore[misc]  # guarded by the caller
+            except Exception:   # noqa: BLE001 — an undelivered alert must not fail the pass
+                # Everything from here on stays queued, in order: sending a later message while an
+                # earlier one is still missing is exactly the lone-recovery case.
+                self._pending_alerts.extend(queued[index:])
+                # Report what is actually held, not what was offered: the queue is bounded, so a
+                # long outage silently drops its oldest messages, and a count that ignored the
+                # bound would promise a delivery that is never coming.
+                logger.exception('[HOST] alert delivery failed — %d message(s) held for retry',
+                                 len(self._pending_alerts))
+                return
 
     def _log_source_health(self, result: IngestResult) -> None:
         """Emit source-failure lines at a level that denoises repeats (ISSUE_11).

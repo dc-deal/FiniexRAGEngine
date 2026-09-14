@@ -77,6 +77,7 @@ from finiexragengine.types.outcome_types import (
     StageTiming,
 )
 from finiexragengine.utils.archive_layout import bucket_path
+from finiexragengine.utils.console_encoding import use_utf8_output
 
 # The eight *backtestable* crypto_sentiment symbols — the IDE has kraken_spot tick data for all of
 # them. DOTUSD (the config's live-only symbol, ISSUE_70) is intentionally excluded here: no tick
@@ -496,6 +497,12 @@ def _parse_variants(spec: str):
 
 
 def main() -> None:
+    # Windows consoles are not UTF-8, and this script prints `-> ` and `.` as real
+    # characters. Without this the two summary prints raise UnicodeEncodeError and the
+    # script exits non-zero — which is how it failed on the production machine on
+    # 2026-08-28, taking seven tests with it while every run in the Linux container was
+    # green. `server_cli` and `export_cli` have always done this; this file never did.
+    use_utf8_output()
     parser = argparse.ArgumentParser(description='Generate mock sentiment JSONL for #141 / #429.')
     parser.add_argument('--cycles', type=int, default=5)
     parser.add_argument('--start', default=DEFAULT_START, help='ISO8601 UTC start')

@@ -181,6 +181,95 @@ watchdog's existing `AlertCallback` seam (`types/alert_types.py`), wired in `api
 `WorkerSupervisor.set_host_alert`. The health store itself never learns that Telegram exists: the
 event travels out on `IngestResult` and the worker announces it.
 
+### The back-off is not also a blind spot (2026-09-08)
+
+The guard stops a set polling for `correlated_backoff_minutes`, which is right — eleven feeds
+failing together is not eleven feed problems. The cost is that the engine then stops *looking*, so
+the closing event can only report the back-off's own length. On 2026-09-08 all eight episodes were
+reported as "recovered after 5m" while the neighbouring set — under the ratio, still polling — was
+fetching 265 articles again **21 seconds** after the same failure. Every episode looked identical
+and none of them was measured.
+
+So while a back-off holds, each pass runs one **connectivity probe** instead of nothing: resolve a
+name, open a socket to a literal address, log both with their durations.
+
+```
+[HOST] forex_news probe · dns cloudflare.com FAIL (24800ms) · tcp 1.1.1.1:53 FAIL (3001ms) · blocked
+[HOST] forex_news probe · dns cloudflare.com ok (31ms) · tcp 1.1.1.1:53 ok (12ms) · ok
+```
+
+Four decisions in that shape, each from what 2026-09-08 got wrong:
+
+- **The name is one the engine does not poll.** A feed fetched every 15 s stays in the OS resolver
+  cache and answers happily through an outage. That cache is why the same event produced
+  `timed out` from the fast-polled crypto feeds and `getaddrinfo failed` from the slower
+  central-bank ones — one cause wearing two symptoms, sorted by poll cadence, which read as two
+  different faults for most of a day.
+- **The socket goes to a literal address**, so the transport is tested with no name lookup in front
+  of it. DNS failing while the socket opens is a resolver fault; both failing is the path.
+- **The DNS half is timed, not bounded.** `getaddrinfo` takes no timeout — the OS resolver's retry
+  schedule decides, and that is why a failing ingest pass took **55 seconds** against a 10 s
+  per-feed deadline. Capping the probe would hide the one number that explains it.
+- **It runs only during a back-off**, where the engine is otherwise silent and no feed is being
+  touched. Two syscalls per pass, and the first probe that says `ok` dates the end of the outage.
+
+`diagnostics.connectivity_probe_*` configures it; `connectivity_probe_enabled: false` switches it
+off, because a diagnostic is worth paying for and not worth being unable to stop.
+
+### The alert survives the outage it reports (2026-09-08)
+
+The connectivity alert travels over the network it is *about*, so it is the message most likely to
+be lost exactly when it matters. On 2026-09-08 two opening alarms were lost that way while the
+recovery five minutes later went through — leaving a lone *"host connectivity recovered after 5m"*
+in the operator's inbox with nothing before it, which reads as noise rather than as an incident.
+
+An undelivered alert is now **held with the moment it was raised** (a bounded in-memory deque per
+worker, 8 deep) and the queue is drained ahead of anything newer, so the incident is read in the
+order it happened rather than the order it arrived. A delayed line says so — `[delayed 5m] host
+connectivity — …` — because an alarm arriving after its own all-clear would otherwise look like a
+second outage. A failure *during* a flush re-queues from that message onward, so the half that got
+through is never replayed.
+
+Two deliberate limits, stated rather than discovered later:
+
+- **It drains on the next alert, not on a timer.** An incident whose last message failed waits for
+  the next one. The trade buys no retry loop and no scheduler; the message worth keeping is the one
+  that *opens* an outage, and an outage is always followed by its recovery.
+- **A restart drops it.** The durable record is the log and the `correlated` rows in
+  `source_quarantine_log` — an alert is a notification, not a ledger, and persisting it would mean a
+  table for a nice-to-have.
+
+### What the cross-set line may claim (corrected 2026-09-08)
+
+The alert names the fleet, not just the set, because 12/12 across two independently-configured sets
+says *the host* while 5/5 in one set says *one upstream provider* — and the two send the operator to
+different places.
+
+**The two halves are different measures, so each says which** (2026-09-08):
+
+```
+[HOST] host connectivity — forex_news 11/11 unreachable this pass
+                         + crypto_news 12/12 known failing in 5m; no quarantine applied, retry …
+```
+
+The set's own number is `failed/pollable` **in this pass**. The other set's is `failed/known` over
+the lookback, where *known* is every row `source_health` holds for it — including a feed disabled in
+the configuration, because `enabled` lives in the config and this store deliberately never reads it.
+That is why two sets with eleven pollable feeds and one disabled feed each report `11/11` for
+themselves and `12/12` for the other: two correct numbers that looked like one inconsistent measure
+until they were labelled. Making them agree would mean teaching the store about configuration it has
+no business knowing.
+
+That count used to be `consecutive_failures > 0`, which is the other set's state **at the instant
+this pass ends**. It undercounts precisely during the flapping a host failure produces: a feed that
+failed seconds ago and then answered once has a streak of zero. On 2026-09-08 it reported
+`crypto_news 1/12` for a set that was losing 8 of 11, sending the reader to eleven healthy feeds. It
+now counts feeds whose **`last_failure_at` falls inside the correlated window** instead.
+
+What no query can see is a set that has not polled *yet* — its worker is seconds away on its own
+clock. So the wording carries what the count cannot: with nothing to report the line reads
+*"no failure reported by the other sets yet"*, never *"other sets healthy"*.
+
 `httpx`/`httpcore` are pinned to WARNING (they log every OpenAI call at INFO). The full detail
 always persists in `source_health` regardless of console level — the report reads it there.
 
@@ -246,6 +335,15 @@ days, `logs/finiex.log`, gitignored). The console stays on for live liveness; th
 survives the scrollback and stays grep-able the morning after. Re-configuration (uvicorn reload) is
 idempotent — our handlers are tagged and replaced, never stacked. Size-based rotation is available via
 `logging.rotation = "size"` + `max_bytes`. Level is the shared `log_level`.
+
+**Two clocks in one file, and it matters downstream.** The handler rolls over at **UTC** midnight,
+so `finiex.log.2026-09-07` covers UTC 2026-09-07 — but the formatter stamps the *local* clock with
+its offset (`2026-09-08T11:05:03.750+02:00`), deliberately, because the operator reads this file next
+to a wall clock. Every other surface in the engine is UTC. Anything that filters this file by time
+therefore has to parse the offset and compare in UTC; `core/observability/log_reader.py` does, and
+`GET /v1/logs/engine` serves the result — see
+[`connect_contract.md`](connect_contract.md) and the
+[diagnostics runbook](../development/diagnostics.md).
 
 Config lives in `app_config.json` (`logging`, `source_health`, `diagnostics` blocks) and mirrors the
 Pydantic defaults exactly.

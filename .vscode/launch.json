@@ -357,6 +357,135 @@
             }
         },
         {
+            // "The cluster path never fires — would a different detector, or a looser similarity?"
+            // ISSUE_106. Answers it by REPLAYING the corpus rather than by deploying a detector:
+            // three measures side by side (articles = the live semantics, distinct feeds = the
+            // design intent, lexical story = ISSUE_96's clustering one stage earlier) across a
+            // similarity grid, with the largest neighbourhood NAMED at each step — the grid alone
+            // said 0.65 "works", and only the titles showed it fires on one feed's daily template.
+            // The gap between the article and feed columns IS the intra-feed duplication.
+            // Read-only, no LLM, no embedding calls. --normalizer compares like with like while
+            // the corpus still holds both text treatments (ISSUE_112).
+            "name": "\ud83d\udcca RAGEngine: Detection Sweep (which detector would have fired?)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/finiexragengine/cli/detection_sweep_cli.py",
+            "args": [
+                "crypto_news",
+                "--since",
+                "30d"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "04_diagnostics",
+                "order": 14
+            }
+        },
+        {
+            // "The scores moved after a deploy — did the EVIDENCE move, or only the answers?"
+            // The retrieval-side sibling of Prompt Drift: the funnel per pipeline, config
+            // fingerprint and WEEKDAY, read from persisted envelopes (ISSUE_24's
+            // per_symbol_retrieval). The weekday is a key, not decoration — the ISSUE_112
+            // normaliser deployed on a Saturday, and read straight off the day series it looked
+            // like a 42% evidence collapse where the matched-weekday figure is 18%; Sunday costs
+            // both pipelines about a third of their corpus with no deploy involved.
+            // Read the PAIR of columns: a rising cut% beside a flat best distance is the floor
+            // meeting a wider spread, beside a rising one it is the corpus drifting away from the
+            // query. Different findings, and neither column alone separates them.
+            // Read-only, no corpus access, no API cost.
+            "name": "📊 RAGEngine: Retrieval Drift (did the evidence move, per weekday?)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/finiexragengine/cli/retrieval_drift_cli.py",
+            "args": [
+                "--since",
+                "14d"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "04_diagnostics",
+                "order": 15
+            }
+        },
+        {
+            // "The cluster path fires now — but is it flagging stories or one feed's template?"
+            // ISSUE_106. The archive counterpart to the Detection Sweep: the sweep REPLAYS the
+            // corpus to say what a setting would do, this reads what the running one DID, from the
+            // neighbourhood counts the detector recorded at flag time (migration 013).
+            // Read the DUPLICATION column: articles / distinct feeds across the flagged
+            // neighbourhoods. ~1.0 is a story carried by separate outlets; 2x and above means one
+            // feed supplied most of what it was credited for — the shape that kept the cluster
+            // path switched off (actionforex publishing nine currency-pair outlooks in an hour and
+            // reaching a cluster of nine by itself). The named flags below the table are the
+            // eyeball check: the ratio flags a suspicion, the headline settles it.
+            // Read-only, no LLM, no embedding calls.
+            "name": "📊 RAGEngine: Detection Quality (are the flags corroboration or one feed?)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/finiexragengine/cli/detection_quality_cli.py",
+            "args": [
+                "--since",
+                "7d"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "04_diagnostics",
+                "order": 16
+            }
+        },
+        {
+            // "Is the normaliser actually working, and how far has the corpus turned over?"
+            // ISSUE_112. Four answers in one place: which treatment produced the stored text, what
+            // carriers SURVIVE in each slice (a stamped row holding markup is the treatment
+            // failing, and the report says so instead of printing a reassuring tick), how much was
+            // removed measured WITHIN each row against its own kept original, and the keyword hits
+            // that exist only inside markup — the class where a CDN filename alone raised an
+            // article to HIGH on a weight-1.0 feed. Read-only, no API cost. --since narrows only
+            // the flow half; the census is corpus-wide by nature.
+            "name": "📊 RAGEngine: Corpus Text (normaliser census + phantom keyword hits)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/finiexragengine/cli/corpus_text_cli.py",
+            "args": [],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "04_diagnostics",
+                "order": 14
+            }
+        },
+        {
+            // "What would this vocabulary actually flag?" ISSUE_121 — the keyword half of the
+            // question `detection_sweep` answers for the cluster path. The keyword gate needs no
+            // corroboration, so a term written into config fires on its own, and until this report
+            // the only way to see what it does was to deploy it and wait.
+            // Two columns per term because the gate decides: `hits` is every match, `gated` only
+            // those on a feed at or above keyword_source_weight — a term firing only below it is
+            // dead vocabulary and invisible in a raw count. A ZERO is reported as a finding and the
+            // plural is probed: `monetary policy decision` matches nothing while the ECB titles
+            // every decision "Monetary policy decisions".
+            // Omit --terms-file to sweep the CONFIGURED vocabulary, which answers what the running
+            // list is doing. Read-only, no LLM, no embedding call.
+            "name": "📊 RAGEngine: Keyword Sweep (what would this vocabulary flag?)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/finiexragengine/cli/keyword_sweep_cli.py",
+            "args": [
+                "forex_news",
+                "--since",
+                "30d"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "04_diagnostics",
+                "order": 17
+            }
+        },
+        {
             // ISSUE_108: stamps breaking_episode_id/_start onto archived envelopes that predate
             // ISSUE_65. WRITES when --apply is added — without it this is a dry run that reports
             // what it would do and refuses to write if its self-check disagreed with any identity

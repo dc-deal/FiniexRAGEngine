@@ -25,7 +25,7 @@ the retrieved `articles`.
   empty-context fallback is a template `{% if %}` — so prompt wording *and* formatting stay in one
   reviewable file, out of Python. Markdown keeps it readable (GitHub-rendered), and LLMs parse the
   structure (headings / lists) well.
-- The render context is `symbol`, `articles`, and **`now`** (timezone-aware UTC wall clock) — the
+- The render context is `symbol`, `articles`, **`retrieved`** and **`now`** (timezone-aware UTC wall clock) — the
   "current time" anchor without which article timestamps are useless for age-weighting. **Ordering
   is template-owned** (v2 sorts newest-first via `|sort(attribute='published_at', reverse=true)`):
   presentation to the LLM is prompt behavior, so it stays versioned and hash-visible. v2 also
@@ -43,6 +43,25 @@ the retrieved `articles`.
   edited in place would change its `content_hash`, i.e. the `prompt_hash` recorded in every envelope
   it ever produced, so the builder binds `query` *and* `symbol` to the same value and
   `tests/llm/test_prompt_builder.py` pins every shipped hash.
+- **v5 (2026-09-07, `crypto_sentiment` only)** fences the **retrospective channel** (ISSUE_30). The
+  deep retrieval tier had been feeding older articles into a *current-mood* prompt unlabelled since
+  2026-09-01 — measured at 1.39 deep articles per pass on Sundays, and observed as a 50-hour-old
+  exchange-halt story sitting in ADAUSD's list. v5 splits the context into a **current news** block
+  and a labelled **background** block, prints every article's **age in hours** beside its timestamp,
+  and states that `sentiment_score`, `confidence` and `urgency` are scored from the current block
+  only. Everything else is v4 verbatim, so the score distribution attributes to the fence and to
+  nothing else.
+
+  The split reads `retrieved` — `RetrievedArticle(article, retrieval_tier)` pairs from the retrieval
+  seam (ISSUE_30) — via `selectattr('retrieval_tier', 'equalto', …)`. `PromptBuilder.build` takes it
+  as an **additive keyword-only** parameter and, when a caller omits it, derives everything as
+  `recent`: that is what v1–v4 assumed anyway, it keeps the name bound under `StrictUndefined`, and
+  it means a future call site cannot silently render an *unfenced* v5. The background block renders
+  only when it has members — roughly seven passes in eight carry no deep article, and an empty
+  labelled block invites the model to comment on its absence.
+
+  **`forex_macro_sentiment` stays on v4**: it runs no deep tier and is the control for that
+  experiment, so a v5 there would fork its series for a block that never renders.
 - **Bump the version when the prompt changes** — different prompts score the same news differently,
   so the consumer must keep the series apart (replay/backfill). A bump = a new file.
 

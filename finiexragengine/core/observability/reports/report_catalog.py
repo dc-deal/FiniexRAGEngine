@@ -29,6 +29,21 @@ from finiexragengine.core.observability.reports.cost_report import (
     EvalPipelineInfo,
     build_cost_report,
 )
+from finiexragengine.core.observability.reports.detection_quality_report import (
+    build_detection_quality_report,
+)
+from finiexragengine.core.observability.reports.detection_sweep_report import (
+    build_detection_sweep_report,
+)
+from finiexragengine.core.observability.reports.keyword_sweep_report import (
+    build_keyword_sweep_report,
+)
+from finiexragengine.core.observability.reports.no_data_report import (
+    build_no_data_report,
+)
+from finiexragengine.core.observability.reports.retrieval_drift_report import (
+    build_retrieval_drift_report,
+)
 from finiexragengine.core.observability.reports.perf_report import build_perf_report
 from finiexragengine.core.observability.reports.prompt_drift_report import (
     build_prompt_drift_report,
@@ -52,6 +67,10 @@ from finiexragengine.core.pipeline.detection_preflight import (
 )
 from finiexragengine.core.pipeline.breaking_story_rule import (
     groupings_from_configs as story_groupings_from_configs,
+)
+from finiexragengine.core.observability.reports.corpus_text_report import (
+    KeywordSet,
+    build_corpus_text_report,
 )
 from finiexragengine.types.config_types.report_config_types import ReportsConfig
 from finiexragengine.types.report_types import (
@@ -150,6 +169,18 @@ def _build_source_health(database_url: str, manager: AppConfigManager,
         silence_days=manager.get_config().reports.source_health.silence_days)
 
 
+def _build_no_data(database_url: str, manager: AppConfigManager, params: ReportParams) -> Any:
+    """Retrieval coverage — read-only over the persisted envelopes.
+
+    Belongs on the catalog even though `coverage` deliberately does not: this one **reads
+    `metadata.per_symbol_retrieval` from outcomes** and never touches the corpus or the query-vector
+    cache, so there is no path from a GET into a paid embedding call. It is the only surface that
+    answers the floor question and the deep tier's contribution from off the machine.
+    """
+    return build_no_data_report(database_url, params.since,
+                                since_label=params.window_label or '7d')
+
+
 def _build_perf(database_url: str, manager: AppConfigManager, params: ReportParams) -> Any:
     return build_perf_report(database_url, params.since, since_label=params.window_label or '7d')
 
@@ -190,7 +221,10 @@ def _build_cost(database_url: str, manager: AppConfigManager, params: ReportPara
     return build_cost_report(database_url, eval_pipelines=_eval_pipelines(manager),
                              credit_usd=manager.get_config().cost.account_credit_usd,
                              recent_passes=params.options.get('recent_passes', 20),
-                             windows=windows)
+                             windows=windows,
+                             # When the price table was last held against the vendor's rates —
+                             # every USD figure in this report is derived from it.
+                             prices_checked=manager.get_config().pricing.checked)
 
 
 def _build_source_latency(database_url: str, manager: AppConfigManager,
@@ -251,7 +285,149 @@ def _build_prompt_drift(database_url: str, manager: AppConfigManager,
         database_url, params.since, since_label=params.window_label or '30d',
         rules=groupings_from_configs(configs),
         confirm_thresholds={config.pipeline_id: config.breaking.urgency_threshold
-                            for config in configs})
+                            for config in configs},
+        # A verdict threshold, so read from config rather than from `params` — a caller must not be
+        # able to make the same weekday cell read solid or thin.
+        min_scored=manager.get_config().reports.prompt_drift.min_scored)
+
+
+def _keyword_sets(manager: AppConfigManager) -> List[KeywordSet]:
+    """Each source-set's detection vocabulary, gate and per-feed weights (ISSUE_112).
+
+    Read through `build_source_set_registry()` — the only load path that honours the
+    `user_configs/` overlay, which is exactly the layer that disables a feed or retunes a gate per
+    machine. Resolving it any other way would judge the corpus against a configuration that did not
+    run.
+
+    Every declared source is carried, not only the enabled ones: the corpus holds articles from
+    feeds that have since been switched off, and their phantom hits are still what the detector
+    acted on at the time.
+    """
+    sets: List[KeywordSet] = []
+    for source_set in manager.build_source_set_registry().list_sets():
+        detection = source_set.detection
+        sets.append(KeywordSet(
+            source_set_id=source_set.source_set_id,
+            keywords=tuple(detection.keywords),
+            keyword_source_weight=detection.keyword_source_weight,
+            weights={source.source_id: source.weight for source in source_set.sources}))
+    return sets
+
+
+def _build_corpus_text(database_url: str, manager: AppConfigManager,
+                       params: ReportParams) -> Any:
+    return build_corpus_text_report(
+        database_url, params.since, since_label=params.window_label or '7d',
+        keyword_sets=_keyword_sets(manager),
+        example_limit=manager.get_config().reports.corpus_text.examples)
+
+
+def _build_detection_sweep(database_url: str, manager: AppConfigManager,
+                           params: ReportParams) -> Any:
+    """The detector replay, one report per source-set (ISSUE_106).
+
+    **Belongs on the catalog, and the reason is the catalog's own rule.** Its CLI docstring used to
+    say it was excluded for being heavy — a self-join over embeddings. Weight is not the criterion
+    this module applies: `coverage` is absent because a cache miss inside it is a paid embedding
+    call, and `_build_no_data` is present because it reads persisted envelopes and cannot spend.
+    This builder opens one connection and runs SELECTs over the corpus — no LLM, no embedder, no
+    write — so there is no path from a GET into a charge. Weight is bounded where the window ceiling
+    already is, on the exposed surface, by `sample`.
+
+    Returns a LIST, one entry per set, narrowed by `source_set_id`. The console has always swept
+    every set by default; a route that answered for one would be a second program wearing the same
+    name.
+    """
+    reports_config = manager.get_config().reports.detection_sweep
+    similarities = tuple(sorted(params.options.get('similarities')
+                                or reports_config.similarities, reverse=True))
+    sample = params.options.get('sample') or reports_config.sample
+    wanted = params.source_set_id
+    reports = []
+    # Through the registry factory, like `_build_breaking`: a per-machine `enabled: false` decides
+    # which feeds contributed articles at all, and a sweep counting a parked feed would flatter a
+    # neighbourhood it never joined.
+    for source_set in manager.build_source_set_registry().list_sets():
+        if wanted and source_set.source_set_id != wanted:
+            continue
+        detection = source_set.detection
+        reports.append(build_detection_sweep_report(
+            database_url, params.since, source_set_id=source_set.source_set_id,
+            source_ids={source.source_id for source in source_set.active_sources()},
+            window_minutes=detection.cluster_window_minutes,
+            mid_cluster_size=detection.mid_cluster_size,
+            high_cluster_size=detection.high_cluster_size,
+            live_similarity=detection.cluster_similarity,
+            since_label=params.window_label or '7d', sample=sample,
+            similarities=similarities, normalizer=params.options.get('normalizer')))
+    return reports
+
+
+def _build_keyword_sweep(database_url: str, manager: AppConfigManager,
+                         params: ReportParams) -> Any:
+    """The vocabulary replay, one report per source set (ISSUE_121).
+
+    On the catalog under the rule #120 pinned, and for the same reason `detection_sweep` is: it runs
+    SELECTs over the corpus — no LLM, no embedder, no write — so no GET here can turn into spend.
+
+    `_keyword_sets` is reused rather than re-derived, so this report, `corpus_text` and
+    `detection_quality` cannot disagree about what the running vocabulary was. `terms` replaces that
+    vocabulary for one call — the candidate list an operator is about to write into config — and its
+    absence is what makes the same address answer "what is the configured list doing".
+
+    Returns a LIST, one entry per set, narrowed by `source_set_id`: a route answering for one set by
+    default would be a second program wearing this one's name.
+    """
+    supplied_terms = tuple(params.options.get('terms') or ())
+    wanted = params.source_set_id
+    reports = []
+    for keyword_set in _keyword_sets(manager):
+        if wanted and keyword_set.source_set_id != wanted:
+            continue
+        reports.append(build_keyword_sweep_report(
+            database_url, params.since, keyword_set=keyword_set,
+            terms=supplied_terms or None, since_label=params.window_label or '14d',
+            normalizer=params.options.get('normalizer')))
+    return reports
+
+
+def _build_detection_quality(database_url: str, manager: AppConfigManager,
+                             params: ReportParams) -> Any:
+    """What the detector flagged and on what evidence — read over the corpus columns (ISSUE_106).
+
+    On the catalog for the same reason `no_data` is: it reads persisted columns and never touches
+    the query-vector cache, so there is no path from a GET into a paid embedding call.
+
+    The disabled sets are a *config* fact the corpus has no column for — the same shape as
+    `source_health`'s disabled feeds. Without it an empty cluster row would read as a gap, when for
+    `forex_news` it is a decision taken against a measurement.
+
+    The vocabulary is the second such fact (migration 014): a term that never fired leaves no row,
+    so "declared and silent" exists only in the comparison between config and corpus. `_keyword_sets`
+    is reused rather than re-derived — one resolution, so this report and `corpus_text` cannot
+    disagree about what the running vocabulary was.
+    """
+    disabled = [source_set.source_set_id
+                for source_set in manager.build_source_set_registry().list_sets()
+                if not source_set.detection.cluster_enabled]
+    return build_detection_quality_report(
+        database_url, params.since, since_label=params.window_label or '7d',
+        example_limit=manager.get_config().reports.detection_quality.examples,
+        disabled_sets=disabled, keyword_sets=_keyword_sets(manager))
+
+
+def _build_retrieval_drift(database_url: str, manager: AppConfigManager,
+                           params: ReportParams) -> Any:
+    """Whether the evidence moved when the setup changed — read over persisted envelopes.
+
+    On the catalog for the same reason `no_data` is: it reads `metadata.per_symbol_retrieval` from
+    `outcomes` and never touches the corpus or the query-vector cache. The floor's own snapshot
+    travels in that field, so a retune is visible in the archive rather than inferred from config
+    history.
+    """
+    return build_retrieval_drift_report(
+        database_url, params.since, since_label=params.window_label or '14d',
+        min_passes=manager.get_config().reports.retrieval_drift.min_passes)
 
 
 _CATALOG: Dict[str, ReportSpec] = {
@@ -280,12 +456,25 @@ _CATALOG: Dict[str, ReportSpec] = {
         defaults=lambda config: {'window': config.breaking_timeline.window},
         summary='The per-pass breaking on/off series behind the episode count, with the flip count '
                 'next to it — optionally narrowed to one symbol.'),
+    'corpus_text': ReportSpec(
+        build=_build_corpus_text, params=('window',),
+        defaults=lambda config: {'window': config.corpus_text.window},
+        summary='Which text treatment produced the stored corpus, what carriers survive in each '
+                'slice, how much the normaliser removed measured within each row, and the keyword '
+                'hits that exist only inside markup.'),
     'prompt_drift': ReportSpec(
         build=_build_prompt_drift, params=('window',),
         defaults=lambda config: {'window': config.prompt_drift.window},
         summary='The urgency distribution per prompt version, per pipeline — confirm and hold-band '
                 'shares, the hold/break ratio, and how concentrated the confirm band is. Never '
                 'pooled across pipelines.'),
+    'no_data': ReportSpec(
+        build=_build_no_data, params=('window',),
+        defaults=lambda config: {'window': config.perf.window},
+        summary='Retrieval coverage per symbol: the share of mechanical no-data passes, how close '
+                'the nearest article came to the relevance floor, and what the deep tier carried '
+                'past the recency window. Read from the persisted envelopes — no corpus access, '
+                'no paid call.'),
     'perf': ReportSpec(
         build=_build_perf, params=('window',),
         defaults=lambda config: {'window': config.perf.window},
@@ -303,6 +492,34 @@ _CATALOG: Dict[str, ReportSpec] = {
         defaults=lambda config: {'window': config.breaking.window},
         summary='Confirmed breaking episodes, the detection funnel, reaction times and the '
                 'episodes-vs-stories measure over the window.'),
+    'detection_sweep': ReportSpec(
+        build=_build_detection_sweep,
+        params=('window', 'sample', 'similarities', 'normalizer', 'source_set_id'),
+        defaults=lambda config: {'window': config.detection_sweep.window,
+                                 'sample': config.detection_sweep.sample,
+                                 'similarities': config.detection_sweep.similarities},
+        summary='What each candidate detector would have flagged, replayed from the stored corpus: '
+                'near-duplicate articles, distinct feeds and lexical stories across a similarity '
+                'grid. Read-only — no LLM, no embedding call.'),
+    'keyword_sweep': ReportSpec(
+        build=_build_keyword_sweep,
+        params=('window', 'source_set_id', 'terms', 'normalizer'),
+        defaults=lambda config: {'window': config.keyword_sweep.window},
+        summary='What a vocabulary would flag, replayed over the stored corpus: hits and '
+                'gate-clearing hits per term, the feeds they came from, and a zero reported as a '
+                'finding (with the plural probed). Read-only — no LLM, no embedding call.'),
+    'detection_quality': ReportSpec(
+        build=_build_detection_quality, params=('window',),
+        defaults=lambda config: {'window': config.detection_quality.window},
+        summary='What the detector actually flagged and on what evidence: flags per path, the '
+                'neighbourhood each cluster flag was made on, and the duplication ratio that '
+                'separates cross-feed corroboration from one feed repeating itself.'),
+    'retrieval_drift': ReportSpec(
+        build=_build_retrieval_drift, params=('window',),
+        defaults=lambda config: {'window': config.retrieval_drift.window},
+        summary='Whether the evidence reaching the prompt moved when the setup changed — the '
+                'retrieval funnel per pipeline, config fingerprint and weekday, so a deploy '
+                'boundary is not read across a weekend.'),
 }
 
 
@@ -350,9 +567,10 @@ def resolve(name: str, config: ReportsConfig,
             options[key] = supplied[key]
 
     params = ReportParams(source_id=supplied.get('source_id'), symbol=supplied.get('symbol'),
-                          episode_start=supplied.get('episode_start'), options=options)
+                          episode_start=supplied.get('episode_start'),
+                          source_set_id=supplied.get('source_set_id'), options=options)
     # The selectors have no configured default — they narrow one call or they are absent.
-    for key in ('source_id', 'symbol', 'episode_start'):
+    for key in ('source_id', 'symbol', 'episode_start', 'source_set_id'):
         if key in supplied:
             applied[key] = AppliedParam(value=supplied[key], source='request')
 

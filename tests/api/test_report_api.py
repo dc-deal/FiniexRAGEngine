@@ -9,9 +9,10 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from finiex_auth.token_registry import TokenRegistry
 
+from finiexragengine.api.endpoints.log_router import build_log_router
 from finiexragengine.api.endpoints.report_router import build_report_router
-from finiexragengine.api.token_registry import TokenRegistry
 from finiexragengine.configuration.app_config_manager import AppConfigManager
 from finiexragengine.core.observability.reports import report_catalog
 from finiexragengine.types.report_types import ReportParams
@@ -48,6 +49,31 @@ def test_a_report_answers_with_its_data_and_the_window_it_used(client: TestClien
     # The derived values the console shows must be in the payload too, or the two surfaces
     # disagree about the same report.
     assert 'flagged_count' in body['data']
+
+
+def test_a_repeatable_terms_parameter_reaches_the_keyword_sweep(client: TestClient) -> None:
+    """The candidate vocabulary travels as a repeatable query parameter (ISSUE_121).
+
+    It comes back named in `params` with its origin: a parameter accepted and then dropped is the
+    failure this provenance model exists to prevent, and `terms` is the first one whose whole point
+    is that the answer describes a list the CONFIG does not contain.
+    """
+    body = client.get('/v1/reports/keyword_sweep',
+                      params=[('terms', 'rate decision'), ('terms', 'intervention'),
+                              ('source_set_id', 'forex_news')]).json()
+
+    assert body['params']['terms']['value'] == ['rate decision', 'intervention']
+    assert body['params']['terms']['source'] == 'request'
+    assert body['params']['window']['source'] == 'config'      # configured unless narrowed
+    assert [report['source_set_id'] for report in body['data']] == ['forex_news']
+    assert [row['term'] for row in body['data'][0]['terms']] == ['intervention', 'rate decision']
+
+
+def test_a_report_that_does_not_take_terms_refuses_them(client: TestClient) -> None:
+    """Refused rather than ignored — the same rule every other unusable parameter follows."""
+    response = client.get('/v1/reports/breaking', params={'terms': 'rate decision'})
+
+    assert response.status_code == 422 and 'terms' in response.json()['detail']
 
 
 def test_an_unknown_report_is_404_not_500(client: TestClient) -> None:
@@ -132,6 +158,60 @@ def test_a_cap_is_bounded_like_the_window(client: TestClient) -> None:
     assert client.get('/v1/reports/source_health?recent_problems=100000').status_code == 422
 
 
+def test_the_sweep_sample_is_bounded_because_weight_is_what_made_it_doubtful(
+        client: TestClient) -> None:
+    """`detection_sweep` is the heaviest entry on the catalog — a self-join over embeddings.
+
+    It belongs here because it cannot spend (ISSUE_106), not because it is cheap. The bound is what
+    makes admitting it safe, so it is asserted rather than trusted: an unbounded `sample` would be
+    the one way this entry differs in kind from every other read.
+    """
+    assert client.get('/v1/reports/detection_sweep?sample=99999').status_code == 422
+    assert client.get('/v1/reports/detection_sweep?sample=0').status_code == 422
+
+    body = client.get('/v1/reports/detection_sweep?sample=25').json()
+    assert body['params']['sample']['value'] == 25
+    assert body['params']['sample']['source'] == 'request'
+
+
+def test_the_sweep_grid_can_be_overridden_and_its_values_are_bounded(
+        client: TestClient) -> None:
+    """The grid is a list parameter, following `cost.windows` — so it is asserted, not assumed.
+
+    A repeated query parameter with per-item bounds is the one shape on this route that behaves
+    differently from a scalar, and a similarity outside [0, 1] is not a grid, it is a typo.
+    """
+    body = client.get('/v1/reports/detection_sweep?similarities=0.9&similarities=0.5').json()
+    assert body['params']['similarities']['value'] == [0.9, 0.5]
+    assert body['params']['similarities']['source'] == 'request'
+
+    assert client.get('/v1/reports/detection_sweep?similarities=1.5').status_code == 422
+
+    # Nothing supplied: the configured grid stands, and the answer says it came from config.
+    configured = client.get('/v1/reports/detection_sweep').json()
+    assert configured['params']['similarities']['source'] == 'config'
+
+
+def test_the_sweep_narrows_to_one_set_over_http(client: TestClient) -> None:
+    every = client.get('/v1/reports/detection_sweep').json()['data']
+    narrowed = client.get(
+        '/v1/reports/detection_sweep?source_set_id=crypto_news').json()['data']
+
+    assert len(every) >= len(narrowed)
+    assert [report['source_set_id'] for report in narrowed] == ['crypto_news']
+
+
+def test_retrieval_drift_takes_a_window_and_nothing_a_caller_could_bend(
+        client: TestClient) -> None:
+    """`min_passes` decides whether a cell reads as thin — a verdict, so it stays config-only.
+
+    Same rule as `source_health.silence_days`: a caller must not be able to make the same cell look
+    solid or thin.
+    """
+    assert client.get('/v1/reports/retrieval_drift?window=14d').status_code == 200
+    assert client.get('/v1/reports/retrieval_drift?symbol=BTCUSD').status_code == 422
+
+
 def test_cost_compares_the_configured_set_and_a_call_narrows_it(client: TestClient) -> None:
     configured = client.get('/v1/reports/cost').json()
     assert [window['label'] for window in configured['data']['real']] == [
@@ -150,3 +230,74 @@ def test_remaining_credit_stays_an_all_time_fact_whichever_window_is_shown(
     narrowed = client.get('/v1/reports/cost?window=14d').json()['data']
 
     assert full['spent_all_usd'] == narrowed['spent_all_usd']
+
+
+def test_the_corpus_text_report_is_served_with_its_payload(client: TestClient) -> None:
+    """ISSUE_112's durable half has to be reachable remotely, or it is a shell-only answer again.
+
+    The engine runs on a box the assistant can only reach over the read-only HTTPS surface, so a
+    diagnostic that exists solely as a CLI answers nobody who is not already on the machine. This
+    pins the whole chain: the catalog lists it, the generic route builds it, and the payload
+    carries the fields the console renders — including `treatments`, whose per-slice carrier counts
+    are the one number that says whether the normaliser is working.
+    """
+    listing = client.get('/v1/reports').json()
+    assert 'corpus_text' in {entry['name'] for entry in listing['reports']}
+
+    body = client.get('/v1/reports/corpus_text').json()
+
+    assert body['report'] == 'corpus_text'
+    assert body['params']['window']['source'] == 'config'
+    # The census and the phantom table both travel — a payload carrying only the totals would make
+    # the API a strictly weaker surface than the console for the same report.
+    for key in ('articles', 'treatments', 'removal', 'phantoms', 'window_articles', 'keyword_sets'):
+        assert key in body['data'], key
+
+
+# --- the log route (2026-09-08) --------------------------------------------------------------
+
+def test_the_log_route_is_bounded_and_names_an_unknown_stream(tmp_path):
+    """A caller picks a range, never a file — `{name}` is a closed set, not a path."""
+    log = tmp_path / 'finiex.log'
+    log.write_text('2026-09-08T11:05:03.750+02:00 ERROR mod: [HOST] connectivity\n',
+                   encoding='utf-8')
+    app = FastAPI()
+    app.include_router(build_log_router(str(log), TokenRegistry()))
+    client = TestClient(app)
+
+    # `{name}` is a path segment, so a traversal attempt cannot even match the route — and a name
+    # outside the closed set is refused rather than resolved against the filesystem.
+    assert client.get('/v1/logs/nope').status_code == 404
+    assert client.get('/v1/logs/engine/../secrets').status_code == 404
+    assert client.get('/v1/logs/engine?limit=0').status_code == 422
+    assert client.get('/v1/logs/engine?min_level=SHOUTING').status_code == 422
+
+
+def test_the_log_route_answers_in_UTC_for_a_locally_stamped_file(tmp_path):
+    """The route's whole reason to be careful: the file is GMT+2, the caller speaks UTC."""
+    log = tmp_path / 'finiex.log'
+    log.write_text('2026-09-08T11:05:03.750+02:00 ERROR mod: [HOST] connectivity\n',
+                   encoding='utf-8')
+    app = FastAPI()
+    app.include_router(build_log_router(str(log), TokenRegistry()))
+    client = TestClient(app)
+
+    hit = client.get('/v1/logs/engine'
+                     '?since=2026-09-08T09:00:00Z&until=2026-09-08T09:10:00Z').json()
+    miss = client.get('/v1/logs/engine'
+                      '?since=2026-09-08T11:00:00Z&until=2026-09-08T11:10:00Z').json()
+
+    assert hit['matched'] == 1
+    assert hit['entries'][0]['timestamp'].startswith('2026-09-08T09:05:03')
+    assert miss['matched'] == 0
+
+
+def test_the_log_route_says_file_logging_is_off_rather_than_serving_an_empty_log():
+    """`logging.file: null` is a supported mode; an empty page would read as a quiet engine."""
+    app = FastAPI()
+    app.include_router(build_log_router(None, TokenRegistry()))
+
+    response = TestClient(app).get('/v1/logs/engine')
+
+    assert response.status_code == 503
+    assert 'logging.file' in response.json()['detail']

@@ -11,12 +11,21 @@ re-open running stories as fresh episodes.
 
 `trigger_reason` and `RunError.type` already had this split; these four did not.
 """
+import typing
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from finiexragengine.core.observability.reports.ingest_report import _STATUS_LABELS
 from finiexragengine.core.outcome.outcome_store import OutcomeStore
 from finiexragengine.core.pipeline.envelope_contract import hold_result
+from finiexragengine.core.sources.article_normalizer import ArticleNormalizer
+from finiexragengine.types.ingest_types import (
+    DETECTION_TRIGGERS,
+    TEXT_NORMALIZER_PROFILES,
+    PollStatus,
+)
+from finiexragengine.types.article_types import RETRIEVAL_TIERS
 from finiexragengine.types.outcome_types import (
     DATA_ORIGINS,
     RESULT_BASES,
@@ -88,3 +97,64 @@ def test_the_vocabularies_are_still_declared():
     assert RESULT_BASES == ('llm', 'no_data', 'degraded')
     assert RUN_STATUSES == ('success', 'partial', 'error')
     assert DATA_ORIGINS == ('live', 'synthetic')
+    assert DETECTION_TRIGGERS == ('cluster', 'keyword')
+    assert TEXT_NORMALIZER_PROFILES == ('v1',)
+    assert RETRIEVAL_TIERS == ('recent', 'deep')
+
+
+def test_a_corpus_column_vocabulary_is_strict_where_it_is_configured():
+    """The corpus-side half of the same split (ISSUE_106 / ISSUE_112).
+
+    Both values are written onto `articles` rows as plain TEXT — a row carrying a profile or a
+    trigger a later version introduced must still load. Strictness therefore sits where the value
+    is *chosen*: the normaliser refuses an unknown profile at construction, which is boot time,
+    rather than stamping a name nothing implements onto a corpus nobody can re-derive.
+    """
+    with pytest.raises(ValueError, match='v2'):
+        ArticleNormalizer('v2')
+
+
+def test_a_citation_from_an_unknown_retrieval_tier_still_loads():
+    """ISSUE_30's field joins the same split: `ArticleRef.retrieval_tier` is a plain `str`.
+
+    A later version may add a third window — a per-symbol tier, a corroboration tier — and an
+    archive line carrying it must load on a reader pinned to this build rather than refusing the
+    whole envelope over one unknown tag.
+    """
+    line = _archived()
+    line['result'][0]['sources'] = [{
+        'article_id': 'a', 'url': 'https://example.test/a', 'title': 't',
+        'published_at': _TS.isoformat(), 'retrieval_tier': 'corroboration'}]
+
+    parsed = SentimentEnvelope(**line)
+    assert parsed.result[0].sources[0].retrieval_tier == 'corroboration'
+
+
+def test_a_citation_archived_before_the_field_existed_still_loads():
+    """And `None` keeps its single meaning: archived before ISSUE_30, never \"recent\"."""
+    line = _archived()
+    line['result'][0]['sources'] = [{
+        'article_id': 'a', 'url': 'https://example.test/a', 'title': 't',
+        'published_at': _TS.isoformat()}]
+
+    parsed = SentimentEnvelope(**line)
+    assert parsed.result[0].sources[0].retrieval_tier is None
+
+
+def test_every_poll_status_has_a_display_label():
+    """The deploy hazard this file exists to catch, one vocabulary over (2026-09-08).
+
+    `build_ingest_report` renders `_STATUS_LABELS[poll.status]` — a **KeyError**, not a fallback.
+    So a `PollStatus` added without a label is a report that crashes the first time that status
+    occurs, which by construction is during whatever incident produced it, on the production
+    machine, where nothing here runs. `embed_failed` was added that way and this is what makes the
+    next one impossible.
+    """
+    declared = set()
+    for member in typing.get_args(PollStatus):
+        # `PollStatus` embeds `PollOutcome`, so one arg is itself a Literal.
+        declared |= set(typing.get_args(member)) if typing.get_args(member) else {member}
+
+    assert declared == set(_STATUS_LABELS), (
+        f'poll statuses without a display label: {sorted(declared - set(_STATUS_LABELS))}; '
+        f'labels for statuses that no longer exist: {sorted(set(_STATUS_LABELS) - declared)}')

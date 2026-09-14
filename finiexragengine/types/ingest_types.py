@@ -20,7 +20,31 @@ PollOutcome = Literal['ok', 'failed']
 # flavour of `quarantined` (ISSUE_84): the feed did nothing wrong, the whole set is paused because
 # the local connectivity failed, and a surface that says "QUARANTINED" there tells the operator to
 # look at the feed — which is exactly the wrong place.
-PollStatus = Literal[PollOutcome, 'quarantined', 'floor_skipped', 'suspended', 'host_backoff']
+# `embed_failed` (2026-09-08) is deliberately NOT a flavour of `suspended`, for the same reason
+# `host_backoff` is not a flavour of `quarantined`: `suspended` means the provider refused on
+# quota and the answer is billing, while this means the provider could not be reached at all and
+# the answer is the network. A surface that says SUSPENDED during a DNS outage sends the operator
+# to the wrong page.
+PollStatus = Literal[PollOutcome, 'quarantined', 'floor_skipped', 'suspended', 'host_backoff',
+                     'embed_failed']
+
+# WHICH text treatment produced an article's stored text, its vector and the prompt that read it
+# (ISSUE_112). A closed vocabulary rather than free text for the same reason as `DetectionTrigger`:
+# it is written onto every corpus row and it is a leaf of `config_fingerprint`, so a typo would fork
+# the signal series under a name nothing else uses.
+#
+# Versions only move forward, like `prompt_version`: a profile is never edited in place, because the
+# archived rows stamped with it record what produced their vectors. A corrected treatment is the next
+# profile.
+TextNormalizerProfile = Literal[
+    'v1',           # strip script/style bodies + tags, unescape, drop Cc/Cf, NFC, collapse whitespace
+]
+
+# The same vocabulary as data, for validation and for surfaces that enumerate it. NOT in it:
+# '' / NULL, which means "stored before this column existed" — an absence, never a profile. Strict at
+# the producing seam, plain `str` at the storage boundary, so a row carrying a profile a later
+# version introduced still loads.
+TEXT_NORMALIZER_PROFILES: Tuple[str, ...] = get_args(TextNormalizerProfile)
 
 
 @dataclass
@@ -36,6 +60,12 @@ class SourceIngest:
     truncated: int = 0
     rejected: int = 0
     embed_tokens: int = 0
+    # What the normaliser removed before any of the above ran (ISSUE_112): how many fetched articles
+    # carried a markup/entity/zero-width carrier, and how many characters were dropped from them.
+    # A silent 36.7 % token overhead is how this survived unnoticed for the project's whole life, so
+    # the pass reports its own effect rather than leaving it to a later query.
+    normalised: int = 0
+    dropped_chars: int = 0
 
     @property
     def duplicates(self) -> int:
@@ -218,11 +248,14 @@ class DetectionReachability:
     - **the weight check is a proof.** `keyword_source_weight` is compared against the highest
       weight actually running. If the gate sits above it, the keyword fast-path cannot fire at all —
       there is no loophole, because `source_weight` comes from the config and nothing else.
-    - **the cluster check is an indicator.** `count_neighbors` is a `COUNT(*)` over corpus articles
-      with no notion of which feed each came from, so a set of four feeds reaches a cluster of five
-      whenever one of them publishes near-duplicates of its own (a live-blog, a follow-up, a
-      syndicated re-post). Fewer active feeds than the threshold therefore means "only intra-feed
-      duplication can still get there", never "unreachable".
+    - **the cluster check is an indicator — unless the set counts feeds (ISSUE_106).** While
+      `cluster_unit` is `'articles'` the probe has no notion of which feed each neighbour came
+      from, so a set of four feeds reaches a cluster of five whenever one of them publishes
+      near-duplicates of its own (a live-blog, a follow-up, a syndicated re-post): fewer active
+      feeds than the threshold means "only intra-feed duplication can still get there", never
+      "unreachable". Under `'feeds'` the same comparison becomes a **proof** — three distinct feeds
+      cannot come from fewer than three pollable ones — so the wording follows the unit rather than
+      being fixed. That is the whole reason the unit is carried here.
     """
     source_set_id: str
     declared: int
@@ -247,6 +280,16 @@ class DetectionReachability:
     # live one, which is the same mistake as reading an unmeasured corpus as an empty one.
     quarantined_ids: List[str] = field(default_factory=list)
     quarantine_known: bool = False
+    # What the set's cluster size counts, and whether the path runs at all (ISSUE_106). Both are
+    # config facts the verdict cannot be stated without: the same threshold against the same feeds
+    # means something different per unit, and a switched-off path is not an unreachable one.
+    cluster_unit: str = 'articles'
+    cluster_enabled: bool = True
+
+    @property
+    def cluster_check_is_proof(self) -> bool:
+        """Whether the cluster verdict can be stated as fact rather than as an indicator."""
+        return self.cluster_unit == 'feeds'
 
     @property
     def effective(self) -> int:
@@ -259,12 +302,17 @@ class DetectionReachability:
 
     @property
     def cluster_needs_self_duplication(self) -> bool:
-        """HIGH is out of reach for the set's feeds alone — only a feed duplicating itself gets there."""
-        return self.high_cluster_size > self.effective
+        """HIGH is out of reach for the set's feeds alone.
+
+        Under `'articles'` that means only a feed duplicating itself can still get there; under
+        `'feeds'` it is simply unreachable. A **disabled** path is neither — it is off by decision,
+        which is a different statement and gets its own line.
+        """
+        return self.cluster_enabled and self.high_cluster_size > self.effective
 
     @property
     def mid_needs_self_duplication(self) -> bool:
-        return self.mid_cluster_size > self.effective
+        return self.cluster_enabled and self.mid_cluster_size > self.effective
 
     @property
     def keyword_path_dead(self) -> bool:
@@ -275,6 +323,54 @@ class DetectionReachability:
     def satisfiable(self) -> bool:
         return not (self.cluster_needs_self_duplication or self.mid_needs_self_duplication
                     or self.keyword_path_dead)
+
+
+@dataclass
+class HostProbe:
+    """What the host could still reach while a connectivity back-off held (2026-09-08).
+
+    Lives next to `HostEvent` because it exists to explain one: the event says polling stopped, the
+    probe says whether the network was actually down and for how long. Two independent halves —
+    resolving a name, and opening a socket to a literal address — because on 2026-09-08 the two
+    failed in different proportions per feed, and the proportion turned out to be a function of the
+    OS resolver cache rather than of the fault.
+    """
+    at: datetime
+    dns_ok: bool
+    dns_ms: float
+    tcp_ok: bool
+    tcp_ms: float
+    # Did the RESOLVER answer at all — asked with a name it cannot have cached (2026-09-09).
+    # `None` when the probe did not take this leg. The plain `dns_ok` above is a control and
+    # nothing more: it resolves a fixed name that the probe itself re-asks every 15 s, so the OS
+    # keeps it cached and it answers in ~1 ms straight through an outage. That blind spot cost the
+    # first two measured episodes, which reported `ok` while eleven feeds could not resolve.
+    resolver_ok: Optional[bool] = None
+    resolver_ms: float = 0.0
+
+    @property
+    def verdict(self) -> str:
+        """What this probe alone can claim — never more than that.
+
+        `dns_only` is the interesting one: a name that will not resolve while a socket to a literal
+        address opens fine is a resolver fault, and every feed failure in that window is a symptom
+        of it rather than eleven separate feed problems.
+        """
+        # The resolver leg outranks the cached one: a name answered from cache says nothing about
+        # whether the resolver is alive, and that is the failure this probe exists to catch.
+        if self.resolver_ok is False and self.tcp_ok:
+            return 'resolver_down'
+        if self.dns_ok and self.tcp_ok:
+            return 'ok'
+        if self.tcp_ok:
+            return 'dns_only'
+        if self.dns_ok:
+            return 'transport_only'
+        return 'blocked'
+
+    @property
+    def reachable(self) -> bool:
+        return self.dns_ok and self.tcp_ok and self.resolver_ok is not False
 
 
 @dataclass
@@ -293,9 +389,15 @@ class IngestResult:
     truncated: int = 0              # inputs trimmed to the model's limit (ISSUE_79)
     rejected: int = 0               # inputs the provider refused — dropped, never stored
     embed_tokens: int = 0           # tokens actually sent to the embedder this pass
+    normalised: int = 0             # fetched articles whose text carried markup/entities (ISSUE_112)
+    dropped_chars: int = 0          # characters the normaliser removed from them
     candidates: int = 0             # breaking candidates flagged this pass (HIGH tier, ISSUE_11)
     max_tier: int = 0               # highest importance tier written this pass — drives the eval wake (ISSUE_11)
     suspended: bool = False         # paid embedding suspended this pass (provider quota, ISSUE_47)
+    # The embedding provider could not be reached and the pass stopped at that source (2026-09-08).
+    # Distinct from `suspended`: nothing was refused, nothing was billed, and the fix is not a
+    # budget one. Carried so the worker line and the live display can say which of the two it was.
+    embed_failed: bool = False
     polls: List[SourcePoll] = field(default_factory=list)
     # Source-health outcomes for this pass (ISSUE_11) — let the worker pick a log level so
     # repeated identical failures are denoised (WARN once, DEBUG the repeats, WARN on flag).

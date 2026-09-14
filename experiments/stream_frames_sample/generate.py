@@ -18,10 +18,31 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import psycopg
 
+# The SAME renderer the live stream uses (ISSUE_9). This file used to carry its own `_frame`, which
+# is how two reissues came to disagree with the contract they demonstrate: a published sample
+# rendered by different code than the wire is a second implementation of a one-specification format.
+from finiexragengine.core.outcome.stream_frames import (
+    render_control,
+    render_heartbeat,
+    render_retry,
+    render_signal,
+)
+
 OUT_PATH = 'docs/architecture/STREAM_FRAMES_SAMPLE.sse'
 PIPELINE = 'crypto_sentiment'
 CADENCE_MS = 600_000                      # M10 — what the pair is translated to
 ISO = re.compile(r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$')
+
+# Every row of the envelope must carry the episode identity NATIVELY. The archive reaches back before
+# ISSUE_65, and a pre-#65 row simply has no such key — so an envelope containing one cannot be
+# evidence about what the build emits, which is the only thing this sample is for. Expressed as a
+# predicate over the data rather than as a deploy timestamp: the boundary is "does the row have the
+# key", which is exactly the question, where a remembered date is a proxy that goes stale.
+_NATIVE_IDENTITY = """
+    NOT EXISTS (
+        SELECT 1 FROM jsonb_array_elements(o.envelope->'result') probe
+        WHERE NOT (probe ? 'breaking_episode_id') OR NOT (probe ? 'breaking_episode_start')
+    )"""
 
 # --- the contract, as data (ISSUE_9 §4) -------------------------------------------------------
 # Tier 1-3 are unconditional on the wire (R15): a stream frame cannot predate a field, so an
@@ -56,9 +77,9 @@ ROW_SHAPES: Dict[str, Tuple[type, ...]] = {
 # two states on the wire — a non-empty id, or null — and `''` is a third that the engine never
 # produces. A fixture inventing it is worse than one omitting the field, because it looks valid.
 NEVER_EMPTY_STRING: Tuple[str, ...] = ('breaking_episode_id',)
-# Every frame carrying state carries the epoch (R19), with no per-frame-type exception: the
-# consumer's cursor is (stream_epoch, seq), and an exception in a rule is what R16 just deleted.
-EPOCH_ON_EVERY_FRAME = True
+# R19 (the epoch on every frame carrying state, with no per-frame-type exception) is enforced by
+# `stream_frames._frame`, i.e. by the wire's own renderer — not by a flag here. A sample cannot
+# demonstrate an invariant it checks with its own private copy of the rule.
 
 
 def _ms(iso: str) -> int:
@@ -118,14 +139,14 @@ def _fetch_episode_trio(database_url: str) -> EpisodeTrio:
     ordinary passes would be worse than none: it would answer the consumer's question with the
     shape they already had.
     """
-    with psycopg.connect(database_url, connect_timeout=5) as conn, conn.cursor() as cur:
-        cur.execute("""
+    episodes = """
             WITH stamped AS (
                 SELECT o.id, o.pipeline_id, o.ts, o.envelope, row_value AS row
                 FROM outcomes o, LATERAL jsonb_array_elements(o.envelope->'result') row_value
                 WHERE o.envelope->>'status' = 'success'
                   AND o.envelope->>'seq' IS NOT NULL
                   AND row_value->>'breaking_episode_id' IS NOT NULL
+                  {native}
             )
             SELECT row->>'breaking_episode_id'
             FROM stamped
@@ -135,8 +156,25 @@ def _fetch_episode_trio(database_url: str) -> EpisodeTrio:
                            AND (row->>'is_breaking')::boolean)
                AND bool_or(NOT (row->>'is_breaking')::boolean)
             ORDER BY max(ts) DESC
-            LIMIT 1""")
+            LIMIT 1"""
+    with psycopg.connect(database_url, connect_timeout=5) as conn, conn.cursor() as cur:
+        cur.execute(episodes.format(native='AND' + _NATIVE_IDENTITY))
         found = cur.fetchone()
+        if not found:
+            # Two causes, and they need different actions from whoever reads this. Asked as a second
+            # query rather than guessed, because the first refusal a reader met was ambiguous
+            # between them and cost a round trip.
+            cur.execute(episodes.format(native=''))
+            legacy = cur.fetchone()
+            if legacy:
+                raise SystemExit(
+                    f'the newest episode carrying all three shapes ({legacy[0]}) has at least one '
+                    'row without a native `breaking_episode_id` — it predates ISSUE_65, and #108 '
+                    'backfilled the rows INSIDE an episode without giving the rows outside one the '
+                    'empty form. Such an envelope cannot be evidence about what the build emits, '
+                    'which is the only thing this sample is for. Wait for an episode produced '
+                    'entirely after the ISSUE_65 deploy, or extend the backfill to write the empty '
+                    'form on every row of a touched envelope.')
         if not found:
             raise SystemExit(
                 'no episode carries all three shapes (opener, continuation, hold-band pass) — '
@@ -152,10 +190,14 @@ def _fetch_episode_trio(database_url: str) -> EpisodeTrio:
         ]
         picked: List[Dict[str, Any]] = []
         for label, condition, order in roles:
+            # The same predicate here, not only in the selection above: an episode can qualify
+            # on its native rows while a *different* pass of it carries a legacy row, and picking
+            # that pass for a role would reintroduce exactly what the selection excluded.
             cur.execute(f"""
                 SELECT o.envelope, o.ts
                 FROM outcomes o, LATERAL jsonb_array_elements(o.envelope->'result') row
                 WHERE row->>'breaking_episode_id' = %s AND {condition}
+                  AND {_NATIVE_IDENTITY}
                 ORDER BY o.ts {order} LIMIT 1""", (episode_id,))
             found = cur.fetchone()
             if not found:
@@ -191,14 +233,12 @@ def _renumber(env: Dict[str, Any], seq: int) -> Dict[str, Any]:
     the head) sit at plausible values instead of around 1.
     """
     env['seq'] = seq
-    for row in env['result']:
-        # The source envelopes are real production output, and the archive reaches back before
-        # ISSUE_65 — those rows carry no episode identity and never will. Filled in with the shape
-        # the engine actually emits outside an episode, which is `None` -> JSON `null`, NOT `''`.
-        # It was `''` until 2026-08-25 and the consumer typed their field from the sample: one
-        # state must not arrive in two empty forms, or every reader downstream has to ask twice.
-        row.setdefault('breaking_episode_id', None)
-        row.setdefault('breaking_episode_start', False)
+    # Nothing is filled in here any more, and the deletion is the point. There used to be a
+    # `setdefault` pair for `breaking_episode_id` / `breaking_episode_start`, for rows predating
+    # ISSUE_65 — code that could never run, because `_check_envelope` demands both keys on every row
+    # and runs first. So the file promised an injection the code forbade, and the promise was the
+    # part that was wrong: the selection now requires native identity on every row instead
+    # (`_NATIVE_IDENTITY`), which is what makes a green run evidence rather than a rendering.
     return {k: env[k] for k in ENVELOPE_FIELDS if k in env}
 
 
@@ -264,17 +304,6 @@ def _check_envelope(env: Dict[str, Any]) -> None:
             raise AssertionError(f'{row["symbol"]}: evidence newer than the envelope')
 
 
-def _frame(event: str, payload: Dict[str, Any]) -> str:
-    """One SSE frame. A `data:` line must never contain a literal newline — `reasoning` is
-    model-written text and does contain them, escaped inside the JSON string."""
-    if EPOCH_ON_EVERY_FRAME and 'stream_epoch' not in payload:
-        raise AssertionError(f'{event} frame carries no stream_epoch — see R19')
-    line = json.dumps(payload, separators=(',', ':'))
-    if '\n' in line:
-        raise AssertionError(f'{event}: literal newline in the data line')
-    return f'event: {event}\ndata: {line}\n'
-
-
 def build(database_url: str) -> str:
     selected = _fetch_episode_trio(database_url)
     trio = selected.envelopes
@@ -304,52 +333,94 @@ def build(database_url: str) -> str:
 
     now_msc = c['available_msc'] + 41_883
     frames = [
-        ': --- 1. connect: GET /v1/stream?pipeline=crypto_sentiment  (history defaults to 1) ---\n',
-        'retry: 5000\n',
-        _frame('signal', a),
+        f': --- 1. connect: GET /v1/stream/{a["pipeline_id"]}  (history defaults to 1) ---\n',
+        render_retry(),
+        render_signal(a),
         ': --- 2. replay/history done; everything after this frame is live ---\n',
-        _frame('control', {'code': 'live', 'stream_epoch': 1, 'head_seq': 1041}),
+        render_control('live', 1, {'head_seq': a['seq']}),
         ': --- 3. a later pass of the SAME breaking episode: `breaking_episode_id` unchanged,\n'
         ':        `breaking_episode_start` false. The id is minted at the edge and never moves. ---\n',
-        _frame('signal', b),
+        render_signal(b),
         ': --- 3b. and the case a reader is most likely to get wrong: `is_breaking` is FALSE while\n'
         ':        the episode id PERSISTS. An episode outlives its own boolean (hysteresis), so the\n'
         ':        id is set on every pass inside it — the opener, the hold band, and a dip that\n'
         ':        arrives before the gap elapses. Gate on the id, not on the flag. ---\n',
-        _frame('signal', c),
+        render_signal(c),
         ': --- 4. keep-alive, every 20 s on every view. now_msc is server time at emission (R17),\n'
         ':        so a consumer can measure clock skew; a stalled seq is a stalled producer. ---\n',
-        _frame('heartbeat', {'stream_epoch': 1, 'seq': 1043,
-                             'available_msc': c['available_msc'], 'now_msc': now_msc}),
+        render_heartbeat(1, c['seq'], now_msc, available_msc=c['available_msc']),
         ': --- 5. control codes, shown together; each occurs on its own ---\n',
         ': 5a  &since=900 - older than replay_window_hours\n',
-        _frame('control', {'code': 'replay_truncated', 'stream_epoch': 1, 'requested_since': 900,
-                           'oldest_available_seq': 1038, 'window_hours': 24}),
-        ': 5b  &since=9001 - ahead of our head (consumer-side store restore)\n',
-        _frame('control', {'code': 'cursor_ahead', 'stream_epoch': 1,
-                           'requested_since': 9001, 'head_seq': 1043}),
-        ': 5c  token revoked mid-stream; the server closes after this frame\n',
-        _frame('control', {'code': 'auth_revoked', 'stream_epoch': 1, 'detail': 'token expired'}),
+        render_control('replay_truncated', 1, {'requested_since': 900,
+                                               'oldest_available_seq': a['seq'] - 3,
+                                               'window_hours': 24}),
+        ': 5b  &since=9001 - ahead of our head (consumer-side store restore). TERMINAL: the\n'
+        ':      server emits this and closes. Same remedy as 5c below - reconnect - but the\n'
+        ':      diagnosis differs and so should the operator alert: cursor_ahead means the\n'
+        ':      CONSUMER rewound, epoch_changed means WE did.\n',
+        render_control('cursor_ahead', 1, {'requested_since': 9001,
+                                           'head_seq': c['seq']}),
+        ': 5c  &epoch=7 against a series now on epoch 1 - the cursor addresses numbers that\n'
+        ':      mean something else now. TERMINAL on the connect path AND mid-stream: after a\n'
+        ':      rewind our own high-water mark points at a series that no longer\n'
+        ':      exists, so its state is suspect too. `stream_epoch` is the NEW epoch (the rule\n'
+        ':      has no per-frame exception); `previous_epoch` is the one the recipient was on.\n'
+        ':      A consumer therefore has exactly ONE resync path, the connect path.\n',
+        render_control('epoch_changed', 1756290421,
+                       {'previous_epoch': 1, 'head_seq': c['seq']}),
+        ': 5d  token revoked mid-stream; the server closes after this frame. NOT reachable yet:\n'
+        ':      the token registry is read at boot, so revocation means a restart - and a\n'
+        ':      restart closes every connection anyway. Specified, and fired by the config\n'
+        ':      reload (ISSUE_115).\n',
+        render_control('auth_revoked', 1, {'detail': 'token expired'}),
         ': --- 6. cold start (R18): a stream that exists but has never produced an envelope.\n'
         ':        No snapshot frame - there is nothing to snapshot. seq 0 is "nothing yet" and\n'
         ':        can never collide with a real seq (the counter returns seq+1, so the first\n'
         ':        envelope is 1). available_msc is absent for the same reason; now_msc still\n'
         ':        proves the producer is alive. An UNKNOWN pipeline_id is a 404 on connect,\n'
         ':        never an empty stream. ---\n',
-        _frame('control', {'code': 'live', 'stream_epoch': 1, 'head_seq': 0}),
-        _frame('heartbeat', {'stream_epoch': 1, 'seq': 0, 'now_msc': now_msc}),
+        render_control('live', 1, {'head_seq': 0}),
+        render_heartbeat(1, 0, now_msc),
     ]
     header = _header(a, c, real_gap)
-    return header + '\n' + '\n'.join(frames)
+    # Frames self-terminate with their own blank line now (the SSE dispatch rule lives in the shared
+    # renderer, not here), so only the comment lines need one added. Joining with a newline as before
+    # would put TWO blank lines after every frame.
+    body = ''.join(part if part.endswith('\n\n') else part + '\n' for part in frames)
+    document = header + '\n' + body
+    # The file must END with a terminating blank line, not merely carry them BETWEEN frames.
+    # The consumer's decoder discards an unterminated frame at connection close — a socket dying
+    # mid-frame must never put half an envelope in their inbox — so a sample whose last frame is
+    # unterminated silently loses it. Reissue 6 lost exactly the cold-start heartbeat that way,
+    # which is the one case section 6 exists to demonstrate. They found it; this is the check.
+    if not document.endswith('\n\n'):
+        raise AssertionError(
+            'the sample does not end with a terminating blank line — a conforming parser would '
+            'drop its last frame')
+    return document
 
 
 def _header(a: Dict[str, Any], b: Dict[str, Any], real_gap_ms: int) -> str:
     gap_min = (_ms(b['timestamp']) - _ms(a['timestamp'])) / 60_000
-    return f""": FiniexRAGEngine - GET /v1/stream - sample frames (ISSUE_9)   [reissue 6, 2026-08-25]
+    return f""": FiniexRAGEngine - GET /v1/stream - sample frames (ISSUE_9)   [reissue 7, 2026-08-27]
 :
 : THREE PASSES OF ONE BREAKING EPISODE on one stream (`{a['pipeline_id']}`), placed {gap_min:.0f} min apart,
-: taken from the outcomes journal and rendered against the specified frame format. NOT recorded
-: from a running stream - none exists yet.
+: taken from the outcomes journal and rendered against the specified frame format.
+:
+: REISSUE 7 - the stream EXISTS now: `GET /v1/stream/{{pipeline_id}}` is served, and these frames are
+: rendered by the SAME module the live wire uses (`core/outcome/stream_frames.py`). Reissues 1-6 were
+: rendered by this script's own private frame function, which is how two of them came to disagree
+: with the contract they demonstrate. That cannot recur; what this file shows and what a socket
+: delivers now come from one place. Five changes:
+:   * `epoch_changed` is present (5c) - the one code that had no example, and the only one whose
+:     payload a reader would otherwise have to invent;
+:   * `cursor_ahead` (5b) states that it is TERMINAL, which the contract text implied and never said;
+:   * `auth_revoked` (5d) says it is not reachable yet and why, rather than looking implemented;
+:   * the connect line is DERIVED from the frames instead of a hardcoded literal - reissue 6 named
+:     `crypto_sentiment` while every frame was `forex_macro_sentiment`, and the consumer found it;
+:   * the file ENDS with a terminating blank line. Reissue 6 did not, so a conforming parser dropped
+:     its last frame - the cold-start heartbeat, the one case section 6 exists to demonstrate. Also
+:     the consumer's find. The generator now refuses to write a sample that ends without it.
 :
 : REISSUE 6 - the passes are CURATED rather than consecutive, at the consumer's request: an opener
 : (`breaking_episode_start: true`), a continuation carrying the same id, and a hold-band pass where
@@ -390,10 +461,12 @@ def _header(a: Dict[str, Any], b: Dict[str, Any], real_gap_ms: int) -> str:
 : `timestamp` -> `available_msc` -> `fetched_at` -> `evidence_as_of` keep exactly the relationships
 : that were measured.
 :
-: NOT INJECTED any more - see REISSUE 5 above. The only fields this script writes are
-: `breaking_episode_id` / `breaking_episode_start`, and only where the source envelope predates
-: ISSUE_65: those rows carry no episode identity and are filled in empty. Both fields are always
-: PRESENT on a row the engine produces today.
+: NOTHING IS INJECTED. Not one contract field is written by this script - the only edits are the
+: uniform time translation and the `seq` renumbering, both described above. The previous reissue
+: claimed it filled `breaking_episode_id` / `breaking_episode_start` on rows predating ISSUE_65;
+: that code could never run, because the contract check demands both keys on every row and runs
+: first. The selection now requires NATIVE episode identity on every row of every chosen envelope,
+: so a pre-ISSUE_65 pass is skipped rather than patched.
 :
 : Note what carries a value, because it is not "the breaking rows". The id is set on every pass
 : INSIDE an episode - the opening pass, a pass in the hold band (`is_breaking` false, urgency at or

@@ -1,6 +1,7 @@
 """Eval worker — clocks one logical pipeline's evaluation (ISSUE_10)."""
 import asyncio
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from time import perf_counter
 from typing import Optional
@@ -10,6 +11,7 @@ from finiexragengine.core.pipeline.breaking_episode import (
     BreakingEpisodeTracker,
     BreakingPass,
 )
+from finiexragengine.core.pipeline.pass_executor import build_pass_executor, run_pass
 from finiexragengine.core.pipeline.pipeline import Pipeline
 from finiexragengine.core.triggers.abstract_trigger import AbstractTrigger
 from finiexragengine.core.ui.engine_stats import (
@@ -55,12 +57,17 @@ class EvalWorker:
     def __init__(self, pipeline: Pipeline, trigger: AbstractTrigger,
                  pass_timeout_seconds: int = 300,
                  engine_stats: Optional[EngineStats] = None,
-                 episode_tracker: Optional[BreakingEpisodeTracker] = None) -> None:
+                 episode_tracker: Optional[BreakingEpisodeTracker] = None,
+                 pass_executor: Optional[ThreadPoolExecutor] = None) -> None:
         self._pipeline = pipeline
         self._trigger = trigger
         # Wall-clock deadline for one pass (ISSUE_74) — see IngestWorker for the rationale, and
         # for why no lock replaced the shared one that used to sit here.
         self._pass_timeout_seconds = pass_timeout_seconds
+        # Off the interpreter's default executor (2026-09-08), for the same reason ingest is: that
+        # pool also serves every sync API endpoint. An eval pass hung on a stalled OpenAI socket
+        # has exactly the shape a hung fetch has, so it gets the same isolation.
+        self._pass_executor = pass_executor or build_pass_executor(1)
         # Optional (ISSUE_26): the live dashboard's shared state. None = no display — every
         # push below is skipped, so the /health-only and CLI paths carry zero overhead.
         self._engine_stats = engine_stats
@@ -97,6 +104,14 @@ class EvalWorker:
     def get_state(self) -> WorkerState:
         return self._state
 
+    def set_pass_executor(self, executor: ThreadPoolExecutor) -> None:
+        """Adopt the fleet-wide pass pool (2026-09-08) in place of this worker's private one.
+
+        A setter rather than a constructor argument because the pool's size is a property of how
+        many workers there are, which the supervisor only knows once it has built them all.
+        """
+        self._pass_executor = executor
+
     async def start(self) -> None:
         await self._trigger.start(self._pass)
 
@@ -111,8 +126,8 @@ class EvalWorker:
             # queueing behind them. The deadline abandons the await, not the thread, so the worker
             # recovers on its next bar close rather than staying dead until a restart. The run's
             # own cost scope lives in `PipelineRunner.run`, where the envelope is assembled.
-            result = await asyncio.wait_for(asyncio.to_thread(self._pipeline.run, reason),
-                                            timeout=self._pass_timeout_seconds)
+            result = await run_pass(self._pass_executor, self._pass_timeout_seconds,
+                                    self._pipeline.run, reason)
         # Every branch opens its detail with the pass's reason (ISSUE_87) — `last_detail` is the one
         # string the log line, the live activity stream and /health all render, so writing it here
         # (rather than only into the envelope) puts the reason into the visible history too.

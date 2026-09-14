@@ -6,7 +6,7 @@ provenance control worked perfectly and is the wrong control, because a label is
 v2 → v3 (2026-08-23) cut the crypto confirm rate 8.43 % → 0.47 %, 113 breaking rows a day down to
 six, and it took three days to see.
 
-Three properties are therefore designed in rather than left to the reader:
+Four properties are therefore designed in rather than left to the reader:
 
 - **Never pooled.** Grouping is per pipeline, always. The v3 → v4 measurement is the argument: the
   aggregate across both streams moved 6.67 % → 6.60 %, practically unchanged, while both
@@ -15,11 +15,28 @@ Three properties are therefore designed in rather than left to the reader:
 - **The confirm band carries its concentration.** Forex v3 reads healthy at 10.78 % and collapsed at
   "one analysis unit supplies 93 % of it". The share alone is the near-miss this report exists to
   prevent, so it never travels without the unit count beside it.
+- **A version is not a setup, so the grouping carries both** (ISSUE_112). `prompt_version` says
+  which template ran; it cannot say which corpus, which retrieval floor or which text treatment fed
+  it. Production proves the gap rather than merely implying it: over 152 crypto envelopes sampled
+  2026-08-29, two `config_fingerprint` values ran under one `prompt_version: 4` and this report
+  rendered them as a single pooled row. Every leaf of the fingerprint is score-defining by
+  construction, so a fingerprint change is exactly as much a series break as a prompt change — and
+  the text normaliser was about to make one without touching a prompt at all.
 - **Only LLM-scored passes enter the distribution.** A result with `basis != 'llm'` is a mechanical
   `no_data` HOLD: retrieval came back empty after the floor, no LLM call was made, and the row
   carries `urgency 0.0`. Folding those in means a corpus outage — the 37-hour frozen corpus of
   2026-08-20 — reads as "the new prompt got calmer". `mechanical` is reported beside `scored` rather
   than dropped, because an absent number is not an answer either.
+
+- **And the comparison is offered on matched weekdays** (ISSUE_106). The main table is the per-setup
+  distribution over the whole window, which is what it has always been; underneath it, consecutive
+  setups are paired *within one weekday*. The reason is measured: the ISSUE_112 normaliser deployed
+  on a Saturday, and read across the weekend its evidence loss looked like 42 % where the
+  weekday-matched figure is 18 %. `retrieval_drift` was built with that key from the start; this
+  report had the same blind spot one stage later, and the deep-tier read of 2026-09-07 hit it — the
+  contribution half was weekday-matched and the confirm half was not. The weekday is deliberately
+  NOT in the primary grouping key: sevenfold rows would dismantle the reading the main table exists
+  for, and a comparison is not a census.
 
 Read from the store like every other surface here, so it re-derives the whole history under whatever
 hold gate is configured today rather than only describing the future.
@@ -47,6 +64,10 @@ from finiexragengine.exceptions.ragengine_errors import VectorStoreError
 _MAX_DISTINCT = 12
 _BIN_WIDTH = 0.1
 
+# ISO weekday (1=Monday) -> label. Ordering by the number rather than the label keeps Monday first
+# instead of Friday, which an alphabetical sort would produce.
+_WEEKDAYS: Tuple[str, ...] = ('Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun')
+
 
 def _fmt_bucket(value: float) -> str:
     """A bucket's key and column label — two decimals, so keys sort as they render."""
@@ -63,6 +84,11 @@ class VersionDistribution:
     """
     pipeline_id: str
     prompt_version: str
+    # The setup that produced these passes (ISSUE_85), and the second half of the grouping key
+    # (ISSUE_112). A prompt version says which template ran; it cannot say which corpus, which
+    # retrieval floor or which text treatment fed it — and a change to any of those moves the
+    # distribution just as hard while `prompt_version` stays put.
+    config_fingerprint: str = ''
     prompt_id: str = ''
     prompt_hashes: List[str] = field(default_factory=list)
     models: List[str] = field(default_factory=list)
@@ -151,6 +177,51 @@ class PipelineDistribution:
 
 
 @dataclass
+class WeekdayCell:
+    """One (pipeline, setup, weekday) slice of the distribution — the pairing's raw material."""
+    pipeline_id: str
+    config_fingerprint: str
+    weekday: int                                 # ISO: 1 = Monday … 7 = Sunday
+    scored: int = 0
+    confirm_passes: int = 0
+    first_seen: Optional[datetime] = None
+
+    @property
+    def confirm_share(self) -> Optional[float]:
+        return self.confirm_passes / self.scored if self.scored else None
+
+
+@dataclass
+class WeekdayPair:
+    """Two consecutive setups compared on the SAME weekday (ISSUE_106).
+
+    Consecutive rather than first-against-last: a weekday can hold more than two setups —
+    `crypto_sentiment` carried five on 2026-08-25 — and a step between neighbours stays meaningful
+    there while a span would average over everything between.
+    """
+    pipeline_id: str
+    weekday: int
+    from_fingerprint: str
+    to_fingerprint: str
+    before_scored: int
+    after_scored: int
+    before_confirm_share: Optional[float]
+    after_confirm_share: Optional[float]
+    thin: bool                                   # either side below the configured floor
+
+    @property
+    def weekday_label(self) -> str:
+        return _WEEKDAYS[self.weekday - 1] if 1 <= self.weekday <= 7 else '?'
+
+    @property
+    def confirm_delta(self) -> Optional[float]:
+        """Percentage POINTS, not a ratio — `None` when either side scored nothing."""
+        if self.before_confirm_share is None or self.after_confirm_share is None:
+            return None
+        return (self.after_confirm_share - self.before_confirm_share) * 100.0
+
+
+@dataclass
 class PromptDriftReport:
     since_label: str
     pipelines: List[PipelineDistribution] = field(default_factory=list)
@@ -158,6 +229,15 @@ class PromptDriftReport:
     binned: bool = False                                 # true = folded to 0.1, see `_MAX_DISTINCT`
     since: Optional[datetime] = None
     until: Optional[datetime] = None
+    # Consecutive setups paired within one weekday (ISSUE_106). Empty until a weekday holds two —
+    # which is also the honest state right after a deploy, and the render says so rather than
+    # printing an empty heading.
+    weekday_pairs: List[WeekdayPair] = field(default_factory=list)
+    min_scored: int = 40                         # below this a paired cell is marked thin
+
+    @property
+    def comparable_weekdays(self) -> int:
+        return len({(pair.pipeline_id, pair.weekday) for pair in self.weekday_pairs})
 
     @property
     def version_count(self) -> int:
@@ -189,6 +269,7 @@ _PROJECTION = """
     SELECT pipeline_id, jsonb_build_object(
         'timestamp',      envelope -> 'timestamp',
         'prompt_version', envelope -> 'prompt_version',
+        'config_fingerprint', envelope -> 'config_fingerprint',
         'prompt_id',      envelope -> 'prompt_id',
         'prompt_hash',    envelope -> 'prompt_hash',
         'metadata',       jsonb_build_object('model', envelope -> 'metadata' -> 'model'),
@@ -214,6 +295,7 @@ def build_prompt_drift_report(database_url: str, since: datetime, *,
                              outcomes_table: str = 'outcomes',
                              rules: Optional[PipelineGroupings] = None,
                              confirm_thresholds: Optional[Dict[str, float]] = None,
+                             min_scored: int = 40,
                              ) -> PromptDriftReport:
     """The per-version score distribution over the window, per pipeline.
 
@@ -235,7 +317,8 @@ def build_prompt_drift_report(database_url: str, since: datetime, *,
     except psycopg.Error as exc:
         raise VectorStoreError(f'prompt drift report failed: {exc}') from exc
     return _aggregate_drift(rows, since_label, rules or {}, confirm_thresholds or {},
-                            since=since, until=datetime.now(timezone.utc))
+                            since=since, until=datetime.now(timezone.utc),
+                            min_scored=min_scored)
 
 
 def _unit_samples(env: Dict[str, object], grouping: EpisodeGrouping) -> Tuple[
@@ -274,13 +357,15 @@ def _unit_samples(env: Dict[str, object], grouping: EpisodeGrouping) -> Tuple[
 def _aggregate_drift(rows: List[Tuple[str, object]], since_label: str,
                      rules: PipelineGroupings, confirm_thresholds: Dict[str, float], *,
                      since: Optional[datetime] = None,
-                     until: Optional[datetime] = None) -> PromptDriftReport:
+                     until: Optional[datetime] = None,
+                     min_scored: int = 40) -> PromptDriftReport:
     """Build the per-version distributions — the DB-free core (tested)."""
     groupings: Dict[str, EpisodeGrouping] = {}
     built: Dict[Tuple[str, str], VersionDistribution] = {}
     # Raw value counters, kept apart from the rendered histogram: whether to bin can only be decided
     # once every version has been seen.
     samples: Dict[Tuple[str, str], Counter] = {}
+    cells: Dict[Tuple[str, str, int], WeekdayCell] = {}
 
     for pipeline_id, envelope in rows:
         env = envelope if isinstance(envelope, dict) else json.loads(envelope)
@@ -289,10 +374,14 @@ def _aggregate_drift(rows: List[Tuple[str, object]], since_label: str,
         # A legacy envelope with no prompt version is its own row rather than a dropped one: the
         # archive reaches back before the field existed, and silence about it would be a gap.
         version = str(env.get('prompt_version') or '(none)')
-        key = (pipeline_id, version)
-        row = built.setdefault(key, VersionDistribution(pipeline_id, version))
+        # Same idiom as the missing version above: an envelope from before ISSUE_85 is its own row
+        # rather than a dropped one, and '(none)' is an absence rather than a setup.
+        fingerprint = str(env.get('config_fingerprint') or '(none)')
+        key = (pipeline_id, version, fingerprint)
+        row = built.setdefault(key, VersionDistribution(pipeline_id, version, fingerprint))
         counter = samples.setdefault(key, Counter())
 
+        cell_key = (pipeline_id, fingerprint)
         row.prompt_id = row.prompt_id or str(env.get('prompt_id') or '')
         prompt_hash = str(env.get('prompt_hash') or '')
         if prompt_hash and prompt_hash not in row.prompt_hashes:
@@ -304,6 +393,14 @@ def _aggregate_drift(rows: List[Tuple[str, object]], since_label: str,
         ts = _parse_dt(str(env['timestamp']))
         row.first_seen = ts if row.first_seen is None else min(row.first_seen, ts)
         row.last_seen = ts if row.last_seen is None else max(row.last_seen, ts)
+        # The same passes, sliced by weekday as well (ISSUE_106) — accumulated in this loop rather
+        # than in a second pass, so the two sections can never describe different populations.
+        cell = cells.get(cell_key + (ts.isoweekday(),))
+        if cell is None:
+            cell = WeekdayCell(pipeline_id=pipeline_id, config_fingerprint=fingerprint,
+                               weekday=ts.isoweekday(), first_seen=ts)
+            cells[cell_key + (ts.isoweekday(),)] = cell
+        cell.first_seen = min(cell.first_seen or ts, ts)
 
         exit_threshold = grouping.rule.get_exit_threshold()
         urgencies, verdicts, mechanical, labels = _unit_samples(env, grouping)
@@ -311,9 +408,11 @@ def _aggregate_drift(rows: List[Tuple[str, object]], since_label: str,
         row.mechanical += len(mechanical)
         for unit, urgency in urgencies.items():
             row.scored += 1
+            cell.scored += 1
             counter[urgency] += 1
             if verdicts.get(unit):
                 row.confirm_passes += 1
+                cell.confirm_passes += 1
                 row.unit_confirms[unit] = row.unit_confirms.get(unit, 0) + 1
             elif urgency >= exit_threshold:
                 # The hold band, defined exactly as the timeline report's `.` cell defines it, so
@@ -339,11 +438,40 @@ def _aggregate_drift(rows: List[Tuple[str, object]], since_label: str,
         # Chronological by first appearance: the drift is a sequence, and reading it in time order
         # is the whole point of putting the versions on adjacent lines.
         versions.sort(key=lambda row: (row.first_seen or datetime.max.replace(tzinfo=timezone.utc),
-                                       row.prompt_version))
+                                       row.prompt_version, row.config_fingerprint))
         pipelines.append(PipelineDistribution(
             pipeline_id, confirm_threshold=confirm_thresholds.get(pipeline_id),
             exit_threshold=grouping.rule.get_exit_threshold(), versions=versions))
-    return PromptDriftReport(since_label, pipelines, buckets, binned, since=since, until=until)
+    return PromptDriftReport(since_label, pipelines, buckets, binned, since=since, until=until,
+                             weekday_pairs=_weekday_pairs(cells, min_scored),
+                             min_scored=min_scored)
+
+
+def _weekday_pairs(cells: Dict[Tuple[str, str, int], WeekdayCell],
+                   min_scored: int) -> List[WeekdayPair]:
+    """Pair consecutive setups inside one (pipeline, weekday), ordered by first appearance.
+
+    By first appearance rather than by fingerprint name: sorting the hex would invert the
+    comparison and report an improvement as a regression. Same ordering rule as
+    `retrieval_drift`, deliberately — the two reports are read side by side.
+    """
+    grouped: Dict[Tuple[str, int], List[WeekdayCell]] = {}
+    for cell in cells.values():
+        grouped.setdefault((cell.pipeline_id, cell.weekday), []).append(cell)
+    pairs: List[WeekdayPair] = []
+    for (pipeline_id, weekday), group in sorted(grouped.items()):
+        group.sort(key=lambda c: (c.first_seen or datetime.max.replace(tzinfo=timezone.utc),
+                                  c.config_fingerprint))
+        for before, after in zip(group, group[1:]):
+            pairs.append(WeekdayPair(
+                pipeline_id=pipeline_id, weekday=weekday,
+                from_fingerprint=before.config_fingerprint,
+                to_fingerprint=after.config_fingerprint,
+                before_scored=before.scored, after_scored=after.scored,
+                before_confirm_share=before.confirm_share,
+                after_confirm_share=after.confirm_share,
+                thin=before.scored < min_scored or after.scored < min_scored))
+    return pairs
 
 
 def _bin(value: float) -> float:
@@ -369,7 +497,7 @@ def format_prompt_drift_report(report: PromptDriftReport, *,
     """
     term_width = width if width is not None else shutil.get_terminal_size((120, 24)).columns
     labels = [_fmt_bucket(value) for value in report.buckets]
-    head = f'{"version":<8} {"first seen":<14} {"scored":>7} {"mech":>5}'
+    head = (f'{"version":<8} {"setup":<14} {"first seen":<14} {"scored":>7} {"mech":>5}')
     head += ''.join(f'{label:>7}' for label in labels)
     head += f'{"confirm":>9}{"hold":>8}{"h/b":>6}{"units":>6}  top unit'
 
@@ -418,13 +546,15 @@ def format_prompt_drift_report(report: PromptDriftReport, *,
             top = (f'{version.top_unit_label} {version.top_unit_share * 100:.0f}%'
                    if version.top_unit else '—')
             lines.append(
-                f'v{version.prompt_version:<7} {seen:<14} {version.scored:>7} '
+                f'v{version.prompt_version:<7} {version.config_fingerprint:<14.14} '
+                f'{seen:<14} {version.scored:>7} '
                 f'{version.mechanical:>5}{cells}{_pct(version.confirm_share):>9}'
                 f'{_pct(version.hold_share):>8}{_ratio(version.hold_break_ratio):>6}'
                 f'{version.confirm_units:>6}  {top}{mark}')
             # The flags say what the ⚠ meant. Only for states actually present, so the legend never
             # explains a condition the report did not find.
-            name = f'{pipeline.pipeline_id} v{version.prompt_version}'
+            name = (f'{pipeline.pipeline_id} v{version.prompt_version} '
+                    f'#{version.config_fingerprint}')
             if version.single_unit_confirm_band:
                 lines_flag = (f'⚠ {name}: the confirm band rests on a single analysis unit '
                               f'({version.top_unit_label}) — the share alone reads healthy')
@@ -438,6 +568,39 @@ def format_prompt_drift_report(report: PromptDriftReport, *,
         lines.append(divider)
 
     lines.extend(flags)
+    lines.extend(_weekday_section(report, divider))
     lines.append(f'{len(report.pipelines)} pipeline(s) · {report.version_count} version(s) · '
                  f'shares are over LLM-scored passes; no pooled figure is emitted')
     return '\n'.join(lines)
+
+
+def _weekday_section(report: PromptDriftReport, divider: str) -> List[str]:
+    """Consecutive setups compared on the same weekday (ISSUE_106).
+
+    A second section rather than a finer grouping key: the table above is a census over the window
+    and sevenfold rows would dismantle it, while a comparison needs exactly this one extra
+    dimension. A deploy almost always changes the weekday too, and reading across that is how a
+    weekend gets attributed to a release.
+    """
+    if not report.weekday_pairs:
+        return [divider,
+                'weekday-matched comparison: no weekday holds two setups yet — a deploy needs to '
+                'run into the same weekday again before its effect can be read against one']
+    lines = [divider,
+             f'weekday-matched comparison · {report.comparable_weekdays} weekday(s) with a '
+             f'before/after pair · the table above pools weekdays, this does not',
+             f'{"pipeline":24s} {"dow":>4s} {"from":>13s} {"to":>13s} '
+             f'{"scored b/a":>13s} {"confirm b→a":>18s} {"Δpp":>7s}']
+    for pair in report.weekday_pairs:
+        before = _pct(pair.before_confirm_share) if pair.before_confirm_share is not None else '—'
+        after = _pct(pair.after_confirm_share) if pair.after_confirm_share is not None else '—'
+        delta = f'{pair.confirm_delta:+.2f}' if pair.confirm_delta is not None else '—'
+        lines.append(
+            f'{pair.pipeline_id:24.24s} {pair.weekday_label:>4s} {pair.from_fingerprint:>13.13s} '
+            f'{pair.to_fingerprint:>13.13s} '
+            f'{pair.before_scored:>6}/{pair.after_scored:<6} '
+            f'{before:>8} → {after:<7} {delta:>7}'
+            + ('  ⚠ thin' if pair.thin else ''))
+    lines.append(f'thin = either side below {report.min_scored} scored passes — marked, not '
+                 f'dropped: which setup ran that day is evidence in itself')
+    return lines

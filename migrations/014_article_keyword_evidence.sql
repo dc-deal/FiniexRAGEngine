@@ -1,0 +1,33 @@
+-- 014_article_keyword_evidence — which vocabulary term a keyword flag was made on (ISSUE_106).
+--
+-- The exact counterpart to 013, and it exists for the reason 013 already stated about the other
+-- path: the detector computes the match to decide a tier and then discards it. `_has_keyword`
+-- returned a bare boolean, so "how many flags did the keyword path make" was answerable from
+-- `detection_trigger` (migration 011) while "WHICH term made them" was not answerable at all.
+--
+-- That gap is not academic: a vocabulary decision is taken per term. "The keyword path is worth
+-- having" is an aggregate nobody tunes on, and "`SEC` fires on 25 of 25 SEC press releases while
+-- `halt trading` has never fired" is the sentence that actually changes a config. The first is
+-- answerable today; the second took a hand-written query and a guess.
+--
+--   detection_keywords   every configured term that matched this article's title + summary
+--
+-- An ARRAY, and ALL matches rather than the first. `re.search` returns the first match in *text*
+-- order, which bears no relation to the config: a term that always co-occurs with another would
+-- read as never having fired, and "which terms are dead" is precisely what this column is for.
+-- `unnest()` turns the per-term read into one GROUP BY.
+--
+-- Written ONLY where the keyword path produced the verdict. A cluster flag leaves it NULL rather
+-- than '{}' — the same distinction 011 and 013 draw between an absence and a category: NULL is
+-- "no vocabulary was consulted", while an empty array would claim one was consulted and matched
+-- nothing. The column is therefore set in its own clause instead of always.
+--
+-- Additive, nullable, up-only, not backfilled: the terms describe a match made at a moment against
+-- a vocabulary that can since have changed, so a reconstruction would be a different measurement
+-- wearing the same column name.
+
+ALTER TABLE articles ADD COLUMN IF NOT EXISTS detection_keywords TEXT[];
+
+-- No index, for 013's reason unchanged: the read pattern is a windowed scan by `flagged_at` for a
+-- report run occasionally, which an index on the array would not serve — and the corpus takes an
+-- insert on every ingest pass.

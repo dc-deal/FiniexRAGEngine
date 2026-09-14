@@ -53,6 +53,22 @@ class ArticleRef(BaseModel):
     # pre-ISSUE_11 archived envelopes stay parseable; always set on new envelopes. The
     # detection timestamp (flagged_at) is joined from the corpus by article_id at report time.
     fetched_at: Optional[datetime] = None
+    # Which retrieval tier surfaced this citation — 'recent' | 'deep' (ISSUE_30). Same additive
+    # pattern as `fetched_at` above, and the "always set on new envelopes" half is what carries the
+    # meaning: `None` says "archived before this field existed" and NOTHING else. Marking only the
+    # deep ones would have been nearly free (12.5 % of passes carry one) and would have made absence
+    # mean two things at once, forcing a reader to cross-check `metadata.per_symbol_retrieval` to
+    # tell them apart.
+    #
+    # A plain `str`, not the `RetrievalTier` Literal: strictness belongs at the producing seam
+    # (`article_types`), while an archived envelope carrying a value a later version introduces must
+    # still load — "always parseable" outranks type strictness at the boundary.
+    #
+    # It costs: `sources[]` is already ~73 % of a stream frame, and this adds 6.29 % to an envelope
+    # (measured 2026-09-02: +2,678 bytes on 42,584). Paid deliberately — the deep tier's
+    # contribution stops being a count in the funnel and becomes auditable per citation, which is
+    # the baseline ISSUE_30's fencing has to be measured against.
+    retrieval_tier: Optional[str] = None
 
 
 class StageTiming(BaseModel):
@@ -84,6 +100,14 @@ class RetrievalFunnel(BaseModel):
     tier_duplicates: int = 0  # same article surfaced by both tiers
     near_duplicates: int = 0  # near-duplicate stories collapsed (>= dedup_similarity)
     kept: int = 0             # what reached the prompt (<= top_k)
+    # Of `kept`, how many came from the DEEP tier — an article older than
+    # `recency_window_minutes` that only reached the prompt because its `importance` cleared
+    # `deep_tier.min_importance` (ISSUE_5, switched on for crypto_sentiment 2026-09-01).
+    # Without it the deep tier's contribution is invisible: `kept` counts both tiers and the
+    # retriever discards the distinction one line after computing it. 0 with the tier enabled is a
+    # real answer — "detection flagged nothing worth carrying forward" — and it is exactly the
+    # number that says whether the dead cluster path is costing retention as well as wakes.
+    deep_kept: int = 0
     best_distance: Optional[float] = None    # nearest candidate pre-floor (nearest miss on 0 kept)
     worst_distance: Optional[float] = None   # farthest candidate pre-floor
     floor: Optional[float] = None            # floor_distance applied this run (None = disabled)

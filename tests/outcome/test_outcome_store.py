@@ -150,3 +150,101 @@ def test_an_unreachable_store_reports_no_journal_id():
     """
     from finiexragengine.core.outcome.outcome_store import OutcomeStore
     assert OutcomeStore('postgresql://nobody:nope@nowhere:5432/none').journal_id() is None
+
+
+# --- the stream's reads (ISSUE_9) --------------------------------------------------------------
+
+def test_the_stream_head_reads_the_counter_and_agrees_with_the_journal(store):
+    """The head comes from `stream_seq`, not from an aggregate over the journal.
+
+    Cheaper — one indexed point read — and also more correct: the counter moves inside the
+    envelope's own transaction, so it can never lead the committed rows.
+    """
+    for _ in range(3):
+        store.save(_envelope())
+
+    head = store.stream_head('p')
+
+    assert head.seq == 3                                   # the counter's first envelope is 1
+    assert head.epoch == 1
+    assert head.available_msc is not None
+    assert head.seq == store.get_latest('p').seq           # counter and journal agree
+
+
+def test_a_stream_the_sequencer_never_saw_is_a_cold_start_not_an_error(store):
+    """`(0, 0, None)` is a real state: the stream exists and has produced nothing. Distinguishing it
+    from "does not exist" is the caller's job — that one is a 404 on connect."""
+    head = store.stream_head('never-ran')
+
+    assert (head.seq, head.epoch, head.available_msc) == (0, 0, None)
+
+
+def test_envelopes_by_seq_walks_forward_and_returns_the_stored_json_verbatim(store):
+    """The frame is the stored envelope byte-for-byte, so this returns raw JSONB rows.
+
+    Validating into a model here would let a model default rewrite an archived line on its way to
+    the wire — and the parity anchor would then be a claim about the model, not about the store.
+    """
+    for _ in range(4):
+        store.save(_envelope())
+
+    rows = store.envelopes_by_seq('p', after_seq=1, limit=10)
+
+    assert [row['seq'] for row in rows] == [2, 3, 4]       # strictly after, ascending
+    assert isinstance(rows[0], dict)                       # not a SentimentEnvelope
+    assert rows[0]['result'][0]['reasoning'] == 'bullish'
+
+
+def test_envelopes_by_seq_respects_the_limit_so_a_replay_stays_bounded(store):
+    for _ in range(5):
+        store.save(_envelope())
+
+    assert [row['seq'] for row in store.envelopes_by_seq('p', 0, limit=2)] == [1, 2]
+
+
+def test_envelopes_by_seq_never_crosses_into_another_stream(store):
+    """One subscription is one contiguous series of one comparability identity — interleaving two
+    pipelines would make every other `seq` look missing, indistinguishable from loss."""
+    store.save(_envelope(pipeline_id='p'))
+    store.save(_envelope(pipeline_id='other'))
+    store.save(_envelope(pipeline_id='p'))
+
+    rows = store.envelopes_by_seq('p', 0, limit=10)
+
+    assert [row['pipeline_id'] for row in rows] == ['p', 'p']
+    assert [row['seq'] for row in rows] == [1, 2]          # per-stream counter, no gap
+
+
+def test_oldest_seq_since_is_the_replay_windows_floor(store):
+    store.save(_envelope(ts=_TS))                                  # seq 1, outside
+    store.save(_envelope(ts=_TS + timedelta(hours=2)))             # seq 2, inside
+    store.save(_envelope(ts=_TS + timedelta(hours=3)))             # seq 3, inside
+
+    assert store.oldest_seq_since('p', _TS + timedelta(hours=1)) == 2
+
+
+def test_oldest_seq_since_is_none_when_the_window_is_empty(store):
+    """A real state — a quiet weekend on a low-cadence stream — not an error."""
+    store.save(_envelope(ts=_TS))
+
+    assert store.oldest_seq_since('p', _TS + timedelta(days=1)) is None
+
+
+def test_a_saved_envelope_notifies_the_stream_channel_on_commit(clean_db):
+    """The dispatcher's wake-up rides the envelope's own transaction (ISSUE_9 §3.4).
+
+    Asserted through a second connection that is LISTENing: PostgreSQL delivers notifications on
+    COMMIT, so receiving one is proof the row is readable — which is the property the dispatcher
+    depends on. A payload-only test would prove nothing about the timing.
+    """
+    import psycopg
+
+    with psycopg.connect(clean_db, autocommit=True) as listener:
+        listener.execute('LISTEN test_stream_channel')
+        OutcomeStore(clean_db, notify_channel='test_stream_channel').save(_envelope())
+
+        # generator; one notification is expected, and the store has already committed
+        received = next(listener.notifies(timeout=5, stop_after=1))
+
+    assert received.channel == 'test_stream_channel'
+    assert received.payload == 'p'                 # the pipeline_id, never the envelope

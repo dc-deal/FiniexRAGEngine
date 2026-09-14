@@ -105,6 +105,7 @@ _APP_INCLUDED: Dict[str, str] = {
     'llm.base_url': 'a self-hosted endpoint serving the same model id is not the same model',
     'embedding.model': 'changes the vectors, hence what retrieval selects',
     'embedding.dimensions': 'ditto — travels with the model',
+    'ingest.text_normalizer': 'the text treatment behind every vector and every prompt (ISSUE_112)',
 }
 
 

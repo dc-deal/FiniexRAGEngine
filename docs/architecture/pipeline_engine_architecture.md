@@ -197,6 +197,11 @@ control: the same five boots left `forex_macro_sentiment`'s fingerprint untouche
 the differing leaf to the crypto source set without reading a single config payload. The registry
 then names it (`theblock`) rather than being asked to find it.
 
+**And do not mistake that ordering test for a detector.** It rules concurrency *out*; it cannot find
+the excursion. Nothing about the ordering here is wrong — one generation per boot, in strict
+succession — so no ordering check would ever flag a configuration that appeared for a single pass
+and was taken back. Only looking at the gaps finds that.
+
 So: group by fingerprint **and look at the gaps**. `first_seen`/`last_seen` answer "when was this
 setup ever alive", never "was it alive throughout". It is the same failure as a single confirm rate
 per prompt version (`prompt_drift`, ISSUE_110): a summary that hides the distribution it summarises.
@@ -262,6 +267,34 @@ watchdog's floor (ISSUE_75): the engine gets a chance to heal itself before it r
 
 No per-worker lock was added either, because none is needed: `IntervalTrigger` and `EventTrigger`
 both await the pass before computing the next wait, so a worker cannot overlap itself.
+
+### Passes do not run in the pool that serves the API (2026-09-08)
+
+The deadline above bounds the damage of a hung pass; it does not undo it, because the abandoned
+thread keeps running and holds an executor slot. Which pool that slot came from turned out to
+matter. `asyncio.to_thread` is `run_in_executor(None, …)` — the interpreter's **default** executor —
+and Starlette runs every sync `def` endpoint in that same pool. The diagnostic surface is full of
+them (`def health()`, `def report()`, `def catalog()`), so a prolonged outage leaks one uncancellable
+thread per worker per deadline into the pool that answers *"what is wrong"*.
+
+On 2026-09-08 the engine went silent for 3½ minutes during a DNS outage and `/v1/*` returned 502
+throughout, cleared only by restarting the app. Short enough that the mechanism was not *proven* —
+but a diagnostic surface whose availability depends on the thing it diagnoses is the wrong shape
+either way.
+
+So `WorkerSupervisor` owns one `ThreadPoolExecutor` (`core/pipeline/pass_executor.py`,
+`thread_name_prefix='finiex-pass'`) and hands it to every worker of both kinds — an eval pass stuck
+on a stalled OpenAI socket has exactly the shape a stuck fetch has. It is sized
+`workers × 2` with a floor of 4: one thread for each pass in flight, one for a predecessor still
+stuck behind its deadline. A worker built without one (the CLI paths, tests) constructs a private
+pool rather than falling back to the default, so the isolation is a property of the worker and not
+of the wiring. Shutdown is `wait=False`, because waiting on a thread blocked in `getaddrinfo` would
+turn a clean stop into the hang the pool exists to contain.
+
+The point is not that this pool cannot fill. It is that when it does, **the thing filling it is not
+the thing that would tell you** — the `[STALL]` watchdog covers "passes stopped completing", and
+this covers the other half: passes stop completing *and* the surface that would say so goes with
+them.
 
 One consequence worth knowing when reading the performance report: passes now genuinely run
 concurrently, so `duration_ms` samples are contention-sensitive in a way they were not before.

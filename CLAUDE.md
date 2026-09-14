@@ -80,6 +80,37 @@ Before committing to a design for a non-trivial feature or change:
   `export_github_issues.sh` pulls every release's notes into
   `github_issues/release_notes/<tag>.md` — check there for orientation on what a past
   version delivered.
+- **Every release re-checks the token prices.** The USD on every report, every `cost_log` row and
+  every envelope is derived from a hand-maintained table (`pricing.models`) — the vendor publishes
+  no pricing API, so nothing detects a change on its own. So a release holds the table against the
+  vendor's published rates and stamps `pricing.checked` with that date; the cost report renders the
+  date and its age on every run. **An unchanged table still gets a fresh date** — "verified today,
+  unchanged" and "nobody has looked since July" are different states, and the date is the only thing
+  that tells them apart. Deliberately no staleness verdict anywhere: picking a threshold would
+  invent a policy nobody chose, and #67's pricing probe is the mechanism meant to *check* rather
+  than to remind.
+- **The suite runs on the production machine at every version bump**, not on the dev container
+  alone: `pytest tests/ -q --tb=line -r fE` from the project root, venv active. The dev container is
+  Linux and the live engine is Windows Server, and the suite **encodes** that difference without
+  being able to exercise it — a green run here is not evidence about there. Both defects found on
+  the first such run (2026-08-28) are of that shape: the stream dispatcher's async psycopg
+  connection cannot work on Windows' default `ProactorEventLoop`, so `GET /v1/stream` served
+  connect and replay but pushed **nothing for 22 hours** while every test was green; and
+  `experiments/mock_signal_data/generate.py` had never run on Windows at all, taking seven tests
+  with it. Neither could fail in the container.
+  **What it costs and touches**, so neither is a surprise: ~22 minutes for ~1,020 tests, because
+  every DB test opens a TCP connection where the container uses a socket; no API budget (`-m paid`
+  is excluded by default); and it creates, migrates and drops a `finiex_test` schema **inside the
+  production database** — isolated by `search_path`, with `clean_db` truncating schema-qualified
+  (`docs/testing.md`). The live engine keeps running: stopping it would cost a gap in the signal
+  series, which is the worse trade.
+  **A red result is decided, never absorbed.** Each failure is either fixed before the tag or
+  recorded as a named platform gap with its reason — a version that ships over an unexplained red
+  is a version whose own evidence nobody read.
+- **The server deploy is stop → pull → `pip install -r requirements.txt` → migrate → start.** The
+  pip step arrived with `finiex_auth` and is not optional: a pull without it runs whatever package
+  version happens to be installed, or none. `/v1/build` reports `auth_package_version` and
+  `auth_package_editable`; an editable install in production is a finding.
 - **Roadmap #1** ticks a batch's checkbox only when it merges; the version's 🏷️ line is the
   batch's Definition of Done.
 
@@ -93,17 +124,34 @@ returns a plausible number for a question that was about production.
 
 | | dev container (what you see) | live server (where the engine runs) |
 |---|---|---|
-| Host | Linux container on the operator's laptop | Windows Server, reached by RDP |
+| Host | Linux container on the operator's laptop | Windows Server on a VPS, reached by RDP |
 | `outcomes` journal | a few hundred envelopes from test runs | the real series, weeks of continuous operation |
-| RAM | the laptop's | **16 GB** |
+| CPU | the laptop's | **4 vCPU** (AMD EPYC, virtualised — so steal time is possible and invisible from inside) |
+| RAM | the laptop's | **8 GB**, and ~5.6 of them in use before the engine's ~0.5 GB is counted |
 | Disk | hundreds of GB free | **~149 GB total, and treated as scarce** |
 | Reachable from here | yes, directly | **read-only over HTTPS** (`/v1/*` with a token; `/health` + `/build` public) — no database, no shell |
+
+**Sizing is measured, not assumed — this table was wrong for weeks.** It said 16 GB until
+2026-09-08, when a screenshot showed 8, and estimates had been made against the wrong number in
+between ("at 16 GB that is not a problem"). Four vCPUs matter for the same reason: the ingest passes
+are CPU-heavy (article normalisation and token counting over ~100–170 items every 15 s per set), so
+the machine's CPU graph shows regular bursts to 100 % that are the engine's own cadence rather than
+a fault. Re-measure before sizing anything; do not trust this paragraph over a fresh reading.
 
 **Since 2026-08-24 there is one exception, and it is narrow.** The live engine has a public TLS edge
 and per-consumer tokens (ISSUE_98), and the assistant holds its own (`claude-dev`, revocable without
 touching the Testing IDE's). So a handful of production questions are now answerable *from
 production*: is the engine alive, what do its workers report, what did the last pass actually
-produce, what does a served envelope contain field by field. Those may be answered directly.
+produce, what does a served envelope contain field by field — and, since 2026-09-08, **what the
+engine's own log said over a UTC range** (`GET /v1/logs/{name}`, grant `logs:engine`). Those may be
+answered directly.
+
+The full route table — every address, its grant, and what it answers — lives in
+`docs/development/diagnostics.md` ("Reference — every route reachable from here"). Read it before a
+remote diagnosis rather than guessing an address. The log route carries one trap worth knowing here:
+`since`/`until` are **UTC**, while the file itself is stamped in the server's local clock (GMT+2) and
+the route converts — so an outage that reads `11:05` in the raw file is `09:05:05Z` over the API, and
+the UTC value is the one that matches `/v1/health`, an envelope or a report.
 
 **Everything else is unchanged, and the two consequences below still govern.** PostgreSQL is not
 exposed and will not be: every aggregate, every historical count, every "how often since X" is still
@@ -123,6 +171,29 @@ every route the assistant can reach is a read.
 tokens an engine *accepts*). The two are one character apart and mean opposite things. `.env` is
 gitignored; `.env.example` carries the key with an empty value.
 
+**Market bars come from the Testing IDE's API: an analysis input for the assistant, never a pipeline
+input.** The engine holds no price, and "RAG belongs on unstructured text only" stays in force; bars
+exist here so a threshold can be checked against what the market did, not only against internal
+consistency. The IDE serves them at `http://host.docker.internal:8000/api/v1/…` to our own consumer
+token (`ragengine`: `bars:*` + `brokers:*`, nothing on `reports` — the IDE's run artifacts belong to
+a private strategy, and the token is refused them). It lives in `.env` as `FINIEX_IDE_CLIENT_TOKEN`,
+distinct from `FINIEX_LIVE_CLIENT_TOKEN`, which is the live engine's. Brokers `kraken_spot` (crypto)
+and `mt5` (FX); timeframes M1…D1, no M10 — aggregate from M5. A bar's timestamp is UTC unix seconds
+at its open, and a truncated answer says so in its `x-bar-*` headers. **Availability is intermittent
+by design:** the operator starts the IDE's API by hand on the laptop, not on the server, so it is
+reachable from the dev container only, and an unreachable endpoint means "ask the operator to start
+it", never a defect.
+
+**On a feed problem, consult the feed doctor before concluding anything.** A parse error names a
+line and a column *in the bytes that machine received*, and those are not the bytes this container
+fetches. On 2026-09-09 `boj_press` failed repeatedly with `not well-formed (invalid token)` at line
+11 column 69, while the same feed fetched from here was clean — 318 lines, 14,722 bytes, line 11
+only 51 characters long, so column 69 does not exist in it. The conclusion drawn from the container
+("the feed ships broken XML") was wrong about the cause and wrong in method; the probe run in the
+right place answered `200 · 14,722 bytes · 44 entries · OK`, and the real failure had been a
+truncated response. `GET /v1/diagnose/feed?source_id=…` answers it remotely,
+`python -m finiexragengine.cli.feed_doctor_cli --source <id>` on the machine.
+
 Two consequences, both learned the hard way:
 
 - **Never answer a question about production from the dev journal.** "Does the journal predate
@@ -133,8 +204,11 @@ Two consequences, both learned the hard way:
   significant fraction of the server. The operator moves artifacts to the server deliberately; a
   process or a file that only fits here is not finished.
 
-Everything the HTTP surface does not cover, the operator still bridges by hand (RDP, file copy,
-`export_cli` and any SQL run on the server). There is no tunnel and no exposed database, and asking
+Everything the HTTP surface does not cover, the operator still bridges by hand (RDP, file copy, and
+any SQL run on the server). The raw series is no longer among it: `GET /v1/pipelines/{id}/archive`
+serves any stretch of a pipeline's envelopes in bounded UTC windows (≤ 24 h, ≤ 500 lines), so
+`export_cli` is needed only for the handover itself — aggregates and every other SQL question still
+need the server. There is no tunnel and no exposed database, and asking
 for either has costs the operator has already weighed — the edge that exists was built deliberately,
 route by route, and is not an opening to widen casually.
 
@@ -298,6 +372,13 @@ Read first, in order:
   (`[OVERRIDE] …`, gated by `logging.warn_on_override`).
   Details: `docs/development/user_configs_overrides.md`.
 - **CLI entry points** in `finiexragengine/cli/` — parameter reception only, no logic.
+- **Every start command is a module command**: `python -m finiexragengine.cli.server_cli`, never
+  `python finiexragengine/cli/server_cli.py`. Running a file puts *that file's directory* on
+  `sys.path` instead of the project root, so `import finiexragengine.…` fails — and it fails only
+  where the root is not already on the path, which is why it can look fine in one shell and be
+  broken in the operator's. The CLIs' own `argparse` prog strings already say `python -m`; the docs
+  said otherwise in eleven places until 2026-09-08. This applies to anything runnable in the repo,
+  `experiments/` included (namespace packages make it work without `__init__.py`).
 - **One report, one command, one route.** A parameter must never decide *which* report you get.
   If it is its own report — its own question, its own shape — it gets its own CLI entry point and
   its own address under `/v1/reports/<name>`. A flag may **narrow** a report (window, symbol,
@@ -313,21 +394,30 @@ Read first, in order:
   instead of defaulting to everything. So a surface added later is unreachable by a consumer until
   someone writes its name into their token. Granting is an act; it is never inherited from a
   default nobody chose.
+  - **The model lives in the shared `finiex_auth` package** — its own public repo
+    (`dc-deal/finiex-modules-auth`), pinned by tag in `requirements.txt`, one implementation with
+    the Testing IDE. This engine owns only its vocabulary (`GRANT_SURFACES` on its
+    `ConsumerToken(ConsumerTokenBase)` subclass) and its loader (`api/token_loader.py`: the
+    `FINIEX_API_TOKENS` name, the precedence, the error type). A change to the model is a change to
+    two services: it is made in the package, tagged, announced on the bus, and pinned here only
+    after this suite has run and its pass count is stated.
   - **A grant names a thing, not a route.** `reports:source_health` keeps meaning what it means
     across a rename or a `/v2`; a path-shaped rule would silently stop matching and answer a
     consumer who did nothing wrong with a 403. Comparison is exact — no wildcard matching against
     caller-supplied paths, which is where authorization defects live.
   - **Bound to the route by FastAPI's own mechanism.** The *surface* is declared once per domain
     router (`Security(dependency, scopes=['reports'])` — `SecurityScopes`), the *name* is the
-    route's first path parameter. A collection route has no identity segment and is therefore
-    filtered in its handler rather than gated, so a caller entitled to some of what it lists still
-    gets an answer.
+    route's first path parameter. A collection route has no identity segment, so it is gated at the
+    surface only: a token holding nothing on that surface is refused (`403`), and a caller entitled
+    to some of what it lists gets an answer filtered in its handler. The floor keeps a forgotten
+    filter from leaking a whole list to a token the surface was never granted to.
   - **Know the one weakness: this half is NOT inherited.** Authentication sits on the single shared
     protected router, so every route inherits it and nobody can forget it. Authorization cannot work
     that way — the surface is per-router information — so a **new domain router that omits
     `Security(..., scopes=[...])` would be authenticated but ungated**, reachable by any valid
     token. That is the failure mode to watch when adding a router, and it is the reason
-    `tests/api/test_report_scopes.py` walks every registered identity route and asserts a token holding
+    `tests/api/test_report_scopes.py` runs the package's walk (`finiex_auth.route_walk`) over every
+    registered identity route, naming the routes this engine must have, and asserts a token holding
     nothing is refused: the declaration is not trusted, it is checked. **A new router means a new
     surface in `GRANT_SURFACES` and a `Security` declaration — or the suite says so.**
   - **`active: false` is a kill switch**, not documentation: a consumer can be switched off without
@@ -486,12 +576,13 @@ tests/                  pytest suite — one folder per domain, mirroring the pa
   `core/observability/reports/`: finding a unit's tests is the same navigation as finding the
   unit. A new test goes into the folder its subject already occupies; **if none fits, create the
   folder for that category** rather than dropping the file at the root — a flat root of 91 files
-  is what the 2026-08-26 split replaced. Two folders are deliberately not mirrors: `contracts/`
+  is what the 2026-08-26 split replaced. Three folders are deliberately not mirrors: `contracts/`
   holds the guards that are about the *codebase* rather than a unit (the typing sweep, the
-  closed-vocabulary boundary, the layout guard itself), and `generator/` holds the tests for the
-  sample generators under `experiments/`. Sample **data** files go to `tests/fixtures/<domain>/`;
-  a factory helper that builds a shape per case stays with its test — a static file cannot vary
-  per case, which is why nothing was outsourced in the split.
+  closed-vocabulary boundary, the layout guard itself), `generator/` holds the tests for the
+  sample generators under `experiments/`, and `experiments/` holds the tests for the other tools
+  there (netwatch). Sample **data** files go to
+  `tests/fixtures/<domain>/`; a factory helper that builds a shape per case stays with its test —
+  a static file cannot vary per case, which is why nothing was outsourced in the split.
   No `__init__.py` anywhere, so pytest imports each module by its bare basename: **basenames stay
   unique across the whole tree** — two `test_report.py` in different folders collide at
   collection. Checked by `tests/contracts/test_suite_layout.py`, which also refuses a new file at
@@ -507,6 +598,18 @@ tests/                  pytest suite — one folder per domain, mirroring the pa
   project root; the operator reads them first. Only on explicit OK does the assistant create
   them on GitHub (`gh issue create`, one at a time) — never push an issue to the tracker
   unprompted. (The bulk re-import script is retired; issues are added individually now.)
+- **An upload is finished only when the draft is gone and the roadmap knows.** On the operator's OK:
+  create or patch on GitHub, **verify by re-reading what the tracker now holds** (a `200` is not
+  evidence that the body arrived intact), then **delete the root `ISSUE_*.md`**, refresh its
+  `github_issues/` snapshot, and **place the issue on roadmap #1 in the same step**. All of it is the
+  assistant's, not the operator's. A draft left in the root after upload is a second copy that drifts
+  from the tracker and is edited by whoever finds it first; an issue that exists only in the tracker
+  is invisible to the one document meant to show what is ahead.
+  **Place it where its reason lives** — beside the issue it completes, or inside the batch whose
+  theme it shares — never appended at the end, and never in a release whose theme it does not belong
+  to. An issue that *is* another issue's Definition-of-Done item cannot sit in a different release
+  than the issue it completes; if the draft's own milestone line says otherwise, the draft is what
+  gets corrected, before upload.
 - **Comments vs body:** additions to a **not-yet-begun** issue always go into the **body**
   (the body stays the spec). Once implementation has started, progress, deviations and
   decisions land as dated **implementation-notes comments** — effectively: comments only on
@@ -519,8 +622,10 @@ tests/                  pytest suite — one folder per domain, mirroring the pa
 - **Never close/resolve issues.** The operator closes them at merge via `resolves #…`. The
   assistant may tick the roadmap checkbox (`[x]`) to show progress, but must never run
   `gh issue close` (or otherwise resolve an issue) — ticked ≠ closed; the issue stays open until merge.
-- Root-level gitignored working files (`ISSUE_*.md` drafts, `INTERNAL_*.md`) are the operator's
-  scratch space; the **operator prunes them once processed** (by processing status). A missing
+- Root-level gitignored working files (`INTERNAL_*.md`, `HANDOFF_*.md`, and any `ISSUE_*.md` that
+  was never uploaded) are the operator's scratch space; the **operator prunes them once processed**
+  (by processing status). An uploaded issue draft is not among them — the assistant removes that
+  one at upload, per the rule above. A missing
   one means "done / transferred", not data loss — GitHub is the durable copy for issues. Do not
   re-create a pruned file unless asked.
 

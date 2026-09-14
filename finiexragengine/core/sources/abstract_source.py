@@ -2,6 +2,7 @@
 from abc import ABC, abstractmethod
 from typing import List, Optional
 
+from finiexragengine.core.sources.article_normalizer import ArticleNormalizer
 from finiexragengine.types.article_types import Article
 from finiexragengine.types.config_types.source_set_types import SourceConfig
 
@@ -13,8 +14,14 @@ class AbstractSource(ABC):
     is handled by the Trigger layer, not here.
     """
 
-    def __init__(self, config: SourceConfig) -> None:
+    def __init__(self, config: SourceConfig,
+                 normalizer: Optional[ArticleNormalizer] = None) -> None:
         self._config = config
+        # Defaulted rather than required (ISSUE_112): a source built without one still normalises,
+        # so the safe behaviour is what you get for free and the configured profile is what the
+        # factory passes. A None default meaning "no normalisation" would make markup the reward
+        # for forgetting an argument.
+        self._normalizer: ArticleNormalizer = normalizer or ArticleNormalizer()
 
     def get_source_id(self) -> str:
         return self._config.source_id
@@ -55,11 +62,31 @@ class AbstractSource(ABC):
         """
         return None
 
-    @abstractmethod
     def fetch(self) -> List[Article]:
-        """Fetch the current set of articles from this source.
+        """Fetch this source's current articles, normalised (ISSUE_112).
+
+        Concrete on purpose, and the reason is structural rather than stylistic: normalisation has
+        to happen for *every* source type, and a step each implementation must remember is a step
+        the next implementation forgets — the accretion that left 32 of 34 `psycopg.connect` calls
+        unbounded (ISSUE_117). A new source type implements `_fetch_articles` and inherits the
+        treatment without knowing it exists.
+
+        The trade accepted here: `fetch` is no longer overridable. A source needing different
+        acquisition mechanics overrides `_fetch_articles`; one needing a different *text* treatment
+        is asking for a second profile, which is a config change, not a subclass.
 
         Returns:
-            Articles with their idempotent article_id already assigned (ISSUE_3).
+            Articles with their idempotent article_id already assigned (ISSUE_3), their text
+            normalised, and `text_normalizer` stamped.
+        """
+        return [self._normalizer.apply(article) for article in self._fetch_articles()]
+
+    @abstractmethod
+    def _fetch_articles(self) -> List[Article]:
+        """Fetch the current set of articles from this source, as the feed serves them.
+
+        Returns:
+            Articles with their idempotent article_id already assigned (ISSUE_3). Text is
+            un-normalised here — `fetch` applies the declared profile.
         """
         ...

@@ -111,6 +111,12 @@ Every applied override is logged once per process, one line per override file, l
 - **Typo detection:** the Pydantic configs drop unknown keys silently, so a typo'd
   override key would otherwise do nothing without a trace. The report checks each leaf
   against the *validated* merged config and flags misses as `⚠ floor_distanze?`.
+- **A flag is never cut by the cap** (2026-09-08), and it leads the line. The cap used to slice in
+  file order, so a flag sitting past position five disappeared into `+N more` — the report found
+  the defect and then hid it. Production ran that way for weeks: `weekly_report.report_command`
+  (a key that belongs on `telegram`, so the override did nothing) was entry sixteen of sixteen, and
+  it surfaced only when `/v1/configs/app` was read leaf by leaf. A file full of typos now gets a
+  long line, exactly once, which is the correct amount of noise for that many real defects.
 - **Gate:** `logging.warn_on_override` in `app_config.json` (default `true`).
 - **Boot order:** the app-config report happens before `configure_logging` (the manager is
   constructed first), so it is buffered and replayed into the log once handlers exist. Without
@@ -118,6 +124,23 @@ Every applied override is logged once per process, one line per override file, l
   file, invisible in live mode. Found in a live server log on 2026-08-16.
 - `coverage_cli` additionally marks its header with `(+ user override)` when the
   effective pipeline config diverges from the tracked one.
+
+## Reading the overlay from somewhere else (2026-09-08)
+
+The startup report says *that* a leaf moved; `GET /v1/configs/{name}` says what the merge produced.
+That closes the gap this whole layer creates: an override is by definition invisible in the
+repository, so a machine's real configuration used to be answerable only on the machine.
+
+```
+GET /v1/configs/source_sets?id=crypto_news   → documents + overrides + layers
+```
+
+Two things it deliberately does not do. It does not re-read the files — the views are built at boot
+over the objects the engine loaded, so the answer describes the running process rather than the
+current disk. And it does not publish secrets: the three credential leaves are masked by policy, and
+the *override entries* pass the same projection, because `user_configs/app_config.json` is exactly
+the file the bearer tokens and the bot token live in. Contract:
+[connect_contract.md](../architecture/connect_contract.md).
 
 ## Conventions
 

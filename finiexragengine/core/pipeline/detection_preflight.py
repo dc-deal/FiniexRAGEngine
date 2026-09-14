@@ -16,9 +16,13 @@ over-ambitious threshold is a *degraded feature*, and blocking on it would take 
 over a quarantined feed. Warning it is the whole point — the failure mode today is silence.
 
 **Two checks, deliberately different in strength** (see `DetectionReachability`): the weight check
-is a proof, the cluster check is an indicator, because `count_neighbors` counts corpus articles
-rather than distinct feeds. The wording keeps them apart on purpose — reporting an indicator as a
-proof is how a report loses its credibility.
+is always a proof; the cluster check is an indicator while the set counts articles and becomes a
+**proof** once it counts distinct feeds (ISSUE_106), because distinct feeds cannot exceed the feeds
+that run. The wording follows the unit rather than being fixed — reporting an indicator as a proof
+is how a report loses its credibility, and reporting a proof as an indicator wastes one.
+
+A set with the cluster path switched off gets neither: it is reported as **off by decision**, which
+is a different state from unreachable and must not read like a threshold somebody should go fix.
 
 **Quarantine is deliberately not part of the boot check**: it is dynamic, so a boot-time verdict
 would be stale within the hour. The boot line reports the `enabled` count; the `breaking` report
@@ -59,6 +63,8 @@ def check_detection_reachability(source_set: SourceSetConfig) -> DetectionReacha
         active_ids=[source.source_id for source in active],
         mid_cluster_size=detection.mid_cluster_size,
         high_cluster_size=detection.high_cluster_size,
+        cluster_unit=detection.cluster_unit,
+        cluster_enabled=detection.cluster_enabled,
         keyword_source_weight=detection.keyword_source_weight,
         max_active_weight=max(weights) if weights else 0.0,
         at_or_above_gate=sum(1 for weight in weights
@@ -112,18 +118,38 @@ def format_reachability_lines(reach: DetectionReachability, *, prefix: str = '')
         lines = [f'{tag} · {reach.active} active feeds ({reach.declared} declared{out_note}) '
                  f'· quarantine not included (it is dynamic — the breaking report reads it live)']
 
-    # The cluster half — an indicator, and worded as one. "Only intra-feed duplication can get
-    # there" is the true statement; "unreachable" would be false, and falsely reassuring.
-    if reach.cluster_needs_self_duplication:
-        lines.append(
-            f'{tag} · high_cluster_size={reach.high_cluster_size} exceeds the '
-            f'{_count_label(reach)} ({reach.effective}) — the cross-feed path to HIGH cannot be '
-            f'reached by these feeds alone; only a feed duplicating itself, or the keyword path, '
-            f'can still fire')
-    if reach.mid_needs_self_duplication:
-        lines.append(
-            f'{tag} · mid_cluster_size={reach.mid_cluster_size} exceeds the '
-            f'{_count_label(reach)} ({reach.effective}) — same for MID: no cross-feed route left')
+    # A switched-off path is not an unreachable one, and saying so is the point of the explicit
+    # flag (ISSUE_106): "off by decision" and "off by arithmetic" are different states, and a
+    # surface that renders them alike invites someone to "fix" a threshold nobody wanted firing.
+    if not reach.cluster_enabled:
+        lines.append(f'{tag} · cluster path OFF by config — detection is keyword-only here. '
+                     f'Measured 2026-09-07: no similarity produces cross-feed corroboration for '
+                     f'this set, while loosening the article count fires one feed\'s daily '
+                     f'template')
+    # The cluster half. Under `articles` it is an indicator — "only intra-feed duplication can get
+    # there" is true where "unreachable" would be false and falsely reassuring. Under `feeds` the
+    # same comparison IS a proof, because distinct feeds cannot exceed the feeds that run.
+    elif reach.cluster_needs_self_duplication or reach.mid_needs_self_duplication:
+        if reach.cluster_check_is_proof:
+            for label, size in (('high', reach.high_cluster_size),
+                                ('mid', reach.mid_cluster_size)):
+                if size > reach.effective:
+                    lines.append(
+                        f'{tag} · {label}_cluster_size={size} counts DISTINCT FEEDS and exceeds '
+                        f'the {_count_label(reach)} ({reach.effective}) — that tier CANNOT fire; '
+                        f'no route, not merely a narrow one')
+        else:
+            if reach.cluster_needs_self_duplication:
+                lines.append(
+                    f'{tag} · high_cluster_size={reach.high_cluster_size} exceeds the '
+                    f'{_count_label(reach)} ({reach.effective}) — the cross-feed path to HIGH '
+                    f'cannot be reached by these feeds alone; only a feed duplicating itself, or '
+                    f'the keyword path, can still fire')
+            if reach.mid_needs_self_duplication:
+                lines.append(
+                    f'{tag} · mid_cluster_size={reach.mid_cluster_size} exceeds the '
+                    f'{_count_label(reach)} ({reach.effective}) — same for MID: no cross-feed '
+                    f'route left')
 
     # The weight half — a proof, and it is the one that fails *silently*, because a keyword hit
     # that never fires leaves nothing behind at all.
@@ -139,9 +165,10 @@ def format_reachability_lines(reach: DetectionReachability, *, prefix: str = '')
             f'{tag} · keyword gate {reach.keyword_source_weight} · '
             f'{reach.at_or_above_gate} of {reach.active} active feeds at or above '
             f'(highest {reach.max_active_weight})')
-    if reach.satisfiable:
+    if reach.satisfiable and reach.cluster_enabled:
         lines.append(f'{tag} · cluster thresholds {reach.mid_cluster_size}/'
-                     f'{reach.high_cluster_size} satisfiable by {reach.effective} '
+                     f'{reach.high_cluster_size} ({reach.cluster_unit}) satisfiable by '
+                     f'{reach.effective} '
                      f'{"pollable" if reach.quarantine_known else "active"} feeds')
     return lines
 
