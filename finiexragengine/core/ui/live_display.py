@@ -344,7 +344,15 @@ class LiveDisplay:
 
     @staticmethod
     def _breaking_detail(snapshot: BreakingSnapshot) -> Text:
-        base = f'{snapshot.detected} detected · {snapshot.confirmed} confirmed'
+        # The split rides inside the detected count it explains (ISSUE_26) — `3 detected
+        # (2 keyword · 1 cluster)`. Rendered only when a path is recorded: a flag from before
+        # the split existed leaves the number alone rather than claiming an unknown path.
+        split = ' · '.join(f'{count} {trigger}'
+                           for trigger, count in sorted(snapshot.by_trigger.items()))
+        detected = f'{snapshot.detected} detected'
+        if split:
+            detected += f' ({split})'
+        base = f'{detected} · {snapshot.confirmed} confirmed'
         if snapshot.detail:
             base += f' · {snapshot.detail}'
         style = 'red' if snapshot.confirmed else ('yellow' if snapshot.detected else 'dim')

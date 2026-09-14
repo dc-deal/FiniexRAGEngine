@@ -264,3 +264,27 @@ def test_a_set_with_no_vocabulary_configured_records_nothing_rather_than_empty()
     store, _ = _detect(5, _article('Five outlets carry the same story'), high_cluster_size=5)
 
     assert store.flagged[0][5] is None
+
+
+def test_a_high_flag_carries_its_evidence_to_the_live_console():
+    """The pass records WHAT it flagged, not only how much (ISSUE_26).
+
+    The detector built this sentence for its log line and dropped it, so the live display could
+    render a count and nothing else. Keyword flags carry their terms, cluster flags their
+    neighbourhood — the same mirror rule the persisted columns follow.
+    """
+    _, keyword = _detect(1, _article('Federal Reserve issues FOMC statement', weight=1.0),
+                         keywords=['fomc statement'], keyword_source_weight=0.9)
+    _, cluster = _detect(5, _article('Five outlets carry the same story'), high_cluster_size=5)
+
+    assert [(c.source_id, c.trigger, c.terms, c.evidence) for c in keyword.flagged] == [
+        ('s', 'keyword', ('fomc statement',), 'keywords fomc statement')]
+    assert [(c.trigger, c.cluster_size, c.evidence) for c in cluster.flagged] == [
+        ('cluster', 5, 'cluster 5')]
+
+
+def test_a_mid_flag_is_counted_but_never_named():
+    """Only HIGH reaches the console: MID wakes nothing and would fill the panel with routine."""
+    _, result = _detect(3, _article('a'))           # == mid_cluster_size, below high
+
+    assert result.mid == 1 and result.flagged == []

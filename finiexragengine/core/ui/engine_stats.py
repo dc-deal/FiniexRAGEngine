@@ -94,6 +94,10 @@ class BreakingSnapshot:
     detected: int                                # candidates flagged (ISSUE_11 ingest side)
     confirmed: int                               # confirmed breaking EPISODES (eval side, edge-triggered)
     detail: str = ''                             # last reaction time, e.g. 'engine 42s / e2e 3.1m'
+    # Cumulative `detected` split by detection path, keyed by `DetectionTrigger` (ISSUE_26). The
+    # row's number says how much the ingest side flagged; which path did it is the part that tells
+    # a vocabulary problem from a cluster one, and it is free — the worker already has the flags.
+    by_trigger: Dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -186,12 +190,19 @@ class EngineStats:
     def set_llm(self, pipeline_id: str, snapshot: LlmSnapshot) -> None:
         self._llm[pipeline_id] = snapshot
 
-    def add_breaking_detected(self, count: int, *, at: datetime) -> None:
-        """Ingest flagged `count` candidates — bump the cumulative detected total."""
+    def add_breaking_detected(self, count: int, *, at: datetime,
+                              by_trigger: Optional[Dict[str, int]] = None) -> None:
+        """Ingest flagged `count` candidates — bump the cumulative detected total, and the
+        per-path totals with it (ISSUE_26). `by_trigger` omitted keeps the split untouched: an
+        older caller adds to the number without claiming a path it did not measure."""
         with self._counter_lock:                          # read-modify-write (ISSUE_74)
             current = self._breaking
+            split = dict(current.by_trigger)
+            for trigger, flags in (by_trigger or {}).items():
+                split[trigger] = split.get(trigger, 0) + flags
             self._breaking = BreakingSnapshot(last=at, detected=current.detected + count,
-                                              confirmed=current.confirmed, detail=current.detail)
+                                              confirmed=current.confirmed, detail=current.detail,
+                                              by_trigger=split)
 
     def add_breaking_episode(self, symbol: str, signal: str, reason: str, detail: str, *,
                              at: datetime, gap_seconds: float = 9000.0) -> None:
@@ -200,7 +211,8 @@ class EngineStats:
         with self._counter_lock:                          # read-modify-write (ISSUE_74)
             current = self._breaking
             self._breaking = BreakingSnapshot(last=at, detected=current.detected,
-                                              confirmed=current.confirmed + 1, detail=detail)
+                                              confirmed=current.confirmed + 1, detail=detail,
+                                              by_trigger=current.by_trigger)
             self._recent_breaking.append(BreakingRecord(started=at, last_seen=at, symbol=symbol,
                                                         signal=signal, reason=reason,
                                                         gap_seconds=gap_seconds))
@@ -239,7 +251,8 @@ class EngineStats:
             if current.last is None or last_seen > current.last:
                 self._breaking = BreakingSnapshot(last=last_seen, detected=current.detected,
                                                   confirmed=current.confirmed,
-                                                  detail=current.detail)
+                                                  detail=current.detail,
+                                                  by_trigger=current.by_trigger)
 
     def touch_breaking_episode(self, symbol: str, *, at: datetime) -> None:
         """A symbol whose open episode this pass held (same ongoing episode, ISSUE_64/82): advance

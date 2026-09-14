@@ -223,6 +223,36 @@ DetectionTrigger = Literal[
 DETECTION_TRIGGERS: Tuple[str, ...] = get_args(DetectionTrigger)
 
 
+@dataclass(frozen=True)
+class FlaggedCandidate:
+    """One HIGH-tier flag and the evidence it was made on — for the live console (ISSUE_26).
+
+    The detector already builds this sentence for its log line and then discards it, so the live
+    display could only ever show a count: `3 detected` says nothing about which path fired, on which
+    feed, or on which headline. The persisted columns (migrations 011/013/014) stay the durable
+    answer; this is the at-the-call echo the operator watching the screen needs.
+    """
+    source_id: str
+    title: str
+    trigger: str                 # a `DetectionTrigger` value — which path produced the verdict
+    terms: Tuple[str, ...] = ()  # the vocabulary that fired (keyword path only, mirror of 014)
+    cluster_size: int = 0        # the neighbourhood that fired (cluster path only, mirror of 013)
+
+    @property
+    def evidence(self) -> str:
+        """Why this article was flagged, in one phrase — `keywords a, b` or `cluster 5`.
+
+        On the shape rather than in either caller: the pass log and the live activity line ask the
+        same question of the same flag, and two spellings of it would drift. Named rather than
+        counted — 'cluster 5' and "the word 'hack' appeared" are different justifications, and a
+        surface sampling false positives has to say which one it is. No terms is the cluster path's
+        own flag, not an empty match.
+        """
+        if self.terms:
+            return f"keywords {', '.join(self.terms)}"
+        return f'cluster {self.cluster_size}'
+
+
 @dataclass
 class DetectionResult:
     """What one detection pass flagged — totals for the ingest log + the wake signal."""
@@ -233,6 +263,9 @@ class DetectionResult:
     # say which channel did the work instead of only how much was flagged — the durable answer is
     # the persisted column, this is the at-the-call echo (CLAUDE.md: a run reports its own effect).
     by_trigger: Dict[str, int] = field(default_factory=dict)
+    # The HIGH flags themselves, in flag order (ISSUE_26). Bounded by what one pass stored, and only
+    # the HIGH tier: the wake and the operator's attention are both about that tier.
+    flagged: List[FlaggedCandidate] = field(default_factory=list)
 
 
 @dataclass
@@ -392,6 +425,9 @@ class IngestResult:
     normalised: int = 0             # fetched articles whose text carried markup/entities (ISSUE_112)
     dropped_chars: int = 0          # characters the normaliser removed from them
     candidates: int = 0             # breaking candidates flagged this pass (HIGH tier, ISSUE_11)
+    # The HIGH flags with their evidence, so the worker's live line can name a term and a feed
+    # instead of a number (ISSUE_26). Empty on a pass that flagged nothing.
+    flagged: List[FlaggedCandidate] = field(default_factory=list)
     max_tier: int = 0               # highest importance tier written this pass — drives the eval wake (ISSUE_11)
     suspended: bool = False         # paid embedding suspended this pass (provider quota, ISSUE_47)
     # The embedding provider could not be reached and the pass stopped at that source (2026-09-08).

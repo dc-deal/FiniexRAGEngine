@@ -11,7 +11,9 @@ from finiexragengine.core.ui.engine_stats import (
     RetrievalSnapshot,
     SourcesSnapshot,
 )
+from finiexragengine.core.pipeline.ingest_worker import _flag_line
 from finiexragengine.core.ui.live_display import LiveDisplay
+from finiexragengine.types.ingest_types import FlaggedCandidate
 
 _NOW = datetime(2026, 7, 22, 12, 0, tzinfo=timezone.utc)
 
@@ -266,3 +268,36 @@ def test_header_warnings_appear_only_while_their_condition_holds():
     assert WARNING_MARK in header and 'journal unnamed' in header
     # Appended to the running header, never replacing it — the operator still sees version/uptime.
     assert header.startswith('FiniexRAGEngine v9.9.9')
+
+
+def test_the_breaking_row_names_the_path_that_flagged():
+    """Which path did the flagging is the part that tells a vocabulary problem from a cluster one.
+
+    A count alone ('3 detected') sent the operator to the log for the one fact the engine already
+    had. Rendered only when a path is recorded, so a flag from before the split stays a plain
+    number rather than claiming an unknown path.
+    """
+    stats = _stats()
+    stats.add_breaking_detected(3, at=datetime.now(timezone.utc),
+                                by_trigger={'keyword': 2, 'cluster': 1})
+    assert '3 detected (1 cluster · 2 keyword)' in _render(stats)
+
+    unsplit = _stats()
+    unsplit.add_breaking_detected(1, at=datetime.now(timezone.utc))
+    assert '1 detected · 0 confirmed' in _render(unsplit)
+
+
+def test_a_flagged_pass_names_the_term_and_the_feed_in_the_activity_stream():
+    """The activity line an ingest pass writes when it flags (ISSUE_26) — one line, not one per
+    flag, so a noisy vocabulary cannot crowd the panel."""
+    stats = _stats()
+    stats.push_event('BREAKING', _flag_line('forex_news', [
+        FlaggedCandidate(source_id='fed_press', title='Federal Reserve issues FOMC statement',
+                         trigger='keyword', terms=('fomc statement',)),
+        FlaggedCandidate(source_id='forexlive', title='FX news wrap', trigger='keyword',
+                         terms=('intervention',))]))
+    text = _render(stats)
+
+    assert 'BREAKING' in text and 'keywords fomc statement' in text
+    # The parts an operator acts on survive the panel's crop; the headline is what may be cut.
+    assert 'fed_press (+1 more)' in text

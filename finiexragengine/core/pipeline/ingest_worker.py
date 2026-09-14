@@ -24,7 +24,8 @@ from finiexragengine.core.ui.engine_stats import (
 from finiexragengine.types.alert_types import AlertCallback
 from finiexragengine.types.config_types.app_config_types import DiagnosticsConfig
 from finiexragengine.types.config_types.source_set_types import SourceSetConfig
-from finiexragengine.types.ingest_types import HostEvent, IngestResult, SourcePoll
+from finiexragengine.types.ingest_types import (FlaggedCandidate, HostEvent, IngestResult,
+                                                SourcePoll)
 from finiexragengine.types.trigger_types import TriggerReason
 from finiexragengine.types.worker_types import WorkerState
 from finiexragengine.utils.relative_age import format_age
@@ -61,6 +62,39 @@ def _overdue_feeds(last_ok: Dict[str, datetime], expected: Dict[str, int],
         if overdue_s > interval * _OVERDUE_FACTOR:
             overdue.append(f'{source_id} overdue {int(overdue_s / 60)}m')
     return overdue
+
+
+def _trigger_counts(flagged: List[FlaggedCandidate]) -> Dict[str, int]:
+    """HIGH flags per detection path, for the BREAKING row's split (ISSUE_26).
+
+    Derived from the flags themselves rather than taken from `DetectionResult.by_trigger`, which
+    counts MID as well: the row's `detected` accumulator is HIGH-only, and a split that does not
+    add up to the number beside it is worse than no split.
+    """
+    counts: Dict[str, int] = {}
+    for candidate in flagged:
+        counts[candidate.trigger] = counts.get(candidate.trigger, 0) + 1
+    return counts
+
+
+def _flag_line(source_set_id: str, flagged: List[FlaggedCandidate]) -> str:
+    """`forex_news · keywords fomc statement · fed_press (+2 more) · Fed issues FOMC statement`.
+
+    One line per pass. The first flag is named in full because that is the one an operator can act
+    on; the rest are counted, so a vocabulary firing on a news wrap cannot crowd out the ingest and
+    source lines around it. The evidence phrase belongs to the flag itself, so this line and the
+    pass log say the same thing about the same flag — and it already names the path, so the
+    trigger is not repeated beside it.
+
+    **The headline goes last on purpose.** The activity panel crops to the terminal's width, and of
+    these parts the headline is the one that survives being cut: the set, the term and the feed are
+    what the operator acts on.
+    """
+    if not flagged:                                      # never reached (the caller guards), kept
+        return f'{source_set_id} flagged nothing'        # so the helper is total on its own input
+    first = flagged[0]
+    more = f' (+{len(flagged) - 1} more)' if len(flagged) > 1 else ''
+    return f'{source_set_id} · {first.evidence} · {first.source_id}{more} · {first.title}'
 
 
 def _quarantine_chip(poll: SourcePoll, now: datetime) -> str:
@@ -332,7 +366,13 @@ class IngestWorker:
                                        f'fetched articles held for the next pass')
         # BREAKING (detected side): cumulative HIGH-tier candidates flagged by ingest (ISSUE_11).
         if result.candidates:
-            stats.add_breaking_detected(result.candidates, at=now)
+            stats.add_breaking_detected(result.candidates, at=now,
+                                        by_trigger=_trigger_counts(result.flagged))
+            # One line per flagging pass, never one per flag (ISSUE_26): the detected counter says
+            # how many, and the operator's question at the screen is *what* — which path, which
+            # feed, which headline. Named for the first flag, counted for the rest, so a noisy
+            # vocabulary cannot push the pass lines off the panel.
+            stats.push_event('BREAKING', _flag_line(source_set_id, result.flagged))
         # A feed crossing into flagged+quarantined this pass gets its own red activity line.
         for source_id, note in result.health_notes.items():
             if note.just_flagged:

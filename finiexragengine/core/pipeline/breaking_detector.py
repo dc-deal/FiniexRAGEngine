@@ -7,7 +7,8 @@ from typing import Dict, List, Optional, Pattern, Set, Tuple
 from finiexragengine.core.rag.abstract_vector_store import AbstractVectorStore
 from finiexragengine.types.article_types import Article, NeighbourCount
 from finiexragengine.types.config_types.source_set_types import DetectionConfig
-from finiexragengine.types.ingest_types import DetectionResult, DetectionTrigger
+from finiexragengine.types.ingest_types import (DetectionResult, DetectionTrigger,
+                                                FlaggedCandidate)
 from finiexragengine.utils.keyword_pattern import build_keyword_pattern
 
 logger = logging.getLogger(__name__)
@@ -20,6 +21,11 @@ LOW, MID, HIGH = 1, 2, 3
 # so it is worth a constant rather than a literal repeated at four call sites.
 CLUSTER: DetectionTrigger = 'cluster'
 KEYWORD: DetectionTrigger = 'keyword'
+
+
+# How many flagged stories the pass line samples. The live console names one and counts the rest,
+# so the two surfaces differ in width, not in content.
+_LOGGED_EXAMPLES = 3
 
 
 @dataclass
@@ -80,10 +86,6 @@ class BreakingDetector:
         # pgvector <=> is cosine *distance* (1 - similarity); a cluster member sits within this.
         max_distance = 1.0 - cfg.cluster_similarity
         since = datetime.now(timezone.utc) - timedelta(minutes=cfg.cluster_window_minutes)
-        # (title, cluster_size, terms) — a few, to judge detection quality in the log. The terms
-        # ride along because `GET /v1/logs/engine` made the log remotely readable: a flag is then
-        # traceable to the word that made it without waiting for a report to be run.
-        high_examples: List[Tuple[str, int, Tuple[str, ...]]] = []
         for article, vector in zip(fresh, vectors):
             # The neighbourhood already in the corpus within the window (this article and its
             # just-stored siblings included) — one query, no rows materialized, no LLM. Skipped
@@ -122,8 +124,16 @@ class BreakingDetector:
             result.by_trigger[verdict.trigger] = result.by_trigger.get(verdict.trigger, 0) + 1
             if breaking:
                 result.candidates += 1
-                if len(high_examples) < 3:
-                    high_examples.append((article.title, cluster_size, matched))
+                # The evidence travels with the flag (ISSUE_26): the log line below and the
+                # live console ask the same question — which path fired, on what — and it was
+                # built here and discarded one line later. Same mirror rule as the columns:
+                # terms only for a keyword verdict, the neighbourhood only for a cluster one.
+                neighbourhood = cluster_size if measured is not None else 0
+                result.flagged.append(FlaggedCandidate(source_id=article.source_id,
+                                                       title=article.title,
+                                                       trigger=verdict.trigger,
+                                                       terms=fired or (),
+                                                       cluster_size=neighbourhood))
             else:
                 result.mid += 1
             result.max_tier = max(result.max_tier, tier)
@@ -135,15 +145,16 @@ class BreakingDetector:
             logger.info('[breaking] flagged %d HIGH + %d MID via %s (window %dmin, sim>=%.2f)',
                         result.candidates, result.mid, split or 'nothing',
                         cfg.cluster_window_minutes, cfg.cluster_similarity)
-            # Sample the flagged HIGH stories so an overnight review can spot false positives.
-            for title, size, terms in high_examples:
-                # Named rather than counted: 'cluster 5' and "the word 'hack' appeared" are
-                # different justifications, and the line that samples false positives should say
-                # which one it is. No terms is the cluster path's own flag, not an empty match.
-                evidence = f"keywords {', '.join(terms)}" if terms else f'cluster {size}'
-                logger.info('[breaking]   HIGH: %r (%s)', title[:72], evidence)
-            if result.candidates > len(high_examples):
-                logger.info('[breaking]   … +%d more HIGH', result.candidates - len(high_examples))
+            # Sample the flagged HIGH stories so an overnight review can spot false positives —
+            # from the recorded flags themselves, so the log and the live console cannot describe
+            # different flags. The terms ride along because `GET /v1/logs/engine` made the log
+            # remotely readable: a flag is traceable to the word that made it without running a
+            # report.
+            for candidate in result.flagged[:_LOGGED_EXAMPLES]:
+                logger.info('[breaking]   HIGH: %r (%s)', candidate.title[:72],
+                            candidate.evidence)
+            if result.candidates > _LOGGED_EXAMPLES:
+                logger.info('[breaking]   … +%d more HIGH', result.candidates - _LOGGED_EXAMPLES)
         return result
 
     def _tier(self, cluster_size: int, source_weight: float,

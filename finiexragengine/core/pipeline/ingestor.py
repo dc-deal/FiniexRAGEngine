@@ -373,6 +373,7 @@ class Ingestor:
             articles, vectors = zip(*detect_batch)
             detection = self._breaking_detector.detect(list(articles), list(vectors))
             result.candidates = detection.candidates
+            result.flagged = detection.flagged
             result.max_tier = detection.max_tier
         result.stage_timings = timer.timings
         return result
