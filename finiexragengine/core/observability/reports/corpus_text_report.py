@@ -21,7 +21,6 @@ Four questions, one surface:
 Question 4 is evaluated with the **real** `ArticleNormalizer`, not a SQL imitation of it: a report
 that approximates the treatment it audits can only ever measure its own approximation.
 """
-import re
 import shutil
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -31,6 +30,10 @@ import psycopg
 
 from finiexragengine.core.sources.article_normalizer import ArticleNormalizer
 from finiexragengine.exceptions.ragengine_errors import VectorStoreError
+from finiexragengine.utils.keyword_pattern import (
+    build_keyword_pattern,
+    sql_keyword_alternation,
+)
 
 # What a NULL `text_normalizer` renders as: stored before the treatment existed. Deliberately not
 # folded into a profile — it is an absence, exactly as `unrecorded` is for `detection_trigger`.
@@ -272,9 +275,9 @@ def _phantoms(cur: psycopg.Cursor, table: str, report: CorpusTextReport,
         if not keyword_set.keywords:
             continue
         report.keyword_sets.append(keyword_set.source_set_id)
-        pattern = re.compile(r'\b(?:' + '|'.join(re.escape(k) for k in keyword_set.keywords)
-                             + r')\b', re.IGNORECASE)
-        sql_pattern = r'\y(' + '|'.join(_sql_quote(k) for k in keyword_set.keywords) + r')\y'
+        # The detector's own construction, not a second one (ISSUE_121).
+        pattern = build_keyword_pattern(keyword_set.keywords)
+        sql_pattern = sql_keyword_alternation(keyword_set.keywords)
         for source_id, weight in keyword_set.weights.items():
             known[source_id] = (keyword_set, weight)
         cur.execute(
@@ -308,11 +311,6 @@ def _phantoms(cur: psycopg.Cursor, table: str, report: CorpusTextReport,
     cur.execute(f'SELECT DISTINCT source_id FROM {table}')
     report.orphan_sources = sorted(str(row[0]) for row in cur.fetchall()
                                    if str(row[0]) not in known)
-
-
-def _sql_quote(keyword: str) -> str:
-    """Escape a keyword for a POSIX alternation — the vocabulary is operator-written config."""
-    return re.sub(r'([\\.^$|()\[\]{}*+?])', r'\\\1', keyword)
 
 
 def format_corpus_text_report(report: CorpusTextReport, width: Optional[int] = None) -> str:

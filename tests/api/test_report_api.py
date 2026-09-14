@@ -51,6 +51,31 @@ def test_a_report_answers_with_its_data_and_the_window_it_used(client: TestClien
     assert 'flagged_count' in body['data']
 
 
+def test_a_repeatable_terms_parameter_reaches_the_keyword_sweep(client: TestClient) -> None:
+    """The candidate vocabulary travels as a repeatable query parameter (ISSUE_121).
+
+    It comes back named in `params` with its origin: a parameter accepted and then dropped is the
+    failure this provenance model exists to prevent, and `terms` is the first one whose whole point
+    is that the answer describes a list the CONFIG does not contain.
+    """
+    body = client.get('/v1/reports/keyword_sweep',
+                      params=[('terms', 'rate decision'), ('terms', 'intervention'),
+                              ('source_set_id', 'forex_news')]).json()
+
+    assert body['params']['terms']['value'] == ['rate decision', 'intervention']
+    assert body['params']['terms']['source'] == 'request'
+    assert body['params']['window']['source'] == 'config'      # configured unless narrowed
+    assert [report['source_set_id'] for report in body['data']] == ['forex_news']
+    assert [row['term'] for row in body['data'][0]['terms']] == ['intervention', 'rate decision']
+
+
+def test_a_report_that_does_not_take_terms_refuses_them(client: TestClient) -> None:
+    """Refused rather than ignored — the same rule every other unusable parameter follows."""
+    response = client.get('/v1/reports/breaking', params={'terms': 'rate decision'})
+
+    assert response.status_code == 422 and 'terms' in response.json()['detail']
+
+
 def test_an_unknown_report_is_404_not_500(client: TestClient) -> None:
     """"There is no such report" and "the report is broken" are different answers to a caller."""
     response = client.get('/v1/reports/does_not_exist')

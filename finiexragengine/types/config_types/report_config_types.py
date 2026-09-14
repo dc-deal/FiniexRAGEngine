@@ -150,6 +150,16 @@ class DetectionQualityReportConfig(BaseModel):
     examples: int = 5
 
 
+class KeywordSweepReportConfig(BaseModel):
+    """The vocabulary replay (ISSUE_121) — a corpus read, on the catalog like the rest.
+
+    Wider than the 7d most reports default to, deliberately: a central-bank term fires around a
+    scheduled decision, and a week can contain none of them. A fortnight is what makes the
+    difference between "this term is wrong" and "its event has not happened yet" readable.
+    """
+    window: str = '14d'
+
+
 class ReportsConfig(BaseModel):
     """One config object per report, keyed by the name the catalog and the API use."""
     source_health: SourceHealthReportConfig = Field(default_factory=SourceHealthReportConfig)
@@ -169,3 +179,4 @@ class ReportsConfig(BaseModel):
         default_factory=RetrievalDriftReportConfig)
     detection_quality: DetectionQualityReportConfig = Field(
         default_factory=DetectionQualityReportConfig)
+    keyword_sweep: KeywordSweepReportConfig = Field(default_factory=KeywordSweepReportConfig)

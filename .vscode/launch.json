@@ -458,6 +458,34 @@
             }
         },
         {
+            // "What would this vocabulary actually flag?" ISSUE_121 — the keyword half of the
+            // question `detection_sweep` answers for the cluster path. The keyword gate needs no
+            // corroboration, so a term written into config fires on its own, and until this report
+            // the only way to see what it does was to deploy it and wait.
+            // Two columns per term because the gate decides: `hits` is every match, `gated` only
+            // those on a feed at or above keyword_source_weight — a term firing only below it is
+            // dead vocabulary and invisible in a raw count. A ZERO is reported as a finding and the
+            // plural is probed: `monetary policy decision` matches nothing while the ECB titles
+            // every decision "Monetary policy decisions".
+            // Omit --terms-file to sweep the CONFIGURED vocabulary, which answers what the running
+            // list is doing. Read-only, no LLM, no embedding call.
+            "name": "📊 RAGEngine: Keyword Sweep (what would this vocabulary flag?)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/finiexragengine/cli/keyword_sweep_cli.py",
+            "args": [
+                "forex_news",
+                "--since",
+                "30d"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "04_diagnostics",
+                "order": 17
+            }
+        },
+        {
             // ISSUE_108: stamps breaking_episode_id/_start onto archived envelopes that predate
             // ISSUE_65. WRITES when --apply is added — without it this is a dry run that reports
             // what it would do and refuses to write if its self-check disagreed with any identity

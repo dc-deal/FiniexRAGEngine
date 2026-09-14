@@ -197,6 +197,9 @@
     "detection_quality": {
       "window": "7d",
       "examples": 5
+    },
+    "keyword_sweep": {
+      "window": "14d"
     }
   }
 }

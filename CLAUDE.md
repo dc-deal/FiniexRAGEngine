@@ -204,8 +204,11 @@ Two consequences, both learned the hard way:
   significant fraction of the server. The operator moves artifacts to the server deliberately; a
   process or a file that only fits here is not finished.
 
-Everything the HTTP surface does not cover, the operator still bridges by hand (RDP, file copy,
-`export_cli` and any SQL run on the server). There is no tunnel and no exposed database, and asking
+Everything the HTTP surface does not cover, the operator still bridges by hand (RDP, file copy, and
+any SQL run on the server). The raw series is no longer among it: `GET /v1/pipelines/{id}/archive`
+serves any stretch of a pipeline's envelopes in bounded UTC windows (≤ 24 h, ≤ 500 lines), so
+`export_cli` is needed only for the handover itself — aggregates and every other SQL question still
+need the server. There is no tunnel and no exposed database, and asking
 for either has costs the operator has already weighed — the edge that exists was built deliberately,
 route by route, and is not an opening to widen casually.
 
@@ -573,12 +576,13 @@ tests/                  pytest suite — one folder per domain, mirroring the pa
   `core/observability/reports/`: finding a unit's tests is the same navigation as finding the
   unit. A new test goes into the folder its subject already occupies; **if none fits, create the
   folder for that category** rather than dropping the file at the root — a flat root of 91 files
-  is what the 2026-08-26 split replaced. Two folders are deliberately not mirrors: `contracts/`
+  is what the 2026-08-26 split replaced. Three folders are deliberately not mirrors: `contracts/`
   holds the guards that are about the *codebase* rather than a unit (the typing sweep, the
-  closed-vocabulary boundary, the layout guard itself), and `generator/` holds the tests for the
-  sample generators under `experiments/`. Sample **data** files go to `tests/fixtures/<domain>/`;
-  a factory helper that builds a shape per case stays with its test — a static file cannot vary
-  per case, which is why nothing was outsourced in the split.
+  closed-vocabulary boundary, the layout guard itself), `generator/` holds the tests for the
+  sample generators under `experiments/`, and `experiments/` holds the tests for the other tools
+  there (netwatch). Sample **data** files go to
+  `tests/fixtures/<domain>/`; a factory helper that builds a shape per case stays with its test —
+  a static file cannot vary per case, which is why nothing was outsourced in the split.
   No `__init__.py` anywhere, so pytest imports each module by its bare basename: **basenames stay
   unique across the whole tree** — two `test_report.py` in different folders collide at
   collection. Checked by `tests/contracts/test_suite_layout.py`, which also refuses a new file at

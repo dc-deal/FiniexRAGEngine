@@ -1,6 +1,5 @@
 """Breaking-candidate detection at ingest — LLM-free cluster-burst + keyword heuristic (ISSUE_11)."""
 import logging
-import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Pattern, Set, Tuple
@@ -9,6 +8,7 @@ from finiexragengine.core.rag.abstract_vector_store import AbstractVectorStore
 from finiexragengine.types.article_types import Article, NeighbourCount
 from finiexragengine.types.config_types.source_set_types import DetectionConfig
 from finiexragengine.types.ingest_types import DetectionResult, DetectionTrigger
+from finiexragengine.utils.keyword_pattern import build_keyword_pattern
 
 logger = logging.getLogger(__name__)
 
@@ -66,8 +66,9 @@ class BreakingDetector:
         # is mapped back to the spelling the operator declared before it is persisted.
         self._keyword_terms: Dict[str, str] = {}
         if config.keywords:
-            alternation = '|'.join(re.escape(keyword) for keyword in config.keywords)
-            self._keyword_pattern = re.compile(rf'\b(?:{alternation})\b', re.IGNORECASE)
+            # One construction, shared with every surface that replays a vocabulary (ISSUE_121):
+            # a report compiling its own regex would describe a matcher that is not this one.
+            self._keyword_pattern = build_keyword_pattern(config.keywords)
             self._keyword_terms = {keyword.lower(): keyword for keyword in config.keywords}
 
     def detect(self, fresh: List[Article], vectors: List[List[float]]) -> DetectionResult:

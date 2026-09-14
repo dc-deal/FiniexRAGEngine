@@ -88,6 +88,7 @@ PUBLIC_PATHS: Tuple[str, ...] = (
     'reports.detection_sweep.window',
     'reports.retrieval_drift.window',
     'reports.detection_quality.window',
+    'reports.keyword_sweep.window',
     # pipeline: what it is and what it evaluates
     'pipeline_id',
     'outcome_type',

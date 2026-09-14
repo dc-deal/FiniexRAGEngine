@@ -119,7 +119,13 @@ def build_report_router(database_url: str, config_manager: AppConfigManager,
                similarities: Optional[List[Annotated[float, Field(ge=0.0, le=1.0)]]] = Query(
                    None, description='override the similarity grid; repeatable'),
                normalizer: Optional[str] = Query(
-                   None, description="restrict the corpus sample to one text treatment, e.g. 'v1'")
+                   None, description="restrict the corpus sample to one text treatment, e.g. 'v1'"),
+               # The candidate vocabulary a keyword sweep replays (ISSUE_121); repeatable, and
+               # capped because the report compiles one pattern per term. Omitted, the sweep
+               # answers for the CONFIGURED vocabulary, which is the other half of its question.
+               terms: Optional[List[str]] = Query(
+                   None, max_length=50,
+                   description='sweep these terms instead of the configured vocabulary; repeatable')
                ) -> ReportEnvelope:
         """Build one report. 404 for an unknown name, 422 for a parameter it cannot use."""
         try:
@@ -132,7 +138,8 @@ def build_report_router(database_url: str, config_manager: AppConfigManager,
         supplied = {'source_id': source_id, 'episode_start': episode_start, 'symbol': symbol,
                     'window': window, 'recent_problems': recent_problems,
                     'recent_passes': recent_passes, 'source_set_id': source_set_id,
-                    'sample': sample, 'similarities': similarities, 'normalizer': normalizer}
+                    'sample': sample, 'similarities': similarities, 'normalizer': normalizer,
+                    'terms': terms}
         missing = [param for param in spec.required if not supplied.get(param)]
         if missing:
             raise HTTPException(status_code=422,

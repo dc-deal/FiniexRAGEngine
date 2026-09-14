@@ -35,6 +35,9 @@ from finiexragengine.core.observability.reports.detection_quality_report import 
 from finiexragengine.core.observability.reports.detection_sweep_report import (
     build_detection_sweep_report,
 )
+from finiexragengine.core.observability.reports.keyword_sweep_report import (
+    build_keyword_sweep_report,
+)
 from finiexragengine.core.observability.reports.no_data_report import (
     build_no_data_report,
 )
@@ -360,6 +363,34 @@ def _build_detection_sweep(database_url: str, manager: AppConfigManager,
     return reports
 
 
+def _build_keyword_sweep(database_url: str, manager: AppConfigManager,
+                         params: ReportParams) -> Any:
+    """The vocabulary replay, one report per source set (ISSUE_121).
+
+    On the catalog under the rule #120 pinned, and for the same reason `detection_sweep` is: it runs
+    SELECTs over the corpus — no LLM, no embedder, no write — so no GET here can turn into spend.
+
+    `_keyword_sets` is reused rather than re-derived, so this report, `corpus_text` and
+    `detection_quality` cannot disagree about what the running vocabulary was. `terms` replaces that
+    vocabulary for one call — the candidate list an operator is about to write into config — and its
+    absence is what makes the same address answer "what is the configured list doing".
+
+    Returns a LIST, one entry per set, narrowed by `source_set_id`: a route answering for one set by
+    default would be a second program wearing this one's name.
+    """
+    supplied_terms = tuple(params.options.get('terms') or ())
+    wanted = params.source_set_id
+    reports = []
+    for keyword_set in _keyword_sets(manager):
+        if wanted and keyword_set.source_set_id != wanted:
+            continue
+        reports.append(build_keyword_sweep_report(
+            database_url, params.since, keyword_set=keyword_set,
+            terms=supplied_terms or None, since_label=params.window_label or '14d',
+            normalizer=params.options.get('normalizer')))
+    return reports
+
+
 def _build_detection_quality(database_url: str, manager: AppConfigManager,
                              params: ReportParams) -> Any:
     """What the detector flagged and on what evidence — read over the corpus columns (ISSUE_106).
@@ -470,6 +501,13 @@ _CATALOG: Dict[str, ReportSpec] = {
         summary='What each candidate detector would have flagged, replayed from the stored corpus: '
                 'near-duplicate articles, distinct feeds and lexical stories across a similarity '
                 'grid. Read-only — no LLM, no embedding call.'),
+    'keyword_sweep': ReportSpec(
+        build=_build_keyword_sweep,
+        params=('window', 'source_set_id', 'terms', 'normalizer'),
+        defaults=lambda config: {'window': config.keyword_sweep.window},
+        summary='What a vocabulary would flag, replayed over the stored corpus: hits and '
+                'gate-clearing hits per term, the feeds they came from, and a zero reported as a '
+                'finding (with the plural probed). Read-only — no LLM, no embedding call.'),
     'detection_quality': ReportSpec(
         build=_build_detection_quality, params=('window',),
         defaults=lambda config: {'window': config.detection_quality.window},

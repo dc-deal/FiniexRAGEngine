@@ -63,12 +63,14 @@ tests/
   ui/  alerts/  triggers/  schema/  utils/
   contracts/                  repo-wide convention guards (typing, closed vocabularies)
   generator/                  the consumer sample generators under experiments/
+  experiments/                the other tools under experiments/ (netwatch)
 ```
 
-Two folders are not package mirrors, deliberately. `contracts/` holds the guards that are about
+Three folders are not package mirrors, deliberately. `contracts/` holds the guards that are about
 the *codebase* rather than about a unit — the typing sweep over `finiexragengine/` and the
 closed-vocabulary boundary; `generator/` holds the tests for the sample generators in
-`experiments/`, which are tools rather than engine code. Everything else names a package domain.
+`experiments/`, and `experiments/` the tests for the other tools there — both tools rather than
+engine code. Everything else names a package domain.
 
 A new test goes into the folder its subject already occupies. If none fits, a new folder is created
 for the category rather than dropping the file at the root — the flat root is what this layout
@@ -151,6 +153,7 @@ in different folders would collide at collection.
 | `llm/test_provider_factory.py` | `llm.provider` → implementation resolution; unknown name fails | — |
 | `observability/test_cost_recorder.py` | USD derivation, billing rows, latency column, session accumulators; per-pass scoping (ISSUE_74): a scope collects only its own calls, recording outside one still works, and **two concurrent passes in real threads do not cross-attribute** — the guarantee the removed global lock used to provide, and what makes every envelope's `cost_usd` trustworthy; the pass reason (ISSUE_87) lands on **every** row of its pass — the query embeddings too — stays NULL outside a scope, and does not leak between two overlapping passes | PostgreSQL |
 | `observability/reports/test_detection_sweep_report.py` | detection sweep (ISSUE_106) — the reading of the grid, which is what the report exists to protect: an inert live configuration is named **inert, not strict**; a single-feed neighbourhood is called out as duplication while a three-outlet one is not; the three columns are never allowed to pass as one measure; a **thin sample** (under 72h) refuses to read as a finding; the sample reports which `text_normalizer` treatment it measured, because two articles sharing a feed's markup are similar because of the markup; and the story measure is **tested, not assumed** — it separates three outlets on one event from a template series with per-item bodies, and provably cannot when the body is byte-identical | — |
+| `observability/reports/test_keyword_sweep_report.py` | the vocabulary replay (ISSUE_121): the sweep matches with the DETECTOR's own pattern builder (asserted mechanically — two constructions would drift and the report would describe a matcher that is not running), a zero is reported as a finding with the plural probed (`monetary policy decision` vs the ECB's own `Monetary policy decisions`), a term firing only below `keyword_source_weight` is counted and called dead, the example prefers a headline that could actually have flagged, an absent `terms` sweeps the configured vocabulary, and the normaliser selector narrows the corpus | PostgreSQL |
 | `observability/reports/test_cost_report.py` / `observability/reports/test_perf_report.py` | section aggregation + pattern tables; fresh/legacy-DB guards. ISSUE_67 groundwork dates the **price basis** on every cost render: the age in days (singular and plural), an absent date saying `NO verification date recorded` rather than passing for current, no staleness verdict at any age — and the seam that had actually broken, `build_cost_report` accepting `prices_checked` and dropping it, invisible to every test that constructed `CostReport` directly | PostgreSQL |
 | `contracts/test_typing_contract.py` | the typing convention (CLAUDE.md "Fully typed") over `finiexragengine/`: an AST sweep asserting every parameter and return carries an annotation, plus a `get_type_hints` pass asserting every annotation **resolves** — since PEP 649 made annotations lazy, a name that was never imported no longer fails at import time. The shared `finiex_auth` package carries its own copy, which there also stands in for the eager annotation evaluation of its Python 3.12 floor | — |
 | `contracts/test_suite_layout.py` | the suite's own layout ("Layout" above): test basenames stay **unique across the tree** — with no `__init__.py`, pytest imports every module by its bare basename, so two same-named files in different folders collide at collection — plus no `__init__.py` creeping in, nothing landing back at the flat root, and no module *hiding from collection* — a file that lost its `test_` prefix in a move drops out of pytest's `python_files` pattern and out of the three checks above at the same time, so that one looks at every `.py` under `tests/` | — |
