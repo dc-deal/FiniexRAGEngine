@@ -35,6 +35,9 @@ from finiexragengine.core.observability.reports.detection_quality_report import 
 from finiexragengine.core.observability.reports.detection_sweep_report import (
     build_detection_sweep_report,
 )
+from finiexragengine.core.observability.reports.keyword_impact_report import (
+    build_keyword_impact_report,
+)
 from finiexragengine.core.observability.reports.keyword_sweep_report import (
     build_keyword_sweep_report,
 )
@@ -391,6 +394,48 @@ def _build_keyword_sweep(database_url: str, manager: AppConfigManager,
     return reports
 
 
+def _pipelines_by_source_set(manager: AppConfigManager) -> Dict[str, List[str]]:
+    """Which pipelines read which source set, from the EFFECTIVE config.
+
+    Through `build_pipeline_registry()` like `_eval_pipelines` above — the only load path that
+    honours the `user_configs/` overlay, which is where a pipeline gets pointed at another set on
+    one machine. A report that judged a set against the wrong pipelines' envelopes would be wrong
+    in the direction nobody checks.
+    """
+    mapping: Dict[str, List[str]] = {}
+    for pipeline in manager.build_pipeline_registry().list_pipelines():
+        config = pipeline.get_config()
+        mapping.setdefault(config.source_set, []).append(config.pipeline_id)
+    return mapping
+
+
+def _build_keyword_impact(database_url: str, manager: AppConfigManager,
+                          params: ReportParams) -> Any:
+    """What the shipped vocabulary did, one report per source set (ISSUE_124).
+
+    Reads `articles` and `outcomes` — no LLM, no embedder, no write — so it belongs on the catalog
+    under the rule #120 pinned, beside the sweep whose question it completes.
+
+    `_keyword_sets` is reused for the same reason the sweep reuses it: the vocabulary and gate this
+    report names must be the ones that ran. The pipelines come from the registry rather than from
+    the report, because resolving config inside a report is what makes two surfaces disagree.
+
+    Returns a LIST, one entry per set, narrowed by `source_set_id` — the shape every per-set report
+    on this catalog already has.
+    """
+    wanted = params.source_set_id
+    by_set = _pipelines_by_source_set(manager)
+    reports = []
+    for keyword_set in _keyword_sets(manager):
+        if wanted and keyword_set.source_set_id != wanted:
+            continue
+        reports.append(build_keyword_impact_report(
+            database_url, params.since, keyword_set=keyword_set,
+            pipeline_ids=by_set.get(keyword_set.source_set_id, []),
+            since_label=params.window_label or '30d'))
+    return reports
+
+
 def _build_detection_quality(database_url: str, manager: AppConfigManager,
                              params: ReportParams) -> Any:
     """What the detector flagged and on what evidence — read over the corpus columns (ISSUE_106).
@@ -508,6 +553,13 @@ _CATALOG: Dict[str, ReportSpec] = {
         summary='What a vocabulary would flag, replayed over the stored corpus: hits and '
                 'gate-clearing hits per term, the feeds they came from, and a zero reported as a '
                 'finding (with the plural probed). Read-only — no LLM, no embedding call.'),
+    'keyword_impact': ReportSpec(
+        build=_build_keyword_impact,
+        params=('window', 'source_set_id'),
+        defaults=lambda config: {'window': config.keyword_impact.window},
+        summary='What the shipped vocabulary actually did: per term, the flags it made, whether '
+                'the envelope it woke cited the article, how long flag-to-envelope took and how '
+                'that envelope\'s urgency compares with the scheduled passes around it.'),
     'detection_quality': ReportSpec(
         build=_build_detection_quality, params=('window',),
         defaults=lambda config: {'window': config.detection_quality.window},

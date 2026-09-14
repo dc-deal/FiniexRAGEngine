@@ -160,6 +160,17 @@ class KeywordSweepReportConfig(BaseModel):
     window: str = '14d'
 
 
+class KeywordImpactReportConfig(BaseModel):
+    """What the shipped vocabulary did (ISSUE_124) — flags joined to the envelopes they woke.
+
+    A month rather than the sweep's fortnight: this report needs flags AND the envelopes that
+    followed them, and the terms worth judging fire around scheduled decisions a few times a
+    quarter. A window too short reads as "this term does nothing" for a term that simply had no
+    event in it — the same confusion the sweep's plural probe exists to prevent.
+    """
+    window: str = '30d'
+
+
 class ReportsConfig(BaseModel):
     """One config object per report, keyed by the name the catalog and the API use."""
     source_health: SourceHealthReportConfig = Field(default_factory=SourceHealthReportConfig)
@@ -180,3 +191,5 @@ class ReportsConfig(BaseModel):
     detection_quality: DetectionQualityReportConfig = Field(
         default_factory=DetectionQualityReportConfig)
     keyword_sweep: KeywordSweepReportConfig = Field(default_factory=KeywordSweepReportConfig)
+    keyword_impact: KeywordImpactReportConfig = Field(
+        default_factory=KeywordImpactReportConfig)

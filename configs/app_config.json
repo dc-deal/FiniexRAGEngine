@@ -200,6 +200,9 @@
     },
     "keyword_sweep": {
       "window": "14d"
+    },
+    "keyword_impact": {
+      "window": "30d"
     }
   }
 }
