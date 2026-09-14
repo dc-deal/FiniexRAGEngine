@@ -192,3 +192,21 @@ def test_restoring_an_episode_shows_it_without_touching_the_session_counters():
     # The reaction is NOT: the replay re-opens an older episode at the window edge, so any number
     # here would be re-sampled against stale evidence (production showed 118.2m for a logged 8.4m).
     assert stats.breaking().detail == ''
+
+
+def test_the_detected_split_accumulates_per_path_and_survives_an_episode():
+    """`3 detected (2 keyword · 1 cluster)` — which path flagged, beside how much (ISSUE_26).
+
+    The split is an accumulator like `detected` itself, so an episode arriving in between must not
+    reset it: the confirmed side rebuilds the snapshot and used to drop every field it did not
+    name. A caller that reports no split adds to the number without claiming a path.
+    """
+    stats = EngineStats()
+    stats.add_breaking_detected(2, at=_NOW, by_trigger={'keyword': 2})
+    stats.add_breaking_episode('EURUSD', 'BUY', 'ECB decision', 'engine 9s / e2e 40s', at=_NOW)
+    stats.add_breaking_detected(1, at=_NOW, by_trigger={'cluster': 1})
+    stats.add_breaking_detected(1, at=_NOW)                   # no split reported
+
+    breaking = stats.breaking()
+    assert breaking.detected == 4
+    assert breaking.by_trigger == {'keyword': 2, 'cluster': 1}

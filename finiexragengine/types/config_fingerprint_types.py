@@ -1,5 +1,6 @@
-"""The identity of one resolved engine configuration (ISSUE_85)."""
+"""The identity of one resolved engine configuration (ISSUE_85) and its activations (ISSUE_116)."""
 from dataclasses import dataclass
+from typing import Literal, Tuple, get_args
 
 
 @dataclass
@@ -20,3 +21,15 @@ class ConfigFingerprint:
     canonical: str        # the serialization that was hashed (sorted, separator-stable JSON)
     pipeline_id: str      # the stream this was resolved for
     source_set_id: str    # the resolved source-set behind it
+
+
+# Why a generation was activated (ISSUE_116). `boot` is a process start, `rollback` a previously
+# seen generation becoming current again — the case the registry erases and `(new)` stays silent
+# for — and `reload` belongs to ISSUE_115, which has no writer yet and is named here because the
+# log is what makes its rollback provable.
+GenerationReason = Literal['boot', 'reload', 'rollback']
+
+# The vocabulary as data, for the surfaces that enumerate it. Strict at the producing seam (a typo
+# fails where the row is written), plain `str` in the row — an activation written by a later
+# version must still load, exactly as `RESULT_BASES` and `DETECTION_TRIGGERS` are handled.
+GENERATION_REASONS: Tuple[str, ...] = get_args(GenerationReason)

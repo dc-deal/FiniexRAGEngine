@@ -26,6 +26,7 @@ from finiexragengine.types.ingest_types import (
     PollStatus,
 )
 from finiexragengine.types.article_types import RETRIEVAL_TIERS
+from finiexragengine.types.config_fingerprint_types import GENERATION_REASONS
 from finiexragengine.types.outcome_types import (
     DATA_ORIGINS,
     RESULT_BASES,
@@ -98,6 +99,7 @@ def test_the_vocabularies_are_still_declared():
     assert RUN_STATUSES == ('success', 'partial', 'error')
     assert DATA_ORIGINS == ('live', 'synthetic')
     assert DETECTION_TRIGGERS == ('cluster', 'keyword')
+    assert GENERATION_REASONS == ('boot', 'reload', 'rollback')
     assert TEXT_NORMALIZER_PROFILES == ('v1',)
     assert RETRIEVAL_TIERS == ('recent', 'deep')
 

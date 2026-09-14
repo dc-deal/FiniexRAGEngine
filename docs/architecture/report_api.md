@@ -38,6 +38,8 @@ authenticated by construction rather than by remembering (#98).
 | `detection_quality` | `window` | what the detector actually flagged and on what evidence — flags per path, the neighbourhood each cluster flag was made on, the duplication ratio |
 | `detection_sweep` | `window`, `sample`, `similarities`, `normalizer`, `source_set_id` | what each candidate detector would have flagged, replayed from the corpus across a similarity grid |
 | `keyword_sweep` | `window`, `source_set_id`, `terms`, `normalizer` | what a vocabulary would flag, replayed over the corpus: hits and gate-clearing hits per term, the feeds they came from, and a zero reported as a finding with the plural probed |
+| `keyword_impact` | `window`, `source_set_id` | what the shipped vocabulary did, per term: flags, whether the envelope the flag woke cited the article, flag-to-envelope reaction, and that envelope's urgency against the scheduled passes of the same window; plus the flags no envelope ever cited, named with how old the article already was when it fired |
+| `generations` | `window`, `pipeline_id` | which configuration was live on which stream: one row per activation with the span it held, what it produced in that span, and whether it was a boot, a reload or a rollback |
 
 ## Config declares, the call overrides — and the answer says which applied
 

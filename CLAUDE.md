@@ -184,6 +184,20 @@ by design:** the operator starts the IDE's API by hand on the laptop, not on the
 reachable from the dev container only, and an unreachable endpoint means "ask the operator to start
 it", never a defect.
 
+**Analysis belongs to the Testing IDE; this project is the RAG engine.** The split is architectural,
+not organisational: the IDE owns market data, indicators and the tooling that computes over them — it
+already caches the series and is faster at it than any script here — while this project owns
+unstructured text, retrieval, and the signal built from them. So an indicator is **requested, never
+rebuilt**: an RSI, an ATR, a resampled series, a statistic over bars, a symbol the broker list does
+not carry — each is a bus request to the IDE (operator-initiated, like every bus message), not a
+helper under `experiments/`. What stays here is the engine's own question — what did our envelopes
+say, and what became of them — plus the arithmetic that joins the two series. A market indicator
+reimplemented in this repo is a defect rather than a convenience: two implementations of one measure
+will disagree eventually, and the IDE's is the one the strategy uses. The IDE's own answer on
+2026-09-14 is the argument in miniature — asked for ATR, they found RSI in two places, ATR in two and
+**two EMA implementations that seed differently and return different numbers under one name**, and
+chose to consolidate before serving any of it.
+
 **On a feed problem, consult the feed doctor before concluding anything.** A parse error names a
 line and a column *in the bytes that machine received*, and those are not the bytes this container
 fetches. On 2026-09-09 `boj_press` failed repeatedly with `not well-formed (invalid token)` at line
@@ -545,6 +559,57 @@ every response, success or failure.
   taxonomy type. Error statistics are aggregated from the persisted envelopes' `status`/`errors`,
   not parsed from log text.
 
+## Usefulness — measured against the market, not only against ourselves
+
+Every threshold in this engine has been tuned against *internal consistency*: did the confirm rate
+move, did the score distribution shift, did the flag look justified. None of that says the signal was
+worth producing. The engine holds no price and never will (RAG belongs on unstructured text only), so
+the outcome term has to come from outside — and since 2026-09-13 it can: the Testing IDE serves bars
+to this project as an analysis input.
+
+So a calibration decision states **which side it was measured on**. "The confirm rate rose" is an
+internal number; "the envelope was in the consumer's hands before the move" is an outcome one, and
+where the second is obtainable it outranks the first. Where it is not obtainable, the decision says so
+instead of letting an internal number stand in for it.
+
+**The goal is a success rate** — how the sentiment this engine produced relates to the price movement
+that followed. That number does not exist yet, and building it honestly is the whole task. A rate is
+decoration without its **baseline** (how often the market moved that way anyway, in the same window),
+without **independent events** (a signal held for six hours is one event, not thirty-six), and without
+a **rule fixed before looking** (event, horizon, threshold, and what counts as a miss). Sample size
+travels with every such figure: at forty events a 60/50 split is noise.
+
+**A match is never a proof, and this is the harder half.** An envelope that precedes a move is a
+coincidence in time — the market has many causes, and the counterfactual, what the price would have
+done without that news, is not observable, ever. So "we saw it coming" is never a finding. What may be
+said is "consistent with" or "not contradicted by"; what must be said is the sample size; what has to
+be settled before looking is the rule that would have counted as a miss. A reading that could not have
+come out negative was not a measurement.
+
+**How it is actually run**, because "keep an eye on it" is not a mechanism:
+
+- **One standing measurement on a cadence — never one per change.** The success rate is a *series*:
+  the week after a vocabulary change holds a handful of events, and a handful proves nothing. Changes
+  are *located* in the series rather than judged by it, and the means already exists — every envelope
+  carries `config_fingerprint` and `prompt_version`, so a boundary is visible without a separate
+  experiment.
+- **The evaluation rule is versioned like a prompt.** Event definition, horizon and threshold live in
+  a file; a change is a new version, never an edit in place, and a reading never picks a different
+  horizon afterwards. A negative reading is recorded, not re-run.
+- **Every change to what the consumer receives marks the series** — point 6 of the review below. A
+  changed output that leaves the series unmarked is what makes a later reading uninterpretable.
+- **Bars are an appointment.** The Testing IDE's API is started BY HAND by the operator on their
+  laptop, so nothing answers unless they switch it on: work needing market data carries that request
+  in the message that proposes it, never discovered halfway through a run. (Direction of travel: the
+  IDE moves onto the server with its API running permanently; until then, ask.)
+- **The engine still never ingests a price.** Bars evaluate the output; they never enter a pipeline,
+  so the measurement is an analysis in the dev container — production has no price access and gets
+  none.
+- **The bus is the channel of last resort**, for agreeing something with that project rather than
+  fetching a file — and it stays operator-initiated, exactly as its own section says.
+- **Results that touch the strategy stay private** (gitignored `experiments/private/`), even when the
+  instrument that produced them is public.
+
 ## Project layout
 
 ```
@@ -637,9 +702,9 @@ tests/                  pytest suite — one folder per domain, mirroring the pa
   or `02_analysis_and_outcome.md` (LLM analysis + outcome) — the per-unit maps of each flow.
 - English everywhere. Human-readable, compact.
 
-## After each feature (five-point review)
+## After each feature (six-point review)
 
-"Code done" is not "done". When a feature or fix is finished, walk these five and state
+"Code done" is not "done". When a feature or fix is finished, walk these six and state
 what each needs (the operator decides and applies):
 
 1. **Tests** — new behavior gets tests; changed behavior updates them.
@@ -649,3 +714,7 @@ what each needs (the operator decides and applies):
 4. **Issues** — if the work came from an issue, fold implementation decisions/deviations
    back into it (render an updated `ISSUE_<name>.md` for the operator to sync).
 5. **Roadmap** — keep issue #1 current; tick a box only when the item ships (merges).
+6. **Outcome** — does this change what the consumer receives (signal, score, urgency, timing)?
+   If yes, name the `config_fingerprint` it forks and the measurement window it lands in; if no,
+   say so in one line. Cheap on purpose: the standing measurement above cannot judge a single
+   change, but it becomes unreadable when a changed output passes into the series unmarked.

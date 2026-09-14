@@ -17,10 +17,12 @@ from finiexragengine.core.pipeline.eval_worker import EvalWorker
 from finiexragengine.core.pipeline.ingest_worker import IngestWorker
 from finiexragengine.core.pipeline.pipeline_runner import PipelineRunResult
 from finiexragengine.core.triggers.interval_trigger import IntervalTrigger
+from finiexragengine.core.ui.engine_stats import EngineStats
 from finiexragengine.exceptions.ragengine_errors import ConfigurationError
 from finiexragengine.types.config_types.app_config_types import DiagnosticsConfig
 from finiexragengine.types.config_types.source_set_types import SourceSetConfig
-from finiexragengine.types.ingest_types import HostProbe, IngestResult, SourcePoll
+from finiexragengine.types.ingest_types import (FlaggedCandidate, HostProbe, IngestResult,
+                                                SourcePoll)
 from finiexragengine.types.outcome_types import RunMetadata, SentimentEnvelope
 from finiexragengine.types.worker_types import WorkerState
 
@@ -547,3 +549,44 @@ def test_the_probe_can_be_switched_off(caplog, monkeypatch):
         _run(_scenario())
 
     assert _probe_lines(caplog) == []
+
+
+# --- 2026-09-14: a flag reaches the screen as a sentence, not only as a counter (ISSUE_26) -------
+
+
+class _FlaggingIngestor:
+    """A pass that flagged two HIGH candidates — one per path, as a mixed pass really arrives."""
+    def __init__(self):
+        self.runs = 0
+
+    def run(self) -> IngestResult:
+        self.runs += 1
+        return IngestResult(fetched=3, stored=3, candidates=2, max_tier=3, flagged=[
+            FlaggedCandidate(source_id='fed_press', title='Federal Reserve issues FOMC statement',
+                             trigger='keyword', terms=('fomc statement',)),
+            FlaggedCandidate(source_id='forexlive', title='FX news wrap', trigger='cluster',
+                             cluster_size=5)])
+
+
+def test_a_flagging_pass_writes_one_activity_line_naming_the_term_and_the_feed():
+    """One line per pass, whatever it flagged: the counter says how many, the line says what.
+
+    Both halves are asserted because they are separately losable — the split feeds the BREAKING
+    row and the line feeds the activity stream, and the pass that produces them is the same one.
+    """
+    ingestor = _FlaggingIngestor()
+    stats = EngineStats(source_set_ids=['crypto_news'])
+
+    async def _scenario():
+        worker = IngestWorker(_SET, ingestor, IntervalTrigger(0.005), 300, engine_stats=stats)
+        task = asyncio.create_task(worker.start())
+        await _until(lambda: ingestor.runs >= 1)
+        await worker.stop()
+        await task
+
+    _run(_scenario())
+    breaking_lines = [event.message for event in stats.events() if event.stage == 'BREAKING']
+    assert len(breaking_lines) == ingestor.runs          # one per pass, never one per flag
+    assert breaking_lines[0] == ('crypto_news · keywords fomc statement · fed_press (+1 more) · '
+                                 'Federal Reserve issues FOMC statement')
+    assert stats.breaking().by_trigger == {'keyword': ingestor.runs, 'cluster': ingestor.runs}

@@ -10,6 +10,7 @@ from finiexragengine.core.llm.prompt_builder import PromptBuilder
 from finiexragengine.core.llm.provider_factory import build_provider
 from finiexragengine.core.observability.budget_guard import BudgetGuard
 from finiexragengine.core.observability.config_fingerprint_store import ConfigFingerprintStore
+from finiexragengine.core.observability.config_generation_store import ConfigGenerationStore
 from finiexragengine.core.observability.cost_recorder import CostRecorder
 from finiexragengine.core.observability.source_health_store import SourceHealthStore
 from finiexragengine.core.observability.source_poll_log import SourcePollLog
@@ -79,6 +80,14 @@ class PipelineAssembler:
         # Provenance registry (ISSUE_85): what each stamped config_fingerprint stood for.
         # One row per distinct setup, written when a runner is built — never on the pass path.
         self._fingerprint_store = ConfigFingerprintStore(database_url)
+        # Activation log (ISSUE_116): WHEN each generation was live per stream. The registry above
+        # upserts, so it cannot hold a re-activation; this appends one row per activation and is
+        # what makes a live rollback provable after the fact.
+        self._generation_store = ConfigGenerationStore(database_url)
+        # Stamped on every activation this process logs, so five boots in ten minutes stay five
+        # readable rows. The assembler's construction is the process's first DB-touching moment —
+        # it identifies the process, and is not offered as an uptime.
+        self._process_started_at = datetime.now(timezone.utc)
 
     def get_source_sets(self) -> SourceSetRegistry:
         return self._source_sets
@@ -305,12 +314,18 @@ class PipelineAssembler:
         # config file cannot change a running engine, so the stamp stays true until the next boot.
         fingerprint = compute_config_fingerprint(config, source_set, self._cfg)
         first_seen = self._fingerprint_store.register(fingerprint)
+        # The activation itself (ISSUE_116), logged beside the registration rather than derived from
+        # it later: the registry's upsert cannot represent A → B → A, and the reason is decided from
+        # the log's own previous row.
+        reason = self._generation_store.log_activation(
+            fingerprint, process_started_at=self._process_started_at)
         # Deliberately right behind the startup [OVERRIDE] lines: first what diverges, then what
         # follows from it. `(new)` says this start breaks the comparable series — the marker that
-        # was missing when the symbol set grew on 2026-07-24.
-        logger.info('[CONFIG] %s · source_set %s · config_fingerprint %s%s',
+        # was missing when the symbol set grew on 2026-07-24. The reason carries what `(new)` cannot:
+        # it is False for a known fingerprint, which is exactly what a rollback is.
+        logger.info('[CONFIG] %s · source_set %s · config_fingerprint %s%s · %s',
                     config.pipeline_id, source_set.source_set_id, fingerprint.value,
-                    ' (new)' if first_seen else '')
+                    ' (new)' if first_seen else '', reason)
         return PipelineRunner(config, ingestor, evaluator, prompt_metadata,
                               llm_model=config.llm.model, cost_recorder=self._recorder,
                               outcome_store=self._outcome_store,

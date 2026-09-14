@@ -486,6 +486,56 @@
             }
         },
         {
+            // "What did the vocabulary we shipped actually DO?" ISSUE_124 — the retrospective half
+            // of the sweep above. A term is worth having only if its flag reached an envelope
+            // earlier than the scheduled pass would have, and three failures are invisible without
+            // this: a flag nobody cited (the wake bought an LLM call and no evidence), a flag that
+            // beat the tick by seconds, and a flag whose envelope sits on the pipeline's baseline.
+            // `cited` is citation in the envelope the flag WOKE — citation anywhere is reach, and
+            // it is a footer line so the two are never read as one number. The urgency delta is
+            // against the scheduled passes of the same pipeline and window, and that baseline is
+            // always printed. Read-only over the corpus and the outcome store.
+            "name": "\ud83d\udcca RAGEngine: Keyword Impact (what did each term actually do?)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/finiexragengine/cli/keyword_impact_cli.py",
+            "args": [
+                "forex_news",
+                "--since",
+                "30d"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "04_diagnostics",
+                "order": 18
+            }
+        },
+        {
+            // "Was THIS configuration live for the whole of that window?" ISSUE_116 — the question
+            // `config_fingerprints` invites and cannot answer, because `first_seen`/`last_seen` are
+            // two edge points rather than a span. On 2026-08-27 that cost a cross-project round
+            // trip: two fingerprints appeared to overlap on one stream, when in fact five restarts
+            // happened around one deploy and one generation produced a single pass before being
+            // reverted. One row per ACTIVATION, with the span it held, what it produced in that
+            // span, and whether it was a boot, a reload or a rollback — the last of which `(new)`
+            // can never say, since it is silent for a fingerprint seen before. Read-only.
+            "name": "\ud83d\udcca RAGEngine: Config Generations (when was which config live?)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/finiexragengine/cli/generations_cli.py",
+            "args": [
+                "--since",
+                "30d"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "04_diagnostics",
+                "order": 19
+            }
+        },
+        {
             // ISSUE_108: stamps breaking_episode_id/_start onto archived envelopes that predate
             // ISSUE_65. WRITES when --apply is added — without it this is a dry run that reports
             // what it would do and refuses to write if its self-check disagreed with any identity
