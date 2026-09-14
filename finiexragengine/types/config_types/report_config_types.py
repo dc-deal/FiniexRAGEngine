@@ -171,6 +171,16 @@ class KeywordImpactReportConfig(BaseModel):
     window: str = '30d'
 
 
+class GenerationsReportConfig(BaseModel):
+    """The activation timeline (ISSUE_116) — a provenance read, on the catalog like the rest.
+
+    A month, because the question it answers is asked about an archive window ("was this
+    configuration alive throughout it"), and a deploy cadence of a few per week needs more than
+    seven days before a timeline shows anything worth reading.
+    """
+    window: str = '30d'
+
+
 class ReportsConfig(BaseModel):
     """One config object per report, keyed by the name the catalog and the API use."""
     source_health: SourceHealthReportConfig = Field(default_factory=SourceHealthReportConfig)
@@ -193,3 +203,4 @@ class ReportsConfig(BaseModel):
     keyword_sweep: KeywordSweepReportConfig = Field(default_factory=KeywordSweepReportConfig)
     keyword_impact: KeywordImpactReportConfig = Field(
         default_factory=KeywordImpactReportConfig)
+    generations: GenerationsReportConfig = Field(default_factory=GenerationsReportConfig)

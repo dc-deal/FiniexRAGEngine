@@ -105,6 +105,8 @@ def build_report_router(database_url: str, config_manager: AppConfigManager,
                recent_passes: Optional[int] = Query(None, ge=1, le=500),
                source_set_id: Optional[str] = Query(None,
                                                     description='narrow to one source set'),
+               pipeline_id: Optional[str] = Query(None,
+                                                  description='narrow to one stream (ISSUE_116)'),
                # The sweep is the heaviest entry on the catalog — a self-join over embeddings — so
                # its size is bounded HERE rather than in the catalog, for the same reason
                # `max_window_days` is: the ceiling is a property of the exposed surface, and an
@@ -139,7 +141,7 @@ def build_report_router(database_url: str, config_manager: AppConfigManager,
                     'window': window, 'recent_problems': recent_problems,
                     'recent_passes': recent_passes, 'source_set_id': source_set_id,
                     'sample': sample, 'similarities': similarities, 'normalizer': normalizer,
-                    'terms': terms}
+                    'terms': terms, 'pipeline_id': pipeline_id}
         missing = [param for param in spec.required if not supplied.get(param)]
         if missing:
             raise HTTPException(status_code=422,

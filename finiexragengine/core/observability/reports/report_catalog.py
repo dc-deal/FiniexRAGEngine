@@ -35,6 +35,9 @@ from finiexragengine.core.observability.reports.detection_quality_report import 
 from finiexragengine.core.observability.reports.detection_sweep_report import (
     build_detection_sweep_report,
 )
+from finiexragengine.core.observability.reports.generations_report import (
+    build_generations_report,
+)
 from finiexragengine.core.observability.reports.keyword_impact_report import (
     build_keyword_impact_report,
 )
@@ -436,6 +439,21 @@ def _build_keyword_impact(database_url: str, manager: AppConfigManager,
     return reports
 
 
+def _build_generations(database_url: str, manager: AppConfigManager,
+                       params: ReportParams) -> Any:
+    """The activation timeline per stream (ISSUE_116).
+
+    Reads `config_generations` and `outcomes` — no LLM, no embedder, no write — so it belongs on the
+    catalog under the rule #120 pinned. No config is resolved here: the log already names the
+    streams it recorded, and a report that filtered by the *currently configured* pipelines would
+    hide the generations of a stream that has since been removed, which is precisely the history
+    this table exists to keep.
+    """
+    return build_generations_report(database_url, params.since,
+                                    pipeline_id=params.options.get('pipeline_id'),
+                                    since_label=params.window_label or '30d')
+
+
 def _build_detection_quality(database_url: str, manager: AppConfigManager,
                              params: ReportParams) -> Any:
     """What the detector flagged and on what evidence — read over the corpus columns (ISSUE_106).
@@ -560,6 +578,13 @@ _CATALOG: Dict[str, ReportSpec] = {
         summary='What the shipped vocabulary actually did: per term, the flags it made, whether '
                 'the envelope it woke cited the article, how long flag-to-envelope took and how '
                 'that envelope\'s urgency compares with the scheduled passes around it.'),
+    'generations': ReportSpec(
+        build=_build_generations,
+        params=('window', 'pipeline_id'),
+        defaults=lambda config: {'window': config.generations.window},
+        summary='Which configuration was live on which stream and for how long: one row per '
+                'activation with the span it ran, what it produced in that span, and whether it '
+                'was a boot, a reload or a rollback.'),
     'detection_quality': ReportSpec(
         build=_build_detection_quality, params=('window',),
         defaults=lambda config: {'window': config.detection_quality.window},

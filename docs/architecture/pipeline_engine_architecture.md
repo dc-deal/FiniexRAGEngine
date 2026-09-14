@@ -206,6 +206,30 @@ So: group by fingerprint **and look at the gaps**. `first_seen`/`last_seen` answ
 setup ever alive", never "was it alive throughout". It is the same failure as a single confirm rate
 per prompt version (`prompt_drift`, ISSUE_110): a summary that hides the distribution it summarises.
 
+#### `config_generations` — the gaps as data (ISSUE_116)
+
+The rule above is what you need when the data cannot state the fact, so the data now states it.
+`config_generations` appends **one row per activation** — `fingerprint`, `pipeline_id`,
+`activated_at`, `reason` (`boot` · `reload` · `rollback`), `process_started_at` — written beside the
+registration in `build_runner`, append-only, never updated, no retention.
+
+It is a second table rather than columns on the first because the cardinalities differ:
+`config_fingerprints` is one row per *configuration* (payload, deduplicated), this is one row per
+*activation* (timeline, never deduplicated). And the `reason` carries what `(new)` cannot: that
+marker comes from the registry's insert/update boolean, so it is silent for a fingerprint seen
+before — which is exactly a rollback. The reason is derived from the log's own previous row on that
+stream, so the boot line names it:
+
+```
+[CONFIG] crypto_sentiment · source_set crypto_news · config_fingerprint 3cce880a58d4 · rollback
+```
+
+Read it with `GET /v1/reports/generations` or
+`python -m finiexragengine.cli.generations_cli` — one row per activation with the span it actually
+held, what it produced in that span (counted from the envelopes' own stamp), and a mark on a
+generation that produced nothing: the reverted excursion above, which no ordering check can find.
+`ORDER BY first_seen` over the registry remains the query that invites the error.
+
 ## Interfaces (swappable backends)
 
 | Interface | Default | Swap candidates |

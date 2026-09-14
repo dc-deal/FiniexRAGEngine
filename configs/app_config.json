@@ -203,6 +203,9 @@
     },
     "keyword_impact": {
       "window": "30d"
+    },
+    "generations": {
+      "window": "30d"
     }
   }
 }
