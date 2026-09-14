@@ -35,6 +35,7 @@ import psycopg
 
 from finiexragengine.core.observability.reports.corpus_text_report import KeywordSet
 from finiexragengine.exceptions.ragengine_errors import VectorStoreError
+from finiexragengine.utils.relative_age import format_age
 
 # How long after a flag a breaking-triggered envelope may still be that flag's wake. The bus
 # publishes on the pass that flagged, so the eval starts within seconds; a breaking envelope a
@@ -44,6 +45,10 @@ _WAKE_WINDOW = timedelta(minutes=15)
 # What a flag with no recorded vocabulary is called. NULL means the terms were never written (a
 # cluster flag, or anything flagged before migration 014) — an absence, never a term that fired.
 _UNRECORDED = 'unrecorded'
+
+# How many unread flags the footer names. Enough to see whether they share a shape (one
+# feed, one age band), short enough that the report stays a page.
+_UNREAD_EXAMPLES = 5
 
 
 @dataclass
@@ -94,6 +99,13 @@ class KeywordImpactReport:
     baseline_urgency: Optional[float] = None        # scheduled passes, same pipelines, same window
     woken_urgency: Optional[float] = None           # breaking passes, same window
     terms: List[TermImpact] = field(default_factory=list)
+    # Age at flag, median, for the articles that WERE cited somewhere and for those that were not
+    # (ISSUE_124 follow-up). The two numbers side by side separate a vocabulary problem from a
+    # freshness one: an article flagged days after publication was outside every retrieval window
+    # before the term ever matched, and no threshold change can rescue it.
+    read_age_s: Optional[float] = None
+    unread_age_s: Optional[float] = None
+    unread_examples: List[UnreadFlag] = field(default_factory=list)
 
     @property
     def silent_terms(self) -> List[str]:
@@ -124,8 +136,29 @@ class _Flag:
     """One keyword flag in the window, with the terms recorded for it."""
     article_id: str
     title: str
+    source_id: str
     at: datetime
     terms: Tuple[str, ...]
+    # When the feed says the article was published. Retrieval only ever considers articles inside
+    # `recency_window_minutes`, so an article already older than that window when it was flagged
+    # could never be retrieved — the flag was spent before it was made. None where the feed carried
+    # no date (the store's estimate is not a fact this report should age against).
+    published_at: Optional[datetime] = None
+
+    @property
+    def age_at_flag_s(self) -> Optional[float]:
+        if self.published_at is None:
+            return None
+        return (self.at - self.published_at).total_seconds()
+
+
+@dataclass
+class UnreadFlag:
+    """A flag whose article no envelope ever cited — the waste, named rather than counted."""
+    source_id: str
+    title: str
+    age_at_flag_s: Optional[float]
+    woke: bool                                      # it also woke a pass, so it cost an LLM call
 
 
 def _ordered(report: KeywordImpactReport) -> KeywordImpactReport:
@@ -229,12 +262,14 @@ def _flags(cur: psycopg.Cursor, table: str, since: datetime,
                 'WHERE table_name = %s AND column_name = %s', (table, 'detection_keywords'))
     terms_column = 'detection_keywords' if cur.fetchone()[0] else 'NULL'
     cur.execute(
-        f'SELECT article_id, title, flagged_at, {terms_column} FROM {table} '
+        f'SELECT article_id, title, source_id, flagged_at, published_at, {terms_column} '
+        f'FROM {table} '
         "WHERE detection_trigger = 'keyword' AND flagged_at >= %s AND source_id = ANY(%s) "
         'ORDER BY flagged_at',
         (since, list(source_ids)))
-    return [_Flag(article_id=article_id, title=title, at=flagged_at, terms=tuple(terms or ()))
-            for article_id, title, flagged_at, terms in cur.fetchall()]
+    return [_Flag(article_id=article_id, title=title, source_id=source_id, at=flagged_at,
+                  published_at=published_at, terms=tuple(terms or ()))
+            for article_id, title, source_id, flagged_at, published_at, terms in cur.fetchall()]
 
 
 def _passes(cur: psycopg.Cursor, table: str, since: datetime,
@@ -268,6 +303,7 @@ def _aggregate(report: KeywordImpactReport, flags: Sequence[_Flag],
     # article the next scheduled pass picked up was read, but not *because* of the flag.
     cited_anywhere = {article_id for entry in passes for article_id in entry.cited}
     report.reached = len({flag.article_id for flag in flags if flag.article_id in cited_anywhere})
+    _age_findings(report, flags, passes, cited_anywhere)
 
     rows: Dict[str, TermImpact] = {}
     for flag in flags:
@@ -292,8 +328,41 @@ def _aggregate(report: KeywordImpactReport, flags: Sequence[_Flag],
     return report
 
 
+def _age_findings(report: KeywordImpactReport, flags: Sequence[_Flag], passes: Sequence[_Pass],
+                  cited_anywhere: Set[str]) -> None:
+    """Why the unread flags were unread: how old their articles already were when they fired.
+
+    Retrieval only considers articles inside `recency_window_minutes`, and the detector does not
+    look at publication age at all — so a feed re-serving an old item produces a flag that no
+    threshold could have turned into evidence. Read against the same median for the articles that
+    were cited, because an age is only ever high or low compared with something.
+    """
+    read_ages, unread_ages = [], []
+    unread: List[UnreadFlag] = []
+    for flag in flags:
+        age = flag.age_at_flag_s
+        if flag.article_id in cited_anywhere:
+            if age is not None:
+                read_ages.append(age)
+            continue
+        if age is not None:
+            unread_ages.append(age)
+        unread.append(UnreadFlag(source_id=flag.source_id, title=flag.title, age_at_flag_s=age,
+                                 woke=_wake_for(flag, passes) is not None))
+    report.read_age_s = median(read_ages) if read_ages else None
+    report.unread_age_s = median(unread_ages) if unread_ages else None
+    # Newest first: the sample is there to show what the engine is doing NOW, and a window's worth
+    # of oldest rows would describe a configuration that may already have changed.
+    report.unread_examples = list(reversed(unread))[:_UNREAD_EXAMPLES]
+
+
 def _minutes(seconds: Optional[float]) -> str:
     return '—' if seconds is None else f'{seconds / 60:.1f} min'
+
+
+def _age(seconds: Optional[float]) -> str:
+    """The shared age vocabulary (`45s` · `15m` · `9h22m`), or `—` where the feed carried no date."""
+    return '—' if seconds is None else format_age(seconds)
 
 
 def _delta(value: Optional[float]) -> str:
@@ -343,6 +412,16 @@ def format_keyword_impact_report(report: KeywordImpactReport,
     lines.append(f'reach: {report.flagged_articles:,} flagged articles, {report.reached:,} cited '
                  f'anywhere — {report.flagged_articles - report.reached:,} raised a tier and were '
                  f'never read')
+    if report.read_age_s is not None or report.unread_age_s is not None:
+        # The discriminator, in one line: an unread flag that was already days old when it fired
+        # was outside every retrieval window before the term matched — a freshness problem, not a
+        # vocabulary or threshold one.
+        lines.append(f'age at flag (median, published → flagged): '
+                     f'cited {_age(report.read_age_s)} · never read {_age(report.unread_age_s)}')
+    for example in report.unread_examples:
+        woke = ' · woke a pass' if example.woke else ''
+        lines.append(f'  never read: {example.source_id} · {_age(example.age_at_flag_s)} old'
+                     f'{woke} · {example.title[:example_width]}')
     unread = [row for row in report.terms if row.unread]
     if unread:
         lines.append('woke a pass and was not cited by it: '
