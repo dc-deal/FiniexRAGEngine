@@ -34,6 +34,10 @@ from finiexragengine.core.alerts.telegram_client import TelegramClient
 from finiexragengine.core.alerts.telegram_command_poller import TelegramCommandPoller
 from finiexragengine.core.alerts.telegram_weekly_format import render_weekly_messages
 from finiexragengine.core.alerts.weekly_scheduler import WeeklyScheduler
+from finiexragengine.core.llm.provider_factory import build_provider
+from finiexragengine.core.observability.cost_recorder import CostRecorder
+from finiexragengine.core.observability.price_probe import drift_notice, probe_prices
+from finiexragengine.core.observability.price_probe_store import PriceProbeStore
 from finiexragengine.core.llm.model_catalog import verify_configured_models
 from finiexragengine.core.observability.budget_guard import BudgetGuard
 from finiexragengine.core.observability.build_info import sample_build_info
@@ -286,8 +290,37 @@ def create_app(attach_runners: Optional[bool] = None,
             if telegram_cfg.commands_enabled:
                 command_poller = TelegramCommandPoller(telegram_client, telegram_cfg,
                                                        _weekly_messages)
+            async def _run_price_probe() -> None:
+                """The weekly price-drift guard (ISSUE_67) — read, record, notify, write nothing.
+
+                Off the loop: it fetches a page and makes an LLM call, both blocking. The notice
+                goes out on a drift AND on an unreadable page, because a guard that has quietly
+                stopped working is the state nobody discovers on their own.
+                """
+                probe_cfg = config_manager.get_config().pricing.probe
+                pricing = config_manager.get_config().pricing
+                provider = build_provider(
+                    config_manager.get_config().llm, probe_cfg.model,
+                    cost_recorder=CostRecorder(database_url, pricing), section='calibration')
+                result = await asyncio.to_thread(
+                    probe_prices, pricing, provider, source_url=probe_cfg.source_url,
+                    probe_model=probe_cfg.model, epsilon_pct=probe_cfg.epsilon_pct)
+                await asyncio.to_thread(
+                    PriceProbeStore(database_url).record, pricing, result.prices,
+                    source_url=probe_cfg.source_url, probe_model=probe_cfg.model,
+                    readable=result.readable)
+                if result.clean:
+                    logger.info('[PRICE] probe ok — %d model(s) match the page', len(result.prices))
+                    return
+                logger.warning('[PRICE] %s', drift_notice(result))
+                await telegram_client.send_message(drift_notice(result))
+
             if weekly_cfg.enabled:
-                weekly_scheduler = WeeklyScheduler(weekly_cfg, _send_weekly)
+                probe_cfg = config_manager.get_config().pricing.probe
+                weekly_scheduler = WeeklyScheduler(
+                    weekly_cfg, _send_weekly,
+                    probe_config=probe_cfg if probe_cfg.enabled else None,
+                    run_probe=_run_price_probe if probe_cfg.enabled else None)
             # Give the watchdog a voice (ISSUE_75). Without Telegram it still detects and logs —
             # delivery is the optional half, so a missing credential degrades the alert, never
             # the detection.
