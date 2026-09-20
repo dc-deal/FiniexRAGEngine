@@ -75,6 +75,7 @@ same shell regardless of the signal type:
   "pipeline_id": "crypto_sentiment",
   "outcome_type": "sentiment_fear_greed",
   "data_origin": "live",
+  "instance_id": "a1b2c3d4e5f6",
   "config_fingerprint": "904c2e16bbfb",
   "prompt_version": "1",
   "prompt_id": "sentiment-crypto",
@@ -181,7 +182,7 @@ collector needs is a read over HTTPS, and nothing that answers can change the en
 
 | Route | Grant | Answers |
 |---|---|---|
-| `GET /v1/health` | *open* | alive, worker cadences and last runs, journal identity, budget, stall state |
+| `GET /v1/health` | *open* | alive, worker cadences and last runs, journal + deployment identity, budget, stall state |
 | `GET /v1/build` | *open* | version, commit, whether the tree was dirty, process start — **which code is actually running** |
 | `GET /v1/pipelines` | `pipelines:<id>` | the constellations a token may see: symbols, trigger, cadence |
 | `GET /v1/pipelines/{id}/latest` | `pipelines:<id>` | the newest persisted envelope, served from the store |

@@ -269,6 +269,31 @@ the document a consumer reads:
 And the rule that keeps this complete: **a new row field is assigned a tier in the change that adds
 it.** A tier table drawn once is a table that goes stale in exactly the way this one did.
 
+### The envelope gained one field on 2026-09-20: `instance_id`
+
+**Tier 3** — identity for correlation, the same reading `breaking_episode_id` carries, and assigned
+here in the change that adds it rather than left for a later diff to discover.
+
+12 lowercase hex naming the **deployment** that produced the row. `/v1/health` already reported
+`journal_id`, but that fingerprints the PostgreSQL *cluster*: the suite migrates a `finiex_test`
+schema inside the production database at every version bump, and a second deployment is one schema
+away, so several producers can answer with one `journal_id`. `instance_id` is minted per schema and
+is therefore the value a data origin is registered against.
+
+What it promises, and what it does not:
+
+- **One deployment, one edge.** It does not move at a restart, a redeploy, a config change or a
+  `seq` rewind. It moves only when the deployment is re-minted deliberately, and that move is the
+  statement *"a different producer writes from here"*.
+- **Not retroactive.** Envelopes archived before the deploy carry no value, and `""` means
+  "produced before this existed" — never "same producer as the neighbour". The boundary is therefore
+  a fact in your own data: the first `seq` per stream that carries a value.
+- **It is stamped by the store**, inside the same write that mints `seq`, so an envelope cannot
+  carry a different deployment's id than the journal it sits in.
+- **It cannot detect a cloned schema.** A copy of production used as a test instance keeps
+  production's id until someone re-mints it; that is an operator step in standing up a copy, not
+  something the field can prove.
+
 ### Why the pair legs are Tier 4, and the reasoning is the consumer's
 
 They were assigned Tier 3 for a consumer's benefit — a free cross-check at parse time against the

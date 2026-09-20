@@ -65,6 +65,7 @@ class OutcomeStore:
         # writes, and it has to share the envelope's transaction (ISSUE_65).
         self._episodes = EpisodeRegistry()
         self._journal_id: Any = _UNRESOLVED     # resolved on first read, then cached
+        self._instance_id: Any = _UNRESOLVED    # same, one level finer (see instance_identity)
 
     def get_sequencer(self) -> StreamSequencer:
         return self._sequencer
@@ -101,6 +102,40 @@ class OutcomeStore:
                         exc.__class__.__name__)
             self._journal_id = None
         return self._journal_id
+
+    def instance_identity(self) -> Optional[str]:
+        """Which deployment owns the journal this store writes into (ISSUE_9 follow-up).
+
+        The finer half of `journal_id` above. That one fingerprints the PostgreSQL *cluster*, which
+        cannot separate two deployments sharing it — and they do share it: the suite migrates a
+        `finiex_test` schema inside the production database at every version bump. This value is
+        minted **per schema** by migration 017, so it answers "which producer", where `journal_id`
+        answers "which database".
+
+        Read here and never minted here: the mint is an operator action, because a restart that
+        changed this field would tell the consumer a different producer wrote the rows. See the
+        migration's header for the full contract — one deployment one edge, no retroactive stamping,
+        a re-mint is a deliberate discontinuity.
+
+        `None` when the table or the row is absent, which on a booted engine cannot happen —
+        `identity_guard` refuses the boot first. It stays a degradable read rather than a raise
+        because `/v1/health` is polled, and a health endpoint that raises on a missing row is a
+        monitor that reports the wrong outage.
+
+        Cached: it cannot change while this process lives, and this is on the pass path.
+        """
+        if self._instance_id is not _UNRESOLVED:
+            return self._instance_id
+        try:
+            with self._connect() as conn, conn.cursor() as cur:
+                cur.execute('SELECT instance_id FROM journal_identity')
+                row = cur.fetchone()
+            self._instance_id = row[0] if row is not None else None
+        except (psycopg.Error, FiniexRagError) as exc:
+            logger.info('instance identity unavailable (%s) — envelopes carry no producer',
+                        exc.__class__.__name__)
+            self._instance_id = None
+        return self._instance_id
 
     def _connect(self) -> psycopg.Connection:
         """A connection per call, and the connect is **bounded** (ISSUE_9 follow-up).
@@ -147,6 +182,12 @@ class OutcomeStore:
         connection is up so connect latency is not inside the claim. The remaining gap to the commit
         is the only way it can run early, and it is bounded by one insert.
         """
+        # Producer identity (ISSUE_9 follow-up) — stamped before the transaction opens, not inside
+        # it: unlike `seq` this is not minted here but read once and cached, so it must never cost a
+        # query while the sequencer's row lock is held. At the store rather than at assembly because
+        # it is a property of the journal being written into: an envelope then cannot carry a
+        # different deployment's id than the row it lands in.
+        envelope.instance_id = self.instance_identity() or ''
         try:
             with self._connect() as conn, conn.cursor() as cur:
                 now_msc = int(datetime.now(timezone.utc).timestamp() * 1000)

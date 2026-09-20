@@ -34,7 +34,7 @@ Every pipeline returns the same shell, parameterised by its payload type:
 
 ```
 AnalysisEnvelope[T]:
-  schema_version, pipeline_id, outcome_type, data_origin,
+  schema_version, pipeline_id, outcome_type, data_origin, instance_id,
   config_fingerprint, prompt_version, prompt_id, prompt_hash,
   timestamp, status, result: List[T], metadata, errors
 ```

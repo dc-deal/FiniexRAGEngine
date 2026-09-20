@@ -8,16 +8,19 @@ rather than an accident of there being no authentication at all. It sits on its 
 the rate limit (60/min per client) because it is the only surface an anonymous caller can reach, and
 `api.health_public: false` moves it behind the token like everything else. How to connect at all:
 `connect_contract.md`. Since 2026-08-22 the Testing IDE's live session polls it every 30 minutes and
-**derives behaviour** from six of its fields — a staleness threshold, an operator panel, a session
-log and a line in its release certificate.
+**derives behaviour** from seven of its fields — a staleness threshold, an operator panel, a
+session log, a line in its release certificate, and since 2026-09-20 the data origin their import
+registers against.
 
 None of that is visible from inside this repository. Without this page, the next person
 reorganising the health document has no way to know that renaming a field ends someone's session,
-and would find out from an outage rather than from a review. So: **these six fields are a contract.
-A rename, a removal or a semantic change is a coordinated break; adding a field is free.**
+and would find out from an outage rather than from a review. So: **these seven fields are a
+contract. A rename, a removal or a semantic change is a coordinated break; adding a field is
+free.**
 
 | Field | What the consumer does with it |
 |---|---|
+| `instance_id` | **Which deployment produced the series**, and the field a data origin is registered against once instead of attesting every batch. `journal_id` fingerprints the PostgreSQL *cluster*, so production and a test schema beside it answer identically — this is minted per schema (migration 017) and stamped on every envelope, so the route and the archive are checkable against each other. **One deployment, one edge:** it does not move at a restart, a redeploy or a config change; it moves only when somebody re-mints, and that change IS the statement "a different producer writes from here". Absent on envelopes archived before 2026-09-20, which is why the import boundary is the first `seq` per stream that carries a value |
 | `journal_id` · `environment` | Shown on the operator panel, written to the session log, recorded in the release certificate. A **mid-session change is an error** on their side: the sequence cursor built so far belongs to the previous journal. `environment` is resolved from `journal_names`, never declared — an unmapped journal answers `unknown`, honestly |
 | `workers[].interval_seconds` where `name == 'eval:<pipeline_id>'` | Their staleness threshold is derived from it, and their run report prints it as the **producer cadence**. It is our reported number, not a median they measured — a session receiving four envelopes has no sample. A drift is reported once |
 | `budget.suspended` (+ `reason`) | Surfaced and logged. Without it a suspended budget reaches a consumer as **silence and nothing else**: the transport stays green and envelopes simply stop, which is indistinguishable from a dead producer |

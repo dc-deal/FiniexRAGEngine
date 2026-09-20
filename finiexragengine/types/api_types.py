@@ -123,6 +123,13 @@ class HealthResponse(BaseModel):
     # mislabelled dev instance would make a rehearsal look like proof. `None` when the identifier is
     # unreadable (managed Postgres) or no store is attached (scaffold-mock mode).
     journal_id: Optional[str] = None
+    # Which deployment inside that journal is producing — 12 lowercase hex, minted per schema by
+    # migration 017 (ISSUE_9 follow-up). `journal_id` fingerprints the cluster and therefore cannot
+    # separate production from a test schema beside it; this can, and it is the value the consumer
+    # registers as a data origin. The same string is stamped on every envelope as `instance_id`, so
+    # what this route reports and what the archive carries are checkable against each other.
+    # `None` in scaffold-mock mode (no store) and on a journal minted before this existed.
+    instance_id: Optional[str] = None
     # The human name for the journal above, resolved through `journal_names` in the configuration
     # (ISSUE_9). `unknown` when the fingerprint has no entry — or when there is no fingerprint to
     # look up at all. Because the name is keyed on the journal's identity, a configuration carried

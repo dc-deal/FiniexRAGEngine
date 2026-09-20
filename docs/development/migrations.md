@@ -97,6 +97,23 @@ builds everything. **Do not copy its style** for new migrations.
 It also replaced five `_ensure_schema()` methods and four inline
 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` statements that used to re-run on every boot.
 
+## A migration that writes a row
+
+`017_journal_identity.sql` is the first migration that does more than shape the schema: it **mints**
+the deployment's `instance_id` (see `diagnostics.md`). That is deliberate and it is the contract —
+minting belongs to an operator action, because an identity minted by the engine would change at
+every restart and announce a new producer to the consumer each time.
+
+Two consequences worth knowing before writing the next one:
+
+- **`clean_db` must not truncate it.** The fixture empties every table it finds in the test schema;
+  a minted row nothing re-creates has to be excluded by name (`_MINTED_TABLES` in
+  `tests/conftest.py`, alongside `schema_migrations`). Forgetting that empties the identity after
+  the first test and every later DB test boots into a deployment that cannot name itself.
+- **The mint is idempotent anyway** (`ON CONFLICT DO NOTHING`), although the runner applies each
+  file exactly once. The statement is also what somebody runs by hand after copying it out of the
+  file, and minting twice is the one thing the table exists to prevent.
+
 ## What is *not* a migration
 
 - **The corpus guard** (`PgVectorStore._verify_corpus_stamp`, ISSUE_16) stamps `corpus_meta`

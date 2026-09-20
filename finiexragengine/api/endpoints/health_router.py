@@ -52,6 +52,9 @@ def build_health_router(config_manager: AppConfigManager,
         stream = (DispatcherInfo(**stream_dispatcher.status())
                   if stream_dispatcher is not None else None)
         journal_id = outcome_store.journal_id() if outcome_store is not None else None
+        # One level finer than the journal: which deployment inside it is producing (ISSUE_9
+        # follow-up). Read from the store so this route and the envelopes report the same string.
+        instance_id = outcome_store.instance_identity() if outcome_store is not None else None
         # Resolved, never declared: an unmapped or unidentifiable journal is honestly `unknown`.
         environment = config_manager.get_config().journal_names.get(journal_id or '', 'unknown')
         # 'ok' is a claim, not a default. A worker whose task ended is the strongest reason to
@@ -65,6 +68,7 @@ def build_health_router(config_manager: AppConfigManager,
                               version=config_manager.get_config().version,
                               pass_timeout_seconds=config_manager.get_config().pass_timeout_seconds,
                               journal_id=journal_id,
+                              instance_id=instance_id,
                               environment=environment,
                               workers=workers, budget=budget, stall=stall,
                               resources=resources, stream=stream)
