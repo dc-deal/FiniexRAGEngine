@@ -554,9 +554,15 @@ UPDATE journal_identity
 RETURNING instance_id, minted_at;
 ```
 
-Then tell the consumer, because their import boundary is exactly the first `seq` carrying the new
-value. **Never re-mint to "refresh" anything**: an identity that changes without a new deployment
-behind it is a discontinuity in someone else's series, reported for no event.
+**Then tell the consumer — this is an obligation, not a courtesy.** Their import boundary is the
+first `seq` carrying the new value, and the Testing IDE stated on 2026-09-20 what a silent re-mint
+actually costs there: they resolve identity to a *class* once at import and admit only `production`
+data into a parity measurement, so an unannounced re-mint does not break a correlation, it **moves
+data in or out of the set they are allowed to measure against** — invisibly, and in their favour or
+against it at random. Announce the new value and the first stamped `seq` per stream, on the bus.
+
+**Never re-mint to "refresh" anything**: an identity that changes without a new deployment behind it
+is a discontinuity in someone else's series, reported for no event.
 
 What it cannot see: a **restore of the whole schema** carries the identity row with it, so a copy of
 production used as a test instance keeps production's `instance_id` until it is re-minted. No guard
