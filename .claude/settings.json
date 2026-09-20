@@ -11,7 +11,11 @@
       "Bash(timeout 900 python -m pytest tests/observability/test_log_reader.py tests/api/test_report_api.py -q --tb=short)",
       "Bash(python -)",
       "Bash(python -c ' *)",
-      "Bash(python3 -c \"import ast; ast.parse\\(open\\('finiexragengine/core/observability/config_generation_store.py'\\).read\\(\\)\\)\")"
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('finiexragengine/core/observability/config_generation_store.py'\\).read\\(\\)\\)\")",
+      "mcp__finiex-bus__bus_ask",
+      "mcp__finiex-bus__bus_note",
+      "mcp__finiex-bus__bus_thread",
+      "Bash(python3 -m pytest experiments/private/signal_outcome -q)"
     ]
   }
 }

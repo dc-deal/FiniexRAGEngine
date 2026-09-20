@@ -73,6 +73,55 @@ def _provider(completions, recorder=None):
                           cost_recorder=recorder)
 
 
+def test_temperature_is_sent_to_a_model_that_accepts_it():
+    completions = _Completions(content=json.dumps({'signal': 'BUY'}))
+    _provider(completions).complete_structured('prompt', {'type': 'object'})
+
+    assert completions.kwargs['temperature'] == LlmConfig().temperature
+
+
+def test_temperature_is_omitted_for_a_family_that_rejects_it():
+    """`gpt-5-*` has no temperature knob — sending it is a hard 400, not a clamped value.
+
+    Observed live on 2026-09-20: the first pass of the nano variant failed on all nine symbols
+    with `Unsupported value: 'temperature' does not support 0.1 with this model`. The parameter
+    must not be in the payload at all; a different value would not help.
+    """
+    completions = _Completions(content=json.dumps({'signal': 'BUY'}))
+    OpenAIProvider(LlmConfig(), 'gpt-5-nano', client=_Client(completions)) \
+        .complete_structured('prompt', {'type': 'object'})
+
+    assert 'temperature' not in completions.kwargs
+    assert completions.kwargs['model'] == 'gpt-5-nano'
+
+
+def test_a_dated_snapshot_of_that_family_is_also_recognised():
+    """The prefix is the rule, so `gpt-5-nano-2026-…` must not reintroduce the 400."""
+    completions = _Completions(content=json.dumps({'signal': 'BUY'}))
+    OpenAIProvider(LlmConfig(), 'gpt-5-nano-2026-08-07', client=_Client(completions)) \
+        .complete_structured('prompt', {'type': 'object'})
+
+    assert 'temperature' not in completions.kwargs
+
+
+def test_the_omission_is_announced_once_and_not_per_call(caplog):
+    """A configured value that never reached the API is stated — but not in every log row.
+
+    `llm.temperature` is inside the config fingerprint, so an envelope from this stream carries
+    a temperature that did not apply. Silent would make the fingerprint a claim nobody checks;
+    once per call would bury it.
+    """
+    completions = _Completions(content=json.dumps({'signal': 'BUY'}))
+    provider = OpenAIProvider(LlmConfig(), 'gpt-5-nano', client=_Client(completions))
+    with caplog.at_level('INFO'):
+        provider.complete_structured('prompt', {'type': 'object'})
+        provider.complete_structured('prompt', {'type': 'object'})
+
+    said = [r for r in caplog.records if 'temperature omitted' in r.getMessage()]
+    assert len(said) == 1
+    assert 'gpt-5-nano' in said[0].getMessage()
+
+
 def test_returns_parsed_data_and_usage():
     result = _provider(_Completions(content=json.dumps({'signal': 'BUY', 'confidence': 0.8}))) \
         .complete_structured('prompt', {'type': 'object'})

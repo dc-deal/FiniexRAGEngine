@@ -74,6 +74,11 @@
         "name": "gpt-4o",
         "sub_pipeline_id": "4o_enhanced",
         "enabled": true
+      },
+      {
+        "name": "gpt-5-nano",
+        "sub_pipeline_id": "nano",
+        "enabled": true
       }
     ]
   },

@@ -1,7 +1,8 @@
 """OpenAI-backed LLM provider (chat-completions + structured outputs)."""
 import json
+import logging
 from time import perf_counter
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
 
 from openai import APITimeoutError, OpenAI, OpenAIError
 
@@ -19,6 +20,21 @@ from finiexragengine.types.llm_types import LlmCompletion, LlmUsage
 if TYPE_CHECKING:
     from finiexragengine.core.observability.budget_guard import BudgetGuard
     from finiexragengine.core.observability.cost_recorder import CostRecorder
+
+logger = logging.getLogger(__name__)
+
+# Model families that REJECT `temperature` outright — the reasoning models have no such knob,
+# and sending it is a hard 400 rather than a value the backend clamps. Observed 2026-09-20 on
+# `gpt-5-nano`, on the first live pass of the ISSUE_42 variant fan-out:
+#
+#   400 — "Unsupported value: 'temperature' does not support 0.1 with this model"
+#
+# Vendor eccentricity, so it lives in the concrete provider and never in `AbstractLLMProvider`.
+# A PREFIX rather than a model list on purpose: the family is the property, and a list would
+# need an entry per dated snapshot (`gpt-5-nano-2026-…`). The cost of being wrong is bounded and
+# visible — a model that would have accepted the parameter simply runs at its own default, and
+# `_announce_omitted_temperature` says so the first time it happens.
+_NO_TEMPERATURE_PREFIXES: Tuple[str, ...] = ('gpt-5',)
 
 
 class OpenAIProvider(AbstractLLMProvider):
@@ -49,6 +65,9 @@ class OpenAIProvider(AbstractLLMProvider):
         # Cost circuit-breaker (ISSUE_47): gates the call before it is made and reacts to the
         # provider's quota signal. None = no breaker (tests / disabled).
         self._budget_guard = budget_guard
+        # Said once per provider, not once per call: a per-call line would bury the fact in
+        # thousands of identical rows, and a fact nobody reads is a fact nobody has.
+        self._temperature_announced = False
 
     def _get_client(self) -> OpenAI:
         if self._client is None:
@@ -56,6 +75,32 @@ class OpenAIProvider(AbstractLLMProvider):
             # None keeps the official API. The key still comes from env / api_key.
             self._client = OpenAI(api_key=self._api_key, base_url=self._config.base_url)
         return self._client
+
+    def _accepts_temperature(self) -> bool:
+        """Whether this model takes the parameter at all — a property of the family, not a setting."""
+        return not self._model.startswith(_NO_TEMPERATURE_PREFIXES)
+
+    def _announce_omitted_temperature(self) -> None:
+        """State it, once. A configured value that did not reach the API must not stay silent.
+
+        `llm.temperature` is inside the config fingerprint because it shapes the score for
+        identical input — so an envelope from this model carries a temperature that did not
+        apply. That is exactly the shape of a field which reads as a measurement and measures
+        nothing, and the only honest treatment is to say so where it happens.
+        """
+        if self._temperature_announced:
+            return
+        self._temperature_announced = True
+        logger.info('[LLM] %s · temperature omitted (the model family rejects it) — the '
+                    'configured %s did not apply to this stream',
+                    self._model, self._config.temperature)
+
+    def _sampling_kwargs(self) -> Dict[str, Any]:
+        """The sampling parameters this model will actually accept."""
+        if not self._accepts_temperature():
+            self._announce_omitted_temperature()
+            return {}
+        return {'temperature': self._config.temperature}
 
     def complete_structured(self, prompt: str, json_schema: Dict[str, Any]) -> LlmCompletion:
         # Circuit-breaker gate (ISSUE_47): while paid work is suspended (provider quota), refuse
@@ -76,8 +121,8 @@ class OpenAIProvider(AbstractLLMProvider):
                     'json_schema': {'name': 'structured_output',
                                     'schema': json_schema, 'strict': False},
                 },
-                temperature=self._config.temperature,
                 timeout=self._config.timeout_seconds,
+                **self._sampling_kwargs(),
             )
         except APITimeoutError as exc:   # subclass of OpenAIError — catch first
             raise LLMTimeoutError(f'LLM call timed out: {exc}') from exc

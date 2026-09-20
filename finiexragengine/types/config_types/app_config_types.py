@@ -113,7 +113,7 @@ class LlmConfig(BaseModel):
     # assembly — fail fast, before any spend. Override the list in the gitignored
     # user_configs to admit e.g. a fine-tuned `ft:...` model without touching tracked config.
     allowed_models: List[str] = Field(
-        default_factory=lambda: ['gpt-4o-mini', 'gpt-4o'])
+        default_factory=lambda: ['gpt-4o-mini', 'gpt-4o', 'gpt-5-nano'])
     # Optional OpenAI-compatible endpoint (vLLM, Ollama, ...) for self-hosted models —
     # private infrastructure, so it belongs in the user_configs override.
     base_url: Optional[str] = None
