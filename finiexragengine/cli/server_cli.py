@@ -6,7 +6,7 @@ import sys
 import uvicorn
 
 from finiexragengine.exceptions.ragengine_errors import ConfigurationError
-from finiexragengine.utils.console_ctrl import restore_console_ctrl_handling
+from finiexragengine.utils.windows_console import restore_console_ctrl_handling
 from finiexragengine.utils.console_encoding import use_utf8_output
 
 

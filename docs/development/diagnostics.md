@@ -805,6 +805,7 @@ database and no shell, and `POST /run` is not registered in production, so nothi
 | `GET /v1/reports/{name}` | `reports:<name>` | one diagnostic surface as JSON (`report_api.md`) |
 | `GET /v1/logs/{name}` | `logs:<name>` | the engine log over a **UTC** range, redacted (`engine` is the only stream) |
 | `GET /v1/configs` · `/{name}` | `configs:<name>` | the **effective** configuration this process runs — `app`, `pipelines`, `source_sets` — `user_configs/` included, credentials masked |
+| `GET /v1/dashboard/{name}` | `dashboard:<view>` | the live console's state as **one reading** — the stage rows, the breaking episodes, the activity feed and the verdicts behind them, stamped with the engine's own clock (`engine` is the only view). `503` when this process runs no workers: nothing is collecting, which is a different fact from nothing happening |
 | `GET /v1/diagnose/{name}` | `diagnose:<name>` | one **configured** feed, fetched and parsed live — the raw bytes that machine receives (`feed` is the only probe) |
 
 Two things a reading has to respect. **A `403` is a grant, not a bug** — access is by name, so a

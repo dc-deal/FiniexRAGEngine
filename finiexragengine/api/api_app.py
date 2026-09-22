@@ -4,7 +4,7 @@ import logging
 import os
 import socket
 from contextlib import asynccontextmanager
-from typing import AsyncIterator, Dict, List, Optional
+from typing import AsyncIterator, Callable, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, FastAPI
 from finiex_auth.bearer_auth import build_bearer_dependency
@@ -23,6 +23,7 @@ from finiexragengine.api.endpoints.log_router import build_log_router
 from finiexragengine.api.endpoints.stream_router import build_stream_router
 from finiexragengine.api.token_loader import load_token_registry
 from finiexragengine.api.endpoints.config_router import build_config_router
+from finiexragengine.api.endpoints.dashboard_router import build_dashboard_router
 from finiexragengine.api.endpoints.diagnose_router import build_diagnose_router
 from finiexragengine.configuration.abstract_config_view import AbstractConfigView
 from finiexragengine.configuration.app_config_manager import AppConfigManager
@@ -54,6 +55,7 @@ from finiexragengine.core.pipeline.detection_preflight import log_detection_pref
 from finiexragengine.core.pipeline.pipeline_assembler import PipelineAssembler
 from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
 from finiexragengine.core.pipeline.worker_supervisor import WorkerSupervisor
+from finiexragengine.core.ui.dashboard_snapshot import DashboardSnapshot, sample_dashboard
 from finiexragengine.core.ui.engine_stats import EngineStats
 from finiexragengine.core.ui.live_display import LiveDisplay
 from finiexragengine.exceptions.ragengine_errors import ConfigurationError
@@ -165,12 +167,25 @@ def create_app(attach_runners: Optional[bool] = None,
     source_sets: Optional[SourceSetRegistry] = None
     stream_dispatcher: Optional[StreamDispatcher] = None
     stream_replay: Optional[StreamReplay] = None
-    # Live dashboard's shared state (ISSUE_26): built only in live mode, injected into every
-    # worker so each pass pushes its snapshot/events; None otherwise (zero overhead). Keys are
-    # pre-registered from the same ids the supervisor builds workers from, so the dashboard's
-    # per-worker dicts never resize at runtime (lock-free render).
+    # The engine's live state (ISSUE_26), injected into every worker so each pass pushes its
+    # snapshot and its events. Keys are pre-registered from the same ids the supervisor builds
+    # workers from, so the per-worker dicts never resize at runtime (lock-free render).
+    #
+    # Built whenever WORKERS run — not when a terminal is attached (ISSUE_126). It used to be gated
+    # on `live_mode`, which additionally requires a TTY, so the moment the engine became a service
+    # the state stopped being COLLECTED rather than merely displayed, and every `_push_stats` call
+    # returned immediately. Nothing durable was lost — this is in-memory and derived from what the
+    # stores already hold — but a remote viewer has nothing to read until the collection is free of
+    # the display. `live_mode` now governs the renderer alone.
+    #
+    # The cost without a display is two bounded deques and a handful of dataclasses per pass.
+    # Tri-state, and initialised here rather than inside the attach block: `None` means the
+    # journal identity was never established (no store to ask), which a viewer must be able to
+    # tell apart from 'established and unnamed'. It also removes a latent NameError — the only
+    # assignment sits behind `attach_runners`, and the reader behind `live_mode`.
+    journal_named: Optional[bool] = None
     engine_stats: Optional[EngineStats] = None
-    if live_mode:
+    if start_workers:
         pipeline_ids = [pipeline.get_config().pipeline_id for pipeline in registry.list_pipelines()]
         source_set_ids = sorted({pipeline.get_config().source_set
                                  for pipeline in registry.list_pipelines()})
@@ -347,6 +362,34 @@ def create_app(attach_runners: Optional[bool] = None,
                                    version=config_manager.get_config().version,
                                    journal_named=journal_named)
 
+    # The same state, for a viewer somewhere else (ISSUE_126 Phase 2). A closure rather than eight
+    # parameters into the router: a router is transport, and this is where the collaborators live.
+    # Left `None` when nothing is collecting, so the route answers 503 with a reason instead of
+    # drawing zeros — an engine with no workers and an engine with nothing happening look identical
+    # on a panel, and they are different facts.
+    # Sampled once, so it describes the code THIS process imported rather than whatever the working
+    # tree holds at request time (see `build_info.sample_build_info`). One sample, two consumers:
+    # `/v1/build` and the dashboard's `engine_started_at` — so the uptime a viewer draws and the
+    # start time that route reports cannot disagree.
+    build_info = sample_build_info(config_manager.get_config().version)
+    dashboard_provider: Optional[Callable[[], DashboardSnapshot]] = None
+    if engine_stats is not None:
+        stats = engine_stats                     # non-Optional binding for the closure below
+        states_provider = supervisor.states if supervisor is not None else None
+
+        def sample_engine_dashboard() -> DashboardSnapshot:
+            """One reading, with every verdict taken on this side of the wire."""
+            return sample_dashboard(stats,
+                                    version=config_manager.get_config().version,
+                                    engine_started_at=build_info.started_at,
+                                    journal_named=journal_named,
+                                    budget_guard=budget_guard,
+                                    stall_watchdog=stall_watchdog,
+                                    resource_gauge=resource_gauge,
+                                    states_provider=states_provider)
+
+        dashboard_provider = sample_engine_dashboard
+
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # The background heartbeat lives inside the server process: started once the
@@ -429,8 +472,10 @@ def create_app(attach_runners: Optional[bool] = None,
                                  resource_gauge=resource_gauge, outcome_store=outcome_store,
                                  stream_dispatcher=stream_dispatcher)
     # Sampled once, here, so it describes the code THIS process imported rather than whatever the
-    # working tree holds at request time (see `build_info.sample_build_info`).
-    build = build_build_router(sample_build_info(config_manager.get_config().version))
+    # working tree holds at request time (see `build_info.sample_build_info`). One sample, two
+    # consumers: `/v1/build` and the dashboard snapshot's `engine_started_at` — so the uptime a
+    # viewer draws and the start time this route reports cannot disagree.
+    build = build_build_router(build_info)
     exempt = ((health, api_config.health_public), (build, api_config.build_info_public))
     app.include_router(_build_public_router(
         api_config, [router for router, is_public in exempt if is_public]))
@@ -481,7 +526,9 @@ def create_app(attach_runners: Optional[bool] = None,
         config_views=_build_config_views(config_manager, registry, source_sets),
         # The feed catalogue this process polls (2026-09-09) — the diagnose route resolves a
         # `source_id` against it, so a caller names a configured feed and never a URL.
-        source_sets=source_sets))
+        source_sets=source_sets,
+        # The live state this process collects (ISSUE_126 Phase 2), or None when nothing does.
+        dashboard_provider=dashboard_provider))
     return app
 
 
@@ -531,7 +578,9 @@ def _build_protected_router(registry: PipelineRegistry,
                             stream: Optional[StreamConfig] = None,
                             log_file: Optional[str] = None,
                             config_views: Optional[Dict[str, AbstractConfigView]] = None,
-                            source_sets: Optional[SourceSetRegistry] = None) -> APIRouter:
+                            source_sets: Optional[SourceSetRegistry] = None,
+                            dashboard_provider: Optional[Callable[[], DashboardSnapshot]] = None
+                            ) -> APIRouter:
     """Everything a token is required for — and everything added here later, automatically.
 
     `extra_routers` carries routers assembled by the caller: the exemptions that were switched
@@ -602,4 +651,8 @@ def _build_protected_router(registry: PipelineRegistry,
     # *outward* on request rather than reading the store — bounded to one named, configured feed
     # per call, which is what keeps it a diagnostic instead of a proxy.
     protected.include_router(build_diagnose_router(source_sets, tokens))
+    # The live console's state (ISSUE_126 Phase 2), on its own grant surface. Mounted even without
+    # a provider, for the same reason the config view is: a route that disappears with a boot mode
+    # is a route the scope sweep cannot see. Without one it answers 503 and says why.
+    protected.include_router(build_dashboard_router(tokens, dashboard_provider))
     return protected

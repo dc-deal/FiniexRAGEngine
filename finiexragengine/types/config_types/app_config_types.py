@@ -16,7 +16,7 @@ from finiexragengine.types.ingest_types import TextNormalizerProfile
 # an operator writing the config — so a typo like `report:source_health` must fail at boot rather
 # than turn into a silent denial nobody can see (CLAUDE.md, closed vocabularies).
 GRANT_SURFACES: Tuple[str, ...] = ('reports', 'pipelines', 'logs', 'configs',
-                                  'diagnose')
+                                  'diagnose', 'dashboard')
 
 
 class ConsumerToken(ConsumerTokenBase):

@@ -405,6 +405,30 @@ class ConfigCatalog(BaseModel):
     configs: List[ConfigCatalogEntry] = Field(default_factory=list)
 
 
+class DashboardResponse(BaseModel):
+    """One reading of the engine's live state — what the console would be showing (ISSUE_126).
+
+    `state` is deliberately untyped, the same reasoning `ReportEnvelope.data` and
+    `FeedDiagnosisResponse.diagnosis` carry: it is `DashboardSnapshot.state` serialized by
+    `utils.dataclass_json`, and typing it here would turn every stage snapshot's every field into an
+    API contract. The fields above it are the part that IS a contract, because a viewer cannot draw
+    an honest screen without them.
+
+    `snapshot_at` is the engine's own clock at sampling. It is what lets a viewer tell a live engine
+    from a frozen fetch, and what every age on the screen must be computed against — otherwise each
+    one is an engine timestamp subtracted from the viewer's clock, and the difference is invisible.
+
+    `journal_named` is tri-state: `True` named, `False` unnamed and the warning belongs on screen,
+    `None` the identity could not be established at all.
+    """
+    view: str
+    snapshot_at: datetime
+    version: str
+    engine_started_at: Optional[datetime] = None
+    journal_named: Optional[bool] = None
+    state: Any = None
+
+
 class FeedDiagnosisResponse(BaseModel):
     """One feed, probed live and diagnosed (2026-09-09).
 

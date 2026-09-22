@@ -27,6 +27,7 @@ What replaces the dashboard until the viewer ships (#126 Phase 2):
 | what happened in the last hour | `logs/finiex.log` (rotating, unchanged) or `GET /v1/logs/engine` |
 | what did the last pass produce | `GET /v1/pipelines/{id}/latest` |
 | everything else | the report routes — `docs/architecture/report_api.md` |
+| what the panel *would* be showing | `GET /v1/dashboard/engine` — one reading of the live state, stamped with the engine's clock. This is the **engine half** of the viewer (ISSUE_126 Phase 2); the process that draws it is not built yet |
 
 Starting it by hand with `--live` stays available for debugging. It is simply not what the service
 runs.
@@ -58,6 +59,213 @@ stays down. Correct behaviour, confusing symptom.
 Note what this means for #102 (secrets out of the startup script): the service definition becomes a
 place a credential lives. That is the registry rather than a pasteable command line, which is better,
 and it is still a copy — #102's `SettingResolver` is where it ends.
+
+## As installed on the production box — 2026-09-22
+
+The record of what was actually run, so a rebuild reproduces it instead of re-deriving it. Secrets
+appear as placeholders; the real values live in the service's own environment and in the gitignored
+server notes.
+
+### First, what the environment actually held
+
+```powershell
+"Machine","User" | % { "$_ : DB=" + [bool][Environment]::GetEnvironmentVariable("DATABASE_URL",$_) +
+                       " KEY=" + [bool][Environment]::GetEnvironmentVariable("OPENAI_API_KEY",$_) }
+
+Machine : DB=False KEY=False
+User    : DB=False KEY=True
+```
+
+**`DATABASE_URL` was persisted nowhere at all.** It had been typed into whichever shell started the
+engine, which is exactly why the console worked for months and a service could not have. That one
+line is the whole argument for `AppEnvironmentExtra`, measured rather than assumed — re-run it before
+any future rebuild instead of trusting this paragraph.
+
+### The install, as executed
+
+```powershell
+C:\nssm\nssm.exe install FiniexRAGEngine `
+  "C:\Users\Administrator\Documents\code\FiniexRAGEngine\.venv\Scripts\python.exe" `
+  "-m finiexragengine.cli.server_cli --workers"
+
+C:\nssm\nssm.exe set FiniexRAGEngine AppDirectory         "C:\Users\Administrator\Documents\code\FiniexRAGEngine"
+C:\nssm\nssm.exe set FiniexRAGEngine AppEnvironmentExtra  "OPENAI_API_KEY=sk-…" "DATABASE_URL=postgresql://…@localhost:5432/…" "SSL_CERT_FILE=C:\Users\…\cacert.pem"
+C:\nssm\nssm.exe set FiniexRAGEngine AppStopMethodConsole 20000
+C:\nssm\nssm.exe set FiniexRAGEngine AppExit 2 Exit
+C:\nssm\nssm.exe set FiniexRAGEngine Start SERVICE_DELAYED_AUTO_START
+
+# added right after the first start — see "what a refusal would have been invisible in", below
+C:\nssm\nssm.exe set FiniexRAGEngine AppStdout "…\FiniexRAGEngine\logs\service.out.log"
+C:\nssm\nssm.exe set FiniexRAGEngine AppStderr "…\FiniexRAGEngine\logs\service.err.log"
+```
+
+**Without `AppStdout`/`AppStderr`, an exit-2 refusal is invisible.** Everything printed before logging
+is configured — including the configuration-error message this page's exit codes exist for — goes to
+stderr and nowhere else. A service has no console to catch it, so the one text an operator needs
+would be replaced by an event-log entry saying the process exited.
+
+Log on as **LocalSystem**, startup **Automatic (Delayed Start)** — the same shape as Caddy beside it.
+
+Two entries in that environment list deserve a word:
+
+- **`SSL_CERT_FILE`** is carried over from the console environment that worked. A service whose CA
+  bundle differs from the shell's fails nowhere at boot and everywhere on outbound HTTPS — the feeds
+  and the OpenAI call — which is the worst place to discover a difference. Here it points at the
+  venv's own bundle (`…\.venv\Lib\site-packages\certifi\cacert.pem`, confirmed present), so it
+  survives a `pip install` and dies with a venv rebuilt at a different path.
+- **`PYTHONUTF8=1`** is belt-and-braces here and not load-bearing: `use_utf8_output()` reconfigures
+  stdout/stderr at the top of every CLI, and the rotating file handler pins `encoding='utf-8'`
+  explicitly. Set it anyway; it costs nothing and removes a class of question.
+
+Before the switch, stop the running console and let it drain. Nothing yet prevents both from running
+at once — that is the run lock, which ships after this page's reboot test.
+
+### Verified from outside, immediately after the start
+
+```
+/v1/build   started_at 2026-09-22T11:30:41Z      auth_package 0.3.0, not editable
+/v1/health  ok · instance_id 1dcb470e3d17 · journal 138c68e48b15 · production
+            ingest:crypto_news  ok · ingest:forex_news  ok
+            eval:crypto_sentiment ok · eval:forex_macro_sentiment ok
+            eval:crypto_sentiment_nano pending   (its pass takes ~100 s)
+            budget not suspended · no stalls · stream listening · RSS 198 MB
+```
+
+And the boot lines, which are the half that says the *switch* changed nothing it should not have
+(`min_level=INFO` — the route defaults to `WARNING` and would show none of these):
+
+```
+[SETTING] FINIEX_API_TOKENS <- user_configs
+[AUTH] 2 consumer token(s) · /health public · POST /run DISABLED
+[AUTH] token ide        · grants: pipelines:*
+[AUTH] token claude-dev · grants: *
+[JOURNAL] 138c68e48b15 · production
+```
+
+**That `[SETTING]` line is the one to read after any move to a service.** The environment form of
+`FINIEX_API_TOKENS` means `*` and *wins* over the overlay, so a machine-scoped leftover would have
+silently replaced the whole grant model — in either direction, since a user-scoped one is visible to
+a console and invisible to LocalSystem. Here the overlay is in force and the consumer list is
+unchanged.
+
+### Two findings from the switch
+
+**`/v1/build` lost the commit — solved, and the cause is worth keeping.** Under the service it
+reported `commit: null` where the console had reported a hash, with the boot log saying
+`[BUILD] … commit not determinable (no git repository here)`. `build_info` shells out to
+`git -C <root> rev-parse`, and as LocalSystem that can fail two ways: git missing from that account's
+PATH, or git refusing a repository owned by another user. The reason is logged at `debug` only, so it
+was settled by elimination — `[Environment]::GetEnvironmentVariable("PATH","Machine")` contains
+`C:\Program Files\Git\cmd`, so git was findable and **ownership was the cause**:
+
+```powershell
+git config --system --add safe.directory "C:/Users/Administrator/Documents/code/FiniexRAGEngine"
+Restart-Service FiniexRAGEngine
+```
+
+After that, `/v1/build` reports the commit again, `dirty: false`, and the boot log reads
+`[BUILD] version 0.3.3 · commit b52e5ac · finiex_auth 0.3.0` — no "WORKING TREE DIRTY", no
+"(EDITABLE)", which is what a production install should look like.
+
+This matters more than it looks: *"is the process the commit I just pushed?"* is the first step of
+the deploy check, and `started_at` without a commit is the single most common false "it's live".
+**Re-run it after any change of service account or checkout location** — it is a per-user refusal,
+so it comes back the moment either moves.
+
+**Stopping the old console left a traceback.** `KeyboardInterrupt` inside `threading._shutdown`, at
+interpreter exit after the lifespan had already drained — a non-daemon worker thread being joined
+when the second interrupt arrived. Cosmetic today, and worth a look if it ever appears under
+`nssm stop`, because there it would mean the drain did not finish before the console event landed.
+
+### The stop, measured on the first restart
+
+`Restart-Service` printed "Waiting for service to stop..." three times, which is the drain rather
+than a hang. The log shows it completing in order:
+
+```
+11:38:22  Scheduler has been shut down
+11:38:25  workers stopped (5)
+11:38:36  [IDENTITY] instance 1dcb470e3d17          ← the new process
+11:38:44  [JOURNAL] 138c68e48b15 · production
+11:38:49  [BUILD] version 0.3.3 · commit b52e5ac · finiex_auth 0.3.0
+11:38:49  five workers started
+```
+
+**Total gap: 24 s**, of which roughly 3–5 s was the drain. That is the case NSSM's default 1500 ms
+stop timeout would have cut short — so `AppStopMethodConsole 20000` earned itself on the first
+restart rather than in theory. It also means the Ctrl+C path works end to end under the service: the
+event arrived, the handler ran, the lifespan drained in its declared order.
+
+### What can be checked without a reboot
+
+A reboot is not free on this box — it also takes down whatever else runs there by hand — so most of
+the confidence is available without one:
+
+```powershell
+sc.exe qc FiniexRAGEngine            # START_TYPE must read AUTO_START (DELAYED)
+C:\nssm\nssm.exe dump FiniexRAGEngine   # the full configuration, as the commands that recreate it
+```
+
+`nssm dump` is the authoritative as-built record — **and it prints the API key**, so redact before
+pasting it anywhere. Everything it shows lives in the registry under
+`HKLM\SYSTEM\CurrentControlSet\Services\FiniexRAGEngine\Parameters` and survives a reboot; the
+`safe.directory` entry is not NSSM at all but `C:\ProgramData\Git\config`, and survives for the same
+reason.
+
+**Logging off is the cheap two-thirds of the test.** A service survives an ended session; a console
+process does not. Log off — not disconnect — wait, and query `/v1/health` from outside. It proves the
+engine is no longer tied to an interactive session, which is most of what a reboot proves. The catch
+is that it kills anything else on the box that still runs on a console, so it waits until those are
+services too.
+
+**A database that is not up yet is not a problem to solve here.** If PostgreSQL lags the engine at
+boot, the schema guard raises, the process exits **1** — retryable, deliberately not 2 — and NSSM
+restarts it with a back-off that reaches about 256 s. A Windows service dependency would remove the
+race outright; the retry survives it, which was judged enough.
+
+### The reboot checklist
+
+Written in advance so the reboot is a test rather than a restart. **Run it before 09:00 UTC**: the
+weekly report is scheduled for Saturdays at 09:00, so an engine that booted earlier reschedules it
+for the same morning — and a report that then fires proves the scheduler came back too. Reboot after
+09:00 and that check slides a week.
+
+| When | Check | Expected |
+|---|---|---|
+| T+0 | `Restart-Computer` | — |
+| T+3 min | `GET /v1/build` | `started_at` after the boot · a commit, **not `null`** · `dirty: false` |
+| T+3 min | `GET /v1/health` | five workers, the known `instance_id`, `journal_id`, `environment: production` |
+| T+5 min | `GET /v1/logs/engine?min_level=INFO` | `[IDENTITY]` · `[JOURNAL]` · `[BUILD]` · three `[AUTH]` lines |
+| T+5 min | `logs\service.err.log` | empty, or exactly the retryable database line |
+| 09:00 | the weekly report fires | the scheduler survived the boot |
+
+**And nobody logs in until those pass.** A logon invalidates the test — it is precisely the thing the
+service is supposed to make unnecessary.
+
+Two negatives worth naming, because each has a known cause: a `commit: null` means the
+`safe.directory` entry did not survive (it should — it is system-wide), and a second set of workers
+means the run lock did not hold.
+
+**This box runs things that are not services**, and they do not come back without an interactive
+logon — the MT5 terminal starts from the user's Startup folder, which runs at logon and not at boot.
+Whether that matters depends on `AutoAdminLogon`:
+
+```powershell
+Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" |
+  Select-Object AutoAdminLogon, DefaultUserName
+```
+
+Not this engine's dependency — it holds no price and reads no terminal — but it is on the same
+machine, so a reboot planned from here should know what else it takes down.
+
+### Still unproven
+
+**The reboot.** Everything above shows the service starts, serves and stops cleanly; none of it
+shows the machine brings it back on its own. Planned as a controlled test on **Saturday 2026-09-26,
+before 09:00 UTC**. Until it has run, this page documents a service, not a solved outage.
+
+**`PYTHONUTF8=1`** is not confirmed to be in the installed environment list. Harmless either way for
+the reasons above, and worth setting when the list is next edited.
 
 ## Stopping, and why the timeout is generous
 

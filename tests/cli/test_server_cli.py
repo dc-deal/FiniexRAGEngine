@@ -10,7 +10,7 @@ import pytest
 
 from finiexragengine.cli import server_cli
 from finiexragengine.exceptions.ragengine_errors import ConfigurationError
-from finiexragengine.utils import console_ctrl
+from finiexragengine.utils import windows_console
 
 
 def test_the_default_bind_is_loopback(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -78,10 +78,10 @@ def test_an_inherited_ignored_ctrl_c_is_removed_on_windows(
     class _FakeCtypes:
         windll = type('_Windll', (), {'kernel32': _FakeKernel32()})()
 
-    monkeypatch.setattr(console_ctrl, 'ctypes', _FakeCtypes)
-    monkeypatch.setattr(console_ctrl.sys, 'platform', 'win32')
+    monkeypatch.setattr(windows_console, 'ctypes', _FakeCtypes)
+    monkeypatch.setattr(windows_console.sys, 'platform', 'win32')
 
-    console_ctrl.restore_console_ctrl_handling()
+    windows_console.restore_console_ctrl_handling()
 
     assert calls == [(None, False)]
 
@@ -96,8 +96,8 @@ def test_it_is_a_no_op_off_windows(monkeypatch: pytest.MonkeyPatch) -> None:
     def explode(*args: object, **kwargs: object) -> None:
         raise AssertionError('no Windows API call may happen off win32')
 
-    monkeypatch.setattr(console_ctrl, 'ctypes',
+    monkeypatch.setattr(windows_console, 'ctypes',
                         type('_Boom', (), {'windll': property(explode)})())
-    monkeypatch.setattr(console_ctrl.sys, 'platform', 'linux')
+    monkeypatch.setattr(windows_console.sys, 'platform', 'linux')
 
-    console_ctrl.restore_console_ctrl_handling()      # no raise = no call
+    windows_console.restore_console_ctrl_handling()      # no raise = no call
