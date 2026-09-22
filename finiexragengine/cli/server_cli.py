@@ -6,12 +6,18 @@ import sys
 import uvicorn
 
 from finiexragengine.exceptions.ragengine_errors import ConfigurationError
+from finiexragengine.utils.console_ctrl import restore_console_ctrl_handling
 from finiexragengine.utils.console_encoding import use_utf8_output
 
 
 def main() -> None:
     # The live display and the startup override report both carry Unicode.
     use_utf8_output()
+    # Before uvicorn installs its own signal handlers (ISSUE_126): undo an inherited
+    # "ignore Ctrl+C", which is how a service manager's stop reaches this process at all.
+    # Without it the console accepts the event, no handler runs, and NSSM escalates to
+    # TerminateProcess — skipping the ordered drain in `api_app.lifespan`.
+    restore_console_ctrl_handling()
     parser = argparse.ArgumentParser(description='FiniexRAGEngine API server')
     # ISSUE_98: loopback by default. The engine is reached through the reverse proxy that
     # terminates TLS (INTERNAL_server_setup / venv_export), never directly — so binding wide
@@ -77,7 +83,12 @@ def main() -> None:
     except ConfigurationError as exc:
         print(f'\nConfiguration error — the server did not start:\n\n  {exc}\n',
               file=sys.stderr)
-        raise SystemExit(1) from None
+        # Exit 2 = "this must not run", and it is addressed to the service manager
+        # (ISSUE_126). NSSM restarts on exit by default, which is right for a crash and
+        # useless for a schema behind, a missing instance identity or a bad token — none
+        # of those improves by being retried. `AppExit 2 Exit` makes the refusal final,
+        # while 1 stays "crashed, try again".
+        raise SystemExit(2) from None
 
 
 if __name__ == '__main__':

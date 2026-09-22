@@ -225,6 +225,20 @@ diagnosing the next one. Its short version: the decisive measurement was a two-m
 TCP probe from another line with two control hosts, because inbound and outbound failing in the same
 seconds is what excludes every explanation living outside the machine.
 
+**The engine does not survive a reboot of its box, and no instrument here can tell you it is gone.**
+On 2026-09-20 the host reset the machine; the reset cost 15 minutes and the engine was down
+**12 h 50 m 46 s**, because it runs on a console window somebody started by hand while Caddy, a
+service, came back on its own — the host event was 2 % of the outage. It was not detected: another
+project reported it on the bus twelve hours in. That is structural. `/v1/health`, the stall watchdog
+(#75) and the dead-worker check (#97) all run **inside the process**, so they go silent with the
+thing they measure; a dead engine does not answer `down`, it fails to answer, and nothing was
+asking. So **liveness is observed from outside the process or it is not observed** — an in-process
+alarm proposed for it is the same mistake a third time. The measured case, with the four-instrument
+timeline, 48,215 missed polls across 22 feeds and why the corpus hole is an exposure that cannot be
+counted, is `github_issues/root_internal_archive/INTERNAL_host_reset_2026-09-20.md`. One reading trap
+from it: the envelope series overstates an outage by one cadence interval, because it measures
+cadence plus outage.
+
 Two consequences, both learned the hard way:
 
 - **Never answer a question about production from the dev journal.** "Does the journal predate
@@ -668,6 +682,30 @@ come out negative was not a measurement.
   fetching a file — and it stays operator-initiated, exactly as its own section says.
 - **Results that touch the strategy stay private** (gitignored `experiments/private/`), even when the
   instrument that produced them is public.
+
+**The series has holes, and a reading that does not know them is not a reading.** Window
+boundaries are set by clean stretches, never by the calendar — and the list travels with the
+instrument rather than in somebody's head:
+
+| Window (UTC) | What it is | Effect on a reading |
+|---|---|---|
+| 2026-07-29, 5 h 08 m | tick gap on the IDE's side | no price for those instants — events drop, controls drop with them |
+| 2026-08-01/02 → 08-09 | the feed-timeout freeze (#73/#74/#75) | **no envelopes at all.** The two projects' records differ at the edge: ours calls it a nine-day freeze from 08-01, the IDE's tick-side record says 08-02 → 08-09. A reading near that edge checks both |
+| 2026-09-08 → 09-17 | VPS lost DNS and outbound TCP several times a day | envelopes exist but ran on **partial retrieval** — degraded, not absent, which is the harder case: nothing is missing, the evidence is thinner |
+| 2026-09-20 19:40 → 09-21 08:39 | host reset, engine down **12 h 50 m** | ~77 envelopes missing per stream |
+
+Two boundaries are about *fields* rather than data, and they bite the same way: the archive's
+integrity fields begin **2026-08-22**, and the bar archive has a quality step at **2026-09-15**
+(gaps over 60 s cost 4.3–16.9 % of covered time before it, 0.0–1.3 % after). A sweep that filters
+absences across either boundary prints a clean answer it has not earned.
+
+**Two traps when measuring a hole from the envelope series**, both paid for:
+
+- it **overstates by one cadence interval** — the gap between the last envelope before and the
+  first after is outage *plus* one scheduled tick;
+- **`seq` stays gapless across an outage** (4466 → 4467 over 12 h 50 m on 2026-09-20), so a
+  consumer gating on cursor continuity cannot see one at all. Only the timestamp spacing against
+  the cadence reveals it — which is a contract fact for any consumer, not only for us.
 
 ## Project layout
 

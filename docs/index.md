@@ -57,6 +57,9 @@ you need.**
   diagnostic CLIs.
 - [Diagnostics](development/diagnostics.md) — indexed by *question*, not subsystem: is a feed
   slow or dead, what did an outage cost, why is a pipeline `partial`, did we lose articles.
+- [Running as a service](development/running_as_a_service.md) — the NSSM and systemd parameters,
+  why the dashboard does not come along, the stop semantics, and the reboot that is the only
+  acceptance test.
 - [Testing](testing.md) — the suite layout, the `paid` marker, and what each test file covers.
 
 ## Elsewhere

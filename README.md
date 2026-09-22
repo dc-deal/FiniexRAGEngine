@@ -113,6 +113,11 @@ python -m finiexragengine.cli.server_cli --workers --port 8100
 python -m finiexragengine.cli.server_cli --workers --live --port 8100
 ```
 
+**Unattended, the engine runs as a service without the dashboard** — a console it shares is a
+console that can suspend it, and on 2026-09-20 a host reset cost 12 h 50 m because nothing
+restarted a hand-started window. Parameters for NSSM and systemd, the stop semantics and the exit
+codes: [`docs/development/running_as_a_service.md`](docs/development/running_as_a_service.md).
+
 The `--live` dashboard while the engine runs — one row per worker (source-set and pipeline),
 stage state on top, a colour-coded activity stream below:
 

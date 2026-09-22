@@ -284,6 +284,12 @@ it ships at `0` (off) on purpose — the weekly line is what produces a real num
 
 ## Is the engine running right now — and how do I stop it?
 
+**On the server this is a service question, not a process question** (ISSUE_126): the engine runs
+under NSSM, so `Get-Service` / `nssm stop` answer it, and `sc.exe qc` says whether it comes back after
+a reboot. Parameters, stop semantics, exit codes and the reboot test:
+[`running_as_a_service.md`](running_as_a_service.md). The rest of this section is the **dev
+container**, where the engine is still something you start by hand.
+
 The dev container has **no `ps`, `pgrep`, `top`, `curl`, `lsof` or `netstat`**, and `jobs` only sees
 children of the current shell — so it shows nothing started from another terminal. Anyone who
 backgrounds a server without noting the PID cannot find it again without the handles below. That is
