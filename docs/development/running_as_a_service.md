@@ -27,10 +27,42 @@ What replaces the dashboard until the viewer ships (#126 Phase 2):
 | what happened in the last hour | `logs/finiex.log` (rotating, unchanged) or `GET /v1/logs/engine` |
 | what did the last pass produce | `GET /v1/pipelines/{id}/latest` |
 | everything else | the report routes — `docs/architecture/report_api.md` |
-| what the panel *would* be showing | `GET /v1/dashboard/engine` — one reading of the live state, stamped with the engine's clock. This is the **engine half** of the viewer (ISSUE_126 Phase 2); the process that draws it is not built yet |
+| the panel itself | `python -m finiexragengine.cli.viewer_cli --url <engine>` — the console, from any machine. See below |
 
 Starting it by hand with `--live` stays available for debugging. It is simply not what the service
 runs.
+
+## The viewer — the console, somewhere else
+
+```bash
+export FINIEX_LIVE_CLIENT_TOKEN=...        # the engine's bearer token, by name, never on the command line
+python -m finiexragengine.cli.viewer_cli --url https://finiex-rag.duckdns.org
+```
+
+It reads `GET /v1/dashboard/{view}` and draws what the console used to. It holds no state the engine
+needs, spends nothing, can be killed at any moment and can run twice at once — **what freezes is no
+longer what works**, which is the whole reason for the split. The grant is `dashboard:<view>`, held
+by nobody unless it is written into a token.
+
+**Everything on that screen was measured on another machine**, so the viewer states its own condition
+as the frame around the panel rather than a line inside it:
+
+- the frame turns **red** carrying the clock time and age of the last good reading
+  (`no answer since 13:30:00 UTC (2m 17s ago) — connection refused, the engine is not running`), and
+  says `never answered` before the first rather than inventing a time;
+- **the old numbers stay**, because what the engine last said is usually the interesting part of an
+  outage;
+- **the reason is a sentence**, since a refused connection, a timeout, a `401` and a `403` send you
+  to four different machines;
+- the age keeps counting on the **viewer's** clock while the panel stays frozen on the **engine's** —
+  a frozen age would make a dead feed look like a quiet engine;
+- and when the two clocks differ by more than a few seconds, the panel says so instead of carrying
+  the difference silently inside every age.
+
+One measured number behind that: the request timeout is floored at **5 s**, because a refused TCP
+connection needs **2.04 s** to report itself on this Windows host. The collector's 2.0 s timeout
+reported a service that was simply not running as "no answer within the timeout" — the wrong
+sentence, lost by forty milliseconds.
 
 ## NSSM, mirroring Caddy
 

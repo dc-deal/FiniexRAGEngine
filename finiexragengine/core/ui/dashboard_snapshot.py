@@ -69,13 +69,21 @@ class ResourceReading:
 
 @dataclass(frozen=True)
 class WorkerLiveness:
-    """The two fields the header's `WORKER DEAD` segment is built from, and nothing else.
+    """A worker's identity and whether it is still alive — not its pass history.
 
-    `WorkerState` carries more (runs, last_status, durations), but the renderer reads exactly these
-    — so this is what the snapshot promises, rather than a whole internal shape whose other fields
-    would become a contract by accident.
+    Four fields, and the line is drawn deliberately. `name`, `kind` and `interval_seconds` are the
+    identity a viewer needs to rebuild a `WorkerState` without inventing one — they are measurements
+    the engine holds and `/v1/health` already publishes, so carrying them adds no contract surface.
+    `stopped_at`/`stopped_reason` are the condition the header's `WORKER DEAD` segment is built from.
+
+    What stays out is the pass history — `runs`, `last_status`, `last_run_at`, `last_duration_ms`
+    and above all `last_detail`, which is a *rendered sentence* ("scheduled · fetched 162 · …"). A
+    viewer can print such a string but cannot colour a threshold with it, sort by it or trend it, and
+    the stage rows get their real numbers from `EngineStats` next door.
     """
     name: str
+    kind: str = ''
+    interval_seconds: int = 0
     stopped_at: Optional[datetime] = None
     stopped_reason: str = ''
 
@@ -150,6 +158,8 @@ def sample_dashboard(stats: EngineStats,
     workers: Optional[List[WorkerLiveness]] = None
     if states_provider is not None:
         workers = [WorkerLiveness(name=state.name,
+                                  kind=state.kind,
+                                  interval_seconds=state.interval_seconds,
                                   stopped_at=state.stopped_at,
                                   stopped_reason=state.stopped_reason)
                    for state in states_provider()]

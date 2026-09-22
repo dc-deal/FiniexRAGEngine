@@ -192,6 +192,46 @@ def test_a_display_without_a_watchdog_renders_normally():
     assert '5/5 ok' in _render(stats, worker_count=4)
 
 
+def test_no_watchdog_renders_the_last_cell_as_unknown_rather_than_healthy():
+    """ISSUE_126: the three states are stalled, checked-and-fine, and **nobody checked**.
+
+    In one process an absent watchdog means this deployment has none, and a neutral cell is right.
+    Fetched from another machine the same absence means the engine did not tell us, and neutral is
+    the cell asserting health on no evidence — on the exact colour channel that exists because a
+    neutral `last 212h…` went unnoticed for nine days. So it renders dim: legible, visibly not a
+    verdict.
+    """
+    from finiexragengine.core.observability.stall_watchdog import StallWatchdog
+    from finiexragengine.types.config_types.app_config_types import StallWatchdogConfig
+
+    stats = _stats()
+    stats.set_sources('crypto_news', SourcesSnapshot(last=_NOW, ok=5, total=5))
+
+    def line(**kwargs) -> str:
+        console = Console(record=True, width=110, height=40)
+        console.print(LiveDisplay(stats, console=console, worker_count=4, **kwargs).render())
+        return next(l for l in console.export_text(styles=True).splitlines()
+                    if 'crypto_news' in l and 'last' in l)
+
+    # A watchdog that ran and found nothing: a verdict, rendered plainly.
+    checked = line(stall_watchdog=StallWatchdog(StallWatchdogConfig(), lambda: []))
+    # No watchdog at all: not a verdict, and it must not look like one.
+    unchecked = line()
+
+    assert '\x1b[2m' in unchecked, 'an unchecked cell must be dim, not neutral'
+    assert unchecked != checked, 'checked-and-fine must be distinguishable from nobody-checked'
+
+
+def test_the_header_does_not_invent_a_zero_spend():
+    """ISSUE_126: `$0.000 today` in the position of a measurement is a plausible wrong number.
+
+    A quiet day and an engine that reported no budget at all look identical once a zero is on
+    screen — and on a viewer the second one means "we were not told".
+    """
+    assert '— today' in _render(_stats(), worker_count=4)
+    assert '$0.000 today' not in _render(_stats(), worker_count=4)
+
+
 def test_activity_stream_shows_recent_events():
     stats = _stats()
     for i in range(30):
@@ -301,3 +341,44 @@ def test_a_flagged_pass_names_the_term_and_the_feed_in_the_activity_stream():
     assert 'BREAKING' in text and 'keywords fomc statement' in text
     # The parts an operator acts on survive the panel's crop; the headline is what may be cut.
     assert 'fed_press (+1 more)' in text
+
+
+def test_a_viewer_measures_the_producers_clock_not_its_own():
+    """ISSUE_126: three numbers on this panel were the reader's clock in disguise.
+
+    The header's uptime was `now - <the display object's construction>`, which in a viewer measures
+    the viewer. Every `last <age>` cell was an engine timestamp minus the reader's clock, so the
+    difference between two machines sat inside each one, invisible. And the SOURCES back-off
+    countdown read the clock a second time inside the same frame.
+
+    Given the producer's start and the instant it stamped its reading with, all three follow the
+    producer — and a viewer whose own clock is minutes off prints the same panel either way.
+    """
+    engine_started = datetime(2026, 9, 22, 11, 30, tzinfo=timezone.utc)
+    snapshot_at = datetime(2026, 9, 22, 13, 30, tzinfo=timezone.utc)
+
+    stats = _stats()
+    stats.set_sources('crypto_news',
+                      SourcesSnapshot(last=snapshot_at - timedelta(minutes=5), ok=5, total=5))
+
+    panel = _render(stats, worker_count=4,
+                    started_at=engine_started, now_provider=lambda: snapshot_at)
+
+    assert 'up 2h' in panel, 'uptime must be measured from the ENGINE start'
+    assert 'last 5m' in panel, 'ages must be measured against the instant the engine stamped'
+
+
+def test_an_unestablished_journal_identity_is_not_an_unnamed_one():
+    """ISSUE_126: two different facts, and they send an operator to two different places.
+
+    `False` says somebody must add a name to `journal_names`. `None` says this reading could not
+    establish the identity at all — telling an operator to go and name a journal would be sending
+    them to fix the wrong thing. In one process it is never None; a viewer is where it arrives.
+    """
+    unnamed = _render(_stats(), worker_count=4, journal_named=False)
+    unknown = _render(_stats(), worker_count=4, journal_named=None)
+
+    assert 'journal unnamed' in unnamed
+    assert 'journal identity not established' in unknown
+    assert 'journal unnamed' not in unknown
+    assert 'journal' not in _render(_stats(), worker_count=4, journal_named=True)

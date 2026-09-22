@@ -97,8 +97,14 @@ def test_a_stalled_set_is_sorted_so_two_identical_readings_serialize_identically
         'eval:crypto_sentiment', 'ingest:crypto_news']
 
 
-def test_only_the_two_fields_the_header_reads_travel_per_worker() -> None:
-    """`WorkerState` carries more; promising all of it would make the rest a contract by accident."""
+def test_the_identity_and_the_condition_travel_but_not_the_pass_history() -> None:
+    """Enough to rebuild a `WorkerState` without inventing one, and no more.
+
+    `kind` and `interval_seconds` are carried because a viewer needs them to reconstruct the object
+    the renderer reads — fabricating them would be the same defect the snapshot exists to prevent.
+    What stays behind is the pass history, `last_detail` above all: a rendered sentence a screen can
+    print but cannot colour, sort or trend.
+    """
     state = WorkerState(name='ingest:crypto_news', kind='ingest', interval_seconds=15)
     state.runs = 41
     state.stopped_at = datetime(2026, 9, 22, 11, 0, tzinfo=timezone.utc)
@@ -109,7 +115,9 @@ def test_only_the_two_fields_the_header_reads_travel_per_worker() -> None:
     assert workers is not None and len(workers) == 1
     assert workers[0].name == 'ingest:crypto_news'
     assert workers[0].stopped_reason == 'RuntimeError("boom")'
+    assert (workers[0].kind, workers[0].interval_seconds) == ('ingest', 15)
     assert not hasattr(workers[0], 'runs')
+    assert not hasattr(workers[0], 'last_detail')
 
 
 def test_the_reading_is_stamped_by_the_engines_clock() -> None:

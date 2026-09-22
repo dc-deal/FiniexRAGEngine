@@ -1,16 +1,19 @@
 """Report serialization (ISSUE_104) — what reaches the wire, and what must not.
 
+Plus the inbound half (ISSUE_126): a viewer on another machine walks the same tree back,
+and the cases below are the two build-skew directions, decided rather than discovered.
+
 Two failure modes shape this unit and therefore these tests: a payload that silently *loses* the
 derived values the console shows, and a payload that silently *gains* an engine object's private
 state because a generic encoder fell back to `vars()`. Both are quiet, so both are pinned here.
 """
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import pytest
 
-from finiexragengine.utils.dataclass_json import to_jsonable
+from finiexragengine.utils.dataclass_json import from_jsonable, to_jsonable
 
 
 @dataclass
@@ -136,3 +139,64 @@ def test_the_error_names_the_type_and_the_way_out() -> None:
 
     message = str(excinfo.value)
     assert '_Opaque' in message and 'report_values()' in message
+
+
+# --- the inbound half (ISSUE_126) -------------------------------------------------------------
+
+@dataclass(frozen=True)
+class _Leaf:
+    name: str
+    at: Optional[datetime] = None
+
+
+@dataclass(frozen=True)
+class _Tree:
+    required: int
+    leaves: List[_Leaf] = field(default_factory=list)
+    by_key: Dict[str, Optional[_Leaf]] = field(default_factory=dict)
+    pairs: List[Tuple[str, str]] = field(default_factory=list)
+    label: str = ''
+
+
+def test_a_tree_survives_the_round_trip_including_its_instants() -> None:
+    """Out and back with no field named at either end — the property the viewer rests on."""
+    tree = _Tree(required=1,
+                 leaves=[_Leaf('a', datetime(2026, 9, 22, 13, 25, tzinfo=timezone.utc))],
+                 by_key={'present': _Leaf('b'), 'not-run-yet': None},
+                 pairs=[('BTCUSD', 'BUY')],
+                 label='x')
+
+    back = from_jsonable(_Tree, to_jsonable(tree))
+
+    assert back == tree
+    assert back.leaves[0].at.tzinfo is not None
+    # JSON has no tuple, and the renderer unpacks these by position — so the annotation decides.
+    assert isinstance(back.pairs[0], tuple)
+    # A pre-registered key that has not produced yet stays an explicit absence rather than vanishing.
+    assert back.by_key['not-run-yet'] is None
+
+
+def test_a_newer_producer_may_send_a_field_this_side_does_not_know() -> None:
+    """Drop it and draw the screen. The alternative is a viewer that dies on every deploy."""
+    payload = {'required': 2, 'label': 'x', 'a_measurement_added_later': 42}
+
+    back = from_jsonable(_Tree, payload)
+
+    assert back.required == 2 and back.label == 'x'
+
+
+def test_an_older_producer_missing_a_required_value_fails_by_name() -> None:
+    """The other direction, and it must be loud: a half-built object renders a plausible screen.
+
+    Naming the field is the whole value — "cannot be rebuilt" without it sends someone diffing two
+    payloads by eye.
+    """
+    with pytest.raises(TypeError) as failure:
+        from_jsonable(_Tree, {'label': 'x'})
+
+    assert 'required' in str(failure.value)
+
+
+def test_a_field_the_payload_omits_keeps_the_dataclass_default() -> None:
+    """Optional absence is not an error — only a REQUIRED one is."""
+    assert from_jsonable(_Tree, {'required': 3}).label == ''

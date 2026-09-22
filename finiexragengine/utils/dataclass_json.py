@@ -1,4 +1,5 @@
-"""Turn a report's dataclass tree into JSON-serializable data (ISSUE_104).
+"""The dataclass tree ↔ JSON pair: out for a report payload (ISSUE_104), back for a viewer
+(ISSUE_126).
 
 `dataclasses.asdict` is not enough, and the gap is not cosmetic: it walks **fields only**, so every
 `@property` disappears. The reports put derived values there on purpose — `SourceHealthRow.
@@ -41,7 +42,18 @@ me" would put a display string where a number belongs, and nothing would complai
 import dataclasses
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
-from typing import Any, Dict, List, Tuple, Type
+from typing import (
+    Any,
+    Dict,
+    List,
+    Optional,
+    Tuple,
+    Type,
+    Union,
+    get_args,
+    get_origin,
+    get_type_hints,
+)
 
 # What may pass through untouched. Deliberately a list rather than "everything that is not a
 # container": the point is that an unrecognised object is an error, not a guess.
@@ -103,3 +115,82 @@ def to_jsonable(value: Any) -> Any:
         f'{type(value).__name__} cannot appear in a report payload: it is neither data nor a '
         f'unit that describes itself. Give it a report_values() returning the values that matter, '
         f'or keep it out of the report shape.')
+
+def from_jsonable(cls: Type[Any], value: Any) -> Any:
+    """Rebuild a dataclass tree from the data `to_jsonable` produced — the inbound half (ISSUE_126).
+
+    Written for the viewer: the engine serializes its live state, a process on another machine walks
+    it back, and the renderer is handed the same shapes it reads in-process. **Neither direction
+    enumerates fields.** That is the property worth paying for — a measurement added to a snapshot
+    reaches a remote screen with no edit at either end, which is the only version of this that
+    survives six months (the FiniexDataCollector's words, and their reason: a viewer one commit newer
+    than its producer drew correctly with nobody having planned for it).
+
+    Reconstruction is driven by the ANNOTATIONS rather than by the data, so the two skew directions
+    are decided rather than discovered:
+
+    - a field the payload does not carry keeps the dataclass's own default, and a *required* one
+      missing raises `TypeError` **naming it** — an older producer is a legible failure, not a
+      half-built object;
+    - a key the dataclass does not declare is dropped, so a newer producer draws on an older viewer.
+
+    Datetimes come back from the `Z` form `to_jsonable` writes. A `Tuple[...]` annotation gets a
+    tuple back, because JSON has no tuple and the renderer unpacks by position.
+    """
+    if not (dataclasses.is_dataclass(cls) and isinstance(cls, type)):
+        raise TypeError(f'{cls!r} is not a dataclass, so there is nothing to rebuild into')
+    if not isinstance(value, dict):
+        raise TypeError(f'{cls.__name__} needs an object to rebuild from, got {type(value).__name__}')
+
+    hints = get_type_hints(cls)
+    kwargs: Dict[str, Any] = {}
+    for field in dataclasses.fields(cls):
+        if field.name not in value:
+            continue                        # absent -> the dataclass's own default, or its error
+        kwargs[field.name] = _rebuild(hints.get(field.name, Any), value[field.name])
+    try:
+        return cls(**kwargs)
+    except TypeError as exc:
+        raise TypeError(f'{cls.__name__} cannot be rebuilt from this payload: {exc}') from None
+
+
+def _rebuild(annotation: Any, value: Any) -> Any:
+    """One value, against the annotation that says what it should become."""
+    if value is None:
+        return None
+    origin = get_origin(annotation)
+    if origin is Union:                     # Optional[X] and friends
+        for candidate in get_args(annotation):
+            if candidate is not type(None):
+                return _rebuild(candidate, value)
+        return value
+    if origin in (list, List):
+        (item,) = get_args(annotation) or (Any,)
+        return [_rebuild(item, entry) for entry in value]
+    if origin in (tuple, Tuple):
+        args = get_args(annotation)
+        if len(args) == 2 and args[1] is Ellipsis:
+            return tuple(_rebuild(args[0], entry) for entry in value)
+        return tuple(_rebuild(arg, entry) for arg, entry in zip(args, value))
+    if origin in (dict, Dict):
+        args = get_args(annotation) or (Any, Any)
+        return {key: _rebuild(args[1], item) for key, item in value.items()}
+    if annotation is datetime or annotation is Optional[datetime]:
+        return _parse_instant(value)
+    if dataclasses.is_dataclass(annotation) and isinstance(annotation, type):
+        return from_jsonable(annotation, value)
+    return value
+
+
+def _parse_instant(value: Any) -> Any:
+    """`2026-09-22T13:25:41Z` back to an aware datetime; anything else is left alone.
+
+    Left alone rather than raising: a value that is already a datetime passes through, and a string
+    this function cannot read is a defect worth seeing at its source rather than here.
+    """
+    if isinstance(value, datetime) or not isinstance(value, str):
+        return value
+    try:
+        return datetime.fromisoformat(value.replace('Z', '+00:00'))
+    except ValueError:
+        return value
