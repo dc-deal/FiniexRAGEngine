@@ -9,7 +9,11 @@ import sys
 import pytest
 
 from finiexragengine.cli import server_cli
-from finiexragengine.exceptions.ragengine_errors import ConfigurationError
+from finiexragengine.exceptions.ragengine_errors import (
+    AlreadyRunningError,
+    ConfigurationError,
+    VectorStoreError,
+)
 from finiexragengine.utils import windows_console
 
 
@@ -101,3 +105,33 @@ def test_it_is_a_no_op_off_windows(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(windows_console.sys, 'platform', 'linux')
 
     windows_console.restore_console_ctrl_handling()      # no raise = no call
+
+
+@pytest.mark.parametrize('error, code', [
+    (AlreadyRunningError('another process already runs the workers against this journal'), 2),
+    (VectorStoreError('connection refused'), 1),
+])
+def test_the_exit_code_separates_a_refusal_from_a_retryable_failure(
+        monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture,
+        error: Exception, code: int) -> None:
+    """2 means "do not restart me"; 1 means "try again" — and the difference is a real decision.
+
+    A second instance will still be a second instance after a restart, so retrying it produces one
+    refusal per cycle for as long as somebody keeps a console open. A database that is not up yet is
+    the opposite: after a reboot the engine may well start before PostgreSQL, and the restart is
+    exactly what fixes it. Both arrive here as exceptions and leave as different instructions to the
+    service manager.
+    """
+    def boom(*args: object, **kwargs: object) -> None:
+        raise error
+
+    monkeypatch.setattr(server_cli.uvicorn, 'run', boom)
+    monkeypatch.setattr(sys, 'argv', ['server_cli'])
+
+    with pytest.raises(SystemExit) as exit_info:
+        server_cli.main()
+
+    assert exit_info.value.code == code
+    err = capsys.readouterr().err
+    assert 'did not start' in err
+    assert 'Traceback' not in err

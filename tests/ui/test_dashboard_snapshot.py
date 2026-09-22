@@ -15,6 +15,7 @@ us", and a screen that draws that as all-clear is a screen that lies. So `None` 
 collapse into each other anywhere in this payload.
 """
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 from finiexragengine.core.ui.dashboard_snapshot import (
     DASHBOARD_VIEWS,
@@ -36,11 +37,19 @@ class _Watchdog:
 
 
 class _Gauge:
+    """Status dict plus the sample behind it — the sampler reads the instant from `latest()`."""
+
     def __init__(self, status: dict) -> None:
         self._status = status
 
     def status(self) -> dict:
         return self._status
+
+    def latest(self):
+        stamp = self._status.get('sampled_at')
+        if stamp is None:
+            return None
+        return SimpleNamespace(ts=datetime.fromisoformat(stamp), rss_mb=self._status['rss_mb'])
 
 
 def _stats() -> EngineStats:
@@ -143,3 +152,42 @@ def test_the_payload_converts_structurally_so_a_new_measurement_needs_no_convert
     # Pre-registered keys survive as explicit nulls rather than vanishing: a missing row and a row
     # that has not run yet are different, and the panel draws them differently.
     assert payload['sources'] == {'crypto_news': None}
+
+def test_every_instant_in_the_payload_is_rendered_the_same_way() -> None:
+    """One field in a second datetime format is what a viewer discovers at parse time.
+
+    Found in production on the first live reading: `ResourceGauge.status()` hands out `sampled_at`
+    already `.isoformat()`d, so the serializer passed the *string* through and it arrived as
+    `+00:00` while every other instant ended in `Z`. A sweep rather than an assertion on that one
+    field, so the next one is caught the same way.
+
+    `budget` is exempt and stays exempt: it is `BudgetGuard.status()` verbatim, the same shape
+    `/v1/health` serves, and normalising it here would make the two surfaces disagree about a field
+    they both publish.
+    """
+    gauge = _Gauge({'enabled': True, 'rss_mb': 265.6, 'open_sockets': 9, 'threads': 21,
+                    'sampled_at': '2026-09-22T13:25:41+00:00', 'ceiling_mb': 0,
+                    'over_ceiling': False})
+    stats = _stats()
+    stats.push_event('INGEST', 'fetched 193')
+
+    payload = to_jsonable(sample_dashboard(stats, resource_gauge=gauge))
+    offenders = [where for where, value in _instants(payload) if not value.endswith('Z')]
+
+    assert offenders == [], offenders
+
+
+def _instants(value: object, path: str = '') -> list:
+    """Every string in the payload that looks like an ISO instant, with where it was found."""
+    found: list = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key == 'budget':
+                continue                       # see the test above — deliberately /health's shape
+            found += _instants(item, f'{path}.{key}')
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            found += _instants(item, f'{path}[{index}]')
+    elif isinstance(value, str) and len(value) >= 19 and value[4] == '-' and value[10] == 'T':
+        found.append((path, value))
+    return found

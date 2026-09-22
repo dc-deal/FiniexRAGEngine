@@ -55,6 +55,7 @@ from finiexragengine.core.pipeline.detection_preflight import log_detection_pref
 from finiexragengine.core.pipeline.pipeline_assembler import PipelineAssembler
 from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
 from finiexragengine.core.pipeline.worker_supervisor import WorkerSupervisor
+from finiexragengine.core.schema.run_lock import RunLock
 from finiexragengine.core.ui.dashboard_snapshot import DashboardSnapshot, sample_dashboard
 from finiexragengine.core.ui.engine_stats import EngineStats
 from finiexragengine.core.ui.live_display import LiveDisplay
@@ -184,6 +185,9 @@ def create_app(attach_runners: Optional[bool] = None,
     # tell apart from 'established and unnamed'. It also removes a latent NameError — the only
     # assignment sits behind `attach_runners`, and the reader behind `live_mode`.
     journal_named: Optional[bool] = None
+    # The worker role's claim on this journal (ISSUE_126) — None when this process runs no
+    # workers, which is the case where a second instance is harmless.
+    run_lock: Optional[RunLock] = None
     engine_stats: Optional[EngineStats] = None
     if start_workers:
         pipeline_ids = [pipeline.get_config().pipeline_id for pipeline in registry.list_pipelines()]
@@ -194,6 +198,21 @@ def create_app(attach_runners: Optional[bool] = None,
         if not database_url:
             raise RuntimeError('attach_runners=True requires DATABASE_URL')
         assembler = PipelineAssembler(config_manager, database_url)
+        # One writer per journal (ISSUE_126), claimed HERE — after the schema and identity guards
+        # have run (the assembler's constructor), and before anything with a side effect: before the
+        # runners are built, before the free model check reaches the provider, before the detection
+        # preflight and long before Telegram or the API bind. The collector's refusal sat after all
+        # of those, so their second instance announced "started" to the operator's phone and only
+        # then discovered it was not allowed to run — once per restart cycle, under a manager that
+        # restarts on exit.
+        #
+        # Only the WORKER role is claimed. Two processes serving reads over one journal are
+        # legitimate and useful; two producing are not.
+        if start_workers:
+            instance_id = assembler.get_outcome_store().instance_identity()
+            if instance_id is not None:
+                run_lock = RunLock(database_url, instance_id)
+                run_lock.acquire()
         # Worker mode (ISSUE_10): acquisition belongs to the ingest workers' clocks,
         # so the API runners are built ingest-less — /run cannot double-ingest next
         # to a running worker. Without workers, /run stays self-contained as before.
@@ -441,6 +460,11 @@ def create_app(attach_runners: Optional[bool] = None,
             await live_display.stop()
             if live_task is not None:
                 await live_task
+        # Last, because nothing may still be writing when the claim goes (ISSUE_126). A hard kill
+        # skips this and costs nothing: the lock is session-scoped, so the database drops it with the
+        # connection — which is the whole reason it is not a file.
+        if run_lock is not None:
+            run_lock.release()
 
     # The interactive schema surfaces (ISSUE_98). FastAPI mounts them on the app itself, so the
     # protected router's dependency never sees them — passing None is the only way to keep them
@@ -470,6 +494,7 @@ def create_app(attach_runners: Optional[bool] = None,
     health = build_health_router(config_manager, supervisor=supervisor,
                                  budget_guard=budget_guard, stall_watchdog=stall_watchdog,
                                  resource_gauge=resource_gauge, outcome_store=outcome_store,
+                                 run_lock=run_lock,
                                  stream_dispatcher=stream_dispatcher)
     # Sampled once, here, so it describes the code THIS process imported rather than whatever the
     # working tree holds at request time (see `build_info.sample_build_info`). One sample, two

@@ -27,6 +27,19 @@ free.**
 | `stall.stalled` | The same silence, a different cause. Naming it is what separates *the producer is stuck* from *the producer died* from *the market is quiet* — three situations that otherwise look identical downstream |
 | `workers[].last_run_at` · `last_status` | A worker whose last run is older than its own interval is a feed about to go stale — visible *before* the staleness contract fires rather than after |
 
+## `run_lock`, and the one thing it changes about `status`
+
+Added 2026-09-22 (ISSUE_126). Present only where this process runs workers — a reader takes no claim,
+because two readers over one journal are legitimate. `held: false` means the producer is still
+producing while its exclusivity is gone, so another instance may be writing the same stream.
+
+**It is re-asserted on every read, never remembered.** A lock whose connection was dropped by an idle
+timeout would otherwise report itself installed while protecting nothing.
+
+**And it can make `status` read `degraded`.** That is not a new meaning for the field — it still says
+"something here is wrong" — but it is a new cause, so a monitor that alerts on it will now also alert
+on two producers. Named here rather than discovered, because `status` is what an external check polls.
+
 ## Two things the fields do not do
 
 - **`budget.suspended` does not depend on `soft_daily_usd`.** The two are easy to conflate and are

@@ -63,6 +63,20 @@ class ResourceInfo(BaseModel):
     over_ceiling: bool = False
 
 
+class RunLockInfo(BaseModel):
+    """The worker role's claim on this journal (ISSUE_126) — re-asserted per read, never remembered.
+
+    Present only where there is something to claim: a process serving reads takes no lock, because
+    two readers over one journal are legitimate. `held: false` means this process is producing while
+    its exclusivity is gone — another instance may be writing the same stream and paying for it —
+    and `reason` carries what the re-assertion was told.
+    """
+    held: bool = False
+    since: Optional[datetime] = None
+    instance_id: str = ''
+    reason: Optional[str] = None
+
+
 class DispatcherStreamInfo(BaseModel):
     """One stream as the push path sees it (ISSUE_9 follow-up)."""
     pipeline_id: str
@@ -130,6 +144,10 @@ class HealthResponse(BaseModel):
     # what this route reports and what the archive carries are checkable against each other.
     # `None` in scaffold-mock mode (no store) and on a journal minted before this existed.
     instance_id: Optional[str] = None
+    # The worker role's claim on that journal (ISSUE_126). Absent when this process runs no
+    # workers; `held: false` is the state worth watching, because it means two producers may
+    # be writing one stream.
+    run_lock: Optional[RunLockInfo] = None
     # The human name for the journal above, resolved through `journal_names` in the configuration
     # (ISSUE_9). `unknown` when the fingerprint has no entry — or when there is no fingerprint to
     # look up at all. Because the name is keyed on the journal's identity, a configuration carried

@@ -67,3 +67,17 @@ class BudgetExceededError(FiniexRagError):
     account ceiling reached (OpenAI 429 `insufficient_quota`) or while the circuit-breaker is
     backing off after one. The runner degrades the symbol to a clean HOLD row and the ingest
     pass suspends its paid part — never a crash (ISSUE_47)."""
+
+
+class AlreadyRunningError(FiniexRagError):
+    """Another live process already owns this journal's worker role (ISSUE_126).
+
+    Deliberately not a `ConfigurationError`: nothing is misconfigured. Two instances against one
+    journal is a *state*, and a correct one somewhere else — the other process is doing exactly what
+    it should. What must not happen is both, because they would produce duplicate envelopes and
+    spend twice for them.
+
+    Reaching `server_cli` it maps to exit **2** like a configuration refusal, for the same reason:
+    a service manager restarting on it would produce one refusal per restart cycle for as long as
+    somebody keeps a console open.
+    """

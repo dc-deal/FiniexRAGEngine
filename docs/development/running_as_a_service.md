@@ -44,7 +44,7 @@ Caddy already runs under NSSM from `C:\nssm\nssm.exe` on this machine, startup t
 | `AppDirectory` | `<checkout>` | the project root, so relative paths (`logs/`, `configs/`, `migrations/`) resolve |
 | `AppEnvironmentExtra` | `PYTHONUTF8=1`, `DATABASE_URL=…`, `OPENAI_API_KEY=…` | **see the trap below** |
 | Startup type | Automatic (Delayed Start) | same as Caddy; the database and the network are up first |
-| `AppStopMethodConsole` | `20000` | see the stop section |
+| `AppStopMethodConsole` | `330000` | see the stop section — **ours, not the collector's number** |
 | `AppExit 2 Exit` | — | exit 2 is a refusal, not a crash; do not restart it |
 | `AppStdout` / `AppStderr` | a file under `logs/` | catches whatever is printed *before* logging is configured — the rotating log cannot |
 
@@ -239,8 +239,11 @@ for the same morning — and a report that then fires proves the scheduler came 
 | T+5 min | `logs\service.err.log` | empty, or exactly the retryable database line |
 | 09:00 | the weekly report fires | the scheduler survived the boot |
 
-**And nobody logs in until those pass.** A logon invalidates the test — it is precisely the thing the
-service is supposed to make unnecessary.
+**Check from outside first, then log in and watch.** An earlier version of this page said nobody may
+log in until the checks pass; that is too strict and it would rule out attending the reboot at all. A
+logon cannot start a service retroactively, so the service either came back on its own or it did not.
+What matters is that the verdict comes from `/v1/build` **off the machine**, where a session cannot
+have influenced it.
 
 Two negatives worth naming, because each has a known cause: a `commit: null` means the
 `safe.directory` entry did not survive (it should — it is system-wide), and a second set of workers
@@ -276,9 +279,21 @@ Ctrl+C there. Two things had to be true for that to work:
    (`utils/console_ctrl.py`). That setting is inherited from whatever launched the process; with it
    in place the console *accepts* the event, no handler runs, and nothing is logged anywhere. The
    collector reproduced exactly this against their real process: it ran on for a full minute.
-2. **The timeout is 20 s, not NSSM's default 1500 ms.** The collector measured graceful stops of
-   **0.15 s and 5.1 s** on this box depending on what was in flight. At 1500 ms the second case
-   escalates to `TerminateProcess`.
+2. **The timeout is 330 s, and the number is ours rather than borrowed.** It started at 20 s, from
+   the collector's measured stops of 0.15 s and 5.1 s — their workload, not ours. Two of our own
+   restarts then measured **3–5 s** and **8 s**, and the second one showed why the ceiling matters:
+   the drain ended in the same second the `crypto_sentiment_nano` pass completed. It had been
+   waiting for it, correctly.
+
+   That pass takes **~100 s**, and `pass_timeout_seconds` bounds any pass at **300 s**. So a stop
+   landing early in a nano pass needs far more than 20 s of drain, and NSSM would have terminated a
+   pass the engine was still legitimately finishing — survivable, because every envelope commits in
+   its own transaction, but it costs that pass's envelope and skips the ordered shutdown. 330 s sits
+   just above the engine's own bound.
+
+   **A ceiling is not a wait.** Raising it does not make a restart slower: a normal stop still takes
+   seconds. It only means a genuinely hung process takes five and a half minutes to be killed, and
+   the stall watchdog is what notices that case.
 
 A clean stop drains in the order `api_app.lifespan` declares: weekly scheduler → command poller →
 stall watchdog → workers → stream dispatcher → live display. Read the tail of the log after a stop and
@@ -293,8 +308,8 @@ why no write-ahead log is needed here.
 | Code | Meaning | What the manager should do |
 |---|---|---|
 | `0` | stopped on request | nothing |
-| `1` | crashed | restart |
-| `2` | **this must not run** — a configuration refusal: schema behind, instance identity missing or malformed, unnamed journal, token problem | **do not restart** (`AppExit 2 Exit`) |
+| `1` | crashed — **including a database that is not up yet**, which is the one failure here that a restart actually fixes | restart |
+| `2` | **this must not run** — a configuration refusal (schema behind, instance identity missing or malformed, token problem), or **another live process already owns this journal's worker role** | **do not restart** (`AppExit 2 Exit`) |
 
 None of the exit-2 causes improves by being retried, and a restart loop over one of them buries the
 actual message under identical log entries.

@@ -60,7 +60,11 @@ class ResourceReading:
     over_ceiling: bool
     ceiling_mb: float
     rss_mb: Optional[float] = None
-    sampled_at: Optional[str] = None
+    # A real datetime, not the string `ResourceGauge.status()` hands out: that one is already
+    # `.isoformat()`d, so the serializer passes it through and it arrives in `+00:00` form while
+    # every other instant in this payload ends in `Z`. One field in a second datetime format is
+    # exactly the kind of thing a viewer discovers at parse time.
+    sampled_at: Optional[datetime] = None
 
 
 @dataclass(frozen=True)
@@ -137,10 +141,11 @@ def sample_dashboard(stats: EngineStats,
         # the two surfaces cannot drift, and the ceiling lives behind it (the gauge exposes no public
         # attribute for it, and reaching for the private one is not how this codebase reads state).
         gauge = resource_gauge.status()
+        sample = resource_gauge.latest()
         resources = ResourceReading(over_ceiling=bool(gauge['over_ceiling']),
                                     ceiling_mb=float(gauge['ceiling_mb']),
                                     rss_mb=gauge['rss_mb'],
-                                    sampled_at=gauge['sampled_at'])
+                                    sampled_at=sample.ts if sample is not None else None)
 
     workers: Optional[List[WorkerLiveness]] = None
     if states_provider is not None:

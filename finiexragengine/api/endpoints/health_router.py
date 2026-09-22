@@ -10,11 +10,13 @@ from finiexragengine.core.observability.stall_watchdog import StallWatchdog
 from finiexragengine.core.outcome.outcome_store import OutcomeStore
 from finiexragengine.core.outcome.stream_dispatcher import StreamDispatcher
 from finiexragengine.core.pipeline.worker_supervisor import WorkerSupervisor
+from finiexragengine.core.schema.run_lock import RunLock
 from finiexragengine.types.api_types import (
     BudgetInfo,
     DispatcherInfo,
     HealthResponse,
     ResourceInfo,
+    RunLockInfo,
     StallInfo,
     WorkerInfo,
 )
@@ -26,6 +28,7 @@ def build_health_router(config_manager: AppConfigManager,
                         stall_watchdog: Optional[StallWatchdog] = None,
                         resource_gauge: Optional[ResourceGauge] = None,
                         outcome_store: Optional[OutcomeStore] = None,
+                        run_lock: Optional[RunLock] = None,
                         stream_dispatcher: Optional[StreamDispatcher] = None) -> APIRouter:
     """Build the health router — the one route deliberately reachable without a token.
 
@@ -55,6 +58,10 @@ def build_health_router(config_manager: AppConfigManager,
         # One level finer than the journal: which deployment inside it is producing (ISSUE_9
         # follow-up). Read from the store so this route and the envelopes report the same string.
         instance_id = outcome_store.instance_identity() if outcome_store is not None else None
+        # The worker role's claim, RE-ASSERTED rather than remembered (ISSUE_126): a lock whose
+        # connection died quietly would otherwise report itself installed while protecting
+        # nothing. Absent when this process runs no workers — there is nothing to claim.
+        lock = RunLockInfo(**run_lock.status()) if run_lock is not None else None
         # Resolved, never declared: an unmapped or unidentifiable journal is honestly `unknown`.
         environment = config_manager.get_config().journal_names.get(journal_id or '', 'unknown')
         # 'ok' is a claim, not a default. A worker whose task ended is the strongest reason to
@@ -64,11 +71,18 @@ def build_health_router(config_manager: AppConfigManager,
         # crypto ingest worker lay dead on 2026-08-20.
         unhealthy = ([worker.name for worker in workers if worker.stopped_at is not None]
                      + (list(stall.stalled) if stall is not None else []))
+        # A producer that has lost its exclusivity while another process holds it is not healthy:
+        # two instances may be writing one stream and paying for both. Reporting the field while
+        # leaving the verdict at 'ok' would be a field that reads as a measurement and measures
+        # nothing — the shape this endpoint was fixed for once already.
+        if lock is not None and not lock.held:
+            unhealthy.append('run_lock')
         return HealthResponse(status='degraded' if unhealthy else 'ok',
                               version=config_manager.get_config().version,
                               pass_timeout_seconds=config_manager.get_config().pass_timeout_seconds,
                               journal_id=journal_id,
                               instance_id=instance_id,
+                              run_lock=lock,
                               environment=environment,
                               workers=workers, budget=budget, stall=stall,
                               resources=resources, stream=stream)
