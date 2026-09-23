@@ -64,17 +64,23 @@ class ResourceInfo(BaseModel):
 
 
 class RunLockInfo(BaseModel):
-    """The worker role's claim on this journal (ISSUE_126) — re-asserted per read, never remembered.
+    """The worker role's claim on this journal (ISSUE_126) — asked of the database, not remembered.
 
     Present only where there is something to claim: a process serving reads takes no lock, because
     two readers over one journal are legitimate. `held: false` means this process is producing while
     its exclusivity is gone — another instance may be writing the same stream and paying for it —
     and `reason` carries what the re-assertion was told.
+
+    `checked_at` is when the database was last actually asked, which is not the same as when this
+    response was built: the check is rate-limited so a public, unauthenticated read cannot generate
+    a query per request. A consumer that cares about freshness reads it rather than assuming the
+    verdict is of this instant.
     """
     held: bool = False
     since: Optional[datetime] = None
     instance_id: str = ''
     reason: Optional[str] = None
+    checked_at: Optional[datetime] = None
 
 
 class DispatcherStreamInfo(BaseModel):

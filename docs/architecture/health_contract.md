@@ -33,8 +33,17 @@ Added 2026-09-22 (ISSUE_126). Present only where this process runs workers — a
 because two readers over one journal are legitimate. `held: false` means the producer is still
 producing while its exclusivity is gone, so another instance may be writing the same stream.
 
-**It is re-asserted on every read, never remembered.** A lock whose connection was dropped by an idle
-timeout would otherwise report itself installed while protecting nothing.
+**It is asked of the database, never remembered — and `checked_at` says when.** A lock whose session
+was dropped by an idle timeout, a firewall or a `pg_terminate_backend` would otherwise report itself
+installed while protecting nothing. The check that looks obvious does not work: a driver's
+"connection closed" flag is set only after a failed I/O operation, so a session killed *server-side*
+leaves it unset indefinitely. The engine therefore queries `pg_locks` for its own backend.
+
+That query is **rate-limited to at most once every ten seconds**, because this route is public and a
+read of it must not become a database query. So the verdict can be up to ten seconds old, and
+`checked_at` carries the moment it was actually taken — a consumer that cares reads it rather than
+assuming the answer is of this instant. Corrected 2026-09-23: before that date this section
+described a re-assertion the code did not perform.
 
 **And it can make `status` read `degraded`.** That is not a new meaning for the field — it still says
 "something here is wrong" — but it is a new cause, so a monitor that alerts on it will now also alert

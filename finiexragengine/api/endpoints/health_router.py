@@ -58,9 +58,11 @@ def build_health_router(config_manager: AppConfigManager,
         # One level finer than the journal: which deployment inside it is producing (ISSUE_9
         # follow-up). Read from the store so this route and the envelopes report the same string.
         instance_id = outcome_store.instance_identity() if outcome_store is not None else None
-        # The worker role's claim, RE-ASSERTED rather than remembered (ISSUE_126): a lock whose
-        # connection died quietly would otherwise report itself installed while protecting
-        # nothing. Absent when this process runs no workers — there is nothing to claim.
+        # The worker role's claim, ASKED OF THE DATABASE rather than remembered (ISSUE_126): a lock
+        # whose session died quietly would otherwise report itself installed while protecting
+        # nothing, and the client-side `connection.closed` cannot see a server-side kill. The answer
+        # carries `checked_at`, because the check is rate-limited — this route is public, so a read
+        # of it must not become a database query. Absent when this process runs no workers.
         lock = RunLockInfo(**run_lock.status()) if run_lock is not None else None
         # Resolved, never declared: an unmapped or unidentifiable journal is honestly `unknown`.
         environment = config_manager.get_config().journal_names.get(journal_id or '', 'unknown')
