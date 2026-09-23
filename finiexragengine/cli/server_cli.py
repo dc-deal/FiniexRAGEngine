@@ -5,13 +5,23 @@ import sys
 
 import uvicorn
 
-from finiexragengine.exceptions.ragengine_errors import ConfigurationError
+from finiexragengine.exceptions.ragengine_errors import (
+    AlreadyRunningError,
+    ConfigurationError,
+    VectorStoreError,
+)
+from finiexragengine.utils.windows_console import restore_console_ctrl_handling
 from finiexragengine.utils.console_encoding import use_utf8_output
 
 
 def main() -> None:
     # The live display and the startup override report both carry Unicode.
     use_utf8_output()
+    # Before uvicorn installs its own signal handlers (ISSUE_126): undo an inherited
+    # "ignore Ctrl+C", which is how a service manager's stop reaches this process at all.
+    # Without it the console accepts the event, no handler runs, and NSSM escalates to
+    # TerminateProcess — skipping the ordered drain in `api_app.lifespan`.
+    restore_console_ctrl_handling()
     parser = argparse.ArgumentParser(description='FiniexRAGEngine API server')
     # ISSUE_98: loopback by default. The engine is reached through the reverse proxy that
     # terminates TLS (INTERNAL_server_setup / venv_export), never directly — so binding wide
@@ -74,9 +84,22 @@ def main() -> None:
                 'finiexragengine.api.api_app:create_app',
                 host=args.host, port=args.port, reload=args.reload, factory=True,
             )
-    except ConfigurationError as exc:
-        print(f'\nConfiguration error — the server did not start:\n\n  {exc}\n',
-              file=sys.stderr)
+    except (ConfigurationError, AlreadyRunningError) as exc:
+        print(f'\nThe server did not start:\n\n  {exc}\n', file=sys.stderr)
+        # Exit 2 = "this must not run", and it is addressed to the service manager
+        # (ISSUE_126). NSSM restarts on exit by default, which is right for a crash and
+        # useless for a schema behind, a missing instance identity or a bad token — none
+        # of those improves by being retried. `AppExit 2 Exit` makes the refusal final,
+        # while 1 stays "crashed, try again".
+        raise SystemExit(2) from None
+    except VectorStoreError as exc:
+        # Exit 1, deliberately, and the difference from 2 is the whole point: a database that is not
+        # up yet is the ONE failure here that improves by being retried. After a reboot the engine
+        # may well start before PostgreSQL does, and NSSM's restart-with-backoff is the right answer
+        # — but only if it is told this is a crash rather than a refusal. The message exists because
+        # the alternative is a twenty-line traceback in `service.err.log` saying the same thing.
+        print(f'\nThe database is not reachable — the server did not start and will be retried:'
+              f'\n\n  {exc}\n', file=sys.stderr)
         raise SystemExit(1) from None
 
 

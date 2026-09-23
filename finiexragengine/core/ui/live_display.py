@@ -52,17 +52,25 @@ WARNING_MARK = '⚠'
 _MAX_EPISODE_ROWS = 3
 
 
-def _last(now: datetime, last: Optional[datetime], *, stalled: bool = False) -> Text:
+def _last(now: datetime, last: Optional[datetime], *, stalled: Optional[bool] = False) -> Text:
     """The `last <age>` cell — dim when a stage has never run (the blindness test: it ages).
 
     A stalled worker (ISSUE_75) paints the cell red. This is the cell that read a perfectly
     neutral `last 212h…` for nine days in August 2026 — an ageing number nobody's eye catches,
     because it looks exactly like `last 4m`. Colour is the whole signal here: the column is
     width-11 and no_wrap, so there is no room for a marker glyph without truncating the age.
+
+    `stalled=None` is the third state and it exists for the viewer (ISSUE_126): **nobody checked.**
+    In one process an absent watchdog means this deployment has none, and neutral is right. Fetched
+    over a wire the same absence means the engine did not tell us — and painting that neutral is the
+    cell reporting health it was never given. It renders dim instead: still legible, visibly not a
+    verdict.
     """
     if last is None:
         return Text('idle', style='dim')
     text = f'last {format_age((now - last).total_seconds())}'
+    if stalled is None:
+        return Text(text, style='dim')
     return Text(text, style='red bold') if stalled else Text(text)
 
 
@@ -104,8 +112,10 @@ class LiveDisplay:
                  worker_count: int = 0,
                  states_provider: Optional[Callable[[], List[WorkerState]]] = None,
                  version: str = '',
-                 journal_named: bool = True,
+                 journal_named: Optional[bool] = True,
                  refresh_seconds: float = 1.0,
+                 started_at: Optional[datetime] = None,
+                 now_provider: Optional[Callable[[], datetime]] = None,
                  console: Optional[Console] = None) -> None:
         self._stats = stats
         self._budget_guard = budget_guard
@@ -136,7 +146,16 @@ class LiveDisplay:
         self._worker_count = worker_count
         self._refresh_seconds = refresh_seconds
         self._console = console if console is not None else Console()
-        self._started_at = datetime.now(timezone.utc)
+        # Whose uptime the header shows (ISSUE_126). In-process this display is born with the engine,
+        # so its own construction is the engine's start. A viewer's is not: without this it would
+        # print its OWN runtime as the producer's uptime — a number that never happened, and one
+        # that looks entirely reasonable.
+        self._started_at = started_at if started_at is not None else datetime.now(timezone.utc)
+        # Where the frame's instant comes from. In-process the wall clock, because the producer and
+        # the reader are the same process. For a viewer it is the instant the ENGINE stamped its
+        # reading with, so every age on the panel is measured in the producer's own clock instead of
+        # silently carrying the difference between two machines.
+        self._now_provider = now_provider
         # Set when the lifespan asks the loop to stop; the render loop waits on it between frames.
         self._stop = asyncio.Event()
 
@@ -171,9 +190,19 @@ class LiveDisplay:
 
     # --- rendering -------------------------------------------------------------------------
 
+    def _now(self) -> datetime:
+        """The frame's instant — the reader's clock in-process, the producer's for a viewer."""
+        return self._now_provider() if self._now_provider is not None else datetime.now(timezone.utc)
+
     def render(self) -> RenderableType:
-        """Full-screen layout: a fixed state panel on top, the activity stream fills the rest. Pure."""
-        now = datetime.now(timezone.utc)
+        """Full-screen layout: a fixed state panel on top, the activity stream fills the rest. Pure.
+
+        The frame's instant comes from `_now()`, not from the wall clock directly (ISSUE_126): every
+        age on this panel is a producer's timestamp subtracted from it, and when the producer is on
+        another machine that subtraction must use the instant the producer stamped its reading with.
+        Using the reader's clock instead hides the skew between two machines inside every age.
+        """
+        now = self._now()
         state = Panel(self._stage_rows(now), title=self._header(now), title_align='left',
                       border_style='cyan')
         activity = Panel(self._activity(now), title='activity', title_align='left',
@@ -193,10 +222,14 @@ class LiveDisplay:
 
     def _header(self, now: datetime) -> str:
         uptime = format_age((now - self._started_at).total_seconds())
-        spend = self._budget_status().get('day_spend_usd', 0.0) if self._budget_guard else 0.0
+        # `— today` rather than `$0.000 today` when nothing reported a spend (ISSUE_126). A zero in
+        # the position of a measurement is indistinguishable from a real quiet day, and on a viewer
+        # it would mean "the engine did not tell us" — the most expensive kind of plausible number.
+        status = self._budget_status()
+        spend = (f'${status["day_spend_usd"]:.3f}' if 'day_spend_usd' in status else '—')
         version = f' v{self._version}' if self._version else ''
         header = (f'FiniexRAGEngine{version} — up {uptime} — {self._worker_count} workers '
-                  f'— ${spend:.3f} today')
+                  f'— {spend} today')
         return header + ''.join(f' — {warning}' for warning in self._header_warnings())
 
     def _header_warnings(self) -> List[str]:
@@ -216,7 +249,13 @@ class LiveDisplay:
         # `--live` runs without a console log handler, so the boot warning about this cannot reach
         # an operator watching the dashboard. Without it they would learn that a consumer's release
         # certificate reads `unknown` only when the certificate comes out.
-        if not self._journal_named:
+        # Three states, not two (ISSUE_126). `False` is a fact about the configuration — somebody has
+        # to add a name. `None` is a fact about this reading: the identity could not be established
+        # at all, and telling an operator to go and name a journal would send them to fix the wrong
+        # thing. In-process it is never None; a viewer is where the distinction arrives.
+        if self._journal_named is None:
+            warnings.append(f'{WARNING_MARK} journal identity not established')
+        elif not self._journal_named:
             warnings.append(f'{WARNING_MARK} journal unnamed (see diagnostics.md)')
         # A worker whose task ended is the loudest thing this header can carry: everything that
         # worker feeds is frozen, and it stays frozen until the process is restarted. It earns a
@@ -245,8 +284,10 @@ class LiveDisplay:
 
         # One row per worker (source-set for SOURCES/INGEST, pipeline for RETRIEVAL/LLM), so the
         # concurrent workers never clobber each other's state (ISSUE_26).
+        # SOURCES is the one detail renderer that needs the frame's instant — its back-off countdown
+        # is a future timestamp minus now, and it used to read its own clock (ISSUE_126).
         self._keyed_rows(table, now, 'SOURCES', self._stats.sources(),
-                         self._sources_detail, 'ingest')
+                         lambda snapshot: self._sources_detail(snapshot, now), 'ingest')
         self._keyed_rows(table, now, 'INGEST', self._stats.ingest(),
                          self._ingest_detail, 'ingest')
         self._keyed_rows(table, now, 'RETRIEVAL', self._stats.retrieval(),
@@ -274,18 +315,26 @@ class LiveDisplay:
         for key, snapshot in snapshots.items():
             # The display keys rows by source-set / pipeline id, the supervisor names workers
             # `ingest:<id>` / `eval:<id>` — `worker_prefix` is that mechanical mapping (ISSUE_75).
-            last_cell = (_last(now, snapshot.last, stalled=f'{worker_prefix}:{key}' in stalled)
+            is_stalled = None if stalled is None else f'{worker_prefix}:{key}' in stalled
+            last_cell = (_last(now, snapshot.last, stalled=is_stalled)
                          if snapshot is not None else Text('idle', style='dim'))
             table.add_row(label if first else '', key, last_cell, detail(snapshot))
             first = False
 
-    def _stalled_workers(self) -> Set[str]:
-        """Worker names the watchdog currently considers stalled — asked, never re-derived, so the
-        threshold lives in exactly one place (ISSUE_75). Empty without a watchdog."""
-        return self._stall_watchdog.stalled_workers() if self._stall_watchdog is not None else set()
+    def _stalled_workers(self) -> Optional[Set[str]]:
+        """Worker names the watchdog considers stalled — asked, never re-derived, so the threshold
+        lives in exactly one place (ISSUE_75).
+
+        `None` when there is no watchdog, and that is deliberately NOT an empty set (ISSUE_126): an
+        empty set is a verdict ("checked, none stalled"), and no watchdog is the absence of one. The
+        two used to collapse here, which meant a viewer whose engine reported no watchdog would have
+        drawn every row in the neutral style — health, asserted on no evidence, on the exact colour
+        channel this cell exists for.
+        """
+        return self._stall_watchdog.stalled_workers() if self._stall_watchdog is not None else None
 
     @staticmethod
-    def _sources_detail(snapshot: Optional[SourcesSnapshot]) -> Text:
+    def _sources_detail(snapshot: Optional[SourcesSnapshot], now: datetime) -> Text:
         if snapshot is None:
             return Text('—', style='dim')
         # Healthy collapses to `N/N ok` (exception density); only deviations spend words.
@@ -296,8 +345,10 @@ class LiveDisplay:
         # (ISSUE_84): naming every blameless feed is the noise the guard exists to remove, and
         # the operator needs to be sent to the host, not to the feeds.
         if snapshot.host_backoff_until is not None:
-            left = format_age((snapshot.host_backoff_until
-                                - datetime.now(timezone.utc)).total_seconds())
+            # The FRAME's instant, not a fresh read: one frame held two clock reads, so this
+            # countdown and the `last` cell beside it could disagree — and on a viewer this one was
+            # a remote future timestamp minus a local clock (ISSUE_126).
+            left = format_age((snapshot.host_backoff_until - now).total_seconds())
             detail = f' — {snapshot.host_detail}' if snapshot.host_detail else ''
             head.append('    ')
             head.append(f'⚠ host connectivity{detail} — back-off {left}, no quarantine',

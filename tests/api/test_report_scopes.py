@@ -258,6 +258,10 @@ def test_no_route_with_an_identity_segment_is_ungated(clean_db: str) -> None:
         app, client, _as('holds-nothing'),
         required=[('/v1/logs/{name}', 'get'), ('/v1/configs/{name}', 'get'),
                   ('/v1/diagnose/{name}', 'get'),
+                  # 2026-09-22: the live console's state for a remote viewer (ISSUE_126). Mounted
+                  # even with no provider — a route that vanishes with a boot mode is one this
+                  # walk cannot see, and an ungated one would hand the panel to any valid token.
+                  ('/v1/dashboard/{name}', 'get'),
                   # 2026-09-13: the series beyond the replay window — the same `pipelines:<id>`
                   # grant as `/latest`, so a token holding nothing must be refused here too.
                   ('/v1/pipelines/{pipeline_id}/archive', 'get'),

@@ -121,6 +121,22 @@ def test_health_reports_no_journal_id_without_a_store(client: TestClient) -> Non
     assert client.get('/v1/health').json()['journal_id'] is None
 
 
+def test_health_names_the_deployment_and_not_only_the_database(client: TestClient) -> None:
+    """`instance_id` beside `journal_id` — the cluster fingerprint cannot separate two deployments.
+
+    The suite migrates a `finiex_test` schema inside the production database at every version bump,
+    and a second deployment is one schema away; both answer with production's `journal_id`. The
+    consumer registers a data origin on the finer value, so it has to be readable without reading an
+    envelope — this route is the one they already poll, and it is reachable without a token.
+
+    The key is unconditional, the value is not: scaffold-mock mode has no store, so there is no
+    producer to name, and absent is the honest answer rather than a placeholder.
+    """
+    body = client.get('/v1/health').json()
+    assert 'instance_id' in body
+    assert body['instance_id'] is None
+
+
 def test_environment_is_resolved_from_the_journal_never_declared(client: TestClient) -> None:
     """The name is keyed on the journal's fingerprint, so it cannot travel to another database.
 

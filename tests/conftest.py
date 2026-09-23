@@ -23,9 +23,14 @@ from finiexragengine.core.schema.migration_runner import MigrationRunner  # noqa
 
 # Every DB-touching test runs against this schema, never against the operator's real corpus.
 _TEST_SCHEMA = 'finiex_test'
-# The migration ledger's name, mirroring `MigrationRunner`'s default: `clean_db` empties every
-# table in the test schema EXCEPT this one, because it records that the schema is already migrated.
+# The migration ledger's name, mirroring `MigrationRunner`'s default: it records that the schema
+# is already migrated.
 _MIGRATION_LEDGER = 'schema_migrations'
+# The two tables a migration WRITES rather than merely creates, and therefore the two `clean_db`
+# must leave alone: nothing re-fills them between tests. `journal_identity` holds the schema's
+# minted producer id (migration 017) — truncating it would leave the deployment unable to name
+# itself, which is exactly the state `identity_guard` refuses to boot on.
+_MINTED_TABLES = (_MIGRATION_LEDGER, 'journal_identity')
 _DEFAULT_DSN = 'postgresql://ragengine:ragengine@127.0.0.1:5433/ragengine'
 
 
@@ -90,15 +95,17 @@ def clean_db(db_dsn: str) -> Iterator[str]:
     migration but forgotten in the list leaks rows between tests, which is the order-dependent
     flake that is found three months later. Reading `pg_tables` removes both: every target is
     schema-qualified, so `public` is unreachable by construction, and the list cannot drift from
-    the migrations. `schema_migrations` is excluded — the ledger is what says the schema is already
-    migrated, and emptying it would re-apply every migration on the next connect.
+    the migrations. `_MINTED_TABLES` is excluded — both hold rows a migration WROTE, which no test
+    re-creates: emptying `schema_migrations` re-applies every migration on the next connect, and
+    emptying `journal_identity` leaves the schema unable to name its own deployment, which is the
+    one state `identity_guard` refuses to boot on.
     """
     import psycopg
 
     with psycopg.connect(db_dsn) as conn:
         rows = conn.execute('SELECT tablename FROM pg_tables '
-                            'WHERE schemaname = %s AND tablename <> %s',
-                            (_TEST_SCHEMA, _MIGRATION_LEDGER)).fetchall()
+                            'WHERE schemaname = %s AND tablename <> ALL(%s)',
+                            (_TEST_SCHEMA, list(_MINTED_TABLES))).fetchall()
         if rows:
             targets = ', '.join(f'{_TEST_SCHEMA}.{row[0]}' for row in rows)
             conn.execute(f'TRUNCATE {targets}')

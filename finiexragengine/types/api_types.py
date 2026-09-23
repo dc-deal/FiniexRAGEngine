@@ -63,6 +63,26 @@ class ResourceInfo(BaseModel):
     over_ceiling: bool = False
 
 
+class RunLockInfo(BaseModel):
+    """The worker role's claim on this journal (ISSUE_126) — asked of the database, not remembered.
+
+    Present only where there is something to claim: a process serving reads takes no lock, because
+    two readers over one journal are legitimate. `held: false` means this process is producing while
+    its exclusivity is gone — another instance may be writing the same stream and paying for it —
+    and `reason` carries what the re-assertion was told.
+
+    `checked_at` is when the database was last actually asked, which is not the same as when this
+    response was built: the check is rate-limited so a public, unauthenticated read cannot generate
+    a query per request. A consumer that cares about freshness reads it rather than assuming the
+    verdict is of this instant.
+    """
+    held: bool = False
+    since: Optional[datetime] = None
+    instance_id: str = ''
+    reason: Optional[str] = None
+    checked_at: Optional[datetime] = None
+
+
 class DispatcherStreamInfo(BaseModel):
     """One stream as the push path sees it (ISSUE_9 follow-up)."""
     pipeline_id: str
@@ -123,6 +143,17 @@ class HealthResponse(BaseModel):
     # mislabelled dev instance would make a rehearsal look like proof. `None` when the identifier is
     # unreadable (managed Postgres) or no store is attached (scaffold-mock mode).
     journal_id: Optional[str] = None
+    # Which deployment inside that journal is producing — 12 lowercase hex, minted per schema by
+    # migration 017 (ISSUE_9 follow-up). `journal_id` fingerprints the cluster and therefore cannot
+    # separate production from a test schema beside it; this can, and it is the value the consumer
+    # registers as a data origin. The same string is stamped on every envelope as `instance_id`, so
+    # what this route reports and what the archive carries are checkable against each other.
+    # `None` in scaffold-mock mode (no store) and on a journal minted before this existed.
+    instance_id: Optional[str] = None
+    # The worker role's claim on that journal (ISSUE_126). Absent when this process runs no
+    # workers; `held: false` is the state worth watching, because it means two producers may
+    # be writing one stream.
+    run_lock: Optional[RunLockInfo] = None
     # The human name for the journal above, resolved through `journal_names` in the configuration
     # (ISSUE_9). `unknown` when the fingerprint has no entry — or when there is no fingerprint to
     # look up at all. Because the name is keyed on the journal's identity, a configuration carried
@@ -396,6 +427,30 @@ class ConfigCatalogEntry(BaseModel):
 class ConfigCatalog(BaseModel):
     """The config documents THIS caller may read — filtered, never complete."""
     configs: List[ConfigCatalogEntry] = Field(default_factory=list)
+
+
+class DashboardResponse(BaseModel):
+    """One reading of the engine's live state — what the console would be showing (ISSUE_126).
+
+    `state` is deliberately untyped, the same reasoning `ReportEnvelope.data` and
+    `FeedDiagnosisResponse.diagnosis` carry: it is `DashboardSnapshot.state` serialized by
+    `utils.dataclass_json`, and typing it here would turn every stage snapshot's every field into an
+    API contract. The fields above it are the part that IS a contract, because a viewer cannot draw
+    an honest screen without them.
+
+    `snapshot_at` is the engine's own clock at sampling. It is what lets a viewer tell a live engine
+    from a frozen fetch, and what every age on the screen must be computed against — otherwise each
+    one is an engine timestamp subtracted from the viewer's clock, and the difference is invisible.
+
+    `journal_named` is tri-state: `True` named, `False` unnamed and the warning belongs on screen,
+    `None` the identity could not be established at all.
+    """
+    view: str
+    snapshot_at: datetime
+    version: str
+    engine_started_at: Optional[datetime] = None
+    journal_named: Optional[bool] = None
+    state: Any = None
 
 
 class FeedDiagnosisResponse(BaseModel):

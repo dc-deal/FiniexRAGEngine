@@ -27,6 +27,7 @@ from finiexragengine.core.rag.openai_embedder import OpenAIEmbedder
 from finiexragengine.core.rag.pgvector_store import PgVectorStore
 from finiexragengine.core.rag.query_vector_cache import QueryVectorCache
 from finiexragengine.core.rag.retriever import Retriever
+from finiexragengine.core.schema.identity_guard import verify_instance_identity
 from finiexragengine.core.schema.schema_guard import verify_schema_current
 from finiexragengine.core.sources.article_normalizer import ArticleNormalizer
 from finiexragengine.core.sources.source_factory import build_source
@@ -62,6 +63,12 @@ class PipelineAssembler:
         # Checks only: applying is the migrate CLI's job (a deploy must not mutate a database
         # as a side effect of booting).
         verify_schema_current(database_url, app.get_migrations_dir())
+        # Producer gate (ISSUE_9 follow-up), one line below the schema gate and for the same reason:
+        # a schema that cannot name its deployment stamps every envelope with an empty producer, and
+        # a consumer reads that as "produced before the field existed". Checks only — minting is
+        # migration 017's, because an identity re-minted at boot would announce a new producer at
+        # every restart.
+        verify_instance_identity(database_url)
         self._recorder = CostRecorder(database_url, self._cfg.pricing)
         # One cost circuit-breaker for every paid call of this process (ISSUE_47): reacts to the
         # provider's quota limit and suspends paid work. Seed the warn-only day accumulator from

@@ -228,6 +228,7 @@ hand, and the ones that have been added over time:
 |---|---|
 | v0.2 (#7/#23/#24/#33/#40) | prompt provenance (`prompt_id` / `prompt_version` / `prompt_hash`), `metadata.model_snapshot` (the served dated model), run-level `prompt_tokens` / `completion_tokens` / `cost_usd` / `per_symbol_tokens`, `result[].basis` (`llm` \| `no_data` \| `degraded`; no-news rows carry `no_data` and zero tokens) |
 | v0.3.2 (#85/#87) | `data_origin`; `config_fingerprint` (derived, `mock-` prefixed — see below); `metadata.trigger_reason` — `scheduled` on grid passes, `breaking` on the unscheduled ones, **never `''`** (that means "predates the field") |
+| v0.3.3 (ISSUE_9 follow-up) | `instance_id` — deliberately **left empty**. It names the deployment whose journal produced a row, and a generated file was produced by no deployment; minting one here would hand a consumer a producer to register that does not exist. `data_origin: synthetic` is the field that separates these files, and it is the one that already does the work |
 | **pending** | the article `importance` tag (#3) — add here once it lands on the model |
 
 ## `config_fingerprint` — derived, never mirrored

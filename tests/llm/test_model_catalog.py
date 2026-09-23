@@ -52,13 +52,13 @@ def test_sections_share_one_endpoint_by_default(monkeypatch):
 
     def _factory(base_url=None):
         built.append(base_url)
-        return _Client(ids=['text-embedding-3-small', 'gpt-4o-mini', 'gpt-4o'])
+        return _Client(ids=['text-embedding-3-small', 'gpt-4o-mini', 'gpt-4o', 'gpt-5-nano'])
 
     monkeypatch.setattr('finiexragengine.core.llm.model_catalog.OpenAI', _factory)
     sections = check_configured_models(AppConfig())
     assert built == [None]
     assert sections[0] == ('ingest — embedding model', {'text-embedding-3-small': True})
-    assert sections[1][1] == {'gpt-4o-mini': True, 'gpt-4o': True}
+    assert sections[1][1] == {'gpt-4o-mini': True, 'gpt-4o': True, 'gpt-5-nano': True}
 
 
 def test_embedding_checks_default_endpoint_with_custom_llm_base_url(monkeypatch):

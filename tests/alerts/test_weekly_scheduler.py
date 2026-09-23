@@ -3,7 +3,10 @@ import asyncio
 from datetime import datetime, timezone
 
 from finiexragengine.core.alerts.weekly_scheduler import WeeklyScheduler
-from finiexragengine.types.config_types.app_config_types import WeeklyReportConfig
+from finiexragengine.types.config_types.app_config_types import (
+    PricingProbeConfig,
+    WeeklyReportConfig,
+)
 
 _CONFIG = WeeklyReportConfig(enabled=True, day_of_week='sun', hour=18, minute=0,
                              timezone='UTC')
@@ -46,3 +49,47 @@ def test_job_failure_is_caught_and_success_calls_back():
     asyncio.run(WeeklyScheduler(_CONFIG, ok)._run())
     assert calls == ['sent']
     asyncio.run(WeeklyScheduler(_CONFIG, boom)._run())   # must not raise
+
+
+# --- the price probe rides this scheduler (ISSUE_67) --------------------------------------------
+
+_PROBE = PricingProbeConfig(enabled=True, day_of_week='sun', hour=17, minute=30, timezone='UTC')
+
+
+def test_the_probe_is_a_second_job_with_its_own_cron_and_its_own_id():
+    """One APScheduler owner, two jobs. The probe runs BEFORE the report on purpose, so a drift is
+    in hand when the report is read rather than arriving after it."""
+    async def scenario() -> None:
+        scheduler = WeeklyScheduler(_CONFIG, _noop, probe_config=_PROBE, run_probe=_noop)
+        scheduler.start()
+        try:
+            report = scheduler.next_run_of('weekly_report')
+            probe = scheduler.next_run_of('price_probe')
+            assert report is not None and probe is not None
+            assert probe < report                      # 17:30 before 18:00 on the same Sunday
+        finally:
+            scheduler.stop()
+
+    asyncio.run(scenario())
+
+
+def test_without_a_probe_configured_the_scheduler_is_exactly_what_it_was():
+    async def scenario() -> None:
+        scheduler = WeeklyScheduler(_CONFIG, _noop)
+        scheduler.start()
+        try:
+            assert scheduler.next_run_of('weekly_report') is not None
+            assert scheduler.next_run_of('price_probe') is None
+        finally:
+            scheduler.stop()
+
+    asyncio.run(scenario())
+
+
+def test_a_failing_probe_never_takes_the_weekly_report_with_it():
+    """It fetches a page and makes a paid call, so it has more ways to fail than the report does."""
+    async def boom() -> None:
+        raise RuntimeError('page unreachable')
+
+    asyncio.run(WeeklyScheduler(_CONFIG, _noop, probe_config=_PROBE,
+                                run_probe=boom)._run_probe_job())   # must not raise

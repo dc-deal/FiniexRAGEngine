@@ -73,6 +73,27 @@
                 "order": 3
             }
         },
+        {
+            // The engine's console when the engine has none (ISSUE_126 Phase 2). Reads one route
+            // over HTTP and spends nothing, so it is safe to start, kill and start twice — which is
+            // the whole point of a viewer. The token comes from the environment by name; a
+            // credential on a command line reaches the shell history and every screenshot.
+            // Point --url at the live engine to watch production from here.
+            "name": "🖥️ RAGEngine: Viewer (draw a running engine, read-only)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "finiexragengine.cli.viewer_cli",
+            "args": [
+                "--url",
+                "http://127.0.0.1:8100"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "01_service",
+                "order": 4
+            }
+        },
         // ====================================================
         // ⚙️ STAGE CLIs (real OpenAI API cost — a single stage, run deliberately)
         // ====================================================
@@ -533,6 +554,30 @@
             "presentation": {
                 "group": "04_diagnostics",
                 "order": 19
+            }
+        },
+        {
+            // "Has the vendor moved a price, and would we have noticed?" ISSUE_67 — every USD
+            // figure this engine reports comes from a hand-maintained table, and there is no
+            // pricing API, so nothing detects a change on its own. This reads the vendor's own
+            // page, has a cheap model extract the rows FROM that page (grounded, not recalled —
+            // a recalled price is the number models hallucinate) and compares.
+            // PAID: one small call, well under a cent, recorded under section='calibration'.
+            // It NEVER writes the table. `--apply` does, after showing the drift and asking — a
+            // wrong price applied automatically corrupts every cost figure downstream invisibly,
+            // while a missed notice costs one week of staleness.
+            "name": "\ud83d\udcb2 RAGEngine: Price Probe (did the vendor move a price?)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/finiexragengine/cli/price_cli.py",
+            "args": [
+                "--probe"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "04_diagnostics",
+                "order": 20
             }
         },
         {

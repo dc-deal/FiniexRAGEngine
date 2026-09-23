@@ -64,6 +64,13 @@ Before committing to a design for a non-trivial feature or change:
 
 - **Never create git commits.** The operator commits manually after reviewing each change.
 - **Commit messages describe the change, not the tooling** — concise and imperative, no automated trailers.
+- **Every closing report ends with a proposed commit message**, ready to paste into
+  `git commit -m`: ONE short line, roughly 50–70 characters, naming what changed rather than
+  repeating the issue's title. Where the work splits into commits a reviewer would want apart — a
+  behaviour change sitting beside a rename, say — propose one line per commit and say which goes
+  first and why. **Never a `Co-Authored-By` trailer and never an AI attribution**: the workflow is
+  described openly at the top of this file, so it does not need signing into every commit. The
+  assistant proposes the text; the operator commits.
 
 ## Versioning & releases
 
@@ -208,6 +215,30 @@ right place answered `200 · 14,722 bytes · 44 entries · OK`, and the real fai
 truncated response. `GET /v1/diagnose/feed?source_id=…` answers it remotely,
 `python -m finiexragengine.cli.feed_doctor_cli --source <id>` on the machine.
 
+**A connectivity failure of the machine itself is a different animal, and the whole case is kept.**
+Between 2026-09-08 and 2026-09-17 the VPS lost DNS and outbound TCP several times a day; the full
+record — every instrument and what it is good for, the branches ruled out and how, the two wrong
+turns, the correspondence with the provider, the clock check after the host move, and the numbers
+that ended it — lives in
+`github_issues/root_internal_archive/INTERNAL_connectivity_case_2026-09.md`. Read it before
+diagnosing the next one. Its short version: the decisive measurement was a two-minute **external**
+TCP probe from another line with two control hosts, because inbound and outbound failing in the same
+seconds is what excludes every explanation living outside the machine.
+
+**The engine does not survive a reboot of its box, and no instrument here can tell you it is gone.**
+On 2026-09-20 the host reset the machine; the reset cost 15 minutes and the engine was down
+**12 h 50 m 46 s**, because it runs on a console window somebody started by hand while Caddy, a
+service, came back on its own — the host event was 2 % of the outage. It was not detected: another
+project reported it on the bus twelve hours in. That is structural. `/v1/health`, the stall watchdog
+(#75) and the dead-worker check (#97) all run **inside the process**, so they go silent with the
+thing they measure; a dead engine does not answer `down`, it fails to answer, and nothing was
+asking. So **liveness is observed from outside the process or it is not observed** — an in-process
+alarm proposed for it is the same mistake a third time. The measured case, with the four-instrument
+timeline, 48,215 missed polls across 22 feeds and why the corpus hole is an exposure that cannot be
+counted, is `github_issues/root_internal_archive/INTERNAL_host_reset_2026-09-20.md`. One reading trap
+from it: the envelope series overstates an outage by one cadence interval, because it measures
+cadence plus outage.
+
 Two consequences, both learned the hard way:
 
 - **Never answer a question about production from the dev journal.** "Does the journal predate
@@ -297,6 +328,12 @@ Adding `"disabledMcpjsonServers": ["finiex-bus"]` removes the tools from context
 Read first, in order:
 - The roadmap — GitHub issue #1 (`FiniexRAGEngine — Vision & Roadmap`).
 - The latest `HANDOFF_*.md` in the project root — current build state and next steps.
+  **A handoff is a snapshot, not a document.** It opens with the UTC timestamp it was written at and
+  the live commit it describes, so staleness is visible in one line — check that stamp against
+  `/v1/build` before trusting a number in it. The operator **deletes it once the new chat has taken
+  it in**, and that is deliberate: a handoff left lying around is read weeks later as if it were
+  current. Anything worth keeping for the record moves to `github_issues/root_internal_archive/`;
+  the project root holds only what is currently in play.
 - `docs/architecture/pipeline_engine_architecture.md` — how the engine is structured.
 
 ## Code conventions
@@ -458,6 +495,42 @@ every response, success or failure.
 - **Every requested symbol is always present** in `result`. No data for a symbol →
   `signal: 'HOLD'`, `confidence: 0.0`, `reasoning: 'No relevant news found'`, `sources: []`.
   A missing symbol is a bug, never "no signal".
+- **The producer reports; the consumer decides.** A failure is stated, never absorbed. A row the
+  engine could not evaluate carries `signal: 'ERROR'` — never a HOLD, because **a HOLD is a
+  statement about the market and an ERROR is a statement about us**. The old behaviour turned our
+  own outage into the consumer's trading signal: one LLM timeout produced `BUY → HOLD → BUY`, and a
+  consumer acting on `signal` flattens a position because a provider did not answer. What to do
+  about a failure — carry the previous signal, wait, go flat — is a *risk* decision, and it belongs
+  to whoever carries the risk. Choosing a staleness threshold here would invent a trading policy
+  inside a RAG engine, identical for every consumer and every instrument.
+  **`no_data` is not a failure and stays `HOLD`.** "We looked and nothing on-topic was published" is
+  a legitimate statement about the world — the most honest HOLD there is. Measured over the seven
+  days to 2026-09-17: 61 of 17,636 symbol passes, almost all of them one FX pair whose nearest miss
+  (0.569) sat just outside its floor (0.55). Reporting that as a fault would announce a quiet news
+  day as an outage. The two cases stay separable by the consumer without asking us: the envelope
+  already carries `metadata.per_symbol_retrieval` (`in_window` / `floor_dropped` / `kept` /
+  `best_distance` / `floor`), so `in_window: 0` is "nothing was published" and
+  `in_window: 24, kept: 0` is "news existed, none of it close enough". A retrieval **break** is not
+  this case and never was: it raises, and lands under the taxonomy as a failed row.
+  The distinction already lives in `basis` (`llm` / `no_data` / `degraded`); `ERROR` moves it into
+  the field every consumer actually reads. **A field that must be read to avoid acting wrongly, but
+  can be ignored without an error, is eventually ignored.**
+  Generally: whenever a plausible default would paper over a failure, that default is the defect.
+  Say what happened.
+  **The counter-test does as much work as the rule, and it is the half that gets skipped.** Not
+  every absence is a failure, and not every cause is worth carrying: *a cause the consumer will not
+  act on is transparency, not a contract defect* — worth having where it is cheap, never worth a
+  field in every record. Two separate questions, both asked: **is it visible to the consumer**, and
+  **does it change what they do**. Only a "no" to the first and a "yes" to the second is a defect.
+  The collector ran this an hour after we sent them the rule (2026-09-17) and it stopped them
+  stamping a cause onto every tick gap — the consuming project already detects those gaps itself,
+  so the label would have changed nothing anyone does. What it *did* leave standing was a
+  `data_stream_status` that every file reports as `HEALTHY` because its error list is never
+  appended to, including files written while 16.9 % of the period was lost. **A field that reads as
+  a measurement and measures nothing** is the shape to hunt — ours was `/v1/health` answering `ok`
+  for the whole 37 hours a worker lay dead, fixed by deriving the verdict instead of defaulting it.
+  *Rollout is coordinated, not unilateral* — `signal` is a closed vocabulary the whole chain
+  switches on, so the value ships only once the consumers can handle it.
 - **Prefer `status: 'partial'` over `'error'`.** If some sources fail but data remains, analyse
   what is there and record the degradation via `metadata.sources_reached`. Reserve
   `status: 'error'` (empty `result`) for when nothing could be produced.
@@ -610,6 +683,30 @@ come out negative was not a measurement.
 - **Results that touch the strategy stay private** (gitignored `experiments/private/`), even when the
   instrument that produced them is public.
 
+**The series has holes, and a reading that does not know them is not a reading.** Window
+boundaries are set by clean stretches, never by the calendar — and the list travels with the
+instrument rather than in somebody's head:
+
+| Window (UTC) | What it is | Effect on a reading |
+|---|---|---|
+| 2026-07-29, 5 h 08 m | tick gap on the IDE's side | no price for those instants — events drop, controls drop with them |
+| 2026-08-01/02 → 08-09 | the feed-timeout freeze (#73/#74/#75) | **no envelopes at all.** The two projects' records differ at the edge: ours calls it a nine-day freeze from 08-01, the IDE's tick-side record says 08-02 → 08-09. A reading near that edge checks both |
+| 2026-09-08 → 09-17 | VPS lost DNS and outbound TCP several times a day | envelopes exist but ran on **partial retrieval** — degraded, not absent, which is the harder case: nothing is missing, the evidence is thinner |
+| 2026-09-20 19:40 → 09-21 08:39 | host reset, engine down **12 h 50 m** | ~77 envelopes missing per stream |
+
+Two boundaries are about *fields* rather than data, and they bite the same way: the archive's
+integrity fields begin **2026-08-22**, and the bar archive has a quality step at **2026-09-15**
+(gaps over 60 s cost 4.3–16.9 % of covered time before it, 0.0–1.3 % after). A sweep that filters
+absences across either boundary prints a clean answer it has not earned.
+
+**Two traps when measuring a hole from the envelope series**, both paid for:
+
+- it **overstates by one cadence interval** — the gap between the last envelope before and the
+  first after is outage *plus* one scheduled tick;
+- **`seq` stays gapless across an outage** (4466 → 4467 over 12 h 50 m on 2026-09-20), so a
+  consumer gating on cursor continuity cannot see one at all. Only the timestamp spacing against
+  the cadence reveals it — which is a contract fact for any consumer, not only for us.
+
 ## Project layout
 
 ```
@@ -705,7 +802,8 @@ tests/                  pytest suite — one folder per domain, mirroring the pa
 ## After each feature (six-point review)
 
 "Code done" is not "done". When a feature or fix is finished, walk these six and state
-what each needs (the operator decides and applies):
+what each needs (the operator decides and applies), and **end the report with a proposed commit
+message** — Commit policy above says what it has to look like:
 
 1. **Tests** — new behavior gets tests; changed behavior updates them.
 2. **Docs** — always review; new structures/features get documented, touched flows get

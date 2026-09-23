@@ -286,6 +286,15 @@ class AnalysisEnvelope(BaseModel, Generic[T]):
     # with the data. Default 'live' keeps pre-change archived envelopes parseable; a consumer reads
     # an absent field as "unknown, produced before this existed".
     data_origin: str = 'live'
+    # Which deployment produced this row (ISSUE_9 follow-up) — minted per schema by migration 017,
+    # stamped by the outcome store, served at `/v1/health` beside `journal_id`. `journal_id`
+    # fingerprints the database CLUSTER, so production and a test schema on the same cluster answer
+    # identically; the consumer needs the finer identity to register a data origin once instead of
+    # attesting every batch. 12 lowercase hex.
+    # Default '' keeps every archived envelope parseable and means "produced before this existed" —
+    # never "same producer as the neighbour". The boundary is therefore a fact in the consumer's own
+    # data: the first `seq` per stream that carries a value.
+    instance_id: str = ''
     # Input provenance (ISSUE_85) — the configuration twin of `prompt_hash` below. Fingerprints
     # the *merged* pipeline config plus its *resolved* source set plus the score-defining slice
     # of the app config, so a feed added, disabled or re-weighted is visible downstream instead

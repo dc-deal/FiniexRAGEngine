@@ -16,7 +16,7 @@ from finiexragengine.types.ingest_types import TextNormalizerProfile
 # an operator writing the config — so a typo like `report:source_health` must fail at boot rather
 # than turn into a silent denial nobody can see (CLAUDE.md, closed vocabularies).
 GRANT_SURFACES: Tuple[str, ...] = ('reports', 'pipelines', 'logs', 'configs',
-                                  'diagnose')
+                                  'diagnose', 'dashboard')
 
 
 class ConsumerToken(ConsumerTokenBase):
@@ -113,7 +113,7 @@ class LlmConfig(BaseModel):
     # assembly — fail fast, before any spend. Override the list in the gitignored
     # user_configs to admit e.g. a fine-tuned `ft:...` model without touching tracked config.
     allowed_models: List[str] = Field(
-        default_factory=lambda: ['gpt-4o-mini', 'gpt-4o'])
+        default_factory=lambda: ['gpt-4o-mini', 'gpt-4o', 'gpt-5-nano'])
     # Optional OpenAI-compatible endpoint (vLLM, Ollama, ...) for self-hosted models —
     # private infrastructure, so it belongs in the user_configs override.
     base_url: Optional[str] = None
@@ -171,7 +171,38 @@ _DEFAULT_MODEL_PRICES = {
     'text-embedding-3-large': ModelPrice(input_per_1k=0.00013),
     'gpt-4o-mini': ModelPrice(input_per_1k=0.00015, output_per_1k=0.0006),
     'gpt-4o': ModelPrice(input_per_1k=0.0025, output_per_1k=0.01),
+    # Priced before it is used, so the variant trial (ISSUE_42 fan-out) is billed correctly from
+    # its first call rather than from the moment someone notices the table has no row for it.
+    'gpt-5-nano': ModelPrice(input_per_1k=0.00005, output_per_1k=0.0004),
 }
+
+
+class PricingProbeConfig(BaseModel):
+    """The weekly price-drift guard (ISSUE_67) — shadow mode, never an applier.
+
+    **Off by default, and that is not timidity:** it makes a paid call, and nothing in this engine
+    that spends money turns itself on. The operator enables it once they want the notice.
+
+    The probe reads the vendor's published page and has a model extract the table *from that page*.
+    Asking a model what prices are would be asking for the number models hallucinate; reading a
+    fetched page fails the honest way instead — a layout change yields "could not read".
+    """
+    enabled: bool = False
+    # The vendor's own price page. A URL rather than a vendor name: the day a second provider is
+    # priced here, it brings its own page and nothing about this unit changes.
+    source_url: str = 'https://developers.openai.com/api/docs/pricing'
+    # The model that READS the page. Because the extraction is grounded in fetched text rather than
+    # recalled, the cheapest allowed model is the right one — this is not a knowledge question.
+    model: str = 'gpt-4o-mini'
+    # Cron fields for the second job in the weekly scheduler, same shape as the weekly report's.
+    # Sunday afternoon, before the weekly report at 18:00, so a drift is in hand when it is read.
+    day_of_week: str = 'sun'
+    hour: int = 17
+    minute: int = 30
+    timezone: str = 'UTC'
+    # How far a price may move before it is a finding. Not zero: a page that renders 0.150 one week
+    # and 0.15 the next must not produce a notice.
+    epsilon_pct: float = 1.0
 
 
 class PricingConfig(BaseModel):
@@ -188,9 +219,12 @@ class PricingConfig(BaseModel):
     # Verdicts are deliberately NOT derived from this (no STALE threshold): picking a staleness
     # number here would be inventing a policy, and ISSUE_67's pricing probe is the mechanism that
     # is supposed to *check* rather than to *remind*. This field is provenance, nothing more.
-    checked: Optional[date] = date(2026, 8, 28)
+    checked: Optional[date] = date(2026, 9, 15)
     models: Dict[str, ModelPrice] = Field(
         default_factory=lambda: dict(_DEFAULT_MODEL_PRICES))
+    # The guard that checks the table above (ISSUE_67). It never writes into it — `price_cli
+    # --apply` does, with a human confirming.
+    probe: PricingProbeConfig = Field(default_factory=PricingProbeConfig)
 
 
 class CircuitBreakerConfig(BaseModel):

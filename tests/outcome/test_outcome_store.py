@@ -152,6 +152,64 @@ def test_an_unreachable_store_reports_no_journal_id():
     assert OutcomeStore('postgresql://nobody:nope@nowhere:5432/none').journal_id() is None
 
 
+def test_every_saved_envelope_carries_the_producing_deployment(store, clean_db):
+    """`instance_id` is stamped at the store, so it always matches the journal the row lands in.
+
+    The finer half of `journal_id` (ISSUE_9 follow-up): the cluster fingerprint cannot separate
+    production from a test schema beside it, and the consumer registers a data origin on this value
+    instead of attesting every batch. Stamped here rather than at assembly precisely so the two can
+    never disagree — an envelope built by one deployment and written into another's journal would
+    otherwise carry the wrong producer.
+    """
+    import re
+
+    store.save(_envelope())
+    loaded = store.get_latest('p')
+
+    assert re.fullmatch(r'[0-9a-f]{12}', loaded.instance_id)
+    assert loaded.instance_id == store.instance_identity()
+    # In the persisted JSON, not only on the in-memory object: the JSONB column IS the served
+    # envelope, and a field that lives only on the model never reaches the archive.
+    assert OutcomeStore(clean_db).get_latest('p').instance_id == loaded.instance_id
+
+
+def test_the_identity_is_read_once_and_cached(store, clean_db):
+    """It cannot change while a process lives, and `save` runs on the pass path.
+
+    Asserted by removing the row underneath a resolved store: a cached value keeps serving, which is
+    the behaviour the pass path needs. (`identity_guard` is what makes the missing row impossible on
+    a booted engine — see `tests/schema/test_identity_guard.py`.)
+    """
+    import psycopg
+
+    minted = store.instance_identity()
+    with psycopg.connect(clean_db) as conn:
+        conn.execute('DELETE FROM journal_identity')
+        conn.commit()
+    try:
+        assert store.instance_identity() == minted          # cached, no second query
+        # A fresh store, however, reads the real state and says so rather than inventing one.
+        assert OutcomeStore(clean_db).instance_identity() is None
+    finally:
+        with psycopg.connect(clean_db) as conn:
+            conn.execute('INSERT INTO journal_identity (singleton, instance_id, minted_at) '
+                         'VALUES (TRUE, %s, now()) ON CONFLICT (singleton) DO NOTHING', (minted,))
+            conn.commit()
+
+
+def test_an_envelope_archived_before_the_field_still_loads(store):
+    """Absent means "produced before this existed" — never "same producer as the neighbour".
+
+    The envelope contract's "always parseable" rule spans this change like every other provenance
+    field, and the consumer's import boundary is therefore a fact in their own data: the first `seq`
+    per stream that carries a value.
+    """
+    old = {'schema_version': '1.0', 'pipeline_id': 'p', 'outcome_type': 'sentiment_fear_greed',
+           'prompt_version': '2', 'timestamp': '2026-07-12T10:00:00Z', 'status': 'success',
+           'result': [], 'metadata': {'model': 'gpt-4o-mini'}}
+    assert SentimentEnvelope(**old).instance_id == ''
+
+
 # --- the stream's reads (ISSUE_9) --------------------------------------------------------------
 
 def test_the_stream_head_reads_the_counter_and_agrees_with_the_journal(store):

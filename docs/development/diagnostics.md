@@ -284,6 +284,12 @@ it ships at `0` (off) on purpose — the weekly line is what produces a real num
 
 ## Is the engine running right now — and how do I stop it?
 
+**On the server this is a service question, not a process question** (ISSUE_126): the engine runs
+under NSSM, so `Get-Service` / `nssm stop` answer it, and `sc.exe qc` says whether it comes back after
+a reboot. Parameters, stop semantics, exit codes and the reboot test:
+[`running_as_a_service.md`](running_as_a_service.md). The rest of this section is the **dev
+container**, where the engine is still something you start by hand.
+
 The dev container has **no `ps`, `pgrep`, `top`, `curl`, `lsof` or `netstat`**, and `jobs` only sees
 children of the current shell — so it shows nothing started from another terminal. Anyone who
 backgrounds a server without noting the PID cannot find it again without the handles below. That is
@@ -481,8 +487,10 @@ Two journals share this schema — the development container and the live server
 plausibly no matter which one it runs against. `/v1/health` reports two fields that settle it:
 
 ```json
-{ "journal_id": "9c3fa4c80d95", "environment": "dev" }
+{ "journal_id": "9c3fa4c80d95", "instance_id": "515e9b094bb0", "environment": "dev" }
 ```
+
+Two identities, at two different grains, and the difference is the reason the second exists.
 
 `journal_id` is **derived**: a 12-character fingerprint of the PostgreSQL `system_identifier` of the
 database the engine writes into. It cannot be configured, therefore cannot be set wrong. `environment`
@@ -520,6 +528,52 @@ envelope. A rename cannot invalidate history. Certify against the id, read the n
 `pg_control_system()` is superuser-restricted by default. On a managed Postgres it is refused, the
 engine reports `journal_id: null` / `environment: "unknown"`, and the remaining epoch detection falls
 back to the journal comparison (see the restore entry above).
+
+### `instance_id` — one level finer, because a cluster holds several deployments
+
+`journal_id` identifies the **database cluster**, and that is not the same as identifying the
+producer. The suite creates a `finiex_test` schema *inside the production database* at every version
+bump (`docs/testing.md`), and a second deployment is one schema away — all of them answer with
+production's `journal_id`. A consumer merging two such series has no mechanical way to separate them
+afterwards.
+
+So migration 017 mints a second identity **per schema**, 12 lowercase hex, and the engine stamps it
+onto every envelope as `instance_id`. The consumer registers a data origin against it once, rather
+than attesting each imported batch.
+
+**One deployment, one edge.** The value is minted by the migration and never by the engine: a
+restart, a redeploy, a config change and a `seq` rewind all leave it untouched. It moves only when
+somebody re-mints, and that is the whole point — the move is the statement *"a different producer
+writes from here"*, which is what a restore into a new deployment has to be able to say.
+
+`identity_guard` re-reads it at every boot and **refuses to start** when the row is missing or not
+12 lowercase hex. Without that, the failure is silent in the worst way: every envelope carries
+`instance_id: ""`, which a consumer correctly reads as "produced before the field existed".
+
+**To re-mint deliberately** — a restore into a genuinely new deployment, a schema cloned from
+production for a second instance — on that machine, in that schema:
+
+```sql
+UPDATE journal_identity
+   SET instance_id = left(replace(gen_random_uuid()::text, '-', ''), 12),
+       minted_at   = now()
+RETURNING instance_id, minted_at;
+```
+
+**Then tell the consumer — this is an obligation, not a courtesy.** Their import boundary is the
+first `seq` carrying the new value, and the Testing IDE stated on 2026-09-20 what a silent re-mint
+actually costs there: they resolve identity to a *class* once at import and admit only `production`
+data into a parity measurement, so an unannounced re-mint does not break a correlation, it **moves
+data in or out of the set they are allowed to measure against** — invisibly, and in their favour or
+against it at random. Announce the new value and the first stamped `seq` per stream, on the bus.
+
+**Never re-mint to "refresh" anything**: an identity that changes without a new deployment behind it
+is a discontinuity in someone else's series, reported for no event.
+
+What it cannot see: a **restore of the whole schema** carries the identity row with it, so a copy of
+production used as a test instance keeps production's `instance_id` until it is re-minted. No guard
+can detect that — the copy is byte-identical by construction. Re-minting is part of standing up a
+copy, in the same sense that clearing its API tokens is.
 
 ## We restored the database — what does the consumer see?
 
@@ -739,7 +793,7 @@ database and no shell, and `POST /run` is not registered in production, so nothi
 
 | Route | Grant | Answers |
 |---|---|---|
-| `GET /v1/health` | *open* | alive, worker cadences and last runs, `journal_id`, budget, stall state |
+| `GET /v1/health` | *open* | alive, worker cadences and last runs, `journal_id` + `instance_id`, budget, stall state |
 | `GET /v1/build` | *open* | version, commit, dirty-at-startup, process start — **which code is actually running** |
 | `GET /v1/pipelines` | `pipelines:<id>` | the constellations this token may see: symbols, trigger type, cadence — plus the stream settings |
 | `GET /v1/pipelines/{id}/latest` | `pipelines:<id>` | the newest persisted envelope, served from the store |
@@ -751,13 +805,15 @@ database and no shell, and `POST /run` is not registered in production, so nothi
 | `GET /v1/reports/{name}` | `reports:<name>` | one diagnostic surface as JSON (`report_api.md`) |
 | `GET /v1/logs/{name}` | `logs:<name>` | the engine log over a **UTC** range, redacted (`engine` is the only stream) |
 | `GET /v1/configs` · `/{name}` | `configs:<name>` | the **effective** configuration this process runs — `app`, `pipelines`, `source_sets` — `user_configs/` included, credentials masked |
+| `GET /v1/dashboard/{name}` | `dashboard:<view>` | the live console's state as **one reading** — the stage rows, the breaking episodes, the activity feed and the verdicts behind them, stamped with the engine's own clock (`engine` is the only view). `503` when this process runs no workers: nothing is collecting, which is a different fact from nothing happening |
 | `GET /v1/diagnose/{name}` | `diagnose:<name>` | one **configured** feed, fetched and parsed live — the raw bytes that machine receives (`feed` is the only probe) |
 
 Two things a reading has to respect. **A `403` is a grant, not a bug** — access is by name, so a
 surface added later is unreachable until someone writes it into a token; and a scoped caller gets
 `403` rather than `404` for an unknown name, so the endpoint is not an existence oracle.
-**And the dev container answers the same routes with different data** — `journal_id` is the only
-mechanical way to tell them apart (production `138c68e48b15`, dev `9c3fa4c80d95`).
+**And the dev container answers the same routes with different data** — `journal_id` is the
+mechanical way to tell the two *databases* apart (production `138c68e48b15`, dev `9c3fa4c80d95`),
+and `instance_id` tells two *deployments* apart even when they share one.
 
 ## Reference — the diagnostic stores
 

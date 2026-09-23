@@ -4,7 +4,7 @@ import logging
 import os
 import socket
 from contextlib import asynccontextmanager
-from typing import AsyncIterator, Dict, List, Optional
+from typing import AsyncIterator, Callable, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, FastAPI
 from finiex_auth.bearer_auth import build_bearer_dependency
@@ -23,6 +23,7 @@ from finiexragengine.api.endpoints.log_router import build_log_router
 from finiexragengine.api.endpoints.stream_router import build_stream_router
 from finiexragengine.api.token_loader import load_token_registry
 from finiexragengine.api.endpoints.config_router import build_config_router
+from finiexragengine.api.endpoints.dashboard_router import build_dashboard_router
 from finiexragengine.api.endpoints.diagnose_router import build_diagnose_router
 from finiexragengine.configuration.abstract_config_view import AbstractConfigView
 from finiexragengine.configuration.app_config_manager import AppConfigManager
@@ -34,6 +35,10 @@ from finiexragengine.core.alerts.telegram_client import TelegramClient
 from finiexragengine.core.alerts.telegram_command_poller import TelegramCommandPoller
 from finiexragengine.core.alerts.telegram_weekly_format import render_weekly_messages
 from finiexragengine.core.alerts.weekly_scheduler import WeeklyScheduler
+from finiexragengine.core.llm.provider_factory import build_provider
+from finiexragengine.core.observability.cost_recorder import CostRecorder
+from finiexragengine.core.observability.price_probe import drift_notice, probe_prices
+from finiexragengine.core.observability.price_probe_store import PriceProbeStore
 from finiexragengine.core.llm.model_catalog import verify_configured_models
 from finiexragengine.core.observability.budget_guard import BudgetGuard
 from finiexragengine.core.observability.build_info import sample_build_info
@@ -50,6 +55,8 @@ from finiexragengine.core.pipeline.detection_preflight import log_detection_pref
 from finiexragengine.core.pipeline.pipeline_assembler import PipelineAssembler
 from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
 from finiexragengine.core.pipeline.worker_supervisor import WorkerSupervisor
+from finiexragengine.core.schema.run_lock import RunLock
+from finiexragengine.core.ui.dashboard_snapshot import DashboardSnapshot, sample_dashboard
 from finiexragengine.core.ui.engine_stats import EngineStats
 from finiexragengine.core.ui.live_display import LiveDisplay
 from finiexragengine.exceptions.ragengine_errors import ConfigurationError
@@ -161,12 +168,28 @@ def create_app(attach_runners: Optional[bool] = None,
     source_sets: Optional[SourceSetRegistry] = None
     stream_dispatcher: Optional[StreamDispatcher] = None
     stream_replay: Optional[StreamReplay] = None
-    # Live dashboard's shared state (ISSUE_26): built only in live mode, injected into every
-    # worker so each pass pushes its snapshot/events; None otherwise (zero overhead). Keys are
-    # pre-registered from the same ids the supervisor builds workers from, so the dashboard's
-    # per-worker dicts never resize at runtime (lock-free render).
+    # The engine's live state (ISSUE_26), injected into every worker so each pass pushes its
+    # snapshot and its events. Keys are pre-registered from the same ids the supervisor builds
+    # workers from, so the per-worker dicts never resize at runtime (lock-free render).
+    #
+    # Built whenever WORKERS run — not when a terminal is attached (ISSUE_126). It used to be gated
+    # on `live_mode`, which additionally requires a TTY, so the moment the engine became a service
+    # the state stopped being COLLECTED rather than merely displayed, and every `_push_stats` call
+    # returned immediately. Nothing durable was lost — this is in-memory and derived from what the
+    # stores already hold — but a remote viewer has nothing to read until the collection is free of
+    # the display. `live_mode` now governs the renderer alone.
+    #
+    # The cost without a display is two bounded deques and a handful of dataclasses per pass.
+    # Tri-state, and initialised here rather than inside the attach block: `None` means the
+    # journal identity was never established (no store to ask), which a viewer must be able to
+    # tell apart from 'established and unnamed'. It also removes a latent NameError — the only
+    # assignment sits behind `attach_runners`, and the reader behind `live_mode`.
+    journal_named: Optional[bool] = None
+    # The worker role's claim on this journal (ISSUE_126) — None when this process runs no
+    # workers, which is the case where a second instance is harmless.
+    run_lock: Optional[RunLock] = None
     engine_stats: Optional[EngineStats] = None
-    if live_mode:
+    if start_workers:
         pipeline_ids = [pipeline.get_config().pipeline_id for pipeline in registry.list_pipelines()]
         source_set_ids = sorted({pipeline.get_config().source_set
                                  for pipeline in registry.list_pipelines()})
@@ -175,6 +198,21 @@ def create_app(attach_runners: Optional[bool] = None,
         if not database_url:
             raise RuntimeError('attach_runners=True requires DATABASE_URL')
         assembler = PipelineAssembler(config_manager, database_url)
+        # One writer per journal (ISSUE_126), claimed HERE — after the schema and identity guards
+        # have run (the assembler's constructor), and before anything with a side effect: before the
+        # runners are built, before the free model check reaches the provider, before the detection
+        # preflight and long before Telegram or the API bind. The collector's refusal sat after all
+        # of those, so their second instance announced "started" to the operator's phone and only
+        # then discovered it was not allowed to run — once per restart cycle, under a manager that
+        # restarts on exit.
+        #
+        # Only the WORKER role is claimed. Two processes serving reads over one journal are
+        # legitimate and useful; two producing are not.
+        if start_workers:
+            instance_id = assembler.get_outcome_store().instance_identity()
+            if instance_id is not None:
+                run_lock = RunLock(database_url, instance_id)
+                run_lock.acquire()
         # Worker mode (ISSUE_10): acquisition belongs to the ingest workers' clocks,
         # so the API runners are built ingest-less — /run cannot double-ingest next
         # to a running worker. Without workers, /run stays self-contained as before.
@@ -286,8 +324,37 @@ def create_app(attach_runners: Optional[bool] = None,
             if telegram_cfg.commands_enabled:
                 command_poller = TelegramCommandPoller(telegram_client, telegram_cfg,
                                                        _weekly_messages)
+            async def _run_price_probe() -> None:
+                """The weekly price-drift guard (ISSUE_67) — read, record, notify, write nothing.
+
+                Off the loop: it fetches a page and makes an LLM call, both blocking. The notice
+                goes out on a drift AND on an unreadable page, because a guard that has quietly
+                stopped working is the state nobody discovers on their own.
+                """
+                probe_cfg = config_manager.get_config().pricing.probe
+                pricing = config_manager.get_config().pricing
+                provider = build_provider(
+                    config_manager.get_config().llm, probe_cfg.model,
+                    cost_recorder=CostRecorder(database_url, pricing), section='calibration')
+                result = await asyncio.to_thread(
+                    probe_prices, pricing, provider, source_url=probe_cfg.source_url,
+                    probe_model=probe_cfg.model, epsilon_pct=probe_cfg.epsilon_pct)
+                await asyncio.to_thread(
+                    PriceProbeStore(database_url).record, pricing, result.prices,
+                    source_url=probe_cfg.source_url, probe_model=probe_cfg.model,
+                    readable=result.readable)
+                if result.clean:
+                    logger.info('[PRICE] probe ok — %d model(s) match the page', len(result.prices))
+                    return
+                logger.warning('[PRICE] %s', drift_notice(result))
+                await telegram_client.send_message(drift_notice(result))
+
             if weekly_cfg.enabled:
-                weekly_scheduler = WeeklyScheduler(weekly_cfg, _send_weekly)
+                probe_cfg = config_manager.get_config().pricing.probe
+                weekly_scheduler = WeeklyScheduler(
+                    weekly_cfg, _send_weekly,
+                    probe_config=probe_cfg if probe_cfg.enabled else None,
+                    run_probe=_run_price_probe if probe_cfg.enabled else None)
             # Give the watchdog a voice (ISSUE_75). Without Telegram it still detects and logs —
             # delivery is the optional half, so a missing credential degrades the alert, never
             # the detection.
@@ -313,6 +380,34 @@ def create_app(attach_runners: Optional[bool] = None,
                                    states_provider=supervisor.states,
                                    version=config_manager.get_config().version,
                                    journal_named=journal_named)
+
+    # The same state, for a viewer somewhere else (ISSUE_126 Phase 2). A closure rather than eight
+    # parameters into the router: a router is transport, and this is where the collaborators live.
+    # Left `None` when nothing is collecting, so the route answers 503 with a reason instead of
+    # drawing zeros — an engine with no workers and an engine with nothing happening look identical
+    # on a panel, and they are different facts.
+    # Sampled once, so it describes the code THIS process imported rather than whatever the working
+    # tree holds at request time (see `build_info.sample_build_info`). One sample, two consumers:
+    # `/v1/build` and the dashboard's `engine_started_at` — so the uptime a viewer draws and the
+    # start time that route reports cannot disagree.
+    build_info = sample_build_info(config_manager.get_config().version)
+    dashboard_provider: Optional[Callable[[], DashboardSnapshot]] = None
+    if engine_stats is not None:
+        stats = engine_stats                     # non-Optional binding for the closure below
+        states_provider = supervisor.states if supervisor is not None else None
+
+        def sample_engine_dashboard() -> DashboardSnapshot:
+            """One reading, with every verdict taken on this side of the wire."""
+            return sample_dashboard(stats,
+                                    version=config_manager.get_config().version,
+                                    engine_started_at=build_info.started_at,
+                                    journal_named=journal_named,
+                                    budget_guard=budget_guard,
+                                    stall_watchdog=stall_watchdog,
+                                    resource_gauge=resource_gauge,
+                                    states_provider=states_provider)
+
+        dashboard_provider = sample_engine_dashboard
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -365,6 +460,11 @@ def create_app(attach_runners: Optional[bool] = None,
             await live_display.stop()
             if live_task is not None:
                 await live_task
+        # Last, because nothing may still be writing when the claim goes (ISSUE_126). A hard kill
+        # skips this and costs nothing: the lock is session-scoped, so the database drops it with the
+        # connection — which is the whole reason it is not a file.
+        if run_lock is not None:
+            run_lock.release()
 
     # The interactive schema surfaces (ISSUE_98). FastAPI mounts them on the app itself, so the
     # protected router's dependency never sees them — passing None is the only way to keep them
@@ -394,10 +494,13 @@ def create_app(attach_runners: Optional[bool] = None,
     health = build_health_router(config_manager, supervisor=supervisor,
                                  budget_guard=budget_guard, stall_watchdog=stall_watchdog,
                                  resource_gauge=resource_gauge, outcome_store=outcome_store,
+                                 run_lock=run_lock,
                                  stream_dispatcher=stream_dispatcher)
     # Sampled once, here, so it describes the code THIS process imported rather than whatever the
-    # working tree holds at request time (see `build_info.sample_build_info`).
-    build = build_build_router(sample_build_info(config_manager.get_config().version))
+    # working tree holds at request time (see `build_info.sample_build_info`). One sample, two
+    # consumers: `/v1/build` and the dashboard snapshot's `engine_started_at` — so the uptime a
+    # viewer draws and the start time this route reports cannot disagree.
+    build = build_build_router(build_info)
     exempt = ((health, api_config.health_public), (build, api_config.build_info_public))
     app.include_router(_build_public_router(
         api_config, [router for router, is_public in exempt if is_public]))
@@ -448,7 +551,9 @@ def create_app(attach_runners: Optional[bool] = None,
         config_views=_build_config_views(config_manager, registry, source_sets),
         # The feed catalogue this process polls (2026-09-09) — the diagnose route resolves a
         # `source_id` against it, so a caller names a configured feed and never a URL.
-        source_sets=source_sets))
+        source_sets=source_sets,
+        # The live state this process collects (ISSUE_126 Phase 2), or None when nothing does.
+        dashboard_provider=dashboard_provider))
     return app
 
 
@@ -498,7 +603,9 @@ def _build_protected_router(registry: PipelineRegistry,
                             stream: Optional[StreamConfig] = None,
                             log_file: Optional[str] = None,
                             config_views: Optional[Dict[str, AbstractConfigView]] = None,
-                            source_sets: Optional[SourceSetRegistry] = None) -> APIRouter:
+                            source_sets: Optional[SourceSetRegistry] = None,
+                            dashboard_provider: Optional[Callable[[], DashboardSnapshot]] = None
+                            ) -> APIRouter:
     """Everything a token is required for — and everything added here later, automatically.
 
     `extra_routers` carries routers assembled by the caller: the exemptions that were switched
@@ -569,4 +676,8 @@ def _build_protected_router(registry: PipelineRegistry,
     # *outward* on request rather than reading the store — bounded to one named, configured feed
     # per call, which is what keeps it a diagnostic instead of a proxy.
     protected.include_router(build_diagnose_router(source_sets, tokens))
+    # The live console's state (ISSUE_126 Phase 2), on its own grant surface. Mounted even without
+    # a provider, for the same reason the config view is: a route that disappears with a boot mode
+    # is a route the scope sweep cannot see. Without one it answers 503 and says why.
+    protected.include_router(build_dashboard_router(tokens, dashboard_provider))
     return protected

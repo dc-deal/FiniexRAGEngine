@@ -75,6 +75,7 @@ same shell regardless of the signal type:
   "pipeline_id": "crypto_sentiment",
   "outcome_type": "sentiment_fear_greed",
   "data_origin": "live",
+  "instance_id": "a1b2c3d4e5f6",
   "config_fingerprint": "904c2e16bbfb",
   "prompt_version": "1",
   "prompt_id": "sentiment-crypto",
@@ -111,6 +112,11 @@ python -m finiexragengine.cli.server_cli --workers --port 8100
 # + a live terminal dashboard (needs a TTY; console logs move to the file log)
 python -m finiexragengine.cli.server_cli --workers --live --port 8100
 ```
+
+**Unattended, the engine runs as a service without the dashboard** — a console it shares is a
+console that can suspend it, and on 2026-09-20 a host reset cost 12 h 50 m because nothing
+restarted a hand-started window. Parameters for NSSM and systemd, the stop semantics and the exit
+codes: [`docs/development/running_as_a_service.md`](docs/development/running_as_a_service.md).
 
 The `--live` dashboard while the engine runs — one row per worker (source-set and pipeline),
 stage state on top, a colour-coded activity stream below:
@@ -181,7 +187,7 @@ collector needs is a read over HTTPS, and nothing that answers can change the en
 
 | Route | Grant | Answers |
 |---|---|---|
-| `GET /v1/health` | *open* | alive, worker cadences and last runs, journal identity, budget, stall state |
+| `GET /v1/health` | *open* | alive, worker cadences and last runs, journal + deployment identity, budget, stall state |
 | `GET /v1/build` | *open* | version, commit, whether the tree was dirty, process start — **which code is actually running** |
 | `GET /v1/pipelines` | `pipelines:<id>` | the constellations a token may see: symbols, trigger, cadence |
 | `GET /v1/pipelines/{id}/latest` | `pipelines:<id>` | the newest persisted envelope, served from the store |
