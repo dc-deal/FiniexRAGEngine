@@ -3,9 +3,9 @@ from datetime import datetime
 from typing import Any, List, Optional, Sequence, Set
 
 import psycopg
-from pgvector.psycopg import register_vector
 
 from finiexragengine.core.rag.abstract_vector_store import AbstractVectorStore
+from finiexragengine.core.rag.pgvector_types import ensure_pgvector_types
 from finiexragengine.exceptions.ragengine_errors import VectorStoreError
 from finiexragengine.types.article_types import Article, NeighbourCount, ScoredArticle
 from finiexragengine.types.config_types.app_config_types import VectorStoreConfig
@@ -56,10 +56,11 @@ class PgVectorStore(AbstractVectorStore):
             raise VectorStoreError(f'cannot connect to the vector store: {exc}') from exc
 
     def _connect(self) -> psycopg.Connection:
-        # register_vector needs the `vector` type to already exist — guaranteed by migration
-        # 001, which the boot check (ISSUE_14) verifies has run before anything constructs this.
+        # The `vector` type must already exist — guaranteed by migration 001, which the boot
+        # check (ISSUE_14) verifies has run before anything constructs this. Registered once
+        # per process, not per connection: per connection it kept ~21 KB forever each time.
         conn = self._raw_connect()
-        register_vector(conn)
+        ensure_pgvector_types(conn)
         return conn
 
     def _verify_corpus_stamp(self) -> None:

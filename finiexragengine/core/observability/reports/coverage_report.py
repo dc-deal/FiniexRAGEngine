@@ -14,8 +14,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 import psycopg
-from pgvector.psycopg import register_vector
 
+from finiexragengine.core.rag.pgvector_types import ensure_pgvector_types
 from finiexragengine.core.rag.query_vector_cache import QueryVectorCache
 from finiexragengine.exceptions.ragengine_errors import VectorStoreError
 
@@ -114,7 +114,7 @@ def build_coverage_report(
     rows: List[SymbolCoverage] = []
     try:
         with psycopg.connect(database_url) as conn:
-            register_vector(conn)                      # bind Python vectors to `%(v)s::vector`
+            ensure_pgvector_types(conn)                # bind Python vectors to `%(v)s::vector`
             with conn.cursor() as cur:
                 # Corpus size + the oldest article per scope: 'all-time' is only as old
                 # as the corpus actually is — the stamp makes the stats honest.

@@ -2,9 +2,9 @@
 from typing import Any, List
 
 import psycopg
-from pgvector.psycopg import register_vector
 
 from finiexragengine.core.rag.abstract_embedder import AbstractEmbedder
+from finiexragengine.core.rag.pgvector_types import ensure_pgvector_types
 from finiexragengine.exceptions.ragengine_errors import EmbeddingError, VectorStoreError
 
 
@@ -52,10 +52,11 @@ class QueryVectorCache:
             raise VectorStoreError(f'cannot connect to the query-vector cache: {exc}') from exc
 
     def _connect(self) -> psycopg.Connection:
-        # register_vector needs the `vector` type to exist — guaranteed by migration 001, which
-        # the boot check (ISSUE_14) verifies has run before anything constructs this.
+        # The `vector` type must exist — guaranteed by migration 001, which the boot check
+        # (ISSUE_14) verifies has run before anything constructs this. Registered once per
+        # process, not per connection (see `pgvector_types`).
         conn = self._raw_connect()
-        register_vector(conn)
+        ensure_pgvector_types(conn)
         return conn
 
     def get_vector(self, query_text: str) -> List[float]:

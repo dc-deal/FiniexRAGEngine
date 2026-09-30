@@ -1,4 +1,6 @@
 """RSS input source (feedparser-backed)."""
+import functools
+import ssl
 import urllib.request
 from calendar import timegm
 from datetime import datetime, timezone
@@ -45,6 +47,33 @@ class _TimeoutHandler(urllib.request.BaseHandler):
 
     # HTTPS travels the same path; urllib dispatches the processor per scheme.
     https_request = http_request
+
+
+@functools.cache
+def _shared_tls_context() -> ssl.SSLContext:
+    """The ONE TLS context every feed poll in this process shares.
+
+    `feedparser.parse()` builds a fresh urllib opener on every call, and an opener built without an
+    HTTPS handler gets urllib's default one — which creates a brand-new `SSLContext` in its
+    constructor. On Windows each context loads the system certificate stores: ~0.5–0.9 MB of
+    native memory, invisible to the garbage collector, which sees only the ~40 small Python
+    objects of the opener/handler reference cycle around it. At ~80 polls a minute that was
+    ~46 MB/min of cyclic garbage, and under the incremental collector of CPython 3.14.0–3.14.4
+    it piled up to 7 GB before a collection reached it (measured 2026-09-30).
+
+    Handing feedparser an HTTPS handler that carries this context makes `build_opener` skip its
+    default handler, so no poll creates a context. An `SSLContext` is safe to share across threads.
+    Built on first use and held for the process lifetime (`functools.cache` over a zero-argument
+    function — exactly one entry, never a growing cache). The system certificate stores are
+    therefore read once per process: a change to the Windows root store takes effect on restart.
+    """
+    context = ssl.create_default_context()
+    # Mirror what urllib's own default handler sets (`http.client._create_https_context`), so the
+    # TLS handshake a feed host sees is the same one it saw before the context was shared.
+    context.set_alpn_protocols(['http/1.1'])
+    if context.post_handshake_auth is not None:
+        context.post_handshake_auth = True
+    return context
 
 
 class RssSource(AbstractSource):
@@ -176,10 +205,15 @@ class RssSource(AbstractSource):
             # `except SourceFetchError` and killed the whole pass — one slow feed taking every
             # other feed in the set down with it, and never reaching quarantine. Catching OSError
             # here routes both paths into the same typed, retried, quarantine-able failure.
+            #
+            # The HTTPS handler carries the process-wide TLS context: without it every poll
+            # would create (and leave to the garbage collector) a context of its own.
             try:
                 parsed = feedparser.parse(url, etag=self._etag, modified=self._modified,
                                           agent=USER_AGENT,
-                                          handlers=[_TimeoutHandler(self._timeout_seconds)])
+                                          handlers=[_TimeoutHandler(self._timeout_seconds),
+                                                    urllib.request.HTTPSHandler(
+                                                        context=_shared_tls_context())])
             except OSError as exc:            # TimeoutError/socket errors ⊂ OSError
                 if attempt == 1:
                     continue                  # same one retry a transient bozo failure gets

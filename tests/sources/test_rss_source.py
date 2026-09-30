@@ -1,5 +1,6 @@
 """Unit tests for RssSource.fetch — parsing, idempotent ids, provenance, errors, timeouts."""
 import socket
+import ssl
 import threading
 import time
 import urllib.request
@@ -8,7 +9,7 @@ from datetime import timezone
 import feedparser
 import pytest
 
-from finiexragengine.core.sources.rss_source import RssSource
+from finiexragengine.core.sources.rss_source import RssSource, _shared_tls_context
 from finiexragengine.exceptions.ragengine_errors import SourceFetchError
 from finiexragengine.types.article_types import Article
 from finiexragengine.types.config_types.source_set_types import SourceConfig
@@ -233,6 +234,47 @@ def test_the_timeout_reaches_the_request(monkeypatch):
     request = urllib.request.Request('https://example.test/rss')
     assert handler.https_request(request).timeout == 7
     assert handler.http_request(request).timeout == 7
+
+
+def test_every_poll_shares_one_tls_context(monkeypatch):
+    """The 2026-09-30 memory growth: one `SSLContext` per poll, left to the garbage collector.
+
+    feedparser builds a fresh opener on every call; without an HTTPS handler of ours, urllib's
+    default one creates a new context in its constructor (via `ssl._create_default_https_context`).
+    The fake below builds the opener exactly as feedparser does, so urllib's own default-handler
+    selection runs, and every context creation on either path is counted. Fifteen polls across
+    three sources must create exactly one.
+    """
+    created = []
+
+    def counting(original):
+        def create(*args, **kwargs):
+            context = original(*args, **kwargs)
+            created.append(context)
+            return context
+        return create
+
+    monkeypatch.setattr(ssl, 'create_default_context', counting(ssl.create_default_context))
+    monkeypatch.setattr(ssl, '_create_default_https_context',
+                        counting(ssl._create_default_https_context))
+    _shared_tls_context.cache_clear()              # a context cached by an earlier test is not a poll's
+    openers = []
+
+    def fake_parse(url, etag=None, modified=None, agent=None, handlers=None):
+        openers.append(urllib.request.build_opener(*handlers))
+        return _FakeParsed([{'id': 'g', 'link': 'https://example.test/a',
+                             'title': 't', 'summary': 's'}])
+
+    monkeypatch.setattr(feedparser, 'parse', fake_parse)
+    sources = [RssSource(SourceConfig(source_id=f's{n}', url=f'https://example.test/{n}'))
+               for n in range(3)]
+    for _ in range(5):
+        for source in sources:
+            source.fetch()
+
+    assert len(openers) == 15
+    assert len(created) == 1
+    _shared_tls_context.cache_clear()              # leave no counting-wrapped context behind
 
 
 def test_a_host_that_never_answers_is_classified_not_propagated():

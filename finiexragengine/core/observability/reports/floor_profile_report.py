@@ -37,9 +37,9 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 import psycopg
-from pgvector.psycopg import register_vector
 
 from finiexragengine.core.observability.reports.no_data_report import NoDataRow
+from finiexragengine.core.rag.pgvector_types import ensure_pgvector_types
 from finiexragengine.core.rag.query_vector_cache import QueryVectorCache
 from finiexragengine.exceptions.ragengine_errors import VectorStoreError
 
@@ -197,7 +197,7 @@ def build_floor_profile_report(
     rows: List[FloorProfileRow] = []
     try:
         with psycopg.connect(database_url) as conn:
-            register_vector(conn)                      # binds Python vectors to `%(v)s::vector`
+            ensure_pgvector_types(conn)                # binds Python vectors to `%(v)s::vector`
             with conn.cursor() as cur:
                 cur.execute(f'SELECT count(*) FROM {article_table} WHERE published_at >= %s',
                             (since_window,))
