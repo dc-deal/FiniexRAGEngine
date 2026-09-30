@@ -17,10 +17,13 @@ What that costs, and why each part is there (the FiniexDataCollector's §5, adop
   would look like a quiet engine.
 - **The two clocks are compared.** Uptime and every age come from the producer's clock; if this
   machine's differs by more than a few seconds, the difference is stated rather than absorbed.
+- **The next poll is counted down.** At a 15 s cadence a viewer that says nothing between polls
+  cannot be told apart from a viewer that has hung — so the frame says when it asks next.
 """
 import asyncio
 import logging
-from datetime import datetime, timezone
+import math
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from rich.console import Console, RenderableType
@@ -55,6 +58,9 @@ class DashboardViewer:
         self._last_good_at: Optional[datetime] = None
         self._reason = ''
         self._skew_seconds: Optional[float] = None
+        # When the next poll is due, set by `run()` after each one. None until the loop has polled
+        # once (or when rendering outside the loop), and then the frame shows no countdown.
+        self._next_poll_at: Optional[datetime] = None
         self._stop = asyncio.Event()
 
     def take(self, reading: FeedReading) -> None:
@@ -73,7 +79,8 @@ class DashboardViewer:
         """The panel as the engine last described it, inside this viewer's verdict about itself."""
         now = now if now is not None else datetime.now(timezone.utc)
         if self._last_good is None:
-            return Panel('', title=f'never answered — {self._reason or "connecting"}',
+            title = f'never answered — {self._reason or "connecting"}'
+            return Panel('', title=title + self._countdown(now, 'next try in'),
                          title_align='left', border_style='red')
 
         state = self._last_good
@@ -96,31 +103,46 @@ class DashboardViewer:
         age = format_age((now - self._last_good_at).total_seconds()) if self._last_good_at else '—'
         if self._reason:
             stamp = self._last_good_at.strftime('%H:%M:%S') if self._last_good_at else 'never'
-            return f'no answer since {stamp} UTC ({age} ago) — {self._reason}'
+            return (f'no answer since {stamp} UTC ({age} ago) — {self._reason}'
+                    + self._countdown(now, 'next try in'))
         title = f'{self._feed.url()} · read {age} ago'
         # Only when it matters: uptime and every age on the panel come from the producer's clock, so
         # a viewer running minutes off would print a panel that is internally consistent and wrong
         # about when any of it happened.
         if self._skew_seconds is not None and abs(self._skew_seconds) > _SKEW_TOLERANCE_SECONDS:
             title += f' · clocks differ by {self._skew_seconds:+.0f}s'
-        return title
+        return title + self._countdown(now, 'next in')
+
+    def _countdown(self, now: datetime, label: str) -> str:
+        """` · next in 8s` — or ` · polling` once due. Empty outside the poll loop.
+
+        Rounded up, so the last second reads `1s` rather than `0s` while the poll is still ahead.
+        """
+        if self._next_poll_at is None:
+            return ''
+        remaining = (self._next_poll_at - now).total_seconds()
+        if remaining <= 0:
+            return ' · polling'
+        return f' · {label} {format_age(math.ceil(remaining))}'
 
     async def run(self) -> None:
         """Poll on one clock, redraw on a faster one, until stopped."""
         from rich.live import Live
 
-        next_poll = 0.0
         with Live(self.render(), console=self._console, screen=True,
                   refresh_per_second=4, transient=False) as live:
             while not self._stop.is_set():
-                if next_poll <= 0.0:
+                # A deadline rather than a decremented counter: the countdown on screen and the poll
+                # itself then read the same instant, and render time cannot drift the cadence.
+                if self._next_poll_at is None or datetime.now(timezone.utc) >= self._next_poll_at:
                     self.take(await asyncio.to_thread(self._feed.poll))
-                    next_poll = self._poll_seconds
+                    self._next_poll_at = (datetime.now(timezone.utc)
+                                          + timedelta(seconds=self._poll_seconds))
                 live.update(self.render(), refresh=True)
                 try:
                     await asyncio.wait_for(self._stop.wait(), timeout=self._refresh_seconds)
                 except asyncio.TimeoutError:
-                    next_poll -= self._refresh_seconds
+                    pass
 
     async def stop(self) -> None:
         self._stop.set()

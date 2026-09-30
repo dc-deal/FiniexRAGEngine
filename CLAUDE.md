@@ -134,7 +134,7 @@ returns a plausible number for a question that was about production.
 | Host | Linux container on the operator's laptop | Windows Server on a VPS, reached by RDP |
 | `outcomes` journal | a few hundred envelopes from test runs | the real series, weeks of continuous operation |
 | CPU | the laptop's | **4 vCPU** (AMD EPYC, virtualised — so steal time is possible and invisible from inside) |
-| RAM | the laptop's | **8 GB**, and ~5.6 of them in use before the engine's ~0.5 GB is counted |
+| RAM | the laptop's | **8 GB**, ~1.9 GB in use with a healthy engine (24 %, measured 2026-09-30 right after a restart). The earlier "~5.6 GB before the engine" was, in all likelihood, the leaking engine itself |
 | Disk | hundreds of GB free | **~149 GB total, and treated as scarce** |
 | Reachable from here | yes, directly | **read-only over HTTPS** (`/v1/*` with a token; `/health` + `/build` public) — no database, no shell |
 
@@ -144,6 +144,16 @@ between ("at 16 GB that is not a problem"). Four vCPUs matter for the same reaso
 are CPU-heavy (article normalisation and token counting over ~100–170 items every 15 s per set), so
 the machine's CPU graph shows regular bursts to 100 % that are the engine's own cadence rather than
 a fault. Re-measure before sizing anything; do not trust this paragraph over a fresh reading.
+
+**Memory is part of every standard check.** A remote health check reads `/v1/health`
+`resources.private_mb` beside `rss_mb` (on Windows `rss` is the working set the OS trims — when the
+two drift apart the machine is paging the engine out), the slope of the `[MEMORY]` lines over the
+last hours (`/v1/logs/engine`: `private` and `blocks`), any `[GC] … froze the process` warning, and
+`/v1/build` `python_version`. A healthy engine sits at roughly 200–250 MB and flat. On
+2026-09-27..30 it grew to 7.2 GB on an 8 GB machine and froze 10–18 min every ~6 h, unseen for three
+days: CPython 3.14.2's incremental GC plus one TLS context per feed poll, beside a smaller pgvector
+leak. `GET /v1/diagnose/memory` (grant `diagnose:memory`) answers *what* grew; its walk holds the
+GIL (`census_ms`), so it is asked, never polled.
 
 **Since 2026-08-24 there is one exception, and it is narrow.** The live engine has a public TLS edge
 and per-consumer tokens (ISSUE_98), and the assistant holds its own (`claude-dev`, revocable without
@@ -693,6 +703,7 @@ instrument rather than in somebody's head:
 | 2026-08-01/02 → 08-09 | the feed-timeout freeze (#73/#74/#75) | **no envelopes at all.** The two projects' records differ at the edge: ours calls it a nine-day freeze from 08-01, the IDE's tick-side record says 08-02 → 08-09. A reading near that edge checks both |
 | 2026-09-08 → 09-17 | VPS lost DNS and outbound TCP several times a day | envelopes exist but ran on **partial retrieval** — degraded, not absent, which is the harder case: nothing is missing, the evidence is thinner |
 | 2026-09-20 19:40 → 09-21 08:39 | host reset, engine down **12 h 50 m** | ~77 envelopes missing per stream |
+| 2026-09-27 13:32 → 09-30 07:53 | engine froze 10–18 min every ~4.5–6 h (12 freezes ≥ 5 min: full GC over a paged-out heap), plus restarts 07:48–07:53 and 09:30–09:33 | missing envelopes in every freeze window; ingest paused, articles fetched late rather than lost |
 
 Two boundaries are about *fields* rather than data, and they bite the same way: the archive's
 integrity fields begin **2026-08-22**, and the bar archive has a quality step at **2026-09-15**

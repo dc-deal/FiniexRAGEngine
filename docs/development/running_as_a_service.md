@@ -56,8 +56,11 @@ as the frame around the panel rather than a line inside it:
   to four different machines;
 - the age keeps counting on the **viewer's** clock while the panel stays frozen on the **engine's** —
   a frozen age would make a dead feed look like a quiet engine;
-- and when the two clocks differ by more than a few seconds, the panel says so instead of carrying
-  the difference silently inside every age.
+- when the two clocks differ by more than a few seconds, the panel says so instead of carrying
+  the difference silently inside every age;
+- and the frame **counts down to the next poll** (`· next in 8s`, `· next try in 12s` while
+  unreachable, `· polling` once due) — at a 15 s cadence a silent frame cannot be told apart from a
+  viewer that has hung.
 
 One measured number behind that: the request timeout is floored at **5 s**, because a refused TCP
 connection needs **2.04 s** to report itself on this Windows host. The collector's 2.0 s timeout

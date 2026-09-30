@@ -110,3 +110,35 @@ def test_the_panel_is_drawn_in_the_producers_clock() -> None:
     # 13:29:00 against the engine's 13:30:00 stamp is 60s — and against OUR clock three
     # seconds later it would be 63s. The distinction is the test.
     assert 'last 60s' in panel, 'the source row ages against the engine stamp, not ours'
+
+
+def test_the_next_try_is_counted_down_while_the_engine_is_unreachable() -> None:
+    """At a 15 s cadence a silent frame cannot be told from a hung viewer — so it says when."""
+    viewer = _viewer()
+    viewer.take(FeedReading(at=_SNAPSHOT_AT,
+                            reason='connection refused — the engine is not running'))
+    viewer._next_poll_at = _SNAPSHOT_AT + timedelta(seconds=12)
+
+    assert 'next try in 12s' in _draw(viewer, _SNAPSHOT_AT)
+    # Rounded up: the last second still reads as ahead, never as `0s`.
+    assert 'next try in 1s' in _draw(viewer, _SNAPSHOT_AT + timedelta(seconds=11, milliseconds=400))
+
+
+def test_the_countdown_also_runs_after_an_outage_and_in_normal_operation() -> None:
+    viewer = _viewer()
+    viewer.take(_good(_SNAPSHOT_AT))
+    viewer._next_poll_at = _SNAPSHOT_AT + timedelta(seconds=15)
+    assert 'next in 8s' in _draw(viewer, _SNAPSHOT_AT + timedelta(seconds=7))
+
+    viewer.take(FeedReading(at=_SNAPSHOT_AT + timedelta(seconds=15), reason='timed out'))
+    viewer._next_poll_at = _SNAPSHOT_AT + timedelta(seconds=30)
+    assert 'next try in 10s' in _draw(viewer, _SNAPSHOT_AT + timedelta(seconds=20))
+
+
+def test_a_due_poll_reads_as_polling_and_no_loop_means_no_countdown() -> None:
+    viewer = _viewer()
+    viewer.take(_good(_SNAPSHOT_AT))
+    assert 'next in' not in _draw(viewer, _SNAPSHOT_AT)       # rendered outside `run()`
+
+    viewer._next_poll_at = _SNAPSHOT_AT
+    assert '· polling' in _draw(viewer, _SNAPSHOT_AT + timedelta(seconds=1))
