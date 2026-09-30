@@ -44,6 +44,7 @@ from finiexragengine.core.observability.budget_guard import BudgetGuard
 from finiexragengine.core.observability.build_info import sample_build_info
 from finiexragengine.core.observability.logging_setup import configure_logging
 from finiexragengine.core.observability.reports.weekly_report import collect_weekly_report
+from finiexragengine.core.observability.memory_census import MemoryCensus
 from finiexragengine.core.observability.resource_gauge import ResourceGauge
 from finiexragengine.core.observability.resource_sample_store import ResourceSampleStore
 from finiexragengine.core.observability.stall_watchdog import StallWatchdog
@@ -273,6 +274,12 @@ def create_app(attach_runners: Optional[bool] = None,
     # process has nothing accumulating worth a fourteen-day series. The gauge disables itself when
     # psutil is missing, so a deploy that forgot `pip install` degrades instead of failing to boot.
     resource_gauge: Optional[ResourceGauge] = None
+    # Memory census (2026-09-30): built in every process, because `GET /v1/diagnose/memory` is worth
+    # answering even without workers; its tick-side half rides the gauge below. The collector hook
+    # is installed by the lifespan, not here, so an app that never starts (a test's TestClient
+    # without a context) leaves `gc.callbacks` untouched.
+    memory_census = MemoryCensus(
+        tracemalloc_frames=config_manager.get_config().diagnostics.tracemalloc_frames)
     if supervisor is not None:
         stall_watchdog = StallWatchdog(config_manager.get_config().stall_watchdog,
                                        supervisor.states)
@@ -282,7 +289,10 @@ def create_app(attach_runners: Optional[bool] = None,
                 database_url, retention_days=diagnostics.resource_retention_days)
                 if database_url else None),
             enabled=diagnostics.resource_gauge_enabled,
-            rss_warn_mb=diagnostics.resource_rss_warn_mb)
+            rss_warn_mb=diagnostics.resource_rss_warn_mb,
+            census=memory_census,
+            memory_log_minutes=diagnostics.memory_log_minutes,
+            gc_pause_warn_seconds=diagnostics.gc_pause_warn_seconds)
         stall_watchdog.set_gauge(resource_gauge)
 
     # Operator alert surface (ISSUE_27): /report command loop + the weekly cron. Lives in
@@ -416,6 +426,9 @@ def create_app(attach_runners: Optional[bool] = None,
         live_task: Optional[asyncio.Task] = None
         watchdog_task: Optional[asyncio.Task] = None
         stream_task: Optional[asyncio.Task] = None
+        # Before anything allocates in earnest: the collector hook times every pause from here on,
+        # and tracemalloc (when configured) only sees allocations made after it starts.
+        memory_census.install()
         # The dispatcher first: a subscriber attaching in the first milliseconds of the process must
         # find a tail already running, and it costs nothing when nobody is watching (a stream with no
         # subscriptions is not read at all).
@@ -465,6 +478,7 @@ def create_app(attach_runners: Optional[bool] = None,
         # connection — which is the whole reason it is not a file.
         if run_lock is not None:
             run_lock.release()
+        memory_census.uninstall()
 
     # The interactive schema surfaces (ISSUE_98). FastAPI mounts them on the app itself, so the
     # protected router's dependency never sees them — passing None is the only way to keep them
@@ -552,6 +566,8 @@ def create_app(attach_runners: Optional[bool] = None,
         # The feed catalogue this process polls (2026-09-09) — the diagnose route resolves a
         # `source_id` against it, so a caller names a configured feed and never a URL.
         source_sets=source_sets,
+        # What `GET /v1/diagnose/memory` counts from (2026-09-30).
+        memory_census=memory_census,
         # The live state this process collects (ISSUE_126 Phase 2), or None when nothing does.
         dashboard_provider=dashboard_provider))
     return app
@@ -604,7 +620,8 @@ def _build_protected_router(registry: PipelineRegistry,
                             log_file: Optional[str] = None,
                             config_views: Optional[Dict[str, AbstractConfigView]] = None,
                             source_sets: Optional[SourceSetRegistry] = None,
-                            dashboard_provider: Optional[Callable[[], DashboardSnapshot]] = None
+                            dashboard_provider: Optional[Callable[[], DashboardSnapshot]] = None,
+                            memory_census: Optional[MemoryCensus] = None
                             ) -> APIRouter:
     """Everything a token is required for — and everything added here later, automatically.
 
@@ -674,8 +691,9 @@ def _build_protected_router(registry: PipelineRegistry,
     protected.include_router(build_config_router(config_views or {}, tokens))
     # The feed doctor (2026-09-09), on its own grant surface. The first route that reaches
     # *outward* on request rather than reading the store — bounded to one named, configured feed
-    # per call, which is what keeps it a diagnostic instead of a proxy.
-    protected.include_router(build_diagnose_router(source_sets, tokens))
+    # per call, which is what keeps it a diagnostic instead of a proxy. Its second probe, the
+    # memory census (2026-09-30), reaches nothing outside the process.
+    protected.include_router(build_diagnose_router(source_sets, tokens, memory_census))
     # The live console's state (ISSUE_126 Phase 2), on its own grant surface. Mounted even without
     # a provider, for the same reason the config view is: a route that disappears with a boot mode
     # is a route the scope sweep cannot see. Without one it answers 503 and says why.

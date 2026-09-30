@@ -16,10 +16,15 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from finiex_auth.token_registry import TokenRegistry
 
+from finiexragengine.api.api_app import _build_protected_router
 from finiexragengine.api.endpoints import diagnose_router as router_module
 from finiexragengine.api.endpoints.diagnose_router import build_diagnose_router
+from finiexragengine.configuration.app_config_manager import AppConfigManager
 from finiexragengine.configuration.source_set_registry import SourceSetRegistry
+from finiexragengine.core.observability.memory_census import MemoryCensus
+from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
 from finiexragengine.core.sources.feed_doctor import FeedDiagnosis
+from finiexragengine.types.config_types.app_config_types import ApiConfig
 
 
 def _registry(tmp_path: Path) -> SourceSetRegistry:
@@ -38,9 +43,9 @@ def _registry(tmp_path: Path) -> SourceSetRegistry:
     return registry
 
 
-def _client(registry) -> TestClient:
+def _client(registry, memory_census=None) -> TestClient:
     app = FastAPI()
-    app.include_router(build_diagnose_router(registry, TokenRegistry()))
+    app.include_router(build_diagnose_router(registry, TokenRegistry(), memory_census))
     return TestClient(app)
 
 
@@ -164,3 +169,64 @@ def test_the_payload_carries_the_fields_the_console_renders(tmp_path, monkeypatc
     for key in ('source_id', 'url', 'bozo', 'suspicious', 'max_age_hours', 'age_basis'):
         assert key in diagnosis, key
     assert body['source_id'] == 'boj_press' and body['name'] == 'feed'
+
+
+# --- the memory probe (2026-09-30) ----------------------------------------------------------------
+
+def test_the_memory_probe_answers_with_the_census(tmp_path, monkeypatch):
+    monkeypatch.setattr(router_module, 'diagnose_feed',
+                        lambda *args, **kwargs: pytest.fail('the memory probe fetched a feed'))
+    response = _client(_registry(tmp_path), MemoryCensus()).get('/v1/diagnose/memory')
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body['name'] == 'memory'
+    diagnosis = body['diagnosis']
+    assert diagnosis['gc_tracked_objects'] > 0 and diagnosis['top_types']
+    assert 'ssl.SSLContext' in diagnosis['live'] and diagnosis['census_ms'] >= 0
+    assert diagnosis['reading']['allocated_blocks'] > 0
+
+
+def test_the_memory_probe_needs_no_source_id_and_no_catalogue():
+    # Scaffold-mock mode has no feed catalogue; the process still has memory worth counting.
+    response = _client(None, MemoryCensus()).get('/v1/diagnose/memory')
+    assert response.status_code == 200
+
+
+def test_no_census_is_a_503_not_a_page_of_zeros(tmp_path):
+    response = _client(_registry(tmp_path)).get('/v1/diagnose/memory')
+    assert response.status_code == 503
+    assert 'no memory census' in response.json()['detail']
+
+
+_FEED_ONLY = 'feed-only-token'
+_MEMORY_ONLY = 'memory-only-token'
+
+
+def _authenticated_client() -> TestClient:
+    """The real composition — an isolated router has no consumer, so no grant could refuse."""
+    manager = AppConfigManager()
+    registry = PipelineRegistry(manager.get_pipelines_dir(), manager.get_user_pipelines_dir())
+    registry.load()
+    api_config = ApiConfig(tokens={
+        'feeds': {'token': _FEED_ONLY, 'grants': ['diagnose:feed'], 'note': 'feed doctor only'},
+        'mem': {'token': _MEMORY_ONLY, 'grants': ['diagnose:memory'], 'note': 'census only'},
+    })
+    app = FastAPI()
+    app.include_router(_build_protected_router(registry, api_config,
+                                               TokenRegistry(api_config.tokens),
+                                               memory_census=MemoryCensus()))
+    return TestClient(app)
+
+
+def test_a_feed_grant_does_not_reach_the_memory_probe():
+    """Why both probes share `/{name}`: the grant is the first path parameter, per name.
+
+    A separate `/v1/diagnose/memory` would have no identity segment and fall back to the surface
+    floor — any `diagnose:*` holder could read it. This asserts the per-name refusal holds.
+    """
+    client = _authenticated_client()
+    refused = client.get('/v1/diagnose/memory', headers={'Authorization': f'Bearer {_FEED_ONLY}'})
+    assert refused.status_code == 403
+    allowed = client.get('/v1/diagnose/memory', headers={'Authorization': f'Bearer {_MEMORY_ONLY}'})
+    assert allowed.status_code == 200

@@ -228,6 +228,40 @@ stop timeout would have cut short — so `AppStopMethodConsole 20000` earned its
 restart rather than in theory. It also means the Ctrl+C path works end to end under the service: the
 event arrived, the handler ran, the lifespan drained in its declared order.
 
+### A stop that takes minutes is the heap, not the drain (2026-09-30)
+
+With a 7.2 GB heap on an 8 GB machine, `Restart-Service` printed "Waiting for service to stop..." for
+over four minutes. The log said why: `workers stopped (4)` and `[RUNLOCK] … released` at 07:48:23 —
+the orderly half was done in seconds — and everything after was the interpreter freeing its heap
+object by object, each page read back from the page file. Task Manager showed the process shrinking
+by several hundred MB a minute.
+
+**Once the log shows `workers stopped` and the run lock released, `Stop-Process -Id <pid> -Force`
+is safe:** nothing is writing any more, the database rolls back whatever is open, and the OS returns
+the memory at once instead of page by page. Before that line, let it drain. A slow stop is a symptom
+worth reading — `/v1/health` `resources.private_mb` against the machine's RAM says whether the heap
+was the cause.
+
+### The interpreter is part of the deploy
+
+`python -VV` on the server, and `/v1/build`'s `python_version` from anywhere. On 2026-09-30 the dev
+container ran CPython 3.14.7 while the live host ran **3.14.2** — one of the releases (3.14.0–3.14.4)
+that shipped the incremental garbage collector 3.14.5 reverted, because it lets cyclic garbage pile
+up in long-running processes. The engine now warns at boot (`[RUNTIME] python 3.14.x carries the
+incremental garbage collector …`). A patch upgrade on the server, both services stopped:
+
+```powershell
+Stop-Service FiniexRAGEngine; Stop-Service FiniexDataCollector
+# run the python.org installer for the newer 3.14.x → "Upgrade Now" (in place, C:\Program Files\Python314)
+python -m venv --upgrade .venv                  # in each project checkout
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+Start-Service FiniexRAGEngine; Start-Service FiniexDataCollector
+python -c "import sys, gc; print(sys.version, gc.get_threshold())"   # 3.14.5+: (2000, 10, 10)
+```
+
+`gc.get_threshold()` is the quick tell: the incremental releases answer `(2000, 10, 0)`. A platform
+change is exactly what the version-bump suite run on this machine exists for.
+
 ### What can be checked without a reboot
 
 A reboot is not free on this box — it also takes down whatever else runs there by hand — so most of

@@ -356,6 +356,18 @@ class DiagnosticsConfig(BaseModel):
     # weekly line is what produces the number to set this from — guessing one now would be the
     # same mistake as moving a retrieval floor on a single window.
     resource_rss_warn_mb: int = 0
+    # Memory census (2026-09-30), on the gauge's tick. One `[MEMORY]` line every this many minutes
+    # — 10 is 144 lines a day, enough to read a slope without drowning the log. 0 = off.
+    memory_log_minutes: int = 10
+    # A garbage collection holds the GIL, so every thread stops for its duration. Warn when one froze
+    # the process for at least this long: a healthy full collection takes well under a second, so 5 s
+    # fires on paging or a runaway heap — the 10–18 min freezes of 2026-09-27..30 — and never on a
+    # normal collection. 0 = off.
+    gc_pause_warn_seconds: float = 5.0
+    # tracemalloc frames per allocation, for the per-source-line view of `GET /v1/diagnose/memory`.
+    # 0 = off, deliberately: tracing costs memory and CPU for the whole process lifetime. Set it in
+    # the server overlay for a hunt (1 frame is enough for per-line growth), and back to 0 after.
+    tracemalloc_frames: int = 0
     # Host-connectivity probe (2026-09-08). While the correlated guard holds the set in its
     # back-off, the engine polls nothing and therefore learns nothing: the closing event reports
     # "recovered after 5m", which is the back-off's own length and not a measurement. Eight

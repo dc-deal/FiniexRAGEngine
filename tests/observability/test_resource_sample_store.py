@@ -30,6 +30,19 @@ def test_a_sample_round_trips(clean_db):
     assert (round(rss), sockets, threads) == (412, 24, 31)
 
 
+def test_private_bytes_round_trip_and_stay_null_where_unknown(clean_db):
+    # Migration 018 (2026-09-30): the committed size beside the working set, so the series shows
+    # paging instead of hiding it. Null is "the platform does not say", never zero.
+    store = ResourceSampleStore(clean_db)
+    windows = _sample(minutes_ago=2)
+    windows.private_mb = 7249.0
+    store.record(windows)
+    store.record(_sample(minutes_ago=1))
+    rows = store.window(datetime.now(timezone.utc) - timedelta(minutes=10))
+    private = [round(row.private_mb) if row.private_mb is not None else None for row in rows]
+    assert private == [7249, None]
+
+
 def test_a_refused_socket_count_is_stored_as_null(clean_db):
     # None and 0 are different facts: one means "the platform would not say", the other "no
     # sockets". Collapsing them would make the Windows host look idle.

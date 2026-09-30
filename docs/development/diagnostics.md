@@ -242,9 +242,15 @@ file-descriptor ceiling whose failure mode looks exactly like twelve unreachable
 **Right now** — `GET /health`, served from the gauge's live sample, never from the table:
 
 ```json
-"resources": {"enabled": true, "rss_mb": 412.3, "open_sockets": 24, "threads": 31,
-              "sampled_at": "2026-08-19T10:23:04+00:00", "ceiling_mb": 0, "over_ceiling": false}
+"resources": {"enabled": true, "rss_mb": 412.3, "private_mb": 431.8, "open_sockets": 24,
+              "threads": 31, "sampled_at": "2026-08-19T10:23:04+00:00", "ceiling_mb": 0,
+              "over_ceiling": false}
 ```
+
+**On Windows `rss_mb` is the working set, and it lies under pressure.** The OS trims it when RAM runs
+short, so on 2026-09-30 it read 5.2 GB while the process held 7.2 GB committed. `private_mb` (private
+bytes, Windows only — `null` elsewhere) is the committed size; **when the two drift apart, the
+machine is paging the engine out.** The ceiling compares against `private_mb` where it exists.
 
 **Over time** — the weekly report's Storage section:
 
@@ -272,6 +278,7 @@ Raw series, when a week is not the right window:
 
 ```sql
 SELECT date_trunc('hour', ts) AS hour, round(avg(rss_mb)) AS rss_mb,
+       round(max(private_mb)) AS private_mb,        -- migration 018; null before it / off Windows
        max(open_sockets) AS sockets, max(threads) AS threads
   FROM resource_samples WHERE ts > now() - interval '3 days'
  GROUP BY 1 ORDER BY 1;
@@ -281,6 +288,73 @@ Sampled on the stall-watchdog tick (60s) — ~1.4k rows/day, retention
 `diagnostics.resource_retention_days` (14), pruned once per UTC day by the writer.
 `diagnostics.resource_rss_warn_mb` warns **once** when crossed and marks the live header;
 it ships at `0` (off) on purpose — the weekly line is what produces a real number to set it from.
+
+## What is the process holding — and did a collection just freeze it?
+
+The gauge says *whether* the engine grows. The memory census says **what** it holds and **what the
+garbage collector costs it** — the instrument that was missing on 2026-09-27..30, when the engine
+grew to 7.2 GB and froze for 10–18 minutes every ~6 hours, and the cause had to be found by reading
+code. It was two things at once: CPython 3.14.2's incremental garbage collector (reverted in 3.14.5)
+leaving cyclic garbage lying around, and feedparser building a fresh urllib opener per poll whose
+HTTPS handler created a new TLS context — ~0.5–0.9 MB of native memory per poll, invisible to the
+collector's object counts. A smaller, genuine leak sat beside it: pgvector registering its types on
+every connection, which psycopg keeps forever. All three are fixed; these are the instruments that
+would name the next one in minutes.
+
+**In the log, on the gauge's tick** — one line every `diagnostics.memory_log_minutes` (10):
+
+```
+[MEMORY] private 412 MB · rss 380 MB · blocks 2,210,456 · gc runs 9120/829/14 · longest pause 0.31 s · pg adapter classes 391 · threads 11
+```
+
+Read it as a pair of slopes over a few hours: **`blocks` rising with `private`** means Python objects
+accumulate (look at the census below); **`private` rising while `blocks` stays flat** means native
+memory does — what the TLS contexts were. `pg adapter classes` must stay flat; it grew by 8 per
+database connection while pgvector was registered per connection.
+
+**A frozen process now says so afterwards.** A collection holds the GIL, so nothing runs during it —
+the log used to show 18 minutes of silence. When one takes at least
+`diagnostics.gc_pause_warn_seconds` (5), the next tick logs:
+
+```
+[GC] generation 2 collection froze the process for 1020.0 s (collected 48213 objects) — every thread, the workers included, stood still for that long
+```
+
+A pause of seconds means the heap is being paged back in: look at `private_mb` against the
+machine's RAM. At boot, `[RUNTIME] python 3.14.x carries the incremental garbage collector …` warns
+on the releases that shipped it, and `/v1/build` reports `python_version`.
+
+**On request** — `GET /v1/diagnose/memory` (grant `diagnose:memory`):
+
+```json
+{"name": "memory", "generated_at": "2026-09-30T10:12:03Z", "diagnosis": {
+  "rss_mb": 380.1, "private_mb": 412.3, "gc_tracked_objects": 1204311, "census_ms": 412.7,
+  "live": {"ssl.SSLContext": 2, "urllib.request.OpenerDirector": 1,
+           "psycopg.Connection": 1, "threading.Thread": 11},
+  "top_types": [{"type_name": "builtins.dict", "count": 412003}, "…"],
+  "reading": {"allocated_blocks": 2210456, "gc_pending": [312, 4, 1], "threads": 11,
+              "pg_adapter_classes": 391, "generations": [{"generation": 2, "collections": 14,
+              "collected": 81233, "uncollectable": 0, "last_pause_ms": 288.1, "max_pause_ms": 310.4}]},
+  "tracemalloc_enabled": false}}
+```
+
+- **`live`** counts the objects this engine has leaked before, plus two that must stay flat. A
+  `ssl.SSLContext` count in the hundreds is the 2026-09-30 defect back.
+- **`top_types`** is every GC-tracked object by type — call it twice an hour apart and compare.
+- **`census_ms`** is what the walk cost. It holds the GIL for that long; it is a diagnostic, not a
+  poll target. At a healthy size it is well under a second.
+
+**For a hunt, turn on tracemalloc** in the server overlay (`user_configs/app_config.json`):
+
+```json
+{"diagnostics": {"tracemalloc_frames": 1}}
+```
+
+After a restart the same route adds `traced_top` (source lines by memory held) and
+**`traced_growth`** — per line, what grew since the previous call, with `traced_since` naming the
+snapshot it is measured against. Call it once, wait an hour, call it again: the top of
+`traced_growth` is the line that allocates what is never freed. It costs memory and CPU for the whole
+process lifetime (a warning says so at boot), so set it back to `0` once the hunt is over.
 
 ## Is the engine running right now — and how do I stop it?
 
@@ -794,7 +868,7 @@ database and no shell, and `POST /run` is not registered in production, so nothi
 | Route | Grant | Answers |
 |---|---|---|
 | `GET /v1/health` | *open* | alive, worker cadences and last runs, `journal_id` + `instance_id`, budget, stall state |
-| `GET /v1/build` | *open* | version, commit, dirty-at-startup, process start — **which code is actually running** |
+| `GET /v1/build` | *open* | version, commit, dirty-at-startup, process start, interpreter version — **which code is actually running, on what** |
 | `GET /v1/pipelines` | `pipelines:<id>` | the constellations this token may see: symbols, trigger type, cadence — plus the stream settings |
 | `GET /v1/pipelines/{id}/latest` | `pipelines:<id>` | the newest persisted envelope, served from the store |
 | `GET /v1/pipelines/{id}/envelopes?since=&epoch=` | `pipelines:<id>` | a bounded range of that pipeline's series |
@@ -806,7 +880,7 @@ database and no shell, and `POST /run` is not registered in production, so nothi
 | `GET /v1/logs/{name}` | `logs:<name>` | the engine log over a **UTC** range, redacted (`engine` is the only stream) |
 | `GET /v1/configs` · `/{name}` | `configs:<name>` | the **effective** configuration this process runs — `app`, `pipelines`, `source_sets` — `user_configs/` included, credentials masked |
 | `GET /v1/dashboard/{name}` | `dashboard:<view>` | the live console's state as **one reading** — the stage rows, the breaking episodes, the activity feed and the verdicts behind them, stamped with the engine's own clock (`engine` is the only view). `503` when this process runs no workers: nothing is collecting, which is a different fact from nothing happening |
-| `GET /v1/diagnose/{name}` | `diagnose:<name>` | one **configured** feed, fetched and parsed live — the raw bytes that machine receives (`feed` is the only probe) |
+| `GET /v1/diagnose/{name}` | `diagnose:<name>` | `feed`: one **configured** feed, fetched and parsed live — the raw bytes that machine receives. `memory`: what the process holds — GC pauses, top types, live counts, tracemalloc growth when enabled |
 
 Two things a reading has to respect. **A `403` is a grant, not a bug** — access is by name, so a
 surface added later is unreachable until someone writes it into a token; and a scoped caller gets

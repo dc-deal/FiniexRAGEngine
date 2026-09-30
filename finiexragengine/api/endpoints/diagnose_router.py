@@ -23,10 +23,23 @@ diagnostic rather than an open proxy is all here:
 - **Redaction on the way out**, because `head` carries bytes a remote host wrote.
 
 Transport only, per the CLI/route convention: `core/sources/feed_doctor.py` owns the diagnosis.
+
+**The second probe, `memory` (2026-09-30), reaches nothing outside the process.** It counts what the
+engine holds — GC generations and their pauses, top object types, the objects that leaked before,
+and tracemalloc growth when enabled — the instrument that would have named the 7 GB growth of
+2026-09-27..30 in minutes instead of a day of reading code. `core/observability/memory_census.py`
+owns it. Its cost is the walk over every live object, which holds the GIL; the response states it
+(`census_ms`), and the grant (`diagnose:memory`) is held by nobody by default, like `diagnose:feed`.
+
+Both probes share this one route because a grant names the route's first path parameter: a
+separate `/v1/diagnose/memory` would have no identity segment and fall back to the surface floor, so
+a token holding only `diagnose:feed` could reach it. The price is that `source_id` can no longer be
+required by signature — so the feed probe refuses its absence explicitly, and still never means
+"all".
 """
 import logging
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
 from fastapi import APIRouter, HTTPException, Query, Security
 from finiex_auth.grant_auth import build_grant_dependency
@@ -34,16 +47,17 @@ from finiex_auth.redaction import redact
 from finiex_auth.token_registry import TokenRegistry
 
 from finiexragengine.configuration.source_set_registry import SourceSetRegistry
+from finiexragengine.core.observability.memory_census import MemoryCensus
 from finiexragengine.core.sources.feed_doctor import diagnose_feed
-from finiexragengine.types.api_types import FeedDiagnosisResponse
+from finiexragengine.types.api_types import FeedDiagnosisResponse, MemoryDiagnosisResponse
 from finiexragengine.types.config_types.source_set_types import SourceConfig
 from finiexragengine.utils.dataclass_json import to_jsonable
 
 logger = logging.getLogger(__name__)
 
-# The one probe this engine exposes. A closed set rather than a free name, so the grant model
-# applies unchanged and a caller cannot reach anything that was not deliberately named.
-_PROBES = ('feed',)
+# The probes this engine exposes. A closed set rather than a free name, so the grant model applies
+# unchanged (`diagnose:feed`, `diagnose:memory`) and a caller cannot reach anything not named here.
+_PROBES = ('feed', 'memory')
 
 # Fields of `FeedDiagnosis` carrying text this engine did not write. `head` is the whole point of
 # the route — the first bytes of the remote body — and therefore arbitrary remote content; the
@@ -56,13 +70,15 @@ _TIMEOUT_SECONDS = 10
 
 
 def build_diagnose_router(source_sets: Optional[SourceSetRegistry],
-                          tokens: TokenRegistry) -> APIRouter:
-    """Probe one configured feed and return what the diagnosis found.
+                          tokens: TokenRegistry,
+                          memory_census: Optional[MemoryCensus] = None) -> APIRouter:
+    """Probe one configured feed — or this process's memory — and return what the diagnosis found.
 
     `source_sets` is the registry this process loaded — the same one the ingest workers poll from,
     so a diagnosis is about a feed the engine actually has. `None` is scaffold-mock mode (no
     database, so no catalogue was built) and the route says so rather than answering for a feed
-    list it never loaded.
+    list it never loaded. `memory_census` is the census this process installed; `None` answers the
+    memory probe with 503 rather than with numbers nobody collected.
     """
     router = APIRouter(prefix='/v1/diagnose', tags=['diagnose'],
                        dependencies=[Security(build_grant_dependency(tokens),
@@ -82,19 +98,26 @@ def build_diagnose_router(source_sets: Optional[SourceSetRegistry],
                 for source in source_set.sources
                 if source.type == 'rss'}
 
-    @router.get('/{name}', response_model=FeedDiagnosisResponse)
+    @router.get('/{name}', response_model=Union[FeedDiagnosisResponse, MemoryDiagnosisResponse])
     def diagnose(name: str,
-                 source_id: str = Query(
-                     ..., description='the configured feed to probe — required, never "all"')
-                 ) -> FeedDiagnosisResponse:
-        """One feed's raw fetch and parse. 404 for an unknown probe or feed, 503 without a catalogue.
+                 source_id: Optional[str] = Query(
+                     None, description='feed probe only: the configured feed to probe — '
+                                       'required there, never "all"')
+                 ) -> Union[FeedDiagnosisResponse, MemoryDiagnosisResponse]:
+        """One probe. 404 for an unknown probe or feed, 503 when its collaborator is absent.
 
-        `source_id` has no default on purpose. An omitted parameter answering "every feed" is the
-        difference between a diagnostic and an amplifier, and a default is exactly how that arrives
-        by accident later.
+        For `feed`, `source_id` is required. An omitted parameter answering "every feed" is the
+        difference between a diagnostic and an amplifier, so its absence is refused with 422 —
+        explicitly here, because the signature can no longer require it (see module docstring).
         """
         if name not in _PROBES:
             raise HTTPException(status_code=404, detail=f'no probe named {name!r}')
+        if name == 'memory':
+            return _memory()
+        if not source_id:
+            raise HTTPException(status_code=422,
+                                detail='source_id is required for the feed probe — one '
+                                       'configured feed per call, never "all"')
         if source_sets is None:
             raise HTTPException(
                 status_code=503,
@@ -124,5 +147,17 @@ def build_diagnose_router(source_sets: Optional[SourceSetRegistry],
         # reader can see *which* text was altered instead of only how much.
         return FeedDiagnosisResponse(name=name, generated_at=datetime.now(timezone.utc),
                                      source_id=source_id, diagnosis=payload, redacted=redacted)
+
+    def _memory() -> MemoryDiagnosisResponse:
+        """The memory census, taken now. Nothing leaves the process and nothing is redacted: the
+        payload is counts, type names and source locations of this engine's own code."""
+        if memory_census is None:
+            raise HTTPException(status_code=503,
+                                detail='no memory census installed in this process')
+        diagnosis = memory_census.diagnose()
+        logger.info('[MEMORY] census served: %d tracked objects, %.0f ms',
+                    diagnosis.gc_tracked_objects, diagnosis.census_ms)
+        return MemoryDiagnosisResponse(name='memory', generated_at=datetime.now(timezone.utc),
+                                       diagnosis=to_jsonable(diagnosis))
 
     return router

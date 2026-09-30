@@ -55,7 +55,11 @@ class ResourceInfo(BaseModel):
     disables it, and a platform that refuses a socket count (Windows) nulls that one field.
     """
     enabled: bool = True
+    # The working set on Windows (resident memory elsewhere) — trimmed by the OS under pressure.
     rss_mb: Optional[float] = None
+    # Private bytes: what the process has committed, resident or paged out (2026-09-30). Windows
+    # only; null elsewhere. When the two diverge, the machine is paging this process out.
+    private_mb: Optional[float] = None
     open_sockets: Optional[int] = None
     threads: Optional[int] = None
     sampled_at: Optional[str] = None
@@ -248,6 +252,10 @@ class BuildInfo(BaseModel):
     # in which a change is live with no pin, no bump and no commit. `None` when not installed.
     auth_package_version: Optional[str] = None
     auth_package_editable: Optional[bool] = None
+    # The interpreter this process runs on (2026-09-30). The dev container ran 3.14.7 while the
+    # live host ran 3.14.2 — whose incremental garbage collector let cyclic garbage pile up to 7 GB —
+    # and nothing reachable from here could tell the two apart. `platform.python_version()`.
+    python_version: Optional[str] = None
     # When this process started. Answers the question the hash cannot: did my restart take effect?
     started_at: datetime
 
@@ -467,3 +475,15 @@ class FeedDiagnosisResponse(BaseModel):
     # Fields whose text a credential pattern changed before it left the process. `head` is the
     # reason this list exists: it carries bytes the remote host wrote, not this engine.
     redacted: List[str] = Field(default_factory=list)
+
+
+class MemoryDiagnosisResponse(BaseModel):
+    """What this process holds, counted on request (2026-09-30).
+
+    `diagnosis` is untyped for the same reason `FeedDiagnosisResponse.diagnosis` is: it is
+    `MemoryDiagnosis` serialized by `utils.dataclass_json`, an internal diagnostic shape that must
+    stay free to change without every field of it becoming an API contract.
+    """
+    name: str
+    generated_at: datetime
+    diagnosis: Any

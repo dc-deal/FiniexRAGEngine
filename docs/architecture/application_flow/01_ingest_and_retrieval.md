@@ -223,6 +223,18 @@ Top-down, each new article flows through these units in order:
    A process-wide `socket.setdefaulttimeout()` at server boot is the backstop under any *other*
    un-timeouted socket; the feed path does not depend on it.
 
+   **The second handler: one TLS context per process, not per poll (2026-09-30).** Beside
+   `_TimeoutHandler`, every fetch hands feedparser an `HTTPSHandler` carrying one shared
+   `SSLContext` (`_shared_tls_context()` in `rss_source.py`). Without it, the opener feedparser
+   builds per call gets urllib's default handler, which creates a new context in its constructor —
+   on Windows ~0.5–0.9 MB of native memory each, loading the system certificate stores, and held in
+   an opener/handler reference cycle the garbage collector sees only as ~40 small objects. At ~80
+   polls a minute that was ~46 MB/min of cyclic garbage; on CPython 3.14.2's incremental collector it
+   reached 7 GB and froze the process for 10–18 minutes at a time. Shared, a poll allocates no
+   context at all. `build_opener` skips its default handler when given an `HTTPSHandler` instance,
+   and the shared context mirrors urllib's own settings (ALPN `http/1.1`, post-handshake auth), so the
+   handshake a feed host sees is unchanged. The certificate stores are read once per process.
+
    **Measuring the deadline instead of guessing it (ISSUE_76).** The 10s above was hand-picked, and
    for nine months there was nothing to judge it by — because a fetch that *fails* left no timing
    behind. `StageTimer.time()` records only when the stage returns, so exactly the polls worth
@@ -535,6 +547,13 @@ Top-down, each new article flows through these units in order:
    mismatched stamp raises hard, naming both sides — vectors from different models
    must never mix, and a config edit can never silently poison the corpus (a model
    change is a deliberate re-embed migration, ISSUE_14).
+   **Type registration, once per process (2026-09-30):** every store connection used to call
+   pgvector's `register_vector(conn)`, which mints new anonymous dumper classes per call that
+   psycopg keeps forever in a class-level cache — ~21 KB a connection, ~0.2–0.4 GB a day.
+   `core/rag/pgvector_types.py` (`ensure_pgvector_types`) registers on psycopg's global adapter
+   template once; later connections inherit it, and only a connection opened before the first
+   registration is served individually. The query-vector cache and the two vector-binding reports
+   use the same unit.
 
 5. **Breaking detection — `core/pipeline/breaking_detector.py` (`BreakingDetector`) · built, ISSUE_11.**
    After upsert, an **LLM-free** pass flags breaking candidates over the articles just stored:

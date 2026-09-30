@@ -50,9 +50,10 @@ class ResourceSampleStore:
         try:
             with psycopg.connect(self._database_url) as conn, conn.cursor() as cur:
                 cur.execute(
-                    f'INSERT INTO {self._TABLE} (ts, rss_mb, open_sockets, threads) '
-                    'VALUES (%s, %s, %s, %s)',
-                    (sample.ts, sample.rss_mb, sample.open_sockets, sample.threads))
+                    f'INSERT INTO {self._TABLE} (ts, rss_mb, open_sockets, threads, private_mb) '
+                    'VALUES (%s, %s, %s, %s, %s)',
+                    (sample.ts, sample.rss_mb, sample.open_sockets, sample.threads,
+                     sample.private_mb))
         except psycopg.Error as exc:
             logger.warning('resource sample write failed (diagnostics only, tick continues): %s',
                            exc)
@@ -85,14 +86,16 @@ class ResourceSampleStore:
                             (self._TABLE,))
                 if cur.fetchone()[0] == 0:
                     return []
+                columns = 'ts, rss_mb, open_sockets, threads, private_mb'
                 if until is None:
-                    cur.execute(f'SELECT ts, rss_mb, open_sockets, threads FROM {self._TABLE} '
+                    cur.execute(f'SELECT {columns} FROM {self._TABLE} '
                                 'WHERE ts >= %s ORDER BY ts', (since,))
                 else:
-                    cur.execute(f'SELECT ts, rss_mb, open_sockets, threads FROM {self._TABLE} '
+                    cur.execute(f'SELECT {columns} FROM {self._TABLE} '
                                 'WHERE ts >= %s AND ts < %s ORDER BY ts', (since, until))
                 return [ResourceSample(ts=row[0], rss_mb=float(row[1]),
-                                       open_sockets=row[2], threads=row[3])
+                                       open_sockets=row[2], threads=row[3],
+                                       private_mb=float(row[4]) if row[4] is not None else None)
                         for row in cur.fetchall()]
         except psycopg.Error as exc:
             logger.warning('resource sample read failed (diagnostics only): %s', exc)

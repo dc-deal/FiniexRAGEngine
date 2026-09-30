@@ -10,8 +10,11 @@ one field and not the sample.
 """
 import builtins
 import logging
+from datetime import datetime, timedelta, timezone
+from typing import Optional
 
 from finiexragengine.core.observability.resource_gauge import ResourceGauge
+from finiexragengine.types.resource_types import GcPause, MemoryReading
 
 
 class _FakeMemory:
@@ -19,17 +22,28 @@ class _FakeMemory:
         self.rss = rss
 
 
+class _FakeWindowsMemory(_FakeMemory):
+    """psutil's Windows pmem: `rss` is the working set, `private` the committed bytes."""
+
+    def __init__(self, rss: int, private: int) -> None:
+        super().__init__(rss)
+        self.private = private
+
+
 class _FakeProcess:
     """Stands in for psutil.Process — `sockets` may raise, as it does on Windows."""
 
     def __init__(self, rss_mb: float = 400.0, sockets: int = 24, threads: int = 31,
-                 sockets_raise: bool = False) -> None:
+                 sockets_raise: bool = False, private_mb: Optional[float] = None) -> None:
         self._rss = int(rss_mb * 1024 * 1024)
+        self._private = int(private_mb * 1024 * 1024) if private_mb is not None else None
         self._sockets = sockets
         self._threads = threads
         self._sockets_raise = sockets_raise
 
     def memory_info(self) -> _FakeMemory:
+        if self._private is not None:
+            return _FakeWindowsMemory(self._rss, self._private)
         return _FakeMemory(self._rss)
 
     def net_connections(self, kind: str = 'inet') -> list:
@@ -154,3 +168,79 @@ def test_status_shape_for_health():
     assert status['rss_mb'] == 412.3 and status['open_sockets'] == 24
     assert status['over_ceiling'] is False
     assert status['sampled_at'] is not None
+
+
+def test_private_bytes_are_carried_where_the_platform_reports_them() -> None:
+    # 2026-09-30: the working set read 5.2 GB while 7.2 GB were committed — the gap IS the paging.
+    windows = _gauge(_FakeProcess(rss_mb=5200.0, private_mb=7200.0)).sample()
+    assert round(windows.private_mb) == 7200 and round(windows.rss_mb) == 5200
+    elsewhere = _gauge(_FakeProcess(rss_mb=412.0)).sample()
+    assert elsewhere.private_mb is None               # not exposed there: unknown, never zero
+
+
+def test_the_ceiling_reads_private_bytes_where_rss_is_a_trimmed_working_set(caplog) -> None:
+    gauge = _gauge(_FakeProcess(rss_mb=300.0, private_mb=600.0), rss_warn_mb=500)
+    with caplog.at_level(logging.WARNING):
+        gauge.sample()
+    assert gauge.over_ceiling is True
+    assert 'private 600 MB crossed the 500 MB ceiling' in caplog.text
+
+
+def test_status_carries_private_bytes_for_health() -> None:
+    gauge = _gauge(_FakeProcess(rss_mb=300.0, private_mb=612.34))
+    gauge.sample()
+    assert gauge.status()['private_mb'] == 612.3
+
+
+class _StubCensus:
+    """Hands the gauge a prepared reading; records whether the tick reset the slowest pause."""
+
+    def __init__(self, pause_ms: Optional[float] = None) -> None:
+        self._pause = GcPause(generation=2, pause_ms=pause_ms, collected=41) if pause_ms else None
+        self.resets = 0
+
+    def reading(self, *, reset_slowest: bool = False) -> MemoryReading:
+        self.resets += int(reset_slowest)
+        return MemoryReading(ts=datetime.now(timezone.utc), allocated_blocks=1_234_567,
+                             gc_pending=[10, 2, 1], generations=[], threads=11,
+                             pg_adapter_classes=391, slowest_pause=self._pause)
+
+
+def test_a_long_collection_is_named_after_the_fact(caplog) -> None:
+    census = _StubCensus(pause_ms=17 * 60 * 1000.0)   # the 17-minute freeze, as it would now read
+    gauge = _gauge(_FakeProcess(), census=census, gc_pause_warn_seconds=5.0)
+    with caplog.at_level(logging.WARNING):
+        gauge.sample()
+    assert '[GC] generation 2 collection froze the process for 1020.0 s' in caplog.text
+    assert census.resets == 1                         # the tick owns the slowest pause
+
+
+def test_a_short_collection_stays_quiet(caplog) -> None:
+    gauge = _gauge(_FakeProcess(), census=_StubCensus(pause_ms=120.0), gc_pause_warn_seconds=5.0)
+    with caplog.at_level(logging.WARNING):
+        gauge.sample()
+    assert '[GC]' not in caplog.text
+
+
+def test_the_memory_line_is_logged_on_its_cadence_not_every_tick(caplog) -> None:
+    gauge = _gauge(_FakeProcess(rss_mb=380.0, private_mb=412.0), census=_StubCensus(),
+                   memory_log_minutes=10)
+    with caplog.at_level(logging.INFO):
+        gauge.sample()
+        gauge.sample()                                # same minute: no second line
+    lines = [record.message for record in caplog.records if record.message.startswith('[MEMORY]')]
+    assert len(lines) == 1
+    assert 'private 412 MB · rss 380 MB · blocks 1,234,567' in lines[0]
+    assert 'pg adapter classes 391 · threads 11' in lines[0]
+
+    gauge._last_memory_log -= timedelta(minutes=11)   # the cadence has elapsed
+    caplog.clear()
+    with caplog.at_level(logging.INFO):
+        gauge.sample()
+    assert any(record.message.startswith('[MEMORY]') for record in caplog.records)
+
+
+def test_no_census_means_no_memory_line(caplog) -> None:
+    with caplog.at_level(logging.INFO):
+        _gauge(_FakeProcess(), memory_log_minutes=10).sample()
+    assert '[MEMORY]' not in caplog.text

@@ -18,7 +18,9 @@ reads as "not determinable here" rather than stopping a boot over a diagnostic n
 import importlib.metadata
 import json
 import logging
+import platform
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -75,6 +77,17 @@ def _auth_package() -> Tuple[Optional[str], Optional[bool]]:
     return distribution.version, editable
 
 
+def has_incremental_gc(version_info: Tuple[int, ...], implementation: str = 'cpython') -> bool:
+    """True for the CPython releases that shipped the incremental garbage collector: 3.14.0–3.14.4.
+
+    3.14.5 reverted it after production reports of cyclic garbage piling up in long-running
+    processes. This engine is one: on 3.14.2 the per-poll TLS contexts grew it to 7 GB and froze it
+    for 10–18 min every ~6 h (2026-09-27..30). A pure predicate so the boot warning is testable.
+    """
+    return (implementation == 'cpython' and tuple(version_info[:2]) == (3, 14)
+            and version_info[2] <= 4)
+
+
 def sample_build_info(version: str) -> BuildInfo:
     """Read the build identity once. Call at startup and hold the result.
 
@@ -95,13 +108,20 @@ def sample_build_info(version: str) -> BuildInfo:
         dirty=(status != '') if status is not None else None,
         auth_package_version=auth_version,
         auth_package_editable=auth_editable,
+        python_version=platform.python_version(),
         started_at=datetime.now(timezone.utc))
     auth = (f' · finiex_auth {auth_version}' + (' (EDITABLE)' if auth_editable else '')
             if auth_version else ' · finiex_auth NOT INSTALLED')
+    python = f' · python {info.python_version}'
     if commit is None:
-        logger.info('[BUILD] version %s · commit not determinable (no git repository here)%s',
-                    version, auth)
+        logger.info('[BUILD] version %s · commit not determinable (no git repository here)%s%s',
+                    version, python, auth)
     else:
-        logger.info('[BUILD] version %s · commit %s%s%s', version, commit,
-                    ' · WORKING TREE DIRTY' if info.dirty else '', auth)
+        logger.info('[BUILD] version %s · commit %s%s%s%s', version, commit,
+                    ' · WORKING TREE DIRTY' if info.dirty else '', python, auth)
+    if has_incremental_gc(tuple(sys.version_info[:3]), sys.implementation.name):
+        logger.warning('[RUNTIME] python %s carries the incremental garbage collector that 3.14.5 '
+                       'reverted: cyclic garbage piles up in a long-running process (2026-09-30: '
+                       '7 GB and 18-minute freezes). Upgrade the interpreter to 3.14.5 or later.',
+                       info.python_version)
     return info

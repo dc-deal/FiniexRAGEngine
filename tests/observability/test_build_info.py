@@ -4,6 +4,7 @@ The unit answers one question: which code did THIS process import. Everything he
 ways that answer can go wrong — a deployment with no git at all, and a value that describes the
 working tree instead of the running process.
 """
+import platform
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -118,3 +119,23 @@ def test_a_missing_or_unreadable_auth_package_never_breaks_the_sample(
     _installed(monkeypatch, _Distribution('0.1.0', None))      # from an index: nothing editable
     info = build_info.sample_build_info('9.9.9')
     assert (info.auth_package_version, info.auth_package_editable) == ('0.1.0', False)
+
+
+def test_the_interpreter_version_is_reported() -> None:
+    # 2026-09-30: the dev container ran 3.14.7 and the live host 3.14.2, and nothing said so.
+    assert build_info.sample_build_info('0.3.3').python_version == platform.python_version()
+
+
+@pytest.mark.parametrize('version, implementation, expected', [
+    ((3, 14, 0), 'cpython', True),
+    ((3, 14, 2), 'cpython', True),                    # what the live host ran
+    ((3, 14, 4), 'cpython', True),
+    ((3, 14, 5), 'cpython', False),                   # the release that reverted it
+    ((3, 14, 7), 'cpython', False),
+    ((3, 13, 9), 'cpython', False),
+    ((3, 14, 2), 'pypy', False),
+])
+def test_the_incremental_gc_releases_are_recognised(version: tuple, implementation: str,
+                                                    expected: bool) -> None:
+    assert build_info.has_incremental_gc(version, implementation) is expected
+
