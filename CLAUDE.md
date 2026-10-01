@@ -153,7 +153,10 @@ last hours (`/v1/logs/engine`: `private` and `blocks`), any `[GC] … froze the 
 2026-09-27..30 it grew to 7.2 GB on an 8 GB machine and froze 10–18 min every ~6 h, unseen for three
 days: CPython 3.14.2's incremental GC plus one TLS context per feed poll, beside a smaller pgvector
 leak. `GET /v1/diagnose/memory` (grant `diagnose:memory`) answers *what* grew; its walk holds the
-GIL (`census_ms`), so it is asked, never polled.
+GIL (`census_ms`), so it is asked, never polled. The case — timeline, the three causes, the
+instruments and what each was good for, the branches ruled out, and the verification — is
+`github_issues/root_internal_archive/INTERNAL_memory_growth_case_2026-09.md`; read it before
+diagnosing the next growth or freeze.
 
 **Since 2026-08-24 there is one exception, and it is narrow.** The live engine has a public TLS edge
 and per-consumer tokens (ISSUE_98), and the assistant holds its own (`claude-dev`, revocable without
