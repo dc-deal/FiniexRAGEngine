@@ -644,6 +644,14 @@ against it at random. Announce the new value and the first stamped `seq` per str
 **Never re-mint to "refresh" anything**: an identity that changes without a new deployment behind it
 is a discontinuity in someone else's series, reported for no event.
 
+**The same obligation covers an engine that cannot mint at all.** The Testing IDE admits our envelopes
+written *before* the mint under an attestation (2026-10-01): `crypto_sentiment` and
+`forex_macro_sentiment`, up to schema 2.0, count as production with the grade `attested`. Because
+`schema_version` stayed 2.0 across the mint, that claim cannot close itself — an **unstamped** 2.0 envelope
+written after it would fall under it too. Our boot guard makes that impossible for production; the case it
+cannot cover is **an engine older than 0.3.3 (no `instance_id`) writing these pipelines anywhere**. If that
+ever happens, tell the IDE on the bus (peer `testingide`) before its output can reach an import.
+
 What it cannot see: a **restore of the whole schema** carries the identity row with it, so a copy of
 production used as a test instance keeps production's `instance_id` until it is re-minted. No guard
 can detect that — the copy is byte-identical by construction. Re-minting is part of standing up a
