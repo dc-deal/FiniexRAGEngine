@@ -135,6 +135,17 @@ def test_healthy_sources_collapse_but_a_deviation_is_named():
     assert 'cryptoslate quarantined' in text                 # only the deviation spends words
 
 
+def test_a_feed_that_was_not_due_is_stated_beside_the_count_not_inside_it():
+    # 2026-09-23: `thedefiant` polls every 60 s against a ~21 s set cadence, so most passes skip it
+    # by design — and the row read `10/11 ok`, a fault that was the poll floor working.
+    stats = _stats()
+    stats.set_sources('crypto_news', SourcesSnapshot(last=_NOW, ok=10, total=10, not_due=1))
+    text = _render(stats)
+    assert '10/10 ok · 1 not due' in text
+    stats.set_sources('crypto_news', SourcesSnapshot(last=_NOW, ok=11, total=11))
+    assert 'not due' not in _render(stats)                   # nothing held back, nothing said
+
+
 def test_a_connectivity_event_replaces_the_per_feed_list(monkeypatch):
     # ISSUE_84: when the whole set is held by a local connectivity failure, naming seven blameless
     # feeds is exactly the noise the guard exists to remove — and it points the operator at the

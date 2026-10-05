@@ -331,7 +331,10 @@ class IngestWorker:
                 self._last_ok[poll.source_id] = now
         already: Set[str] = set(result.quarantined_skips) | set(result.failed_sources)
         # SOURCES row: healthy collapses to `N/N ok`; only failed/quarantined/overdue feeds named.
+        # A feed held back by its own poll floor was not due, so it is not in the denominator — it
+        # is counted beside it instead, or a healthy pass reads as `10/11 ok`.
         ok = sum(1 for poll in result.polls if poll.status == 'ok')
+        not_due = sum(1 for poll in result.polls if poll.status == 'floor_skipped')
         deviations = ([_quarantine_chip(poll, now) for poll in result.polls
                        if poll.status == 'quarantined']
                       + [f'{source_id} failed' for source_id in result.failed_sources]
@@ -341,7 +344,7 @@ class IngestWorker:
         backoff = next((poll.until for poll in result.polls if poll.status == 'host_backoff'), None)
         event = result.host_event
         stats.set_sources(source_set_id, SourcesSnapshot(
-            last=now, ok=ok, total=len(result.polls),
+            last=now, ok=ok, total=len(result.polls) - not_due, not_due=not_due,
             deviations=[] if backoff else deviations,
             host_backoff_until=backoff or (event.backoff_until if event
                                            and not event.resumed else None),

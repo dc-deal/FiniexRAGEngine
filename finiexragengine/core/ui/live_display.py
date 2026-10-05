@@ -341,6 +341,9 @@ class LiveDisplay:
         healthy = not snapshot.deviations and snapshot.host_backoff_until is None
         head = Text(f'{snapshot.ok}/{snapshot.total} ok',
                     style='green' if healthy else 'yellow')
+        # Feeds held back by their own poll floor: stated, never counted as a shortfall.
+        if snapshot.not_due:
+            head.append(f' · {snapshot.not_due} not due', style='dim')
         # A set-wide connectivity failure replaces the per-feed list rather than joining it
         # (ISSUE_84): naming every blameless feed is the noise the guard exists to remove, and
         # the operator needs to be sent to the host, not to the feeds.

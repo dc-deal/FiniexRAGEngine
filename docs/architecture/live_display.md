@@ -85,6 +85,9 @@ Notes on the rows:
   alive?'. Only named when stuck; a healthy slow feed cycles within its interval and stays folded
   into `N/N ok`. Already-quarantined/failed feeds keep their own marker. The full per-feed last-poll
   view lives in the Sources report (`sources_cli`).
+- **SOURCES `· N not due`** — feeds held back this pass by their own `poll_interval_seconds` floor.
+  They are **not in the denominator**: counted in, a healthy pass with one slow feed read `10/11 ok`
+  and looked like a fault (2026-09-23). Dim, never a deviation — the floor working is not a problem.
 - **BREAKING section** (ISSUE_64) — the summary row (`N detected · M confirmed · reaction`)
   followed by up to three recent *episodes*, one line each: `SYMBOL SIGNAL` · **live/ended** ·
   **why it broke**. An episode a restart inherited is restored into this list from the seeded

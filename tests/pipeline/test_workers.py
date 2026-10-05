@@ -590,3 +590,32 @@ def test_a_flagging_pass_writes_one_activity_line_naming_the_term_and_the_feed()
     assert breaking_lines[0] == ('crypto_news · keywords fomc statement · fed_press (+1 more) · '
                                  'Federal Reserve issues FOMC statement')
     assert stats.breaking().by_trigger == {'keyword': ingestor.runs, 'cluster': ingestor.runs}
+
+
+class _FloorIngestor:
+    """A healthy pass where one feed was held back by its own poll floor — the 2026-09-23 shape."""
+    def __init__(self):
+        self.runs = 0
+
+    def run(self) -> IngestResult:
+        self.runs += 1
+        return IngestResult(fetched=10, polls=[SourcePoll(f'feed{n}', 'ok') for n in range(10)]
+                            + [SourcePoll('thedefiant', 'floor_skipped', detail='poll floor')])
+
+
+def test_a_feed_held_back_by_its_poll_floor_is_not_in_the_denominator():
+    ingestor = _FloorIngestor()
+    stats = EngineStats(source_set_ids=['crypto_news'])
+
+    async def _scenario():
+        worker = IngestWorker(_SET, ingestor, IntervalTrigger(0.005), 300, engine_stats=stats)
+        task = asyncio.create_task(worker.start())
+        await _until(lambda: ingestor.runs >= 1)
+        await worker.stop()
+        await task
+
+    _run(_scenario())
+    snapshot = stats.sources()['crypto_news']
+    assert (snapshot.ok, snapshot.total, snapshot.not_due) == (10, 10, 1)
+    assert snapshot.deviations == []                          # healthy, and it says so
+

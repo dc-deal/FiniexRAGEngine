@@ -39,7 +39,11 @@ class SourcesSnapshot:
     """SOURCES row — liveness of the feed fetches (state, not history: ~56/min)."""
     last: datetime
     ok: int                                      # sources that polled ok this pass
-    total: int                                   # sources the pass considered
+    total: int                                   # sources that were DUE this pass (not_due excluded)
+    # Feeds deliberately not polled yet because their own `poll_interval_seconds` floor had not
+    # elapsed. Out of the denominator: counted in, a healthy pass read `10/11 ok` and sent the
+    # operator looking for a fault that was the poll floor working (2026-09-23).
+    not_due: int = 0
     deviations: List[str] = field(default_factory=list)   # named problem feeds only (exception density)
     # Set-wide connectivity back-off (ISSUE_84). When set, the whole set is paused because the
     # local connectivity failed — which is a different sentence from "these feeds are broken",
