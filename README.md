@@ -390,7 +390,7 @@ full **[Vision & Roadmap](https://github.com/dc-deal/FiniexRAGEngine/issues/1)**
 
 ## Tech stack
 
-Python 3.12 · FastAPI · Pydantic · PostgreSQL + pgvector · OpenAI API · feedparser · pytest · Docker
+Python 3.14 (≥ 3.14.5) · FastAPI · Pydantic · PostgreSQL + pgvector · OpenAI API · feedparser · pytest · Docker
 
 ## Development
 

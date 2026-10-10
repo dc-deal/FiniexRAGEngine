@@ -251,19 +251,59 @@ was the cause.
 container ran CPython 3.14.7 while the live host ran **3.14.2** — one of the releases (3.14.0–3.14.4)
 that shipped the incremental garbage collector 3.14.5 reverted, because it lets cyclic garbage pile
 up in long-running processes. The engine now warns at boot (`[RUNTIME] python 3.14.x carries the
-incremental garbage collector …`). A patch upgrade on the server, both services stopped:
+incremental garbage collector …`). **The floor is 3.14.5; the dev image pins the exact patch the
+server runs** (`Dockerfile`), because this case showed the patch level is not cosmetic.
+
+A patch upgrade on the server, both services stopped (engine and collector share
+`C:\Program Files\Python314`, so one installer run covers both):
 
 ```powershell
 Stop-Service FiniexRAGEngine; Stop-Service FiniexDataCollector
-# run the python.org installer for the newer 3.14.x → "Upgrade Now" (in place, C:\Program Files\Python314)
-python -m venv --upgrade .venv                  # in each project checkout
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+
+# the CLASSIC installer, not the install manager — see below
+$ProgressPreference = 'SilentlyContinue'        # Invoke-WebRequest in PS 5.1 crawls otherwise
+Invoke-WebRequest "https://www.python.org/ftp/python/3.14.7/python-3.14.7-amd64.exe" `
+  -OutFile "$env:USERPROFILE\Downloads\python-3.14.7-amd64.exe"
+& "$env:USERPROFILE\Downloads\python-3.14.7-amd64.exe"          # → "Upgrade Now"
+& "C:\Program Files\Python314\python.exe" -VV   # only after "Setup was successful"
+
+# in each project checkout, with the BASE interpreter named explicitly (never the venv's own)
+& "C:\Program Files\Python314\python.exe" -m venv --upgrade .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt               # engine
+.\.venv\Scripts\python.exe -c "import sys, gc; print(sys.version, gc.get_threshold())"
+#   3.14.5+ answers (2000, 10, 10); the incremental releases answer (2000, 10, 0)
+
 Start-Service FiniexRAGEngine; Start-Service FiniexDataCollector
-python -c "import sys, gc; print(sys.version, gc.get_threshold())"   # 3.14.5+: (2000, 10, 10)
 ```
 
-`gc.get_threshold()` is the quick tell: the incremental releases answer `(2000, 10, 0)`. A platform
-change is exactly what the version-bump suite run on this machine exists for.
+The probe runs with the venv's interpreter on purpose: that is the binary NSSM starts, and a global
+`python` that answers 3.14.7 says nothing about a venv that was never upgraded. A platform change is
+exactly what the version-bump suite run on this machine exists for.
+
+**Done 2026-10-10, 3.14.2 → 3.14.7.** Four things that cost time, so they do not cost it twice:
+
+- **Windows Server has neither `winget` nor the Store**, so python.org's recommended *Python install
+  manager* (an MSIX app) does not install here. It would not be the right tool anyway: it installs
+  per user into a different directory, while both venvs point at `C:\Program Files\Python314`. The
+  classic `python-3.14.x-amd64.exe` upgrades exactly that directory in place.
+- **`&` returns at once for a GUI installer**, so a `-VV` typed straight after it still answers with
+  the old version. Check only once setup reports success.
+- **The install took ~10 minutes** on this box (precompiling the standard library under the virus
+  scanner), most of the downtime. Do not cancel it midway: an interrupted upgrade can leave the
+  directory half replaced.
+- **`-VV` is a capital V.** A lower-case `-v` traces every import and drops into the interactive
+  interpreter (`exit()` leaves it).
+
+Measured result: engine down **10:17:12 → 10:31:49 UTC (14 m 37 s)**, two envelopes missing per stream
+(the 10:20 and 10:30 ticks). `/v1/build` `python_version` 3.14.7, **no `[RUNTIME]` line at boot**, and
+the first `[MEMORY]` line read `gc runs 366/33/3` — three full collections within seconds of boot,
+where 3.14.2 had run **none** in ten days. Identity and both `config_fingerprint`s unchanged, so the
+interpreter change forked no series.
+
+**A minor version is not this procedure.** 3.15.0 shipped 2026-10-09; moving to it means a new
+directory (`Python315`), venvs rebuilt rather than upgraded, and every compiled dependency needing a
+`cp315` wheel for Windows — which a day-old release often does not have yet. That is a change of its
+own: dev container and suite first, then the server, never the other way round.
 
 ### What can be checked without a reboot
 
@@ -303,10 +343,13 @@ for the same morning — and a report that then fires proves the scheduler came 
 |---|---|---|
 | T+0 | `Restart-Computer` | — |
 | T+3 min | `GET /v1/build` | `started_at` after the boot · a commit, **not `null`** · `dirty: false` |
-| T+3 min | `GET /v1/health` | five workers, the known `instance_id`, `journal_id`, `environment: production` |
-| T+5 min | `GET /v1/logs/engine?min_level=INFO` | `[IDENTITY]` · `[JOURNAL]` · `[BUILD]` · three `[AUTH]` lines |
+| T+3 min | `GET /v1/health` | one worker per configured source set and pipeline (four since the nano variant was switched off; five when this table was written), the known `instance_id`, `journal_id`, `environment: production` |
+| T+5 min | `GET /v1/logs/engine?min_level=INFO` | `[IDENTITY]` · `[JOURNAL]` · `[BUILD]` · three `[AUTH]` lines · `weekly report scheduled — next run …` |
 | T+5 min | `logs\service.err.log` | empty, or exactly the retryable database line |
 | 09:00 | the weekly report fires | the scheduler survived the boot |
+
+The `weekly report scheduled` line proves the job was **registered** at boot; only the 09:00 fire
+proves it **runs**. A reboot after 09:00 still gets the first half the same morning.
 
 **Check from outside first, then log in and watch.** An earlier version of this page said nobody may
 log in until the checks pass; that is too strict and it would rule out attending the reboot at all. A
@@ -330,11 +373,41 @@ Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" |
 Not this engine's dependency — it holds no price and reads no terminal — but it is on the same
 machine, so a reboot planned from here should know what else it takes down.
 
-### Still unproven
+### The reboot, 2026-10-10 — passed
 
-**The reboot.** Everything above shows the service starts, serves and stops cleanly; none of it
-shows the machine brings it back on its own. Planned as a controlled test on **Saturday 2026-09-26,
-before 09:00 UTC**. Until it has run, this page documents a service, not a solved outage.
+A restart from the Start menu, **both services left running on purpose**, and nobody touched anything
+afterwards: the operator watched over RDP and did not start a single service. Observed from outside
+the machine by polling `/v1/build` every 10 s:
+
+```
+10:00:20  last scheduled pass lands (crypto; forex 10:00:15) — nothing in flight after it
+10:01:27  [STREAM] listener dropped — PostgreSQL stopped first
+10:01:27  Scheduler has been shut down · workers stopped (4) · [RUNLOCK] released     (0.1 s)
+10:01:42  first failed poll — the box is going down
+10:04:02  502 — Caddy is back, the engine is not yet
+10:04:08  first engine log line (Delayed Start)
+10:04:09  [RUNLOCK] claimed · [IDENTITY] 1dcb470e3d17
+10:04:39  /v1/build answers, started_at 10:04:32
+10:04:50  boot pass lands (crypto; forex 10:04:51)
+```
+
+- **About 3 minutes unreachable, and no envelope lost** — the outage fell between two ticks, and
+  `seq` runs on unbroken (7375 → 7376, 7089 → 7090).
+- Every checklist row held: a commit and `dirty: false`, four workers `ok`, the known `instance_id`
+  and `journal_id`, `environment: production`, the boot lines, the weekly job re-registered for the
+  next Saturday. Both `config_fingerprint`s unchanged, reason `boot`.
+- **Windows stops services in parallel**, so the database went down before the engine. Harmless here
+  because no pass was running; a pass in flight would have failed and reported it — never absorbed —
+  and the run lock is session-held, so a dead session is a released lock (`run_lock.py`).
+- **The commit moved, 0839429 → 5da42c3.** The checkout on disk had been ahead of the running process
+  since 2026-09-30, fourteen minutes after its start; the reboot imported what was on disk. Harmless
+  (viewer and docs only), and precisely the question `/v1/build` exists to answer.
+
+**What it does not cover is a power cut** — no stop signal at all. The start side is the same as
+above, and it is the side that failed on 2026-09-20; the other side was observed then: PostgreSQL
+survived that hard cut intact. Nothing about it is worth provoking deliberately.
+
+### Still unproven
 
 **`PYTHONUTF8=1`** is not confirmed to be in the installed environment list. Harmless either way for
 the reasons above, and worth setting when the list is next edited.
@@ -387,7 +460,8 @@ actual message under identical log entries.
 
 Not a start, not a stop. **Restart the machine and confirm `/v1/health` answers without anybody
 logging in.** That is the only test that measures the thing this page is about — the collector's own
-service step is explicitly unproven for exactly this reason.
+service step is explicitly unproven for exactly this reason. **Passed on 2026-10-10** — see "The
+reboot, 2026-10-10" above.
 
 ```powershell
 sc.exe qc FiniexRAGEngine          # START_TYPE must read AUTO_START (DELAYED)
