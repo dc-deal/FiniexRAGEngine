@@ -242,7 +242,8 @@ class PgVectorStore(AbstractVectorStore):
             raise VectorStoreError(f'flag_candidates update failed: {exc}') from exc
 
     def query(self, vector: List[float], top_k: int, since: datetime,
-              min_importance: Optional[int] = None) -> List[ScoredArticle]:
+              min_importance: Optional[int] = None,
+              until: Optional[datetime] = None) -> List[ScoredArticle]:
         table = _TABLE
         columns = ', '.join(self._COLUMNS)
         # <=> is pgvector's cosine-distance operator (0.0 = identical direction).
@@ -254,6 +255,11 @@ class PgVectorStore(AbstractVectorStore):
                f'embedding <=> %s::vector AS distance '
                f'FROM {table} WHERE published_at >= %s')
         params: list = [vector, since]
+        if until is not None:
+            # Half-open window [since, until): the background section's upper edge is the recent
+            # window's lower edge, so an article exactly on the boundary belongs to recent only.
+            sql += ' AND published_at < %s'
+            params.append(until)
         if min_importance is not None:
             sql += ' AND importance >= %s'
             params.append(min_importance)

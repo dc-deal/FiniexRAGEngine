@@ -72,6 +72,27 @@ Before committing to a design for a non-trivial feature or change:
   described openly at the top of this file, so it does not need signing into every commit. The
   assistant proposes the text; the operator commits.
 
+## What gets published — the scaffolding, not the business logic
+
+This repository is public, and from 2026-10-11 it carries **the engine, not our use of it**.
+
+- **Public — the scaffolding.** Engine code, diagnostics and reports, LLM model support (model
+  profiles, the allowlist, the price table), migrations, tests of mechanisms, docs of mechanisms —
+  and the **reference configuration** in `configs/` + `prompts/`: everything built up to 2026-10-11
+  (`crypto_sentiment`, `forex_macro_sentiment`, their prompts, source sets and calibration). It is a
+  complete, working system for a contributor who wants one out of the box, it stays public, and it
+  keeps being maintained in public, values included.
+- **Private — the business logic.** Every pipeline, prompt, source set and calibration result added
+  from now on lives in `configs_private/`: its own private git repository, identical on the dev box
+  and the server, never committed here.
+- **The test for a file:** would it tell a reader *what we read, how we read it, or what we act on* in
+  a private pipeline? Then it is private. The mechanism that makes it possible is public.
+- **Issues, roadmap and docs describe mechanisms and measurement methods** — never the name, prompt
+  content, feeds or tuned values of a private pipeline. Private work items live in the private
+  repository. The read surfaces serve private definitions to token holders like any other, so
+  `configs:*` and `reports:*` are granted to ourselves only; the public `/v1/health` names private
+  workers by a neutral alias.
+
 ## Versioning & releases
 
 - **Scheme:** semver `MAJOR.MINOR.PATCH`; pre-1.0 tags carry an `-alpha` suffix
@@ -114,7 +135,9 @@ Before committing to a design for a non-trivial feature or change:
   **A red result is decided, never absorbed.** Each failure is either fixed before the tag or
   recorded as a named platform gap with its reason — a version that ships over an unexplained red
   is a version whose own evidence nobody read.
-- **The server deploy is stop → pull → `pip install -r requirements.txt` → migrate → start.** The
+- **The server deploy is stop → pull → `git -C configs_private pull` → `pip install -r
+  requirements.txt` → migrate → start.** The private pull is the business configuration's own
+  deploy; `/v1/build` reports `private_commit` beside `commit`, so both halves are checkable. The
   pip step arrived with `finiex_auth` and is not optional: a pull without it runs whatever package
   version happens to be installed, or none. `/v1/build` reports `auth_package_version` and
   `auth_package_editable`; an editable install in production is a finding.
@@ -426,15 +449,16 @@ Read first, in order:
 - **Custom exceptions** in `finiexragengine/exceptions/` (`*_errors.py`), rooted at `FiniexRagError`.
 - **Config managers** in `finiexragengine/configuration/`; instantiate and use directly.
   Config defaults must mirror the JSON config file exactly.
-- **Config truth is layered — and the factories are the only load paths.** Tracked `configs/`
-  carries the shared defaults; a gitignored `user_configs/` overlay (`app_config.json`,
-  `pipelines/*.json`, `source_sets/*.json`) deep-merges on top at load — secrets,
-  machine-specific switches, local experiments. Registries load **only** via
-  `AppConfigManager.build_pipeline_registry()` / `build_source_set_registry()` (raw
-  constructors are test-only) — a call site assembling its own registry silently drops
-  the override layer. Every applied override reports at startup, leaf by leaf
-  (`[OVERRIDE] …`, gated by `logging.warn_on_override`).
-  Details: `docs/development/user_configs_overrides.md`.
+- **Config truth is layered — and the factories are the only load paths.** Three layers, merged in
+  order: tracked `configs/` + `prompts/` (the public reference) → `configs_private/` (ours: overlays
+  onto the reference by file name, plus complete private pipelines, source sets and prompts; one
+  private git repo, identical on every machine) → gitignored `user_configs/` (per machine: switches
+  and secrets, unversioned). The same id defined in two files, or the same prompt version in two
+  layers, is a boot refusal, never a silent shadow. Registries load **only** via
+  `AppConfigManager.build_pipeline_registry()` / `build_source_set_registry()` (raw constructors are
+  test-only) — a call site assembling its own registry silently drops both overlay layers. Every
+  applied override reports at startup, leaf by leaf, per layer (`[OVERRIDE] …`, gated by
+  `logging.warn_on_override`). Details: `docs/development/user_configs_overrides.md`.
 - **CLI entry points** in `finiexragengine/cli/` — parameter reception only, no logic.
 - **Every start command is a module command**: `python -m finiexragengine.cli.server_cli`, never
   `python finiexragengine/cli/server_cli.py`. Running a file puts *that file's directory* on
@@ -738,6 +762,8 @@ finiexragengine/        package root (no __init__.py)
   types/                @dataclass domain types + config_types/ (Pydantic)
   utils/                dependency-free helpers (pure functions, no engine imports)
 configs/                app_config.json + pipelines/*.json (constellations)
+configs_private/        private business configuration — own repo, gitignored here (pipelines/,
+                        source_sets/, prompts/, tests/)
 docs/                   architecture + guides
 tests/                  pytest suite — one folder per domain, mirroring the package
 ```

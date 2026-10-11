@@ -117,6 +117,20 @@ class DeepTierConfig(BaseModel):
     window_minutes: int = 43200          # how far back the deep tier may reach (30 days)
 
 
+class BackgroundSectionConfig(BaseModel):
+    """Opt-in older retrieval section with its own budget, for pipelines with a slow horizon.
+
+    Not the deep tier, and the differences are the point: it is NOT gated by `importance` (the deep
+    tier admits what the keyword detector flagged, which measured as almost nothing), it does NOT
+    share `top_k` (the deep tier only fills slots recent news leaves, so it rarely gets any), and it
+    ends where the recent window begins, so the two sections never return the same article. It
+    answers "what has been building up over the weeks before", for a pipeline whose horizon is
+    days, and the prompt fences it as background.
+    """
+    window_minutes: int = 20160          # how far back the section reaches (14 days)
+    top_k: int = 8                       # its own cap, on top of the recent section's top_k
+
+
 class RetrievalConfig(BaseModel):
     top_k: int = 12
     recency_window_minutes: int = 1440   # recency window for retrieval (ISSUE_3)
@@ -132,6 +146,20 @@ class RetrievalConfig(BaseModel):
     # (forex) land ~0.37-0.46 → 0.55 (this default) holds there.
     floor_distance: Optional[float] = 0.55
     deep_tier: Optional[DeepTierConfig] = None   # None = recent-only (sentiment default, ISSUE_5)
+    # None = no background section — exactly how every pipeline retrieved before it existed, which
+    # is why the fingerprint omits it while unset (config_fingerprint._PIPELINE_OMIT_WHEN_NONE).
+    background: Optional[BackgroundSectionConfig] = None
+
+    @model_validator(mode='after')
+    def _background_reaches_past_recent(self) -> 'RetrievalConfig':
+        # A background window no longer than the recent one would be empty by construction — a
+        # configuration that silently retrieves nothing is refused here, not discovered in a funnel.
+        if (self.background is not None
+                and self.background.window_minutes <= self.recency_window_minutes):
+            raise ValueError(
+                f'retrieval.background.window_minutes ({self.background.window_minutes}) must '
+                f'exceed recency_window_minutes ({self.recency_window_minutes})')
+        return self
 
 
 class BreakingConfig(BaseModel):

@@ -169,7 +169,10 @@ factories for constellations and source-sets). On startup, every applied overrid
 reported once as a one-liner (`[OVERRIDE] pipelines/crypto_sentiment.json ·
 floor_distance 0.7→0.65 · symbols 8→2`), with typo'd keys flagged (`⚠ key?`) — a
 forgotten override never steers a run silently (`logging.warn_on_override`, default on).
-Full guide — merge semantics, load paths, report format:
+Between the two sits an optional **private layer**, `configs_private/` — a separate repository for
+pipelines, source sets and prompts an operator does not publish; this repository ships the engine
+and a complete reference configuration, and loads a private layer when one is checked out.
+Full guide — the three layers, merge semantics, load paths, report format:
 [docs/development/user_configs_overrides.md](docs/development/user_configs_overrides.md).
 
 The **database schema is not configuration** — it is owned by the numbered SQL files in

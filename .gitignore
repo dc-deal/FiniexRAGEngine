@@ -37,6 +37,9 @@ HANDOFF_*.md
 IMPORT_NOTES_*.md
 # Private strategy research — the framework is public, what it is used to research is not.
 experiments/private/
+# Private business configuration (pipelines, prompts, source sets, calibration added from
+# 2026-10-11 on) — its own private git repository, the layer between configs/ and user_configs/.
+configs_private/
 
 # Local issue snapshot utility + its output (personal, never published)
 export_github_issues.sh

@@ -305,6 +305,25 @@ directory (`Python315`), venvs rebuilt rather than upgraded, and every compiled 
 `cp315` wheel for Windows — which a day-old release often does not have yet. That is a change of its
 own: dev container and suite first, then the server, never the other way round.
 
+### The private configuration layer on the server
+
+Our own pipelines, prompts and source sets live in `configs_private/` — a private repository
+cloned inside the checkout (CLAUDE.md, "What gets published"). On the server it is cloned once and
+then pulled with every deploy:
+
+```powershell
+cd C:\Users\Administrator\Documents\code\FiniexRAGEngine
+git clone <private repository> configs_private          # once
+git config --system --add safe.directory "C:/Users/Administrator/Documents/code/FiniexRAGEngine/configs_private"
+git -C configs_private pull                              # every deploy, beside the main pull
+```
+
+The `safe.directory` entry matters for the same reason as the main checkout's: LocalSystem refuses
+a repository owned by another user, and `/v1/build` then reports `private_commit: null` instead of
+the commit it loaded. A private template that is missing — the layer not cloned, or not pulled —
+stops the boot as a configuration refusal (exit 2) naming the layers it searched, rather than a
+crash NSSM would restart.
+
 ### What can be checked without a reboot
 
 A reboot is not free on this box — it also takes down whatever else runs there by hand — so most of

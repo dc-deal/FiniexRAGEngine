@@ -108,12 +108,17 @@ class LlmConfig(BaseModel):
     """
     provider: str = 'openai'
     temperature: float = 0.1
-    timeout_seconds: int = 30
+    # Per call. 90 rather than 30 since the reasoning models (gpt-5 family) joined: their hidden
+    # reasoning tokens make a call take tens of seconds, and the gpt-5-nano trial lost 32 calls to
+    # a 30 s ceiling. A ceiling, not a wait — the 1–2 s calls of the fast pipelines are unaffected —
+    # and still bounded per pass by `pass_timeout_seconds`. Outside the fingerprint: a timeout
+    # produces an error, never a different score.
+    timeout_seconds: int = 90
     # Governance allowlist: a pipeline requesting a model outside this set fails at
     # assembly — fail fast, before any spend. Override the list in the gitignored
     # user_configs to admit e.g. a fine-tuned `ft:...` model without touching tracked config.
     allowed_models: List[str] = Field(
-        default_factory=lambda: ['gpt-4o-mini', 'gpt-4o', 'gpt-5-nano'])
+        default_factory=lambda: ['gpt-4o-mini', 'gpt-4o', 'gpt-5-nano', 'gpt-5-mini', 'gpt-5'])
     # Optional OpenAI-compatible endpoint (vLLM, Ollama, ...) for self-hosted models —
     # private infrastructure, so it belongs in the user_configs override.
     base_url: Optional[str] = None
@@ -174,6 +179,9 @@ _DEFAULT_MODEL_PRICES = {
     # Priced before it is used, so the variant trial (ISSUE_42 fan-out) is billed correctly from
     # its first call rather than from the moment someone notices the table has no row for it.
     'gpt-5-nano': ModelPrice(input_per_1k=0.00005, output_per_1k=0.0004),
+    # The reasoning-model family beside nano, priced before first use like nano was.
+    'gpt-5-mini': ModelPrice(input_per_1k=0.00025, output_per_1k=0.002),
+    'gpt-5': ModelPrice(input_per_1k=0.00125, output_per_1k=0.01),
 }
 
 
@@ -219,7 +227,7 @@ class PricingConfig(BaseModel):
     # Verdicts are deliberately NOT derived from this (no STALE threshold): picking a staleness
     # number here would be inventing a policy, and ISSUE_67's pricing probe is the mechanism that
     # is supposed to *check* rather than to *remind*. This field is provenance, nothing more.
-    checked: Optional[date] = date(2026, 9, 15)
+    checked: Optional[date] = date(2026, 10, 11)
     models: Dict[str, ModelPrice] = Field(
         default_factory=lambda: dict(_DEFAULT_MODEL_PRICES))
     # The guard that checks the table above (ISSUE_67). It never writes into it — `price_cli

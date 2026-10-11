@@ -1,9 +1,49 @@
-# Config Overrides (`user_configs/`)
+# Config Layers (`configs/` → `configs_private/` → `user_configs/`)
+
+Configuration is resolved across three layers, lowest first:
+
+| Layer | What it is | Versioned |
+|---|---|---|
+| `configs/` + `prompts/` | the **public reference** — a complete, working system for anyone who clones this repository | here, publicly |
+| `configs_private/` | **our business configuration** — pipelines, source sets and prompts we do not publish | its own private repository, identical on every machine |
+| `user_configs/` | **this machine** — secrets, switches, local experiments | nowhere (gitignored, per machine) |
 
 Every tracked config can be overlaid by a gitignored local file under `user_configs/` —
 the place for secrets, machine-specific switches, and local experiments. The tracked
 files in `configs/` stay the shared defaults; the override layer is deep-merged on top
 at load, per machine, and is never committed.
+
+## The private layer (`configs_private/`)
+
+Why it exists: this repository is public and carries the engine, not our use of it (CLAUDE.md, *What
+gets published*). The private layer is where our own pipelines, prompts, source sets and calibration
+results live — a private git repository checked out at `configs_private/` and gitignored by this one.
+
+```
+configs_private/
+  pipelines/<id>.json      a COMPLETE private pipeline — or, named like a tracked file, an overlay onto it
+  source_sets/<id>.json    the same for source sets
+  prompts/<family>/<family>_v<N>.md   private prompt families and versions
+  tests/                   its own suite: python -m pytest configs_private/tests -q
+```
+
+- **A file named like a tracked one is an overlay** — deep-merged onto it exactly like a
+  `user_configs/` overlay, before the machine's overlay. **A new name is a complete definition.**
+- **The machine overlay applies last, on top of either** — a private pipeline's shadow variant can be
+  switched off on one machine with the usual `{"sub_pipeline_id": …, "enabled": false}`.
+- **Nothing is shadowed silently:** the same pipeline or source-set id from two files, or the same
+  prompt version in two layers, refuses to boot (`ConfigurationError`, exit 2).
+- **A prompt may continue a family in the private layer** (`v1` public, `v2` private) — versions are
+  files, and a version lives in exactly one layer.
+- **Visible at boot:** `[OVERRIDE] configs_private/pipelines/<id>.json · …` for a private overlay,
+  `[CONFIG] <id> · … · private` for a private pipeline, and `/v1/build` reports `private_commit`.
+  The public `/v1/health` names private workers `eval:private-N` / `ingest:private-N`.
+- **The public suite never loads it** (`tests/conftest.py` points it at an empty directory), so a
+  clone without the layer and our machines run the same tests. The layer's own suite runs from the
+  engine checkout and loads through the real factories.
+- **Deploy:** `git -C configs_private pull` beside the main pull. On a service running as
+  LocalSystem, add the directory to git's `safe.directory` like the main checkout, or `/v1/build`
+  reports `private_commit: null`.
 
 ## What can be overridden
 
@@ -13,8 +53,9 @@ at load, per machine, and is never committed.
 | `user_configs/pipelines/<id>.json` | `configs/pipelines/<id>.json` | thin a symbol list, flip a model variant off, try a retrieval floor |
 | `user_configs/source_sets/<id>.json` | `configs/source_sets/<id>.json` | disable a feed this machine's egress IP cannot reach |
 
-**Prompts are deliberately not overridable** — a prompt is series-defining
-(`prompt_version`); a silent per-machine prompt would fork the score series invisibly.
+**Prompts are deliberately not overridable in place** — a prompt is series-defining
+(`prompt_version`); a silent per-machine prompt would fork the score series invisibly. New prompt
+families and versions are *added* in the private layer, never substituted for an existing file.
 
 ## Start from the template
 

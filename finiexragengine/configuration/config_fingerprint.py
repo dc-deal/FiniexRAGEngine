@@ -70,6 +70,18 @@ _PIPELINE_EXCLUDED: Dict[str, str] = {
                                    'may be and still count as one story; reporting, not scoring',
 }
 
+# --- what stays out ONLY while it is unset, and why --------------------------------------
+# The denylist above drops a key whatever its value. These are the opposite case: optional
+# blocks that ARE series-defining once set, added after the archive began. `model_dump` emits a
+# new field as `null` on every config, so without this rule adding the field forks every
+# existing series although none of them changed — the false positive the denylist comment
+# accepts, but here it is provable: an absent block is exactly what every earlier config ran.
+# When set, the block is hashed like any other field. Same one-level dotted form as above.
+_PIPELINE_OMIT_WHEN_NONE: Dict[str, str] = {
+    'retrieval.background': 'the second, older retrieval section — '
+                            'unset means no section, which is how every earlier pass retrieved',
+}
+
 _SOURCE_SET_EXCLUDED: Dict[str, str] = {
     'trigger': 'ingest poll cadence — pace, not corpus content. NOTE the asymmetry: the '
                'PIPELINE trigger IS hashed, because eval cadence (the bar-close timeframe) is '
@@ -119,7 +131,8 @@ def compute_config_fingerprint(pipeline: PipelineConfig, source_set: SourceSetCo
     """
     payload = {
         'app': _app_slice(app),
-        'pipeline': _prune(pipeline.model_dump(mode='json'), _PIPELINE_EXCLUDED),
+        'pipeline': _omit_when_none(_prune(pipeline.model_dump(mode='json'), _PIPELINE_EXCLUDED),
+                                    _PIPELINE_OMIT_WHEN_NONE),
         'source_set': _source_set_half(source_set),
     }
     canonical = _dumps(_canonical(payload))
@@ -177,6 +190,26 @@ def _prune(data: Dict[str, Any], excluded: Dict[str, str]) -> Dict[str, Any]:
             continue
         block = pruned.get(head)
         if isinstance(block, dict) and leaf in block:
+            block = dict(block)                 # copy — never mutate the caller's dump
+            del block[leaf]
+            pruned[head] = block
+    return pruned
+
+
+def _omit_when_none(data: Dict[str, Any], paths: Dict[str, str]) -> Dict[str, Any]:
+    """Drop each listed key only while its value is None; the reasons live in the constant above.
+
+    A set value passes through untouched, so the field is hashed as soon as a config uses it.
+    """
+    pruned = dict(data)
+    for path in paths:
+        head, dot, leaf = path.partition('.')
+        if not dot:
+            if pruned.get(head, ...) is None:
+                del pruned[head]
+            continue
+        block = pruned.get(head)
+        if isinstance(block, dict) and leaf in block and block[leaf] is None:
             block = dict(block)                 # copy — never mutate the caller's dump
             del block[leaf]
             pruned[head] = block

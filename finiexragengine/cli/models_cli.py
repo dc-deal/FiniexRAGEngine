@@ -9,6 +9,7 @@ import argparse
 
 from finiexragengine.configuration.app_config_manager import AppConfigManager
 from finiexragengine.core.llm.model_catalog import check_configured_models, format_model_check
+from finiexragengine.core.llm.model_profiles import ModelProfiles
 from finiexragengine.exceptions.ragengine_errors import LLMApiError
 from finiexragengine.utils.console_encoding import use_utf8_output
 
@@ -39,7 +40,10 @@ def main() -> None:
     default_endpoint = 'api.openai.com (default)'
     endpoint = (f'llm {cfg.llm.base_url} · embedding {default_endpoint}'
                 if cfg.llm.base_url else default_endpoint)
-    print(format_model_check(sections, used_by, endpoint))
+    # How each allowed eval model is called — the same table the provider consults.
+    profiles = {model: ModelProfiles().resolve(model).describe()
+                for model in cfg.llm.allowed_models}
+    print(format_model_check(sections, used_by, endpoint, profiles))
 
 
 if __name__ == '__main__':

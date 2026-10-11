@@ -1,5 +1,5 @@
 """The health endpoint — public by exemption (ISSUE_98); `/pipelines` moved out."""
-from typing import Optional
+from typing import Dict, List, Optional
 
 from fastapi import APIRouter
 
@@ -29,7 +29,8 @@ def build_health_router(config_manager: AppConfigManager,
                         resource_gauge: Optional[ResourceGauge] = None,
                         outcome_store: Optional[OutcomeStore] = None,
                         run_lock: Optional[RunLock] = None,
-                        stream_dispatcher: Optional[StreamDispatcher] = None) -> APIRouter:
+                        stream_dispatcher: Optional[StreamDispatcher] = None,
+                        public_worker_names: Optional[Dict[str, str]] = None) -> APIRouter:
     """Build the health router — the one route deliberately reachable without a token.
 
     `supervisor` (ISSUE_10) adds the live worker states to /health — the first
@@ -41,15 +42,23 @@ def build_health_router(config_manager: AppConfigManager,
     `stall_watchdog` (ISSUE_75) adds which workers have gone silent — the worker states above
     already carried `last_run_at`, but reading a stall out of it required knowing each worker's
     threshold; this reports the verdict instead of the raw material.
+    `public_worker_names` maps a private worker's real name to its public alias (`eval:private-1`):
+    this route is reachable without a token, and a private pipeline's name is business logic. Its
+    `last_detail` is blanked for the same reason — it can name feeds — while the state stays exact,
+    so liveness is still observable from outside.
     """
+    aliases = public_worker_names or {}
     router = APIRouter(prefix='/v1', tags=['health'])
 
     @router.get('/health', response_model=HealthResponse)
     def health() -> HealthResponse:
-        workers = ([WorkerInfo(**vars(state)) for state in supervisor.states()]
+        workers = ([_public(WorkerInfo(**vars(state)), aliases) for state in supervisor.states()]
                    if supervisor is not None else [])
         budget = BudgetInfo(**budget_guard.status()) if budget_guard is not None else None
         stall = StallInfo(**stall_watchdog.status()) if stall_watchdog is not None else None
+        if stall is not None and aliases:
+            stall = stall.model_copy(update={
+                'stalled': [aliases.get(name, name) for name in stall.stalled]})
         resources = (ResourceInfo(**resource_gauge.status())
                      if resource_gauge is not None else None)
         stream = (DispatcherInfo(**stream_dispatcher.status())
@@ -90,3 +99,26 @@ def build_health_router(config_manager: AppConfigManager,
                               resources=resources, stream=stream)
 
     return router
+
+
+def _public(worker: WorkerInfo, aliases: Dict[str, str]) -> WorkerInfo:
+    """A worker as the public route shows it — renamed and without detail when it is private."""
+    alias = aliases.get(worker.name)
+    if alias is None:
+        return worker
+    return worker.model_copy(update={'name': alias, 'last_detail': ''})
+
+
+def private_worker_aliases(private_pipeline_ids: List[str],
+                           private_source_set_ids: List[str]) -> Dict[str, str]:
+    """`eval:<id>` / `ingest:<id>` of every private pipeline and set → a neutral numbered alias.
+
+    Numbered per kind in sorted-id order, so the mapping is stable for a given configuration. It is
+    not an identity across configurations — adding a private pipeline may renumber — which is fine
+    for what the public route is for: is everything alive.
+    """
+    aliases: Dict[str, str] = {}
+    for kind, ids in (('eval', private_pipeline_ids), ('ingest', private_source_set_ids)):
+        for number, item in enumerate(sorted(ids), start=1):
+            aliases[f'{kind}:{item}'] = f'{kind}:private-{number}'
+    return aliases

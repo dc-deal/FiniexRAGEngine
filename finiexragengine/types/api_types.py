@@ -248,6 +248,11 @@ class BuildInfo(BaseModel):
     # in-place edit is plausible, and this is the difference between "which deploy is live" and
     # "...and has anyone touched it".
     dirty: Optional[bool] = None
+    # The private configuration layer (`configs_private/`, its own repository): which commit of OUR
+    # pipelines and prompts this process loaded. A hash says nothing about the contents, so it is as
+    # public as the main commit. `None` when the layer is not checked out as a repository here.
+    private_commit: Optional[str] = None
+    private_dirty: Optional[bool] = None
     # The shared auth package (`finiex_auth`) and whether it is an EDITABLE install — the dev state
     # in which a change is live with no pin, no bump and no commit. `None` when not installed.
     auth_package_version: Optional[str] = None

@@ -12,6 +12,7 @@ from finiexragengine.exceptions.ragengine_errors import (
     LLMTimeoutError,
 )
 from finiexragengine.types.config_types.app_config_types import LlmConfig
+from finiexragengine.types.outcome_types import SentimentLlmOutput
 
 
 class _Message:
@@ -166,3 +167,49 @@ def test_timeout_maps_to_llm_timeout_error():
 def test_backend_error_maps_to_llm_api_error():
     with pytest.raises(LLMApiError):
         _provider(_Completions(exc=OpenAIError('boom'))).complete_structured('p', {})
+
+
+# --- strict structured output, by model profile ------------------------------------------
+
+def _sent_format(model: str) -> dict:
+    completions = _Completions(content='{}')
+    OpenAIProvider(LlmConfig(), model, client=_Client(completions)).complete_structured(
+        'p', SentimentLlmOutput.model_json_schema())
+    return completions.kwargs['response_format']['json_schema']
+
+
+def test_the_reasoning_family_is_called_with_strict_output():
+    # The 2026-10-11 dev pass: gpt-5-mini returned `urgingency` for `urgency` with the schema as a
+    # hint, so both rows degraded. Strict decoding cannot produce a key the schema does not name.
+    sent = _sent_format('gpt-5-mini')
+    assert sent['strict'] is True
+    schema = sent['schema']
+    assert set(schema['required']) == set(schema['properties'])   # every field listed …
+    assert 'breaking_reason' in schema['required']
+    assert 'default' not in schema['properties']['breaking_reason']
+    assert {'type': 'null'} in schema['properties']['breaking_reason']['anyOf']  # … still nullable
+    assert schema['properties']['urgency']['maximum'] == 1.0       # ranges kept
+
+
+def test_the_live_series_family_is_called_exactly_as_before():
+    # gpt-4o-mini produces the public series: the schema goes out untouched and non-strict.
+    sent = _sent_format('gpt-4o-mini')
+    assert sent['strict'] is False
+    assert sent['schema'] == SentimentLlmOutput.model_json_schema()
+
+
+def test_a_fine_tune_is_called_like_its_base_model():
+    # `ft:gpt-5-…` used to get `temperature` (a hard 400), because the prefix check saw `ft:`.
+    completions = _Completions(content='{}')
+    OpenAIProvider(LlmConfig(), 'ft:gpt-5-mini:org:custom:abc',
+                   client=_Client(completions)).complete_structured('p', {'type': 'object'})
+    assert 'temperature' not in completions.kwargs
+    assert completions.kwargs['response_format']['json_schema']['strict'] is True
+
+
+def test_the_strict_schema_is_a_copy():
+    schema = SentimentLlmOutput.model_json_schema()
+    before = json.dumps(schema, sort_keys=True)
+    _sent_format('gpt-5')
+    assert json.dumps(SentimentLlmOutput.model_json_schema(), sort_keys=True) == before
+

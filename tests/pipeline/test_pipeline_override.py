@@ -1,7 +1,10 @@
 """Per-pipeline user_configs override (deep-merge) — dev/live variant without touching the base."""
 import json
 
+import pytest
+
 from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
+from finiexragengine.exceptions.ragengine_errors import ConfigurationError
 
 _BASE = {
     'pipeline_id': 'crypto_sentiment', 'outcome_type': 'sentiment_fear_greed',
@@ -75,3 +78,27 @@ def test_override_toggles_one_variant_enabled_via_merge_by_key(tmp_path):
     ids = sorted(p.get_config().pipeline_id for p in registry.list_pipelines())
     assert ids == ['crypto_sentiment']                   # 4o off; the default (mini) still runs
     assert registry.get('crypto_sentiment').get_config().llm.model == 'gpt-4o-mini'
+
+
+def test_a_mistyped_switch_off_override_is_a_configuration_refusal(tmp_path):
+    # The 2026-09-23 switch-off: the overlay named the model instead of its sub_pipeline_id, so
+    # merge-by-key appended a fourth variant without one. That must surface as a
+    # ConfigurationError (server_cli exits 2, the service manager does not restart it) — not as a
+    # bare pydantic error, which exits 1 and is restarted in a loop.
+    with pytest.raises(ConfigurationError) as caught:
+        _registry(tmp_path, {'llm': {'models': [{'name': 'gpt-4o', 'enabled': False}]}})
+    assert 'crypto_sentiment.json' in str(caught.value)
+    assert '(merged with ' in str(caught.value)                # names the overlay layer
+    assert 'user/crypto_sentiment.json' in str(caught.value)
+
+
+def test_an_invalid_tracked_config_is_a_configuration_refusal_too(tmp_path):
+    # Same rule without any overlay: the message names the file and does not blame an override.
+    # key != base + quote, so the symbol fails validation
+    broken = dict(_BASE, symbols=[{'key': 'BTCUSD', 'base': 'BTC', 'quote': 'EUR'}])
+    _write(tmp_path / 'pipes' / 'crypto_sentiment.json', broken)
+    registry = PipelineRegistry(tmp_path / 'pipes', tmp_path / 'user')
+    with pytest.raises(ConfigurationError) as caught:
+        registry.load()
+    assert 'crypto_sentiment.json is invalid' in str(caught.value)
+    assert 'merged with' not in str(caught.value)

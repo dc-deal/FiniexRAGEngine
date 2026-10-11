@@ -7,7 +7,10 @@ import pytest
 pytest.importorskip('jinja2')
 
 from finiexragengine.core.llm.prompt_builder import PromptBuilder  # noqa: E402
-from finiexragengine.exceptions.ragengine_errors import LLMError  # noqa: E402
+from finiexragengine.exceptions.ragengine_errors import (  # noqa: E402
+    ConfigurationError,
+    LLMError,
+)
 from finiexragengine.types.article_types import (  # noqa: E402
     Article,
     RetrievedArticle,
@@ -57,6 +60,46 @@ def test_prompt_version_selects_the_file(tmp_path):
 def test_missing_template_raises_llmerror(tmp_path):
     with pytest.raises(LLMError):
         PromptBuilder(tmp_path).build('sentiment', '9', 'BTCUSD', [])
+
+
+# --- prompt layers: the public reference and the private layer -------------------------------
+
+def _layer(root: Path, name: str, version: str, text: str) -> Path:
+    folder = root / name
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / f'{name}_v{version}.md').write_text(text, encoding='utf-8')
+    return root
+
+
+def test_a_template_is_found_in_whichever_layer_holds_it(tmp_path):
+    public = _layer(tmp_path / 'prompts', 'sentiment', '1', 'public {{ symbol }}')
+    private = _layer(tmp_path / 'private', 'macro', '1', 'private {{ symbol }}')
+    builder = PromptBuilder([public, private])
+    assert builder.build('sentiment', '1', 'BTCUSD', []) == 'public BTCUSD'
+    assert builder.build('macro', '1', 'BTCUSD', []) == 'private BTCUSD'
+
+
+def test_one_family_may_continue_in_the_private_layer(tmp_path):
+    # Versions are per file: v1 public, v2 private is two layers, not a clash.
+    public = _layer(tmp_path / 'prompts', 'sentiment', '1', 'v1')
+    private = _layer(tmp_path / 'private', 'sentiment', '2', 'v2')
+    builder = PromptBuilder([public, private])
+    assert (builder.build('sentiment', '1', 'X', []), builder.build('sentiment', '2', 'X', [])) == (
+        'v1', 'v2')
+
+
+def test_the_same_version_in_two_layers_is_refused(tmp_path):
+    # Whichever were read first would define what `prompt_hash` means in every envelope.
+    public = _layer(tmp_path / 'prompts', 'sentiment', '1', 'one text')
+    private = _layer(tmp_path / 'private', 'sentiment', '1', 'another text')
+    with pytest.raises(ConfigurationError, match='more than one layer'):
+        PromptBuilder([public, private]).metadata('sentiment', '1')
+
+
+def test_a_missing_template_names_every_layer_it_searched(tmp_path):
+    with pytest.raises(LLMError, match='searched') as caught:
+        PromptBuilder([tmp_path / 'prompts', tmp_path / 'private']).metadata('macro', '1')
+    assert 'prompts' in str(caught.value) and 'private' in str(caught.value)
 
 
 def test_article_braces_are_not_reparsed(tmp_path):

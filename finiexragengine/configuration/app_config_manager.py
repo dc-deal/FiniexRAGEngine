@@ -22,6 +22,9 @@ _USER_PIPELINES_DIR = _PROJECT_ROOT / 'user_configs' / 'pipelines'
 _SOURCE_SETS_DIR = _PROJECT_ROOT / 'configs' / 'source_sets'
 _USER_SOURCE_SETS_DIR = _PROJECT_ROOT / 'user_configs' / 'source_sets'
 _PROMPTS_DIR = _PROJECT_ROOT / 'prompts'
+# The private layer (CLAUDE.md, "What gets published"): our own pipelines, source sets and prompts,
+# a private repository checked out here and gitignored by this one. Absent = the public reference.
+_PRIVATE_DIR = _PROJECT_ROOT / 'configs_private'
 _MIGRATIONS_DIR = _PROJECT_ROOT / 'migrations'
 
 
@@ -113,27 +116,37 @@ class AppConfigManager:
         """
         return _USER_SOURCE_SETS_DIR
 
+    def get_private_pipelines_dir(self) -> Path:
+        """The private layer's constellations — overlays onto tracked ones, or complete ones."""
+        return _PRIVATE_DIR / 'pipelines'
+
+    def get_private_source_sets_dir(self) -> Path:
+        """The private layer's source sets — overlays onto tracked ones, or complete ones."""
+        return _PRIVATE_DIR / 'source_sets'
+
     def build_pipeline_registry(self) -> PipelineRegistry:
-        """The one way to load constellations: tracked dir + gitignored user overrides.
+        """The one way to load constellations: tracked dir + private layer + machine overrides.
 
         Call sites must never assemble a PipelineRegistry themselves — four CLIs once
         did and silently dropped the override merge. Routing every consumer through
-        this factory makes forgetting the user dir impossible, exactly like the
+        this factory makes forgetting a layer impossible, exactly like the
         app-config merge in __init__ (an omission is correct, not wrong).
         """
-        registry = PipelineRegistry(self.get_pipelines_dir(), self.get_user_pipelines_dir())
+        registry = PipelineRegistry(self.get_pipelines_dir(), self.get_user_pipelines_dir(),
+                                    self.get_private_pipelines_dir())
         registry.load()
-        for name, entries in registry.override_entries().items():
-            self._emit_overrides(f'user_configs/pipelines/{name}', entries)
+        for label, entries in registry.override_entries().items():
+            self._emit_overrides(label, entries)
         return registry
 
     def build_source_set_registry(self) -> SourceSetRegistry:
-        """The one way to load source-sets: tracked catalogue + per-machine overrides."""
+        """The one way to load source-sets: tracked catalogue + private layer + machine overlay."""
         registry = SourceSetRegistry(self.get_source_sets_dir(),
-                                     self.get_user_source_sets_dir())
+                                     self.get_user_source_sets_dir(),
+                                     self.get_private_source_sets_dir())
         registry.load()
-        for name, entries in registry.override_entries().items():
-            self._emit_overrides(f'user_configs/source_sets/{name}', entries)
+        for label, entries in registry.override_entries().items():
+            self._emit_overrides(label, entries)
         return registry
 
     def _emit_overrides(self, file_label: str, entries: List[OverrideEntry]) -> None:
@@ -144,7 +157,19 @@ class AppConfigManager:
             emit_override_report(file_label, entries)
 
     def get_prompts_dir(self) -> Path:
+        """The public reference prompts only — see `get_prompt_dirs` for what the engine loads."""
         return _PROMPTS_DIR
+
+    def get_private_prompts_dir(self) -> Path:
+        return _PRIVATE_DIR / 'prompts'
+
+    def get_prompt_dirs(self) -> List[Path]:
+        """Where prompt templates are looked up: the public reference, then the private layer.
+
+        A template present in both is refused at load (`PromptBuilder`), so the order never decides
+        which of two files wins — it only decides the order a missing template's message lists them.
+        """
+        return [self.get_prompts_dir(), self.get_private_prompts_dir()]
 
     def get_migrations_dir(self) -> Path:
         """Numbered SQL migrations (ISSUE_14) — the schema's source of truth, applied in order."""

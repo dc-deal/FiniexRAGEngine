@@ -629,9 +629,17 @@ Retrieval runs **per symbol**. Top-down, one symbol's query flows through:
    over-fetches (`_OVERFETCH`) so dedup cannot starve the cap. Result: at most `top_k`
    distinct, recent, on-topic articles.
 
+6. **Background section (opt-in) — `Retriever._background`.** Only for a pipeline that
+   declares `retrieval.background`: a second query over `[now − window, start of the recent
+   window)` — the store's `query(..., until=)` makes the window half-open, so nothing is
+   returned twice — with its own cap, the same floor, no importance gate, and near-duplicates
+   of anything already kept collapsed. Appended behind the main selection with tier
+   `background`, counted on its own in the funnel (`background_in_window` /
+   `background_floor_dropped` / `background_kept`).
+
 The retrieval parameters (`top_k`, `recency_window_minutes`, `dedup_similarity`, the
-optional two-tier `deep_tier`) and the ranking tie-breaks are documented in
-`../retrieval_policy.md`.
+optional two-tier `deep_tier`, the optional `background` section) and the ranking tie-breaks are
+documented in `../retrieval_policy.md`.
 
 ## What leaves retrieval — and what does not
 

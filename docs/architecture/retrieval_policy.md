@@ -32,6 +32,16 @@ Resolution order (`SymbolQueryMap.query_for`):
   stay recent-only (no `deep_tier` key = disabled).
 - `top_k` is the **hard cap** on what reaches the prompt, applied after merge and dedup.
   Each tier over-fetches (2 × top_k) so dedup cannot starve the cap.
+- **Background section (opt-in per pipeline, `retrieval.background`):** a second, older section for
+  pipelines whose horizon is days rather than hours. Its window is
+  `[now − background.window_minutes, start of the recent window)` — half-open and ending where the
+  recent window begins, so no article is returned by both. It has **its own cap**
+  (`background.top_k`, over-fetched 2×), is **not** importance-gated, applies the same relevance
+  floor, and collapses a candidate that near-duplicates anything already kept. It is selected after
+  the recent/deep squeeze and appended behind it, tier `background`, so a prompt can fence it. Why it
+  is not the deep tier: the deep tier admits only what the keyword detector flagged (measured as
+  almost nothing) and fills only the slots recent news leaves (rarely any) — it answers *what was
+  important*, the background section answers *what has been building up*.
 
 ## Ordering
 
@@ -90,7 +100,9 @@ re-sort by `published_at`, mixing both into one numbered list. It now returns
 `RetrievedArticle(article, retrieval_tier)`; `RetrievedContext.articles` stays available as a
 **property** so a shipped prompt renders byte-identically, and `RetrievalFunnel.deep_kept` is
 derived from that list rather than accumulated beside it — one computation, so the funnel's count
-and the envelope's per-citation tiers cannot disagree. The tier is a closed vocabulary
+and the envelope's per-citation tiers cannot disagree. The background section is counted on its
+own — `background_in_window`, `background_floor_dropped`, `background_kept` — so every counter above
+keeps exactly the meaning it had in the archive, and `background_kept` is not part of `kept`. The tier is a closed vocabulary
 (`RetrievalTier`), named in full because *tier* already means the **importance** tier (1/2/3)
 elsewhere; the retriever's rank key maps it back to an explicit order, since sorting the labels
 would put `deep` ahead of `recent` alphabetically and rank week-old articles above today's news.
@@ -112,12 +124,13 @@ See `docs/architecture/weekly_report_and_alerts.md`.
 | `dedup_similarity` | 0.92 | pairwise cosine ≥ this collapses near-duplicates |
 | `floor_distance` | 0.55 | query↔article distance > this drops the candidate; `null` disables; crypto constellation: 0.68 (see calibration note) (ISSUE_24) |
 | `deep_tier` | absent | opt-in: `{ "min_importance": 2, "window_minutes": 43200 }` |
+| `background` | absent | opt-in: `{ "window_minutes": 20160, "top_k": 8 }` — its window must exceed `recency_window_minutes` (refused at load otherwise); absent is omitted from `config_fingerprint`, so adding the key to the schema forked no existing series |
 
 `symbol_queries` sits at the top level of the constellation, next to `symbols`.
 
 ## Tests
 
 `tests/rag/test_retriever.py` (mocked embedder/store: recency, cap, dedup, deep tier,
-tie-breaks), `tests/rag/test_symbol_query_map.py` (alias + fallback), and the paid live
+background section — window bounds, own cap, cross-section dedup, its counters — tie-breaks), `tests/rag/test_symbol_query_map.py` (alias + fallback), and the paid live
 round-trip in `tests/rag/test_rag_live.py` (real embeddings → pgvector → retrieve) — see
 [testing](../testing.md).

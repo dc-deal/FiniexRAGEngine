@@ -21,6 +21,16 @@ pipeline without touching code:
 `prompts/crypto_sentiment/crypto_sentiment_v3.md` and renders the template with `query` and
 the retrieved `articles`.
 
+**Two prompt layers.** The builder searches the public `prompts/` and the private layer's
+`configs_private/prompts/` (`AppConfigManager.get_prompt_dirs()`, see
+[the config layers](../development/user_configs_overrides.md)). A family may continue privately
+(`v1` public, `v2` private); the same version in both is refused at load, so `prompt_hash` always
+means one text. A template missing from every layer stops the boot as a configuration refusal
+(exit 2) naming the layers it searched — the usual cause is a private layer not pulled.
+Front-matter keys beyond the identity are free-form and outside `prompt_hash` — e.g.
+`abstain_marker`, the literal a prompt asks the model to open an abstaining reasoning with, so a
+report can count abstentions without a schema field.
+
 - The article-rendering **loop lives in the template** (`{% for a in articles %}`) and the
   empty-context fallback is a template `{% if %}` — so prompt wording *and* formatting stay in one
   reviewable file, out of Python. Markdown keeps it readable (GitHub-rendered), and LLMs parse the
@@ -103,6 +113,28 @@ and returns an `LlmCompletion(data, usage)`.
   attached by the engine** from the actual retrieved articles; the model never invents article ids.
 - `SentimentLlmOutput` is strict (`extra='forbid'`, all fields required), so a malformed completion
   is rejected on validation.
+
+### Model profiles — how a model family is called
+
+`ModelProfiles` (`core/llm/model_profiles.py`) resolves a model id to its family's `ModelProfile`
+(longest prefix; dated snapshots and `ft:` fine-tunes resolve to their base family; an unknown
+model keeps the behaviour it had before profiles). The provider asks it what to send:
+
+| Family | `temperature` | Schema | Reasoning |
+|---|---|---|---|
+| `gpt-5` (`gpt-5`, `-mini`, `-nano`) | omitted — a hard 400 otherwise | **strict** | yes |
+| `gpt-4o` (`gpt-4o`, `-mini`) | sent | hint | no |
+| anything else | sent | hint | no |
+
+**Strict output** constrains decoding to the schema (`strict: true`, every property required,
+`default` removed, `Optional` fields stay nullable, ranges kept). The reasoning family needs it: with
+the schema as a hint, gpt-5-mini returned `urgingency` for `urgency` on its first pass (2026-10-11)
+and gpt-5-nano dropped `urgency` 12 times in its September trial. The `gpt-4o` row is pinned by a
+test — it produces the public live series, and changing how it is called would change those series
+without moving any fingerprint, so that is decided like a prompt bump.
+
+The boot log states each model's profile once (`[MODEL] gpt-5-mini · family gpt-5 · reasoning ·
+strict output · no temperature`), and `models_cli` shows it as a column.
 
 ## Model governance (per-pipeline model + allowlist)
 

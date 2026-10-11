@@ -1,4 +1,4 @@
-"""Unit tests for Retriever — recency, top_k cap, dedup, deep tier, tie-breaks, funnel.
+"""Unit tests for Retriever — recency, top_k cap, dedup, deep tier, background, tie-breaks, funnel.
 
 Embedder and store are faked, so these run offline. The fake store records the
 query arguments (window, min_importance) and returns pre-built ScoredArticle
@@ -8,10 +8,13 @@ import itertools
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
+import pytest
+
 from finiexragengine.core.rag.abstract_vector_store import AbstractVectorStore
 from finiexragengine.core.rag.retriever import Retriever
 from finiexragengine.types.article_types import Article, ScoredArticle
 from finiexragengine.types.config_types.pipeline_config_types import (
+    BackgroundSectionConfig,
     DeepTierConfig,
     RetrievalConfig,
 )
@@ -51,9 +54,9 @@ class _FakeStore(AbstractVectorStore):
     def existing_ids(self, article_ids: List[str]) -> set:
         raise AssertionError('retrieval must not check existence')
 
-    def query(self, vector, top_k, since, min_importance=None):
+    def query(self, vector, top_k, since, min_importance=None, until=None):
         self.calls.append({'top_k': top_k, 'since': since,
-                           'min_importance': min_importance})
+                           'min_importance': min_importance, 'until': until})
         return self._responses.pop(0) if self._responses else []
 
 
@@ -246,3 +249,74 @@ def test_empty_store_yields_empty_context():
     assert (funnel.in_window, funnel.floor_dropped, funnel.kept) == (0, 0, 0)
     assert funnel.best_distance is None and funnel.worst_distance is None
     assert funnel.floor == 0.55                       # the cut that *would* have applied
+
+
+# --- background section (`retrieval.background`) ---
+
+def _background_retriever(store: _FakeStore, **kwargs) -> Retriever:
+    config = dict(top_k=2, recency_window_minutes=60, floor_distance=0.7,
+                  background=BackgroundSectionConfig(window_minutes=600, top_k=3))
+    config.update(kwargs)
+    return _retriever(store, **config)
+
+
+def test_background_queries_the_window_before_recent_with_its_own_overfetch():
+    store = _FakeStore([[_hit('r1', 0.1)], [_hit('b1', 0.2)]])
+    before = datetime.now(timezone.utc)
+    _background_retriever(store).retrieve('q')
+    after = datetime.now(timezone.utc)
+    recent, background = store.calls
+    # Half-open [now − 600 min, recent start): the upper edge IS the recent window's lower edge, so
+    # no article can be returned twice and none falls between the two.
+    assert background['until'] == recent['since']
+    assert before - timedelta(minutes=600) <= background['since'] <= after - timedelta(minutes=600)
+    assert background['top_k'] == 6                       # its own cap × overfetch, not top_k's
+    assert background['min_importance'] is None           # not importance-gated, unlike deep
+    assert recent['until'] is None
+
+
+def test_background_has_its_own_budget_beside_a_full_recent_section():
+    # The deep tier only fills slots recent news leaves; the background section does not compete.
+    recent = [_hit('r1', 0.1), _hit('r2', 0.2), _hit('r3', 0.3)]
+    older = [_hit('b1', 0.15), _hit('b2', 0.25), _hit('b3', 0.35), _hit('b4', 0.45)]
+    context = _background_retriever(store := _FakeStore([recent, older])).retrieve('q')
+    assert len(store.calls) == 2
+    assert [(r.article.article_id, r.retrieval_tier) for r in context.retrieved] == [
+        ('r1', 'recent'), ('r2', 'recent'),
+        ('b1', 'background'), ('b2', 'background'), ('b3', 'background')]
+
+
+def test_background_is_counted_on_its_own_and_leaves_the_main_counters_alone():
+    recent = [_hit('r1', 0.1), _hit('r2', 0.2), _hit('r3', 0.9)]
+    older = [_hit('b1', 0.2), _hit('b2', 0.8), _hit('b3', 0.95)]
+    funnel = _background_retriever(_FakeStore([recent, older])).retrieve('q').funnel
+    # Main squeeze exactly as without the section: 3 offered, 1 over the floor, 2 kept.
+    assert (funnel.in_window, funnel.floor_dropped, funnel.kept) == (3, 1, 2)
+    # The section beside it: 3 offered, 2 over the same floor, 1 kept — and not inside `kept`.
+    assert (funnel.background_in_window, funnel.background_floor_dropped,
+            funnel.background_kept) == (3, 2, 1)
+    assert funnel.best_distance == 0.1                    # the main squeeze's spread only
+
+
+def test_an_older_copy_of_a_kept_story_is_collapsed():
+    story = _unit(40)
+    recent = [_hit('r1', 0.1, embedding=story)]
+    older = [_hit('b-copy', 0.12, embedding=story), _hit('b-new', 0.3)]
+    context = _background_retriever(_FakeStore([recent, older])).retrieve('q')
+    assert [r.article.article_id for r in context.retrieved] == ['r1', 'b-new']
+
+
+def test_without_a_background_section_nothing_changes():
+    store = _FakeStore([[_hit('r1', 0.1)]])
+    context = _retriever(store, top_k=2, floor_distance=0.7).retrieve('q')
+    assert len(store.calls) == 1
+    assert (context.funnel.background_in_window, context.funnel.background_floor_dropped,
+            context.funnel.background_kept) == (0, 0, 0)
+
+
+def test_a_background_window_inside_the_recent_one_is_refused():
+    # It could only ever be empty — refused at load instead of discovered as zeros in a funnel.
+    with pytest.raises(ValueError, match='must exceed recency_window_minutes'):
+        RetrievalConfig(recency_window_minutes=2880,
+                        background=BackgroundSectionConfig(window_minutes=2880, top_k=8))
+

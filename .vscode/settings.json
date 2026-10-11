@@ -28,6 +28,11 @@
     },
     // show gitignored files (github_issues/, ISSUE_*, user_configs/ ...) in search + Ctrl+P
     "search.useIgnoreFiles": false,
+    // nested private repositories (gitignored by this one) — listed in Source Control beside it
+    "git.scanRepositories": [
+        "configs_private",
+        "experiments/private"
+    ],
     // font with proper emoji widths (matters for the ---- box alignment in reports);
     // download if missing: https://github.com/microsoft/cascadia-code/releases
     "terminal.integrated.fontFamily": "Cascadia Code PL",

@@ -108,6 +108,13 @@ class RetrievalFunnel(BaseModel):
     # real answer — "detection flagged nothing worth carrying forward" — and it is exactly the
     # number that says whether the dead cluster path is costing retention as well as wakes.
     deep_kept: int = 0
+    # The background section (`retrieval.background`) has its own window, floor pass and cap, so it
+    # is counted on its own: the counters above keep describing the recent/deep squeeze exactly as
+    # before, and stay comparable across the archive. All three are 0 for a pipeline without the
+    # section. `background_kept` is also not part of `kept`.
+    background_in_window: int = 0     # candidates in [now − window, recent window start)
+    background_floor_dropped: int = 0  # of those, dropped by the same floor_distance
+    background_kept: int = 0          # what reached the prompt from the section (<= its top_k)
     best_distance: Optional[float] = None    # nearest candidate pre-floor (nearest miss on 0 kept)
     worst_distance: Optional[float] = None   # farthest candidate pre-floor
     floor: Optional[float] = None            # floor_distance applied this run (None = disabled)

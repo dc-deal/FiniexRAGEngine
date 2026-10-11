@@ -17,6 +17,8 @@ import pytest
 
 from finiexragengine.configuration.app_config_manager import AppConfigManager
 from finiexragengine.configuration.config_fingerprint import compute_config_fingerprint
+from finiexragengine.configuration.source_set_registry import SourceSetRegistry
+from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
 from finiexragengine.types.config_types.app_config_types import AppConfig, IngestConfig
 from finiexragengine.types.config_types.pipeline_config_types import PipelineConfig
 from finiexragengine.types.config_types.source_set_types import SourceSetConfig
@@ -113,6 +115,22 @@ def test_retrieval_prompt_model_and_eval_cadence_all_change_it(baseline):
         pipeline = _edited(_PIPELINE)
         pipeline[path[0]][path[1]] = value
         assert _fingerprint(pipeline=pipeline) != baseline, f'{path} must move the fingerprint'
+
+
+def test_the_background_section_is_hashed_when_set_and_absent_when_unset(baseline):
+    # Unset is what every earlier config ran, so its `null` must not reach the payload — otherwise
+    # adding the field would have forked every existing series. Set, it defines what the prompt
+    # reads, so it forks like any retrieval knob, and so does each of its two values.
+    assert '"background"' not in compute_config_fingerprint(
+        PipelineConfig(**_PIPELINE), SourceSetConfig(**_SOURCE_SET), AppConfig()).canonical
+    with_section = _edited(_PIPELINE)
+    with_section['retrieval']['background'] = {'window_minutes': 20160, 'top_k': 8}
+    set_value = _fingerprint(pipeline=with_section)
+    assert set_value != baseline
+    for leaf, value in (('window_minutes', 10080), ('top_k', 4)):
+        retuned = _edited(with_section)
+        retuned['retrieval']['background'][leaf] = value
+        assert _fingerprint(pipeline=retuned) != set_value, f'background.{leaf} must move it'
 
 
 def test_stream_naming_does_not_change_it(baseline):
@@ -344,6 +362,37 @@ def test_golden_value_pins_the_canonicalization():
     assert '"pipeline_id"' not in result.canonical      # identity is not an input
     assert '"poll_interval_seconds"' not in result.canonical
     assert '"fetch_timeout_seconds"' not in result.canonical
+
+
+# The shipped constellations as committed — no user_configs overlay, so the values are the same on
+# every machine (production's overlay yields different ones; that is the overlay's business).
+_SHIPPED_FINGERPRINTS = {
+    'crypto_sentiment': '725590558425',
+    'crypto_sentiment_4o_enhanced': 'cf884ebb801d',
+    'crypto_sentiment_nano': '2f505a43ccfc',
+    'forex_macro_sentiment': '1f25ec5d2a07',
+}
+
+
+def test_the_shipped_pipelines_keep_their_fingerprints():
+    # The golden value above pins the ALGORITHM on a fixture; nothing pinned the series the archive
+    # actually holds. A schema field added for one pipeline lands in every other pipeline's dump,
+    # and a field nested where the fixture has no block (`retrieval.deep_tier`) forked
+    # crypto_sentiment while the golden test stayed green. This pins the real streams: a change
+    # here is a fork of a live series, and is updated only together with that decision. A NEW
+    # pipeline is not listed here and does not need to be.
+    root = Path(__file__).resolve().parents[2] / 'configs'
+    pipelines = PipelineRegistry(root / 'pipelines', None)
+    pipelines.load()
+    source_sets = SourceSetRegistry(root / 'source_sets', None)
+    source_sets.load()
+    app = AppConfig(**json.loads((root / 'app_config.json').read_text(encoding='utf-8')))
+    actual = {}
+    for pipeline_id in _SHIPPED_FINGERPRINTS:
+        config = pipelines.get(pipeline_id).get_config()
+        actual[pipeline_id] = compute_config_fingerprint(
+            config, source_sets.get(config.source_set), app).value
+    assert actual == _SHIPPED_FINGERPRINTS
 
 
 def test_an_envelope_without_the_field_still_parses():

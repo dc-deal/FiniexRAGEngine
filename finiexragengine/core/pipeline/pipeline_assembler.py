@@ -34,6 +34,7 @@ from finiexragengine.core.sources.source_factory import build_source
 from finiexragengine.exceptions.ragengine_errors import (
     ConfigurationError,
     FiniexRagError,
+    LLMError,
     VectorStoreError,
 )
 from finiexragengine.types.config_types.pipeline_config_types import PipelineConfig
@@ -154,7 +155,7 @@ class PipelineAssembler:
                                  model=self._cfg.embedding.model,
                                  dimensions=self._cfg.embedding.dimensions)
         retriever = Retriever(cache, store, config.retrieval)
-        prompt_builder = PromptBuilder(self._app.get_prompts_dir())
+        prompt_builder = PromptBuilder(self._app.get_prompt_dirs())
         # Provider seam: `llm.provider` names the implementation, the factory resolves
         # it — the assembler never hard-codes a provider class.
         provider = build_provider(self._cfg.llm, model, cost_recorder=self._recorder,
@@ -287,7 +288,7 @@ class PipelineAssembler:
                         poll_log=poll_log, fetch_workers=source_set.fetch_workers)
 
     def build_runner(self, config: PipelineConfig,
-                     include_ingest: bool = True) -> PipelineRunner:
+                     include_ingest: bool = True, private: bool = False) -> PipelineRunner:
         """Assemble one pipeline's full graph; billing sections per paid caller.
 
         `include_ingest=False` is worker mode (ISSUE_10): acquisition belongs to the
@@ -313,8 +314,16 @@ class PipelineAssembler:
                                    SourceHealthStore(self._database_url, self._cfg.source_health))
         # The prompt fingerprint is resolved once here (ISSUE_33) — the runner stamps it
         # on every envelope, valid even for a pass where all evals fail.
-        prompt_builder = PromptBuilder(self._app.get_prompts_dir())
-        prompt_metadata = prompt_builder.metadata(config.prompt.name, config.prompt.version)
+        prompt_builder = PromptBuilder(self._app.get_prompt_dirs())
+        try:
+            prompt_metadata = prompt_builder.metadata(config.prompt.name, config.prompt.version)
+        except LLMError as exc:
+            # A missing template is a configuration refusal (exit 2), not a crash to restart: the
+            # likely cause is a private layer that is not checked out or not pulled on this machine,
+            # and no retry fixes that.
+            raise ConfigurationError(
+                f'{config.pipeline_id}: {exc} — is the private layer (configs_private/) checked '
+                'out and pulled?') from exc
         # The configuration fingerprint takes the identical path (ISSUE_85): resolved once from
         # the MERGED config plus the RESOLVED source set, registered with its canonical payload,
         # then carried. It describes the configuration this process loaded — a later edit to a
@@ -330,9 +339,11 @@ class PipelineAssembler:
         # follows from it. `(new)` says this start breaks the comparable series — the marker that
         # was missing when the symbol set grew on 2026-07-24. The reason carries what `(new)` cannot:
         # it is False for a known fingerprint, which is exactly what a rollback is.
-        logger.info('[CONFIG] %s · source_set %s · config_fingerprint %s%s · %s',
+        # `· private` marks a stream defined by the private layer: the boot log says which streams
+        # are the public reference and which are ours, without anyone opening a directory.
+        logger.info('[CONFIG] %s · source_set %s · config_fingerprint %s%s · %s%s',
                     config.pipeline_id, source_set.source_set_id, fingerprint.value,
-                    ' (new)' if first_seen else '', reason)
+                    ' (new)' if first_seen else '', reason, ' · private' if private else '')
         return PipelineRunner(config, ingestor, evaluator, prompt_metadata,
                               llm_model=config.llm.model, cost_recorder=self._recorder,
                               outcome_store=self._outcome_store,
@@ -347,8 +358,10 @@ class PipelineAssembler:
         a second call site.
         """
         for pipeline in registry.list_pipelines():
-            pipeline.set_runner(self.build_runner(pipeline.get_config(),
-                                                  include_ingest=include_ingest))
+            config = pipeline.get_config()
+            pipeline.set_runner(self.build_runner(
+                config, include_ingest=include_ingest,
+                private=registry.is_private(config.pipeline_id)))
 
     def _reconcile_stream(self, pipeline_id: str) -> None:
         """Bump this stream's epoch if its series was rewound; never fatal.

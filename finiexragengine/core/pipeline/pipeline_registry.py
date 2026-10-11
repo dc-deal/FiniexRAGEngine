@@ -1,10 +1,11 @@
 """Loads constellation JSONs into Pipeline objects and serves them by id."""
-import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
-from finiexragengine.configuration.config_merge import deep_merge
+from pydantic import ValidationError
+
+from finiexragengine.configuration.config_layers import load_layered_documents
 from finiexragengine.configuration.override_report import OverrideEntry, collect_overrides
 from finiexragengine.core.pipeline.pipeline import Pipeline
 from finiexragengine.exceptions.ragengine_errors import (
@@ -23,6 +24,23 @@ logger = logging.getLogger(__name__)
 # or one symbol's `enabled` (ISSUE_70) without restating the whole array. Plain lists (keywords)
 # still replace.
 _OVERRIDE_LIST_KEYS = {'models': 'sub_pipeline_id', 'sources': 'source_id', 'symbols': 'key'}
+
+
+def _keep_one_llm_form(merged: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]:
+    """Guard the llm XOR after each overlay: the form an overlay picks wins over the layer below.
+
+    If an overlay sets `llm.model` the merged `models` list is dropped, and vice versa — switching
+    forms via an overlay must never produce an invalid "both present". Run per layer, so a private
+    overlay and a machine overlay can each switch forms on their own.
+    """
+    overlay_llm = overlay.get('llm', {})
+    merged_llm = merged.get('llm')
+    if isinstance(merged_llm, dict) and isinstance(overlay_llm, dict):
+        if 'model' in overlay_llm and 'models' not in overlay_llm:
+            merged_llm.pop('models', None)
+        elif 'models' in overlay_llm and 'model' not in overlay_llm:
+            merged_llm.pop('model', None)
+    return merged
 
 
 def expand_variants(config: PipelineConfig) -> List[PipelineConfig]:
@@ -58,86 +76,85 @@ class PipelineRegistry:
     """Discovers and holds the configured pipelines.
 
     Each *.json in the pipelines directory is one constellation -> one Pipeline —
-    or N logical pipelines when it declares model variants (ISSUE_42).
+    or N logical pipelines when it declares model variants (ISSUE_42). Two further layers may
+    contribute (`configuration/config_layers.py`): the private layer patches a tracked
+    constellation or defines a complete private one, and the machine overlay patches either.
     """
 
     def __init__(self, pipelines_dir: Path,
-                 user_overrides_dir: Optional[Path] = None) -> None:
+                 user_overrides_dir: Optional[Path] = None,
+                 private_dir: Optional[Path] = None) -> None:
         self._pipelines_dir = pipelines_dir
         # Optional gitignored per-pipeline overrides (deep-merged onto the tracked config, same
         # pattern as app_config) — the place for a dev/live variant (fewer symbols, other models)
         # without touching the committed constellation. None = no overrides.
         self._user_overrides_dir = user_overrides_dir
+        # Optional private layer (`configs_private/pipelines/`): our own constellations and our
+        # patches to the public reference, versioned in a private repository. None = no layer.
+        self._private_dir = private_dir
         self._pipelines: Dict[str, Pipeline] = {}
-        # Stream ids whose constellation carried a gitignored user override (all variants of
-        # an overridden file) — surfaced e.g. in the cost report so a diverging config is visible.
+        # Stream ids whose constellation carried an overlay from either layer (all variants of an
+        # overlaid file) — surfaced e.g. in the cost report so a diverging config is visible.
         self._overridden: set = set()
-        # Per overridden file: the touched leaves (old → new), for the startup override
-        # report — collected at load, emitted by the AppConfigManager factory (gated there).
+        # Stream ids whose complete definition lives in the private layer (all their variants).
+        self._private: set = set()
+        # Per applied overlay, keyed by its layer label (`user_configs/pipelines/x.json`): the
+        # touched leaves (old → new), for the startup override report — collected at load,
+        # emitted by the AppConfigManager factory (gated there).
         self._override_entries: Dict[str, List[OverrideEntry]] = {}
 
     def load(self) -> None:
-        """Load every constellation JSON in the pipelines directory."""
-        # Discovery: one constellation JSON = one Pipeline (N with variants), keyed by
-        # pipeline_id. PipelineConfig(**data) is the Pydantic validation gate — a
-        # malformed constellation fails loudly here at load time, not mid-run.
-        for path in sorted(self._pipelines_dir.glob('*.json')):
-            data, base, override = self._with_override(path)
-            overridden = override is not None
-            declared = PipelineConfig(**data)
-            if overridden:
-                # Collected against the VALIDATED config: a key Pydantic dropped is a
-                # typo candidate; a key with a schema default reads as '(added)'.
-                self._override_entries[path.name] = collect_overrides(
-                    base, override, declared.model_dump(), _OVERRIDE_LIST_KEYS)
+        """Load every constellation the three layers define."""
+        documents = load_layered_documents(self._pipelines_dir, self._private_dir,
+                                           self._user_overrides_dir, _OVERRIDE_LIST_KEYS,
+                                           merge_step=_keep_one_llm_form)
+        for document in documents:
+            # PipelineConfig(**data) is the Pydantic validation gate — a malformed constellation
+            # fails loudly here at load time, not mid-run.
+            try:
+                declared = PipelineConfig(**document.data)
+            except ValidationError as exc:
+                # A constellation that fails validation is a configuration refusal, not a crash:
+                # surfaced as ConfigurationError so server_cli exits 2 and the service manager
+                # does not restart it. As a bare pydantic error it exited 1, and NSSM restarted a
+                # mistyped switch-off overlay for seven minutes (the variant switch-off of
+                # 2026-09-23). The message names every layer that contributed.
+                origin = (' (merged with ' + ', '.join(o.label for o in document.overlays) + ')'
+                          if document.overlays else '')
+                kind = 'private pipeline config' if document.private else 'pipeline config'
+                raise ConfigurationError(
+                    f'{kind} {document.name}{origin} is invalid:\n{exc}') from exc
+            validated = declared.model_dump()
+            for overlay in document.overlays:
+                # Collected against the VALIDATED config: a key Pydantic dropped is a typo
+                # candidate; a key with a schema default reads as '(added)'.
+                self._override_entries[overlay.label] = collect_overrides(
+                    overlay.base, overlay.overlay, validated, _OVERRIDE_LIST_KEYS)
             for config in expand_variants(declared):
-                # A derived stream id colliding with another pipeline (or another
-                # file's expansion) would silently shadow a signal series — refuse.
+                # A derived stream id colliding with another pipeline (or another file's
+                # expansion, or a private definition reusing a public id) would silently
+                # shadow a signal series — refuse.
                 if config.pipeline_id in self._pipelines:
                     raise ConfigurationError(
                         f"duplicate pipeline_id '{config.pipeline_id}' "
-                        f'(from {path.name}) — stream ids must be unique')
+                        f'(from {document.name}) — stream ids must be unique')
                 self._pipelines[config.pipeline_id] = Pipeline(config)
-                if overridden:
+                if document.overlays:
                     self._overridden.add(config.pipeline_id)
+                if document.private:
+                    self._private.add(config.pipeline_id)
 
     def is_overridden(self, pipeline_id: str) -> bool:
-        """Whether this stream's constellation was deep-merged with a user override."""
+        """Whether this stream's constellation was patched by the private layer or the machine."""
         return pipeline_id in self._overridden
 
+    def is_private(self, pipeline_id: str) -> bool:
+        """Whether this stream is defined by the private layer, not the public reference."""
+        return pipeline_id in self._private
+
     def override_entries(self) -> Dict[str, List[OverrideEntry]]:
-        """Touched leaves per overridden constellation file (empty when none)."""
+        """Touched leaves per applied overlay, keyed by its layer label (empty when none)."""
         return self._override_entries
-
-    def _with_override(self, path: Path) -> Tuple[Dict[str, Any], Dict[str, Any],
-                                                  Optional[Dict[str, Any]]]:
-        """Load a constellation, deep-merging a gitignored user override when one exists.
-
-        Override only what differs — everything else is inherited from the tracked base (no
-        silent drift, unlike a full copy). Lists (`symbols`, `llm.models`) replace wholesale.
-
-        Returns:
-            (merged, base, override) — base and override stay raw so the override report
-            can render `old → new` per touched leaf; override is None when none exists.
-        """
-        data = json.loads(path.read_text(encoding='utf-8'))
-        if self._user_overrides_dir is None:
-            return data, data, None
-        override_path = self._user_overrides_dir / path.name
-        if not override_path.exists():
-            return data, data, None
-        override = json.loads(override_path.read_text(encoding='utf-8'))
-        merged = deep_merge(data, override, _OVERRIDE_LIST_KEYS)
-        # Guard the llm XOR: if the override picks a form (model vs models), drop the base's
-        # *other* form so switching forms via override can't produce an invalid "both present".
-        override_llm = override.get('llm', {})
-        merged_llm = merged.get('llm')
-        if isinstance(merged_llm, dict):
-            if 'model' in override_llm and 'models' not in override_llm:
-                merged_llm.pop('models', None)
-            elif 'models' in override_llm and 'model' not in override_llm:
-                merged_llm.pop('model', None)
-        return merged, data, override
 
     def list_pipelines(self) -> List[Pipeline]:
         return list(self._pipelines.values())

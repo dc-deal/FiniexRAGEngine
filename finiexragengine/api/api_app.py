@@ -15,7 +15,10 @@ from finiex_auth.token_registry import TokenRegistry
 from finiexragengine.api.endpoints.archive_router import build_archive_router
 from finiexragengine.api.endpoints.build_router import build_build_router
 from finiexragengine.api.endpoints.envelopes_router import build_envelopes_router
-from finiexragengine.api.endpoints.health_router import build_health_router
+from finiexragengine.api.endpoints.health_router import (
+    build_health_router,
+    private_worker_aliases,
+)
 from finiexragengine.api.endpoints.report_router import build_report_router
 from finiexragengine.api.endpoints.pipelines_router import build_pipelines_router
 from finiexragengine.api.endpoints.sentiment_router import build_sentiment_router
@@ -40,6 +43,7 @@ from finiexragengine.core.observability.cost_recorder import CostRecorder
 from finiexragengine.core.observability.price_probe import drift_notice, probe_prices
 from finiexragengine.core.observability.price_probe_store import PriceProbeStore
 from finiexragengine.core.llm.model_catalog import verify_configured_models
+from finiexragengine.core.llm.model_profiles import ModelProfiles
 from finiexragengine.core.observability.budget_guard import BudgetGuard
 from finiexragengine.core.observability.build_info import sample_build_info
 from finiexragengine.core.observability.logging_setup import configure_logging
@@ -229,6 +233,9 @@ def create_app(attach_runners: Optional[bool] = None,
         # loudly here instead of failing a paid run later; an unreachable provider only
         # logs (the allowlist stays the hard gate).
         verify_configured_models(config_manager.get_config())
+        # How each eval model will be called (temperature, strict output), once per model.
+        ModelProfiles().announce(pipeline.get_config().llm.model
+                                 for pipeline in registry.list_pipelines())
         # Detection-threshold preflight (ISSUE_106) — the same idiom one domain over: the three
         # `DetectionConfig` thresholds only mean something relative to the feeds that actually run,
         # and nothing checked them until now. Warns, never refuses: an over-ambitious threshold is
@@ -505,11 +512,20 @@ def create_app(attach_runners: Optional[bool] = None,
     # of the two. `health_public: false` used to leave /health on the app regardless — public, and
     # *unthrottled*, because the rate limiter lives on the public wrapper. The flag documented as
     # "moves it behind the token" removed the only protection an anonymous caller met.
+    # Private pipelines and source sets keep their state on the public route but not their names
+    # (CLAUDE.md, "What gets published"): the aliases are fixed here, once, from the registries
+    # this process loaded.
+    worker_aliases = private_worker_aliases(
+        [pipeline.get_config().pipeline_id for pipeline in registry.list_pipelines()
+         if registry.is_private(pipeline.get_config().pipeline_id)],
+        [config.source_set_id for config in source_sets.list_sets()
+         if source_sets.is_private(config.source_set_id)] if source_sets is not None else [])
     health = build_health_router(config_manager, supervisor=supervisor,
                                  budget_guard=budget_guard, stall_watchdog=stall_watchdog,
                                  resource_gauge=resource_gauge, outcome_store=outcome_store,
                                  run_lock=run_lock,
-                                 stream_dispatcher=stream_dispatcher)
+                                 stream_dispatcher=stream_dispatcher,
+                                 public_worker_names=worker_aliases)
     # Sampled once, here, so it describes the code THIS process imported rather than whatever the
     # working tree holds at request time (see `build_info.sample_build_info`). One sample, two
     # consumers: `/v1/build` and the dashboard snapshot's `engine_started_at` — so the uptime a

@@ -3,11 +3,11 @@
 import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 from jinja2 import Environment, StrictUndefined, Template
 
-from finiexragengine.exceptions.ragengine_errors import LLMError
+from finiexragengine.exceptions.ragengine_errors import ConfigurationError, LLMError
 from finiexragengine.types.article_types import Article, RetrievedArticle
 from finiexragengine.types.prompt_metadata import PromptMetadata
 
@@ -62,8 +62,12 @@ class PromptBuilder:
     the mood — provenance is attached downstream from the real articles, never invented.
     """
 
-    def __init__(self, prompts_dir: Path) -> None:
-        self._prompts_dir = Path(prompts_dir)
+    def __init__(self, prompts_dirs: Union[Path, Sequence[Path]]) -> None:
+        # One directory or several: the public reference and, when present, the private layer
+        # (`AppConfigManager.get_prompt_dirs`). Order only shapes the not-found message — a template
+        # present in two of them is refused below, so no directory silently wins over another.
+        dirs = [prompts_dirs] if isinstance(prompts_dirs, (str, Path)) else list(prompts_dirs)
+        self._prompts_dirs: List[Path] = [Path(directory) for directory in dirs]
         # from_string (not FileSystemLoader): we strip the front-matter ourselves before Jinja
         # sees the body. autoescape off — raw prompt text, not HTML. StrictUndefined — a typo'd
         # variable fails loudly. trim/lstrip — `{% %}` control lines leave no stray blank lines.
@@ -78,18 +82,28 @@ class PromptBuilder:
     def _load(self, name: str, version: str) -> Tuple[PromptMetadata, Template]:
         """Read, parse (front-matter -> metadata) and compile the template, cached.
 
-        Layout: one folder per prompt family — `prompts/<name>/<name>_v<version>.md`
+        Layout: one folder per prompt family — `<dir>/<name>/<name>_v<version>.md`
         (e.g. crypto_sentiment/, forex_sentiment/) — so a family's versions stay
-        together and each pipeline type owns its wording.
+        together and each pipeline type owns its wording. `<dir>` is any of the configured
+        layers; a version lives in exactly one of them.
         """
         key = (name, version)
         if key in self._cache:
             return self._cache[key]
-        path = self._prompts_dir / name / f'{name}_v{version}.md'
-        try:
-            raw = path.read_text(encoding='utf-8')
-        except FileNotFoundError as exc:
-            raise LLMError(f'prompt template not found: {name}/{path.name}') from exc
+        file_name = f'{name}_v{version}.md'
+        found = [directory / name / file_name for directory in self._prompts_dirs
+                 if (directory / name / file_name).is_file()]
+        if not found:
+            searched = ', '.join(directory.as_posix() for directory in self._prompts_dirs)
+            raise LLMError(f'prompt template not found: {name}/{file_name} (searched {searched})')
+        if len(found) > 1:
+            # One version, two texts: whichever was read first would define what the envelopes'
+            # `prompt_hash` means, and the other would be a silent shadow. A version is immutable
+            # per layer and lives in exactly one of them.
+            raise ConfigurationError(
+                f'prompt {name}/{file_name} exists in more than one layer: '
+                + ', '.join(path.as_posix() for path in found))
+        raw = found[0].read_text(encoding='utf-8')
         meta, body = _split_front_matter(raw)
         # Fingerprint the body (front-matter excluded): a silent edit shows in the output;
         # a metadata-only fix does not invalidate the series. Short git-style hex is enough.

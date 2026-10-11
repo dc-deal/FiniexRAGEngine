@@ -2,11 +2,12 @@
 import json
 import logging
 from time import perf_counter
-from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from openai import APITimeoutError, OpenAI, OpenAIError
 
 from finiexragengine.core.llm.abstract_llm_provider import AbstractLLMProvider
+from finiexragengine.core.llm.model_profiles import ModelProfiles
 from finiexragengine.core.llm.openai_quota import is_quota_exceeded
 from finiexragengine.exceptions.ragengine_errors import (
     BudgetExceededError,
@@ -23,18 +24,25 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Model families that REJECT `temperature` outright — the reasoning models have no such knob,
-# and sending it is a hard 400 rather than a value the backend clamps. Observed 2026-09-20 on
-# `gpt-5-nano`, on the first live pass of the ISSUE_42 variant fan-out:
-#
-#   400 — "Unsupported value: 'temperature' does not support 0.1 with this model"
-#
-# Vendor eccentricity, so it lives in the concrete provider and never in `AbstractLLMProvider`.
-# A PREFIX rather than a model list on purpose: the family is the property, and a list would
-# need an entry per dated snapshot (`gpt-5-nano-2026-…`). The cost of being wrong is bounded and
-# visible — a model that would have accepted the parameter simply runs at its own default, and
-# `_announce_omitted_temperature` says so the first time it happens.
-_NO_TEMPERATURE_PREFIXES: Tuple[str, ...] = ('gpt-5',)
+def _strict_schema(schema: Dict[str, Any]) -> Dict[str, Any]:
+    """The schema in the shape OpenAI's strict structured output accepts — a copy, never in place.
+
+    Strict mode wants every property listed in `required` and no `default` keyword: an optional
+    field stays optional by being nullable (`anyOf: [..., null]`), which Pydantic already emits for
+    `Optional`. Range keywords (`minimum`/`maximum`) are accepted and kept — checked against the
+    live API on 2026-10-11 — and the caller still validates the payload against its model on top.
+    Nested objects get the same treatment.
+    """
+    def _walk(node: Any) -> Any:
+        if isinstance(node, list):
+            return [_walk(item) for item in node]
+        if not isinstance(node, dict):
+            return node
+        result = {key: _walk(value) for key, value in node.items() if key != 'default'}
+        if isinstance(result.get('properties'), dict):
+            result['required'] = list(result['properties'])
+        return result
+    return _walk(schema)
 
 
 class OpenAIProvider(AbstractLLMProvider):
@@ -57,6 +65,9 @@ class OpenAIProvider(AbstractLLMProvider):
                  budget_guard: Optional['BudgetGuard'] = None) -> None:
         self._config = config
         self._model = model
+        # How this model's family is called (temperature, strict output) — resolved once, from the
+        # one table that knows (`ModelProfiles`), instead of a prefix check buried in the call.
+        self._profile = ModelProfiles().resolve(model)
         self._api_key = api_key
         self._client = client   # built lazily from OPENAI_API_KEY / api_key if not injected
         self._cost_recorder = cost_recorder
@@ -76,10 +87,6 @@ class OpenAIProvider(AbstractLLMProvider):
             self._client = OpenAI(api_key=self._api_key, base_url=self._config.base_url)
         return self._client
 
-    def _accepts_temperature(self) -> bool:
-        """Whether this model takes the parameter at all — a property of the family, not a setting."""
-        return not self._model.startswith(_NO_TEMPERATURE_PREFIXES)
-
     def _announce_omitted_temperature(self) -> None:
         """State it, once. A configured value that did not reach the API must not stay silent.
 
@@ -97,10 +104,18 @@ class OpenAIProvider(AbstractLLMProvider):
 
     def _sampling_kwargs(self) -> Dict[str, Any]:
         """The sampling parameters this model will actually accept."""
-        if not self._accepts_temperature():
+        if not self._profile.accepts_temperature:
             self._announce_omitted_temperature()
             return {}
         return {'temperature': self._config.temperature}
+
+    def _response_format(self, json_schema: Dict[str, Any]) -> Dict[str, Any]:
+        """The `response_format` this model's family is called with."""
+        strict = self._profile.strict_output
+        return {'type': 'json_schema',
+                'json_schema': {'name': 'structured_output',
+                                'schema': _strict_schema(json_schema) if strict else json_schema,
+                                'strict': strict}}
 
     def complete_structured(self, prompt: str, json_schema: Dict[str, Any]) -> LlmCompletion:
         # Circuit-breaker gate (ISSUE_47): while paid work is suspended (provider quota), refuse
@@ -113,14 +128,11 @@ class OpenAIProvider(AbstractLLMProvider):
             response = client.chat.completions.create(
                 model=self._model,
                 messages=[{'role': 'user', 'content': prompt}],
-                # Structured output: the model must return JSON matching the schema.
-                # strict=False accepts the full Pydantic schema (range constraints and
-                # all); the caller validates the payload against its model on top.
-                response_format={
-                    'type': 'json_schema',
-                    'json_schema': {'name': 'structured_output',
-                                    'schema': json_schema, 'strict': False},
-                },
+                # Structured output: the model must return JSON matching the schema. Strict where
+                # the family needs it (decoding constrained to the schema — the reasoning family
+                # misspells keys otherwise); a hint elsewhere, unchanged for the live series. The
+                # caller validates the payload against its model on top either way.
+                response_format=self._response_format(json_schema),
                 timeout=self._config.timeout_seconds,
                 **self._sampling_kwargs(),
             )

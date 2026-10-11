@@ -5,7 +5,9 @@ ways that answer can go wrong — a deployment with no git at all, and a value t
 working tree instead of the running process.
 """
 import platform
+import subprocess
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 import pytest
@@ -138,4 +140,45 @@ def test_the_interpreter_version_is_reported() -> None:
 def test_the_incremental_gc_releases_are_recognised(version: tuple, implementation: str,
                                                     expected: bool) -> None:
     assert build_info.has_incremental_gc(version, implementation) is expected
+
+
+# --- the private configuration layer -------------------------------------------------------
+
+def _commit_repo(root: Path, content: str) -> str:
+    """A throwaway repository with one commit; returns its short hash."""
+    root.mkdir(parents=True, exist_ok=True)
+    git = ['git', '-C', str(root), '-c', 'user.name=t', '-c', 'user.email=t@example.test']
+    subprocess.run([*git, 'init', '-q'], check=True)
+    (root / 'f.txt').write_text(content, encoding='utf-8')
+    subprocess.run([*git, 'add', '.'], check=True)
+    subprocess.run([*git, 'commit', '-q', '-m', 'c'], check=True)
+    return subprocess.run([*git, 'rev-parse', '--short', 'HEAD'], check=True,
+                          capture_output=True, text=True).stdout.strip()
+
+
+def test_no_private_layer_reports_nulls(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(build_info, '_PRIVATE_ROOT', tmp_path / 'configs_private')
+    assert build_info._private_layer() == (None, None)
+
+
+def test_a_plain_private_directory_never_reports_the_public_commit(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The trap this guards: the layer lives INSIDE the public working tree, so `git -C` on a
+    # directory that is not its own repository answers for the public one. Reporting that hash as
+    # "private" would claim a version of our configuration that does not exist.
+    _commit_repo(tmp_path / 'public', 'public')
+    plain = tmp_path / 'public' / 'configs_private'
+    plain.mkdir()
+    monkeypatch.setattr(build_info, '_PRIVATE_ROOT', plain)
+    assert build_info._private_layer() == (None, None)
+
+
+def test_a_private_repository_reports_its_own_commit(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    public = _commit_repo(tmp_path / 'public', 'public')
+    private = _commit_repo(tmp_path / 'public' / 'configs_private', 'private')
+    monkeypatch.setattr(build_info, '_PRIVATE_ROOT', tmp_path / 'public' / 'configs_private')
+    commit, dirty = build_info._private_layer()
+    assert (commit, dirty) == (private, False)
+    assert commit != public
 

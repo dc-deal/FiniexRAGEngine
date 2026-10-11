@@ -1,6 +1,6 @@
 """Retrieval stage — the RAG 'squeeze': only relevant, recent, deduped context."""
 from datetime import datetime, timedelta, timezone
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from finiexragengine.core.rag.abstract_vector_store import AbstractVectorStore
 from finiexragengine.core.rag.query_vector_cache import QueryVectorCache
@@ -15,11 +15,12 @@ from finiexragengine.types.outcome_types import RetrievalFunnel
 
 RECENT: RetrievalTier = 'recent'
 DEEP: RetrievalTier = 'deep'
+BACKGROUND: RetrievalTier = 'background'
 # Ordering rank per tier — NOT the label, and the distinction is load-bearing. The tier used to be
 # the integers 0/1 and `_rank_key` sorted on them directly; sorting the labels instead would order
 # them alphabetically, put 'deep' ahead of 'recent', and rank week-old articles above today's news.
 # That is the precise contamination ISSUE_30 exists to prevent, and it would be silent.
-_TIER_RANK = {RECENT: 0, DEEP: 1}
+_TIER_RANK = {RECENT: 0, DEEP: 1, BACKGROUND: 2}
 
 
 def _cosine(a: List[float], b: List[float]) -> float:
@@ -54,7 +55,11 @@ class Retriever:
       `source_weight`, then a higher `importance` wins;
     - near-duplicate stories across feeds are collapsed via pairwise cosine on
       the stored embeddings (>= `dedup_similarity`), keeping the better-ranked;
-    - `top_k` is the hard cap on what reaches the prompt.
+    - `top_k` is the hard cap on what reaches the prompt from these two tiers;
+    - *background section* (opt-in via `retrieval.background`) — selected AFTER the
+      squeeze above, from the window that ends where the recent one begins, with its own
+      cap and no importance gate; a candidate that near-duplicates anything already kept
+      is collapsed. Its articles are appended behind the others.
     """
 
     _OVERFETCH = 2   # pull extra candidates per tier so dedup cannot starve top_k
@@ -101,28 +106,69 @@ class Retriever:
             candidates = [(tier, hit) for tier, hit in candidates if hit.distance <= floor]
         floor_dropped = in_window - len(candidates)
         candidates.sort(key=_rank_key)
-        retrieved, tier_duplicates, near_duplicates = self._squeeze(candidates)
+        kept, tier_duplicates, near_duplicates = self._squeeze(candidates, self._config.top_k, [])
+        # The background section runs after the main squeeze and is counted on its own, so every
+        # counter above keeps meaning exactly what it meant before the section existed.
+        background: List[Tuple[RetrievalTier, ScoredArticle]] = []
+        background_in_window = 0
+        background_floor_dropped = 0
+        if self._config.background is not None:
+            background, background_in_window, background_floor_dropped = self._background(
+                vector, now, recent_since, floor, kept)
+        retrieved = [RetrievedArticle(article=hit.article, retrieval_tier=tier)
+                     for tier, hit in kept + background]
         # Derived from the list rather than accumulated beside it (ISSUE_30): one computation, so
         # the funnel's count and the per-citation tiers in the envelope cannot disagree. They used
         # to be two, and two numbers meant to agree are the shape ISSUE_82 spent weeks on.
         deep_kept = sum(1 for item in retrieved if item.retrieval_tier == DEEP)
+        background_kept = sum(1 for item in retrieved if item.retrieval_tier == BACKGROUND)
         return RetrievedContext(retrieved=retrieved, funnel=RetrievalFunnel(
             in_window=in_window, floor_dropped=floor_dropped,
             tier_duplicates=tier_duplicates, near_duplicates=near_duplicates,
-            kept=len(retrieved), deep_kept=deep_kept, best_distance=best_distance,
+            kept=len(kept), deep_kept=deep_kept,
+            background_in_window=background_in_window,
+            background_floor_dropped=background_floor_dropped,
+            background_kept=background_kept, best_distance=best_distance,
             worst_distance=worst_distance, floor=floor))
 
-    def _squeeze(self, ranked: List[Tuple[RetrievalTier, ScoredArticle]]
-                 ) -> Tuple[List[RetrievedArticle], int, int]:
-        """Collapse id- and near-duplicates in rank order and cap at top_k.
+    def _background(self, vector: List[float], now: datetime, recent_since: datetime,
+                    floor: Optional[float], prior: List[Tuple[RetrievalTier, ScoredArticle]]
+                    ) -> Tuple[List[Tuple[RetrievalTier, ScoredArticle]], int, int]:
+        """Select the background section: older, its own cap, no importance gate.
 
-        Returns the kept articles **paired with the tier that surfaced them**, plus the two
+        The window is [now − window_minutes, recent_since) — half-open and ending exactly where the
+        recent window starts, so no article can be returned by both. The same relevance floor
+        applies (an off-topic article is not made relevant by being old), and a candidate that
+        near-duplicates anything in `prior` is collapsed: an older copy of a story already in the
+        prompt adds tokens, not evidence. Returns the kept pairs, the candidates the window offered,
+        and how many of those the floor dropped.
+        """
+        section = self._config.background
+        since = now - timedelta(minutes=section.window_minutes)
+        hits = self._store.query(vector, section.top_k * self._OVERFETCH, since,
+                                 until=recent_since)
+        in_window = len(hits)
+        if floor is not None:
+            hits = [hit for hit in hits if hit.distance <= floor]
+        floor_dropped = in_window - len(hits)
+        ranked = sorted(((BACKGROUND, hit) for hit in hits), key=_rank_key)
+        kept, _tier_duplicates, _near_duplicates = self._squeeze(ranked, section.top_k, prior)
+        return kept, in_window, floor_dropped
+
+    def _squeeze(self, ranked: List[Tuple[RetrievalTier, ScoredArticle]], cap: int,
+                 prior: List[Tuple[RetrievalTier, ScoredArticle]]
+                 ) -> Tuple[List[Tuple[RetrievalTier, ScoredArticle]], int, int]:
+        """Collapse id- and near-duplicates in rank order and cap at `cap`.
+
+        Returns the newly kept articles **paired with the tier that surfaced them**, plus the two
         collapse counters (tier duplicates, near-duplicates). The tier was always available in this
         loop and was discarded one line later (ISSUE_30); keeping it is what lets the prompt fence
         a retrospective article and the envelope record which citations were retrospective.
+        `prior` is what an earlier selection already kept: compared against for duplicates, never
+        returned and never counted against `cap` (empty for the main squeeze).
         """
         kept: List[Tuple[RetrievalTier, ScoredArticle]] = []
-        seen_ids = set()
+        seen_ids = {hit.article.article_id for _tier, hit in prior}
         tier_duplicates = 0
         near_duplicates = 0
         for tier, hit in ranked:
@@ -130,12 +176,11 @@ class Retriever:
                 tier_duplicates += 1
                 continue   # same article surfaced by both tiers
             if any(_cosine(hit.embedding, other.embedding) >= self._config.dedup_similarity
-                   for _tier, other in kept):
+                   for _tier, other in prior + kept):
                 near_duplicates += 1
                 continue   # near-duplicate story from another feed
             seen_ids.add(hit.article.article_id)
             kept.append((tier, hit))
-            if len(kept) == self._config.top_k:
+            if len(kept) == cap:
                 break   # cap applied after dedup, so duplicates never consume a slot
-        return ([RetrievedArticle(article=hit.article, retrieval_tier=tier)
-                 for tier, hit in kept], tier_duplicates, near_duplicates)
+        return kept, tier_duplicates, near_duplicates

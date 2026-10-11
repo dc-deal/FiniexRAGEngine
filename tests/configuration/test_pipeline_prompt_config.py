@@ -1,4 +1,7 @@
 """Tests for the pipeline-declared prompt block (ISSUE_33) + required eval model."""
+import json
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
@@ -52,8 +55,6 @@ def test_symbol_spec_key_must_equal_base_plus_quote():
 
 def test_shipped_pipeline_configs_load_and_validate():
     # The real 9 crypto + 8 forex specs (ISSUE_70) parse, and every key == base+quote.
-    import json
-    from pathlib import Path
     for name in ('crypto_sentiment', 'forex_macro_sentiment'):
         cfg = PipelineConfig(**json.loads(Path(f'configs/pipelines/{name}.json').read_text()))
         assert cfg.symbols                                       # non-empty; validated on construction

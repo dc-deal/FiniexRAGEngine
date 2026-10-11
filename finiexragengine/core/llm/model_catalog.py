@@ -123,14 +123,19 @@ def verify_configured_models(config: AppConfig) -> bool:
 
 
 def format_model_check(sections: List[CheckSection], used_by: Dict[str, List[str]],
-                       endpoint: str) -> str:
-    """Render the staged check as the console pattern table (models CLI)."""
-    divider = '-' * 78
+                       endpoint: str, profiles: Optional[Dict[str, str]] = None) -> str:
+    """Render the staged check as the console pattern table (models CLI).
+
+    `profiles` maps an eval model to how it is called (`ModelProfile.describe`); a model without
+    one (the embedding model) shows `-`.
+    """
+    profiles = profiles or {}
+    divider = '-' * 114
     lines = [
         'Model Check',
         f'endpoint: {endpoint}',
         divider,
-        f'{"model":44} {"available":>9}  used by',
+        f'{"model":30} {"available":>9}  {"profile":56}  used by',
         divider,
     ]
     total = 0
@@ -143,7 +148,8 @@ def format_model_check(sections: List[CheckSection], used_by: Dict[str, List[str
                 missing.append(model)
             status = 'yes' if available else 'MISSING'
             pipelines = ', '.join(used_by.get(model, [])) or '-'
-            lines.append(f'  {model:42} {status:>9}  {pipelines}')
+            profile = profiles.get(model, '-')
+            lines.append(f'  {model:28} {status:>9}  {profile:56}  {pipelines}')
     lines.append(divider)
     lines.append(f'{total} models checked · '
                  + (f'{len(missing)} MISSING: {", ".join(missing)}' if missing else 'all available'))

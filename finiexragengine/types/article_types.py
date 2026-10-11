@@ -16,7 +16,7 @@ from finiexragengine.types.outcome_types import RetrievalFunnel
 # a reader should not have to know which integer meant which window. Strict here at the producing
 # seam so a typo fails where it is written; the model field that stores it is a plain `str`, so an
 # archived envelope carrying a value a later version introduces still parses.
-RetrievalTier = Literal['recent', 'deep']
+RetrievalTier = Literal['recent', 'deep', 'background']
 RETRIEVAL_TIERS: Tuple[str, ...] = get_args(RetrievalTier)
 
 

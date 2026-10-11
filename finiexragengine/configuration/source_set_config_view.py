@@ -2,6 +2,7 @@
 from typing import Dict, List, Tuple
 
 from finiexragengine.configuration.abstract_config_view import AbstractConfigView
+from finiexragengine.configuration.config_layers import group_entries_by_stem
 from finiexragengine.configuration.override_report import OverrideEntry
 from finiexragengine.configuration.source_set_registry import SourceSetRegistry
 from finiexragengine.types.config_types.source_set_types import SourceSetConfig
@@ -18,7 +19,8 @@ class SourceSetConfigView(AbstractConfigView):
 
     NAME = 'source_sets'
     SUMMARY = 'feed catalogue: which sources are enabled, their weights, detection thresholds'
-    LAYERS: Tuple[str, ...] = ('configs/source_sets/', 'user_configs/source_sets/')
+    LAYERS: Tuple[str, ...] = ('configs/source_sets/', 'configs_private/source_sets/',
+                               'user_configs/source_sets/')
 
     def __init__(self, registry: SourceSetRegistry) -> None:
         # The registry the ingest workers themselves poll from — `PipelineAssembler` holds it, so a
@@ -29,5 +31,4 @@ class SourceSetConfigView(AbstractConfigView):
         return {source_set.source_set_id: source_set for source_set in self._registry.list_sets()}
 
     def override_entries(self) -> Dict[str, List[OverrideEntry]]:
-        return {name.removesuffix('.json'): entries
-                for name, entries in self._registry.override_entries().items()}
+        return group_entries_by_stem(self._registry.override_entries())

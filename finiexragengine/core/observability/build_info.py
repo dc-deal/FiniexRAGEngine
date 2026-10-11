@@ -32,12 +32,16 @@ logger = logging.getLogger(__name__)
 # The repository root, resolved from this file rather than from the working directory: a service
 # started by NSSM has whatever CWD the service manager gave it.
 _REPO_ROOT = Path(__file__).resolve().parents[3]
+# The private configuration layer, its own repository inside the working tree (gitignored by this
+# one). Only ever asked when it carries its own `.git`: a plain directory there would make
+# `git -C` answer for the PUBLIC repository it sits in, and report the public commit as ours.
+_PRIVATE_ROOT = _REPO_ROOT / 'configs_private'
 _TIMEOUT_SECONDS = 5
 
 
-def _git(*args: str) -> Optional[str]:
-    """One git command against the repo root — `None` on any failure, and never a raise."""
-    command: List[str] = ['git', '-C', str(_REPO_ROOT), *args]
+def _git(*args: str, root: Path = _REPO_ROOT) -> Optional[str]:
+    """One git command against a repository root — `None` on any failure, and never a raise."""
+    command: List[str] = ['git', '-C', str(root), *args]
     try:
         completed = subprocess.run(command, capture_output=True, text=True,
                                    timeout=_TIMEOUT_SECONDS, check=False)
@@ -77,6 +81,17 @@ def _auth_package() -> Tuple[Optional[str], Optional[bool]]:
     return distribution.version, editable
 
 
+def _private_layer() -> Tuple[Optional[str], Optional[bool]]:
+    """The private layer's commit and dirty flag — `(None, None)` unless it is its own repository."""
+    if not (_PRIVATE_ROOT / '.git').exists():
+        return None, None
+    commit = _git('rev-parse', '--short', 'HEAD', root=_PRIVATE_ROOT)
+    if commit is None:
+        return None, None
+    status = _git('status', '--porcelain', root=_PRIVATE_ROOT)
+    return commit, (status != '') if status is not None else None
+
+
 def has_incremental_gc(version_info: Tuple[int, ...], implementation: str = 'cpython') -> bool:
     """True for the CPython releases that shipped the incremental garbage collector: 3.14.0–3.14.4.
 
@@ -101,6 +116,7 @@ def sample_build_info(version: str) -> BuildInfo:
     # answers, and only one of them means the deploy can be trusted to match a commit.
     status = _git('status', '--porcelain') if commit else None
     auth_version, auth_editable = _auth_package()
+    private_commit, private_dirty = _private_layer()
     info = BuildInfo(
         version=version,
         commit=commit,
@@ -109,10 +125,14 @@ def sample_build_info(version: str) -> BuildInfo:
         auth_package_version=auth_version,
         auth_package_editable=auth_editable,
         python_version=platform.python_version(),
+        private_commit=private_commit,
+        private_dirty=private_dirty,
         started_at=datetime.now(timezone.utc))
     auth = (f' · finiex_auth {auth_version}' + (' (EDITABLE)' if auth_editable else '')
             if auth_version else ' · finiex_auth NOT INSTALLED')
     python = f' · python {info.python_version}'
+    if private_commit is not None:
+        python = (f' · private {private_commit}' + (' (DIRTY)' if private_dirty else '')) + python
     if commit is None:
         logger.info('[BUILD] version %s · commit not determinable (no git repository here)%s%s',
                     version, python, auth)

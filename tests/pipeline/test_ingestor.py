@@ -85,7 +85,8 @@ class _FakeStore(AbstractVectorStore):
                 new += 1
         return new
 
-    def query(self, vector, top_k, since, min_importance=None) -> List[ScoredArticle]:
+    def query(self, vector, top_k, since, min_importance=None,
+              until=None) -> List[ScoredArticle]:
         return []
 
 

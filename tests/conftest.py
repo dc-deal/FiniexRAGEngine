@@ -34,6 +34,26 @@ _MINTED_TABLES = (_MIGRATION_LEDGER, 'journal_identity')
 _DEFAULT_DSN = 'postgresql://ragengine:ragengine@127.0.0.1:5433/ragengine'
 
 
+@pytest.fixture(autouse=True)
+def _public_reference_only(monkeypatch: pytest.MonkeyPatch,
+                           tmp_path_factory: pytest.TempPathFactory) -> None:
+    """The public suite tests the public repository: the private layer is switched off for it.
+
+    `configs_private/` is a private checkout that exists on our machines and nowhere else, so a
+    test that loaded it would pass or fail depending on who runs it — and a contributor's clone
+    has no such directory at all. The factories are pointed at an empty directory instead; the
+    layer's MECHANISM is tested with temporary directories, and the private definitions are tested
+    by the private repository's own suite.
+    """
+    absent = tmp_path_factory.getbasetemp() / 'no_private_layer'
+    monkeypatch.setattr(AppConfigManager, 'get_private_pipelines_dir',
+                        lambda self: absent / 'pipelines')
+    monkeypatch.setattr(AppConfigManager, 'get_private_source_sets_dir',
+                        lambda self: absent / 'source_sets')
+    monkeypatch.setattr(AppConfigManager, 'get_private_prompts_dir',
+                        lambda self: absent / 'prompts')
+
+
 @pytest.fixture
 def client() -> TestClient:
     # attach_runners=False pins the app to scaffold-mock mode: the free suite must

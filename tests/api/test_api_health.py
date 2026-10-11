@@ -211,3 +211,39 @@ def test_health_says_degraded_when_a_worker_died() -> None:
     # And the healthy one is untouched — 'degraded' names the engine, the fields name the worker.
     assert next(w for w in body['workers']
                 if w['name'] == 'ingest:forex_news')['stopped_at'] is None
+
+
+def test_private_workers_appear_on_the_public_route_by_alias_only():
+    # The route is reachable without a token; a private pipeline's name — and the feeds its
+    # detail line can mention — are business logic. The state is not: a dead private worker
+    # still turns the verdict, and the stall list names it by the same alias.
+    from fastapi import FastAPI
+
+    from finiexragengine.api.endpoints.health_router import (
+        build_health_router,
+        private_worker_aliases,
+    )
+
+    public = WorkerState(name='eval:crypto_sentiment', kind='eval', interval_seconds=600,
+                         last_detail='scheduled · success')
+    private = WorkerState(name='eval:secret_view', kind='eval', interval_seconds=3600,
+                          last_detail='scheduled · success · fed by secret_feed')
+    private.stopped_at = datetime(2026, 10, 11, 12, 0, tzinfo=timezone.utc)
+
+    class _Supervisor:
+        def states(self) -> list:
+            return [public, private]
+
+    aliases = private_worker_aliases(['secret_view'], ['secret_news'])
+    assert aliases == {'eval:secret_view': 'eval:private-1', 'ingest:secret_news': 'ingest:private-1'}
+    app = FastAPI()
+    app.include_router(build_health_router(AppConfigManager(), supervisor=_Supervisor(),
+                                           public_worker_names=aliases))
+    body = TestClient(app).get('/v1/health').json()
+
+    names = [worker['name'] for worker in body['workers']]
+    assert names == ['eval:crypto_sentiment', 'eval:private-1']
+    assert 'secret' not in TestClient(app).get('/v1/health').text
+    assert body['workers'][0]['last_detail'] == 'scheduled · success'   # public ones untouched
+    assert body['status'] == 'degraded'                                 # the verdict still counts it
+
