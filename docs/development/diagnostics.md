@@ -905,7 +905,7 @@ and `instance_id` tells two *deployments* apart even when they share one.
 | `source_poll_log` | one row per poll attempt: duration, outcome, error type | `diagnostics.poll_log_retention_days` (14) |
 | `source_quarantine_log` | one row per quarantine episode / connectivity event: rung, cool-off, trigger, frozen timeline | forever (~1 MB/year) |
 | `resource_samples` | one row per watchdog tick: rss, sockets, threads | `diagnostics.resource_retention_days` (14) |
-| `cost_log` | one row per paid API call: tokens, USD, duration | forever (billing) |
+| `cost_log` | one row per API call attempt: tokens, USD, duration, `attempt`, `outcome` (failed attempts with NULL spend) | forever (billing) |
 | `outcomes` | every produced envelope | forever |
 | `articles` | the corpus + embed token counts + breaking flags | forever |
 

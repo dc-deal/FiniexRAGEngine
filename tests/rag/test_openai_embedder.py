@@ -38,7 +38,8 @@ class _Embeddings:
         self._bad_dim = bad_dim
         self._boom = boom
 
-    def create(self, model: str, input: list, dimensions: int) -> _Response:
+    def create(self, model: str, input: list, dimensions: int,
+               timeout: float = None) -> _Response:
         self._parent.calls.append({'model': model, 'n': len(input), 'dimensions': dimensions})
         if self._boom:
             raise OpenAIError('simulated API failure')
@@ -113,7 +114,8 @@ class _PoisonEmbeddings:
         self._parent = parent
         self._poisoned = poisoned
 
-    def create(self, model: str, input: list, dimensions: int) -> _Response:
+    def create(self, model: str, input: list, dimensions: int,
+               timeout: float = None) -> _Response:
         self._parent.calls.append(list(input))
         offenders = [text for text in input if text in self._poisoned]
         if offenders:
@@ -183,7 +185,8 @@ class _EchoEmbeddings:
     def __init__(self, parent: '_EchoClient') -> None:
         self._parent = parent
 
-    def create(self, model: str, input: list, dimensions: int) -> _Response:
+    def create(self, model: str, input: list, dimensions: int,
+               timeout: float = None) -> _Response:
         self._parent.sent.extend(input)
         return _Response([_Item(i, [0.0] * dimensions) for i in range(len(input))])
 
@@ -218,7 +221,7 @@ def test_token_mismatch_warns_but_does_not_fail(caplog):
         usage = _Usage()
 
     class _Embeddings2(_Embeddings):
-        def create(self, model, input, dimensions):
+        def create(self, model, input, dimensions, timeout=None):
             base = super().create(model, input, dimensions)
             return _UsageResponse(base.data)
 

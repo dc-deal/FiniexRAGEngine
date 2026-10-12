@@ -128,6 +128,17 @@ Every paid API call (embedding news, embedding a query, later the LLM eval) writ
 `cost_log` table — section, model, tokens, and the USD derived from the price table **at record
 time** (frozen, so a later price change never rewrites history; the token count is the ground truth).
 
+Since ISSUE_128 (migration 019) a row is one **attempt**: `attempt` (1-based) and `outcome` (`ok` ·
+`timeout` · `connection` · `rate_limited` · `server_error` · `rejected` · `quota`). A failed attempt
+has NULL tokens and NULL USD — unknown whether billed. Rows from before the migration read
+`outcome = 'ok'` (only answers were written then) and `attempt` NULL (whether the SDK retried
+inside one is no longer knowable). The report's `calls` count answers; failed attempts get their own
+line, because their spend is in no USD figure:
+
+```
+failed attempts: this week 4 · this month 4 · all-time 4 (spend unknown — not in the USD above)
+```
+
 ```bash
 python -m finiexragengine.cli.cost_cli
 ```
@@ -183,7 +194,8 @@ operator-specific values and secrets. The **price table** (`pricing.models` in
 change; past `cost_log` rows keep their as-recorded USD regardless. Browse the raw log in pgAdmin:
 
 ```sql
-SELECT ts, section, model, total_tokens, usd_cost FROM cost_log ORDER BY ts DESC;
+SELECT ts, section, model, attempt, outcome, total_tokens, usd_cost FROM cost_log ORDER BY ts DESC;
+SELECT model, outcome, count(*) FROM cost_log WHERE outcome <> 'ok' GROUP BY 1, 2;   -- what failed
 ```
 
 ## Performance tracking (latency log + perf CLI)
@@ -213,6 +225,26 @@ window total                                           26.8
 Reading it: `avg` for the trend, `p95`/`max` for outliers (an API hang shows as a runaway max),
 `API s` for where the wall-clock actually went. Rows recorded before latency capture existed have
 no duration; they are excluded from the aggregates and counted in an `untimed legacy calls` note.
+
+**Latency is over the attempts that answered** (ISSUE_128) — a timed-out attempt's duration is our
+deadline, not the provider's speed. Below the table, an attempts block per pipeline × model says how
+many calls needed a retry and how the failed attempts ended:
+
+```
+LLM / embedding attempts (last 7d)
+----------------------------------------------------------------------------------------------------
+pipeline · model                         calls  retried  failed attempts                spend unknown
+----------------------------------------------------------------------------------------------------
+<pipeline> · gpt-4o-mini                 9,412        3  1 server_error · 2 timeout                 3
+<pipeline> · gpt-5                         168        4  4 timeout                                  4
+crypto_news · text-embedding-3-small    40,311        0  -                                          -
+----------------------------------------------------------------------------------------------------
+7 call(s) retried · 7 failed attempt(s), 7 with unknown spend
+```
+
+**A series break, stated:** before migration 019 a row's `duration_ms` was the whole logical call,
+including any retries the SDK made out of sight and the backoff between them; from it on, it is one
+attempt. A latency comparison across that boundary compares two different measures.
 
 Beyond the report, every spending CLI pass (ingest, eval) echoes a `--- run metrics ---` footer —
 per-stage times plus what the pass just spent — so cost and latency are visible right where the run

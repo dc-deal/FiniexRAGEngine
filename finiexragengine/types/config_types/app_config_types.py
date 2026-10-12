@@ -108,12 +108,14 @@ class LlmConfig(BaseModel):
     """
     provider: str = 'openai'
     temperature: float = 0.1
-    # Per call. 90 rather than 30 since the reasoning models (gpt-5 family) joined: their hidden
-    # reasoning tokens make a call take tens of seconds, and the gpt-5-nano trial lost 32 calls to
-    # a 30 s ceiling. A ceiling, not a wait — the 1–2 s calls of the fast pipelines are unaffected —
-    # and still bounded per pass by `pass_timeout_seconds`. Outside the fingerprint: a timeout
-    # produces an error, never a different score.
-    timeout_seconds: int = 90
+    # Per attempt, for every family without a ceiling of its own. The reasoning family (gpt-5) takes
+    # tens of seconds per call and gets its own through its model profile (ISSUE_128) — a global 90
+    # would make a hung 2 s call wait as long. Outside the fingerprint: a timeout produces an error,
+    # never a different score.
+    timeout_seconds: int = 30
+    # Retries per call after the first attempt (ISSUE_128), run by the engine rather than the SDK so
+    # every attempt is recorded. The SDK's own default; bounded per pass by `pass_timeout_seconds`.
+    max_retries: int = 2
     # Governance allowlist: a pipeline requesting a model outside this set fails at
     # assembly — fail fast, before any spend. Override the list in the gitignored
     # user_configs to admit e.g. a fine-tuned `ft:...` model without touching tracked config.
@@ -142,6 +144,9 @@ class EmbeddingConfig(BaseModel):
     # the ingest path. Deliberately well below the worker's `pass_timeout_seconds` so the *call*
     # fails with a log line before the *pass* is abandoned without one.
     timeout_seconds: int = 60
+    # Retries per batch request after the first attempt (ISSUE_128) — the LLM stage's rule, so one
+    # policy covers every OpenAI call.
+    max_retries: int = 2
 
 
 class IngestConfig(BaseModel):
@@ -266,8 +271,10 @@ class LoggingConfig(BaseModel):
     backup_count: int = 14                     # rotated files kept (daily: days; size: files)
     max_bytes: int = 10_000_000                # size-rotation only (ignored when rotation='daily')
     # Third-party loggers pinned to WARNING so the file is signal, not per-request noise
-    # (httpx logs every OpenAI call at INFO — thousands a night otherwise).
-    quiet_loggers: List[str] = Field(default_factory=lambda: ['httpx', 'httpcore'])
+    # (httpx logs every OpenAI call at INFO — thousands a night otherwise). Since openai 3.x the
+    # SDK's transport is the `httpx2` / `httpcore2` fork, so both generations are named.
+    quiet_loggers: List[str] = Field(
+        default_factory=lambda: ['httpx', 'httpcore', 'httpx2', 'httpcore2'])
     # Startup override report: log WHAT each user_configs/ file changes (old → new per
     # leaf, typo'd keys flagged) — once per process. False = only the compact markers.
     warn_on_override: bool = True

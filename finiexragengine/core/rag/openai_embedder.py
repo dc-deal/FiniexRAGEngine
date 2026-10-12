@@ -1,16 +1,17 @@
 """OpenAI-backed embedder (text-embedding-3-small by default)."""
 import logging
-from time import perf_counter
-from typing import TYPE_CHECKING, List, Optional, Tuple
+from typing import TYPE_CHECKING, List, Optional
 
 from openai import BadRequestError, OpenAI, OpenAIError
 
+from finiexragengine.core.llm.openai_call_runner import OpenAICallRunner
 from finiexragengine.core.llm.openai_quota import is_quota_exceeded
 from finiexragengine.core.rag.abstract_embedder import AbstractEmbedder
 from finiexragengine.core.rag.token_budget import FittedText, TokenBudget
 from finiexragengine.exceptions.ragengine_errors import BudgetExceededError, EmbeddingError
 from finiexragengine.types.config_types.app_config_types import EmbeddingConfig
 from finiexragengine.types.embedding_types import EmbedResult
+from finiexragengine.types.llm_types import AttemptOutcome
 
 if TYPE_CHECKING:
     from finiexragengine.core.observability.budget_guard import BudgetGuard
@@ -37,8 +38,9 @@ class OpenAIEmbedder(AbstractEmbedder):
                  budget_guard: Optional['BudgetGuard'] = None) -> None:
         self._config = config
         self._client = client   # built lazily from OPENAI_API_KEY if not injected
-        # Optional cost capture (ISSUE_23): if a recorder is set, each embed() call
-        # logs its token usage under `section` (e.g. 'ingest_news' | 'ingest_query').
+        # Optional cost capture (ISSUE_23): if a recorder is set, every batch request logs its
+        # token usage under `section` (e.g. 'ingest_news' | 'ingest_query') — one row per attempt
+        # (ISSUE_128), so a batch that succeeded before a later one failed is never lost.
         self._cost_recorder = cost_recorder
         self._section = section
         self._pipeline_id = pipeline_id
@@ -48,14 +50,28 @@ class OpenAIEmbedder(AbstractEmbedder):
         # The model's input limit (ISSUE_79). Resolved here so an unknown model fails at
         # construction — at boot, where the startup check surfaces it — not mid-pass.
         self._budget = TokenBudget(config)
+        # Our retry loop, not the SDK's (ISSUE_128): every attempt visible and recorded.
+        self._runner = OpenAICallRunner(f'[EMBED] {pipeline_id or section} · {config.model}',
+                                        config.max_retries, float(config.timeout_seconds),
+                                        on_failed_attempt=self._record_failed_attempt)
 
     def _get_client(self) -> OpenAI:
         if self._client is None:
             # An explicit deadline (ISSUE_79): without one the SDK default applies (600s read x 2
             # retries ~= 30 min of a dead worker), which made this the last un-timeouted network
             # call in the ingest path and the likeliest cause of passes blowing the #74 deadline.
-            self._client = OpenAI(timeout=self._config.timeout_seconds)
+            # max_retries=0: the runner retries, so no attempt happens out of sight (ISSUE_128).
+            self._client = OpenAI(timeout=self._config.timeout_seconds, max_retries=0)
         return self._client
+
+    def _record_failed_attempt(self, attempt: int, outcome: AttemptOutcome,
+                               duration_ms: float) -> None:
+        """One row for a batch attempt that did not answer — spend unknown, so NULL."""
+        if self._cost_recorder is None:
+            return
+        self._cost_recorder.record(self._section, self._config.model, None, None,
+                                   self._pipeline_id, duration_ms=duration_ms,
+                                   attempt=attempt, outcome=outcome)
 
     def embed(self, texts: List[str]) -> EmbedResult:
         if not texts:
@@ -73,14 +89,11 @@ class OpenAIEmbedder(AbstractEmbedder):
             input_tokens=[item.tokens for item in fitted],
             truncated_tokens=[item.dropped_tokens for item in fitted],
         )
-        api_ms = 0.0
-        served_model = ''
         # 2. Send in batches; a batch the provider rejects wholesale is bisected rather than lost.
+        #    Each batch request records its own row as it answers (ISSUE_128).
         for start in range(0, len(texts), self._MAX_BATCH):
             indices = list(range(start, min(start + self._MAX_BATCH, len(texts))))
-            batch_ms, model = self._embed_indices(client, indices, fitted, result)
-            api_ms += batch_ms
-            served_model = model or served_model
+            self._embed_indices(client, indices, fitted, result)
         # 3. Does the provider count what we counted? Our sum is tiktoken's, `billed_tokens` is
         #    theirs. A divergence means the encoding assumption has drifted (a retargeted model id,
         #    a stale tiktoken table) — the same class of silent shift the alias-drift guard watches
@@ -89,22 +102,11 @@ class OpenAIEmbedder(AbstractEmbedder):
             logger.warning('[EMBED] token count mismatch: counted %d locally, provider billed %d '
                            '(model %s) — the tokenizer assumption may have drifted',
                            result.counted_tokens, result.billed_tokens, self._config.model)
-        # Record the spend once per embed() call — cost is never silent (ISSUE_23);
-        # the API duration rides the same row as the latency sample (ISSUE_32).
-        recorded_usd = 0.0
-        if self._cost_recorder is not None and result.billed_tokens:
-            recorded_usd = self._cost_recorder.record(self._section, self._config.model,
-                                       result.billed_tokens, 0, self._pipeline_id,
-                                       duration_ms=api_ms,
-                                       model_snapshot=served_model or None)
-        # A successful call proves quota is available → clear any suspend + feed the day warn (ISSUE_47).
-        if self._budget_guard is not None:
-            self._budget_guard.record_spend(recorded_usd)
         return result
 
     def _embed_indices(self, client: OpenAI, indices: List[int], fitted: List[FittedText],
-                       result: EmbedResult) -> Tuple[float, str]:
-        """Embed the inputs at `indices`, filling `result` in place; returns (api_ms, served_model).
+                       result: EmbedResult) -> None:
+        """Embed the inputs at `indices`, filling `result` in place and recording each request.
 
         Bisects on a provider rejection (ISSUE_79). A `BadRequestError` means *some* item in this
         batch is unacceptable — the provider names an index but not reliably enough to trust
@@ -113,20 +115,20 @@ class OpenAIEmbedder(AbstractEmbedder):
         failure case, none in the normal one.
 
         The trigger is deliberately narrow. Quota errors keep raising `BudgetExceededError`
-        (ISSUE_47) and transient failures stay with the SDK's own retry — bisecting those would
-        multiply a temporary outage instead of isolating a permanent defect.
+        (ISSUE_47) and transient failures stay with the call runner's retry (ISSUE_128) —
+        bisecting those would multiply a temporary outage instead of isolating a permanent defect.
         """
         if not indices:
-            return 0.0, ''
-        call_start = perf_counter()
+            return
+        inputs = [fitted[i].text for i in indices]
         try:
-            response = client.embeddings.create(
+            answered = self._runner.run(lambda timeout: client.embeddings.create(
                 model=self._config.model,
-                input=[fitted[i].text for i in indices],
+                input=inputs,
                 dimensions=self._config.dimensions,
-            )
+                timeout=timeout,
+            ))
         except BadRequestError as exc:
-            api_ms = (perf_counter() - call_start) * 1000.0
             if len(indices) == 1:
                 # Isolated: this single input is the one the provider will not take.
                 result.rejected.append(indices[0])
@@ -134,11 +136,11 @@ class OpenAIEmbedder(AbstractEmbedder):
                 logger.warning('[EMBED] input rejected by the provider and skipped '
                                '(%d tokens after fitting): %s',
                                fitted[indices[0]].tokens, exc)
-                return api_ms, ''
+                return
             middle = len(indices) // 2
-            left_ms, left_model = self._embed_indices(client, indices[:middle], fitted, result)
-            right_ms, right_model = self._embed_indices(client, indices[middle:], fitted, result)
-            return api_ms + left_ms + right_ms, left_model or right_model
+            self._embed_indices(client, indices[:middle], fitted, result)
+            self._embed_indices(client, indices[middle:], fitted, result)
+            return
         except OpenAIError as exc:
             # A quota exhaustion is a budget stop → arm the breaker + BUDGET_EXCEEDED
             # (ISSUE_47); anything else stays the embedding-error path.
@@ -147,17 +149,32 @@ class OpenAIEmbedder(AbstractEmbedder):
                 raise BudgetExceededError(
                     f'embedding suspended — provider quota reached: {exc}') from exc
             raise EmbeddingError(f'embedding request failed: {exc}') from exc
-        api_ms = (perf_counter() - call_start) * 1000.0
-        # Accumulate the paid token usage across batches (irreconstructable later).
+        response = answered.value
+        # The paid token usage of this request (irreconstructable later), accumulated across
+        # batches for the tokenizer canary in `embed()`.
         usage = getattr(response, 'usage', None)
-        if usage is not None:
-            result.billed_tokens += getattr(usage, 'prompt_tokens', 0) or 0
+        billed = (getattr(usage, 'prompt_tokens', 0) or 0) if usage is not None else 0
+        result.billed_tokens += billed
         # Served model (response.model). Embedding ids carry no alias/snapshot pair —
         # the id IS the version (vectors across models are incompatible, so OpenAI
         # ships changes as new ids). Captured anyway: if the id were ever silently
         # retargeted, the corpus would mix vector spaces — the alias-drift guard in
         # CostRecorder then fires for ingest rows too (ISSUE_40).
         served_model = getattr(response, 'model', '') or ''
+        # Record this request now — cost is never silent (ISSUE_23), the answering attempt's
+        # duration is its latency sample (ISSUE_32), and a later batch failing cannot take this
+        # row with it (ISSUE_128).
+        recorded_usd = 0.0
+        if self._cost_recorder is not None and billed:
+            recorded_usd = self._cost_recorder.record(self._section, self._config.model, billed, 0,
+                                                      self._pipeline_id,
+                                                      duration_ms=answered.duration_ms,
+                                                      model_snapshot=served_model or None,
+                                                      attempt=answered.attempt, outcome='ok')
+        # A successful request proves quota is available → clear any suspend + feed the day warn
+        # (ISSUE_47).
+        if self._budget_guard is not None:
+            self._budget_guard.record_spend(recorded_usd)
         # OpenAI returns L2-normalized (unit-length) vectors, so downstream a
         # dot product already equals cosine similarity and pgvector's <=>
         # distance needs no separate normalization step.
@@ -168,4 +185,3 @@ class OpenAIEmbedder(AbstractEmbedder):
                     f'expected dimension {self._config.dimensions}, '
                     f'got {len(item.embedding)}')
             result.vectors[indices[item.index]] = list(item.embedding)
-        return api_ms, served_model

@@ -18,13 +18,16 @@ _DEFAULT = ModelProfile(family='default', accepts_temperature=True, strict_outpu
 # `gpt-5`: the reasoning family. It rejects `temperature` with a hard 400 (observed 2026-09-20 on
 # gpt-5-nano), and with the schema only a hint it returns malformed keys — `urgingency` for
 # `urgency` on gpt-5-mini's first pass (2026-10-11), 12 missing `urgency` in the nano trial. Strict
-# output constrains decoding to the schema, which fixed both on the same input.
+# output constrains decoding to the schema, which fixed both on the same input. Its calls take tens
+# of seconds (hidden reasoning tokens), so it gets its own per-attempt ceiling instead of a global
+# timeout that would make a hung 2 s call of another family wait as long (ISSUE_128).
 #
 # `gpt-4o`: the family the live public series run on (gpt-4o-mini). Its profile is pinned by a
 # test: switching it to strict output would change how those series are produced without moving
 # any fingerprint, so that is decided like a prompt bump, never as a cleanup.
 _PROFILES: Tuple[ModelProfile, ...] = (
-    ModelProfile(family='gpt-5', accepts_temperature=False, strict_output=True, reasoning=True),
+    ModelProfile(family='gpt-5', accepts_temperature=False, strict_output=True, reasoning=True,
+                 call_timeout_seconds=120.0),
     ModelProfile(family='gpt-4o', accepts_temperature=True, strict_output=False, reasoning=False),
 )
 

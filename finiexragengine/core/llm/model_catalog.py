@@ -12,6 +12,10 @@ logger = logging.getLogger(__name__)
 # Section title + model dict — one entry per stage in `check_configured_models`.
 CheckSection = Tuple[str, Dict[str, bool]]
 
+# `models.list` is a free, small call; without a bound it ran with the SDK default — 600 s per
+# attempt, three attempts — so a stalled provider could hold the boot check for ~30 minutes.
+_LIST_TIMEOUT_SECONDS = 15.0
+
 
 class ModelCatalog:
     """Queries one provider endpoint's available models and checks configured ids.
@@ -37,7 +41,9 @@ class ModelCatalog:
         if self._available is None:
             try:
                 if self._client is None:
-                    self._client = OpenAI(base_url=self._base_url)
+                    # Bounded, and not retried: the check is soft — a miss logs and boot goes on.
+                    self._client = OpenAI(base_url=self._base_url, timeout=_LIST_TIMEOUT_SECONDS,
+                                          max_retries=0)
                 self._available = {model.id for model in self._client.models.list()}
             except OpenAIError as exc:
                 raise LLMApiError(f'model list unavailable: {exc}') from exc

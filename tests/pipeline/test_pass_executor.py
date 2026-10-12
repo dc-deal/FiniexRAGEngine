@@ -10,15 +10,17 @@ The identity is the whole fix, so it is asserted directly: nothing else in the s
 if a later edit put `to_thread` back.
 """
 import asyncio
+import contextvars
 import threading
 import time
-from typing import List
+from typing import List, Optional, Tuple
 
 from finiexragengine.core.pipeline.ingest_worker import IngestWorker
 from finiexragengine.core.pipeline.pass_executor import (
     THREADS_PER_WORKER,
     build_pass_executor,
     pass_pool_size,
+    pass_seconds_remaining,
     run_pass,
 )
 from finiexragengine.core.triggers.interval_trigger import IntervalTrigger
@@ -138,3 +140,36 @@ def test_the_deadline_still_abandons_the_await_and_the_thread_keeps_running():
     asyncio.run(_scenario())
     assert finished.wait(timeout=2.0), 'the abandoned thread must still be running, uncancelled'
     executor.shutdown(wait=False)
+
+
+# --- the caller's context reaches the pass (ISSUE_128) ---------------------------------------
+
+_MARKER: contextvars.ContextVar[str] = contextvars.ContextVar('test_pass_marker', default='')
+
+
+def _seen_in_thread() -> Tuple[str, Optional[float]]:
+    return _MARKER.get(), pass_seconds_remaining()
+
+
+def test_a_value_bound_on_the_loop_is_visible_in_the_pass_thread():
+    """`run_in_executor` copies no context — `asyncio.to_thread` does. Without the copy, the
+    ingest pass's cost scope (entered on the loop) never reached the embedder: its spend read $0
+    and its rows carried no `trigger_reason`."""
+    async def _scenario():
+        executor = build_pass_executor(1)
+        try:
+            token = _MARKER.set('ingest pass')
+            try:
+                return await run_pass(executor, 30, _seen_in_thread)
+            finally:
+                _MARKER.reset(token)
+        finally:
+            executor.shutdown(wait=False)
+
+    marker, remaining = asyncio.run(_scenario())
+    assert marker == 'ingest pass'
+    assert remaining is not None and 25.0 < remaining <= 30.0   # the deadline travels along
+
+
+def test_the_deadline_exists_only_inside_a_pass():
+    assert pass_seconds_remaining() is None

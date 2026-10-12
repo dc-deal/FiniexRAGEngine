@@ -1,9 +1,13 @@
-"""Cost recorder — one billing-log row per paid API call (ISSUE_23).
+"""Cost recorder — one billing-log row per API call attempt (ISSUE_23, ISSUE_128).
 
 USD is derived from the configured price table **at record time** and stored on the row,
 so a later price change never rewrites history: the token counts are the ground truth
 (exact, from the API `usage`), the USD is a frozen derivation. An unknown model logs a
 warning and costs 0.0 — a new, unpriced model is visible, not silently free.
+
+A failed attempt is a row too (ISSUE_128): its tokens and USD are NULL — whether the provider
+billed a timed-out request is unknown, and a plausible 0 would hide exactly that — and its
+`duration_ms` is that attempt alone. Totals treat the unknown as nothing spent *that we know of*.
 """
 import logging
 from contextlib import contextmanager
@@ -15,6 +19,7 @@ import psycopg
 
 from finiexragengine.exceptions.ragengine_errors import VectorStoreError
 from finiexragengine.types.config_types.app_config_types import PricingConfig
+from finiexragengine.types.llm_types import AttemptOutcome
 
 logger = logging.getLogger(__name__)
 
@@ -31,10 +36,10 @@ class PassSpend:
 
 
 # The active pass's accumulator. A ContextVar, not a thread-local, because the pass body runs via
-# `asyncio.to_thread`, which copies the current context at call time and runs the body under
-# `ctx.run` — so a scope opened on the event loop reaches the worker thread, and two concurrent
-# passes each get their own binding (verified, not assumed). The accumulator is mutable and shared
-# by reference, so the value written inside the thread is readable back on the loop afterwards.
+# `pass_executor.run_pass`, which copies the current context and runs the body under `ctx.run` — so
+# a scope opened on the event loop reaches the worker thread, and two concurrent passes each get
+# their own binding. The accumulator is mutable and shared by reference, so the value written
+# inside the thread is readable back on the loop afterwards.
 _CURRENT_PASS: ContextVar[Optional[PassSpend]] = ContextVar('finiex_pass_spend', default=None)
 
 # Why the active pass runs (ISSUE_87). A second ContextVar rather than a field on `PassSpend`,
@@ -115,17 +120,23 @@ class CostRecorder:
         except psycopg.Error as exc:
             raise VectorStoreError(f'cannot connect to the cost log: {exc}') from exc
 
-    def record(self, section: str, model: str, prompt_tokens: int,
-               completion_tokens: int = 0, pipeline_id: Optional[str] = None,
+    def record(self, section: str, model: str, prompt_tokens: Optional[int],
+               completion_tokens: Optional[int] = 0, pipeline_id: Optional[str] = None,
                duration_ms: Optional[float] = None,
-               model_snapshot: Optional[str] = None) -> float:
+               model_snapshot: Optional[str] = None,
+               attempt: Optional[int] = None, outcome: AttemptOutcome = 'ok') -> float:
         """Write one cost_log row (tokens + USD + latency + served model); returns the USD.
 
         `model` is the configured name (the pricing-table key); `model_snapshot` is what
         the API actually served (`response.model`) — an alias retarget shows up here.
+        `attempt` (1-based) and `outcome` say which try of a call this row is (ISSUE_128);
+        `prompt_tokens=None` records a failed attempt whose spend is unknown — NULL tokens and
+        NULL USD, returned as 0.0 because nothing is known to have been spent.
         """
-        usd = derive_usd(self._pricing, model, prompt_tokens, completion_tokens)
-        total = prompt_tokens + completion_tokens
+        known = prompt_tokens is not None
+        usd = (derive_usd(self._pricing, model, prompt_tokens, completion_tokens or 0)
+               if known else None)
+        total = prompt_tokens + (completion_tokens or 0) if known else None
         try:
             with self._connect() as conn, conn.cursor() as cur:
                 # Alias-drift guard (#40): compare the served snapshot with the last one
@@ -146,20 +157,23 @@ class CostRecorder:
                 cur.execute(
                     f'INSERT INTO {self._table} (section, model, prompt_tokens, '
                     'completion_tokens, total_tokens, usd_cost, pipeline_id, duration_ms, '
-                    'model_snapshot, trigger_reason) '
-                    'VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)',
-                    (section, model, prompt_tokens, completion_tokens, total, usd,
+                    'model_snapshot, trigger_reason, attempt, outcome) '
+                    'VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)',
+                    (section, model, prompt_tokens,
+                     (completion_tokens or 0) if known else None, total, usd,
                      pipeline_id, duration_ms, model_snapshot or None,
                      # Why the enclosing pass runs (ISSUE_87) — read off the scope, so no paid
                      # call site has to carry a value it never uses. NULL outside a scope.
-                     _CURRENT_REASON.get() or None))
+                     _CURRENT_REASON.get() or None,
+                     attempt, outcome))
         except psycopg.Error as exc:
             raise VectorStoreError(f'cost-log write failed: {exc}') from exc
-        self._session_tokens += total
-        self._session_usd += usd
+        # Unknown spend adds nothing to the totals: they say what we know was spent.
+        self._session_tokens += total or 0
+        self._session_usd += usd or 0.0
         # Attribute to the enclosing pass, if any (ISSUE_74). None outside a scope — the CLI
         # paths record without one and read the session totals instead.
         current = _CURRENT_PASS.get()
         if current is not None:
-            current.add(total, usd)
-        return usd
+            current.add(total or 0, usd or 0.0)
+        return usd or 0.0

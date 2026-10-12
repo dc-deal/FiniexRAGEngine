@@ -4,6 +4,8 @@ Two clearly separated parts, so real and estimated numbers are never confused:
 
 - **REAL** — aggregated from the billing log (`cost_log`): actual USD, windowed (this week /
   this month / all-time) and split per pipeline / source-set. Ground truth, frozen at record time.
+  `calls` counts the calls that answered; a failed attempt (ISSUE_128) is counted beside them, and
+  its spend — unknown — is not in the USD.
 - **PREDICTION** — *extrapolated*: the **real** measured cost per eval pass (from the persisted
   envelopes) × the **current effective config's** eval cadence. Every projected figure is marked
   (⚠️ + "est" / "~"); these are estimates of a continuous run, **not** real consumption.
@@ -37,6 +39,8 @@ class RealWindow:
     tokens: int
     usd: float
     by_pipeline: List[LineItem] = field(default_factory=list)
+    # Attempts that did not answer (ISSUE_128) — their spend is unknown, so it is not in `usd`.
+    failed_attempts: int = 0
 
 
 @dataclass
@@ -121,21 +125,36 @@ def _table_exists(cur: psycopg.Cursor, table: str) -> bool:
     return cur.fetchone()[0] > 0
 
 
+def _has_outcome(cur: psycopg.Cursor, table: str) -> bool:
+    """Whether the billing log records attempts (migration 019, ISSUE_128)."""
+    cur.execute('SELECT count(*) FROM information_schema.columns '
+                "WHERE table_name = %s AND column_name = 'outcome'", (table,))
+    return cur.fetchone()[0] > 0
+
+
 def _window(cur: psycopg.Cursor, table: str, label: str,
-            since: Optional[datetime]) -> RealWindow:
-    """Aggregate the billing log for one window: totals + a per-pipeline breakdown."""
+            since: Optional[datetime], recorded: bool = False) -> RealWindow:
+    """Aggregate the billing log for one window: totals + a per-pipeline breakdown.
+
+    With per-attempt rows (`recorded`), a call is an attempt that answered; the failed ones are
+    counted on their own. Sums need no filter — a failed attempt's tokens and USD are NULL.
+    """
     where, params = ('', [])
     if since is not None:
         where, params = ('WHERE ts >= %s', [since])
-    cur.execute(f'SELECT count(*), coalesce(sum(total_tokens), 0), coalesce(sum(usd_cost), 0) '
-                f'FROM {table} {where}', params)
-    calls, tokens, usd = cur.fetchone()
+    calls = "count(*) FILTER (WHERE outcome = 'ok')" if recorded else 'count(*)'
+    failed = "count(*) FILTER (WHERE outcome <> 'ok')" if recorded else '0'
+    cur.execute(f'SELECT {calls}, coalesce(sum(total_tokens), 0), coalesce(sum(usd_cost), 0), '
+                f'{failed} FROM {table} {where}', params)
+    calls_n, tokens, usd, failed_n = cur.fetchone()
     cur.execute(
-        f"SELECT coalesce(pipeline_id, '(unattributed)'), count(*), "
+        f"SELECT coalesce(pipeline_id, '(unattributed)'), {calls}, "
         f'coalesce(sum(total_tokens), 0), coalesce(sum(usd_cost), 0) '
-        f'FROM {table} {where} GROUP BY pipeline_id ORDER BY sum(usd_cost) DESC', params)
+        f'FROM {table} {where} GROUP BY pipeline_id '
+        f'ORDER BY coalesce(sum(usd_cost), 0) DESC', params)
     by_pipeline = [LineItem(pid, int(c), int(t), float(u)) for pid, c, t, u in cur.fetchall()]
-    return RealWindow(label, int(calls), int(tokens), float(usd), by_pipeline)
+    return RealWindow(label, int(calls_n), int(tokens), float(usd), by_pipeline,
+                      failed_attempts=int(failed_n))
 
 
 def _build_prediction(cur: psycopg.Cursor, outcomes_table: str,
@@ -201,12 +220,13 @@ def build_cost_report(database_url: str, *,
                 empty = [RealWindow(label, 0, 0, 0.0) for label, _ in windows]
                 return CostReport(empty, None, 0.0, credit_usd,
                                   prices_checked=prices_checked)
-            real = [_window(cur, cost_table, label, since) for label, since in windows]
+            recorded = _has_outcome(cur, cost_table)
+            real = [_window(cur, cost_table, label, since, recorded) for label, since in windows]
             # All-time spend is read on its own rather than picked out of the displayed set:
             # `remaining_usd` is credit minus everything ever spent, which stays true whichever
             # windows the caller asked to compare (ISSUE_104). Reading it from the set worked only
             # while the set was hard-coded to contain 'all-time'.
-            spent_all = _window(cur, cost_table, 'all-time', None).usd
+            spent_all = _window(cur, cost_table, 'all-time', None, recorded).usd
             prediction = _build_prediction(cur, outcomes_table, eval_pipelines or {},
                                            recent_passes)
     except psycopg.Error as exc:
@@ -237,6 +257,10 @@ def format_cost_report(report: CostReport) -> str:
     for window in report.real:
         lines.append(f'{window.label:12} {window.calls:>6} {window.tokens:>11,} '
                      f'{_fmt_usd(window.usd):>14}')
+    # Attempts that did not answer (ISSUE_128): said, because their spend is in no figure above.
+    if any(window.failed_attempts for window in report.real):
+        counts = ' · '.join(f'{window.label} {window.failed_attempts}' for window in report.real)
+        lines.append(f'failed attempts: {counts} (spend unknown — not in the USD above)')
     # Per-pipeline / source-set attribution over the full history (the complete picture).
     all_time = next((w for w in report.real if w.label == 'all-time'), None)
     if all_time and all_time.by_pipeline:

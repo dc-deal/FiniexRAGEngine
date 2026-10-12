@@ -1,6 +1,6 @@
 """Weekly scheduler (ISSUE_27) — config→cron mapping, lifecycle, job resilience."""
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from finiexragengine.core.alerts.weekly_scheduler import WeeklyScheduler
 from finiexragengine.types.config_types.app_config_types import (
@@ -66,7 +66,11 @@ def test_the_probe_is_a_second_job_with_its_own_cron_and_its_own_id():
             report = scheduler.next_run_of('weekly_report')
             probe = scheduler.next_run_of('price_probe')
             assert report is not None and probe is not None
-            assert probe < report                      # 17:30 before 18:00 on the same Sunday
+            # 17:30 before 18:00 on the same Sunday. Compared modulo a week, because the NEXT runs
+            # are not always in the same week: between 17:30 and 18:00 on a Sunday the probe's next
+            # run is a week away while the report's is today — a plain `probe < report` failed for
+            # exactly those 30 minutes.
+            assert (report - probe) % timedelta(weeks=1) == timedelta(minutes=30)
         finally:
             scheduler.stop()
 

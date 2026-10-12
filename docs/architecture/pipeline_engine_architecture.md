@@ -276,9 +276,9 @@ whole engine with it. `asyncio.to_thread` cannot be cancelled, so the lock was n
 The two invariants now live where they belong:
 
 - **Cost attribution** — `CostRecorder.pass_scope()` accumulates only the calls made inside it,
-  carried into the worker thread by the context copy `asyncio.to_thread` makes. It replaced a
-  session delta against the shared recorder, which was only correct under serialization. This is
-  what makes `metadata.cost_usd` on every persisted envelope trustworthy without a lock.
+  carried into the worker thread by the context copy `run_pass` makes. It replaced a session delta
+  against the shared recorder, which was only correct under serialization. This is what makes
+  `metadata.cost_usd` on every persisted envelope trustworthy without a lock.
 - **The live counters** — `EngineStats` owns a small lock for its read-modify-write writers (see
   `live_display.md`).
 
@@ -323,6 +323,14 @@ them.
 One consequence worth knowing when reading the performance report: passes now genuinely run
 concurrently, so `duration_ms` samples are contention-sensitive in a way they were not before.
 Earlier measurements were taken under artificial exclusivity.
+
+**The pass runs in a copy of the caller's context, with its deadline bound in it (ISSUE_128).**
+`asyncio.to_thread` copied the context; `run_in_executor`, which replaced it here, does not — and for
+a month nothing noticed: the eval passes open their cost scope *inside* the thread, but the ingest
+pass opens it on the event loop, so its embeddings were recorded outside any scope. Ingest spend per
+pass read $0 and its `cost_log` rows carried no `trigger_reason`. `run_pass` now runs the body under
+`contextvars.copy_context()`, and binds the pass deadline into that copy so a paid call can stop
+retrying before the await is abandoned under it (`pass_seconds_remaining()`).
 
 The API then serves two shapes:
 

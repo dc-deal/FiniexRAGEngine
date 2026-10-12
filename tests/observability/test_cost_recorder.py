@@ -10,6 +10,7 @@ import psycopg
 import pytest
 
 from finiexragengine.core.observability.cost_recorder import CostRecorder, derive_usd
+from finiexragengine.core.pipeline.pass_executor import build_pass_executor, run_pass
 from finiexragengine.types.config_types.app_config_types import ModelPrice, PricingConfig
 
 _TABLE = 'cost_log'
@@ -187,3 +188,63 @@ def test_concurrent_passes_do_not_cross_attribute_their_reason(recorder, clean_d
         rows = cur.fetchall()
     assert sorted(rows) == [('breaking', 1000), ('breaking', 1000),
                             ('scheduled', 4000), ('scheduled', 4000)]
+
+
+# --- ISSUE_128: one row per attempt ---------------------------------------------------------
+
+
+def test_a_failed_attempt_is_a_row_whose_spend_is_unknown(recorder, clean_db):
+    usd = recorder.record('llm_eval', 'gpt-4o-mini', None, None, 'p', duration_ms=120_004.0,
+                          attempt=1, outcome='timeout')
+    recorder.record('llm_eval', 'gpt-4o-mini', 1000, 500, 'p', duration_ms=19_472.0,
+                    model_snapshot='gpt-4o-mini-2024-07-18', attempt=2, outcome='ok')
+    assert usd == 0.0                                  # nothing KNOWN was spent
+    with psycopg.connect(clean_db) as conn, conn.cursor() as cur:
+        cur.execute('SELECT attempt, outcome, prompt_tokens, completion_tokens, total_tokens, '
+                    'usd_cost, duration_ms, model_snapshot FROM cost_log ORDER BY id')
+        failed, answered = cur.fetchall()
+    # NULL, never a plausible 0: whether the provider billed a timed-out request is unknown.
+    assert failed == (1, 'timeout', None, None, None, None, pytest.approx(120_004.0), None)
+    assert answered[:5] == (2, 'ok', 1000, 500, 1500)
+    assert answered[5] == pytest.approx(0.00045)
+
+
+def test_unknown_spend_adds_nothing_to_the_totals(recorder):
+    with recorder.pass_scope() as spend:
+        recorder.record('llm_eval', 'gpt-4o-mini', None, None, attempt=1, outcome='server_error')
+        recorder.record('llm_eval', 'gpt-4o-mini', 1000, 500, attempt=2)
+    assert spend.tokens == 1500 and spend.usd == pytest.approx(0.00045)
+    assert recorder.session_tokens == 1500
+
+
+def test_a_row_written_without_an_attempt_says_ok_and_no_attempt(recorder, clean_db):
+    # A caller that does not know (a CLI, a test) writes what history holds: outcome 'ok' (only
+    # answers were ever recorded that way) and no attempt number rather than a guessed 1.
+    recorder.record('ingest_news', 'text-embedding-3-small', 100)
+    with psycopg.connect(clean_db) as conn, conn.cursor() as cur:
+        cur.execute('SELECT attempt, outcome FROM cost_log')
+        assert cur.fetchone() == (None, 'ok')
+
+
+def test_a_scope_opened_on_the_loop_collects_what_the_pass_thread_records(recorder, clean_db):
+    """The ingest worker's shape exactly: scope on the event loop, record inside `run_pass`.
+
+    Until `run_pass` copied the context, this pass read $0 and its row had no reason — every
+    ingest pass in production, while the eval passes (which open their scope inside the thread)
+    were correct.
+    """
+    async def _pass():
+        executor = build_pass_executor(1)
+        try:
+            with recorder.pass_scope('scheduled') as spend:
+                await run_pass(executor, 30, recorder.record, 'ingest_news',
+                               'text-embedding-3-small', 10_000)
+            return spend
+        finally:
+            executor.shutdown(wait=False)
+
+    spend = asyncio.run(_pass())
+    assert spend.usd == pytest.approx(0.0002)
+    with psycopg.connect(clean_db) as conn, conn.cursor() as cur:
+        cur.execute('SELECT trigger_reason FROM cost_log')
+        assert cur.fetchone() == ('scheduled',)

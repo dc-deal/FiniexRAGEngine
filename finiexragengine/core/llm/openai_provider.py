@@ -1,13 +1,13 @@
 """OpenAI-backed LLM provider (chat-completions + structured outputs)."""
 import json
 import logging
-from time import perf_counter
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from openai import APITimeoutError, OpenAI, OpenAIError
 
 from finiexragengine.core.llm.abstract_llm_provider import AbstractLLMProvider
 from finiexragengine.core.llm.model_profiles import ModelProfiles
+from finiexragengine.core.llm.openai_call_runner import OpenAICallRunner
 from finiexragengine.core.llm.openai_quota import is_quota_exceeded
 from finiexragengine.exceptions.ragengine_errors import (
     BudgetExceededError,
@@ -16,7 +16,7 @@ from finiexragengine.exceptions.ragengine_errors import (
     LLMTimeoutError,
 )
 from finiexragengine.types.config_types.app_config_types import LlmConfig
-from finiexragengine.types.llm_types import LlmCompletion, LlmUsage
+from finiexragengine.types.llm_types import AttemptOutcome, LlmCompletion, LlmUsage
 
 if TYPE_CHECKING:
     from finiexragengine.core.observability.budget_guard import BudgetGuard
@@ -56,6 +56,10 @@ class OpenAIProvider(AbstractLLMProvider):
     LLMApiError, non-JSON output -> LLMParseError. Token usage *and the served model*
     (`response.model`, the dated snapshot behind the alias) are captured on every call
     (ISSUE_23) and, if a cost_recorder is set, logged under `section`.
+
+    Retries are ours, not the SDK's (ISSUE_128): the client is built with `max_retries=0` and
+    `OpenAICallRunner` runs the attempts, each with this family's timeout and each recorded — a
+    failed attempt as a row with unknown spend, the answering one with its usage.
     """
 
     def __init__(self, config: LlmConfig, model: str, api_key: Optional[str] = None,
@@ -79,13 +83,32 @@ class OpenAIProvider(AbstractLLMProvider):
         # Said once per provider, not once per call: a per-call line would bury the fact in
         # thousands of identical rows, and a fact nobody reads is a fact nobody has.
         self._temperature_announced = False
+        # Per-attempt ceiling (ISSUE_128): the family's own where it declares one (the reasoning
+        # family takes tens of seconds), the global `llm.timeout_seconds` everywhere else.
+        if self._profile.call_timeout_seconds is not None:
+            self._timeout = self._profile.call_timeout_seconds
+        else:
+            self._timeout = float(config.timeout_seconds)
+        self._runner = OpenAICallRunner(f'[LLM] {pipeline_id or section} · {model}',
+                                        config.max_retries, self._timeout,
+                                        on_failed_attempt=self._record_failed_attempt)
 
     def _get_client(self) -> OpenAI:
         if self._client is None:
             # base_url switches to an OpenAI-compatible endpoint (user_configs override);
             # None keeps the official API. The key still comes from env / api_key.
-            self._client = OpenAI(api_key=self._api_key, base_url=self._config.base_url)
+            # max_retries=0: the runner retries, so no attempt happens out of sight (ISSUE_128).
+            self._client = OpenAI(api_key=self._api_key, base_url=self._config.base_url,
+                                  max_retries=0)
         return self._client
+
+    def _record_failed_attempt(self, attempt: int, outcome: AttemptOutcome,
+                               duration_ms: float) -> None:
+        """One row for an attempt that did not answer — spend unknown, so NULL (ISSUE_128)."""
+        if self._cost_recorder is None:
+            return
+        self._cost_recorder.record(self._section, self._model, None, None, self._pipeline_id,
+                                   duration_ms=duration_ms, attempt=attempt, outcome=outcome)
 
     def _announce_omitted_temperature(self) -> None:
         """State it, once. A configured value that did not reach the API must not stay silent.
@@ -120,45 +143,43 @@ class OpenAIProvider(AbstractLLMProvider):
     def complete_structured(self, prompt: str, json_schema: Dict[str, Any]) -> LlmCompletion:
         # Circuit-breaker gate (ISSUE_47): while paid work is suspended (provider quota), refuse
         # before the call so the eval degrades to a clean HOLD instead of a doomed API request.
+        # Asked once per call, never per attempt — it has a probe side effect.
         if self._budget_guard is not None and not self._budget_guard.should_attempt():
             raise BudgetExceededError('LLM paid work suspended — provider quota reached')
         client = self._get_client()
-        call_start = perf_counter()
+        request: Dict[str, Any] = {
+            'model': self._model,
+            'messages': [{'role': 'user', 'content': prompt}],
+            # Structured output: the model must return JSON matching the schema. Strict where
+            # the family needs it (decoding constrained to the schema — the reasoning family
+            # misspells keys otherwise); a hint elsewhere, unchanged for the live series. The
+            # caller validates the payload against its model on top either way.
+            'response_format': self._response_format(json_schema),
+            **self._sampling_kwargs(),
+        }
         try:
-            response = client.chat.completions.create(
-                model=self._model,
-                messages=[{'role': 'user', 'content': prompt}],
-                # Structured output: the model must return JSON matching the schema. Strict where
-                # the family needs it (decoding constrained to the schema — the reasoning family
-                # misspells keys otherwise); a hint elsewhere, unchanged for the live series. The
-                # caller validates the payload against its model on top either way.
-                response_format=self._response_format(json_schema),
-                timeout=self._config.timeout_seconds,
-                **self._sampling_kwargs(),
-            )
+            # One request per attempt, each with the timeout the runner hands it — the family's
+            # ceiling, shrunk to what the pass has left (ISSUE_128).
+            answered = self._runner.run(
+                lambda timeout: client.chat.completions.create(timeout=timeout, **request))
         except APITimeoutError as exc:   # subclass of OpenAIError — catch first
             raise LLMTimeoutError(f'LLM call timed out: {exc}') from exc
         except OpenAIError as exc:
             # A quota exhaustion (429 insufficient_quota) is a budget stop, not a transient
             # backend error (ISSUE_47): arm the breaker and surface it as BUDGET_EXCEEDED so the
-            # runner degrades to HOLD; a plain rate-limit stays the retryable LLM_API_ERROR path.
+            # runner degrades to HOLD. The call runner never retries it, so the breaker hears of
+            # it on the first attempt rather than the third.
             if self._budget_guard is not None and is_quota_exceeded(exc):
                 self._budget_guard.on_quota_error(reason=getattr(exc, 'code', None) or 'quota')
                 raise BudgetExceededError(
                     f'LLM paid work suspended — provider quota reached: {exc}') from exc
             raise LLMApiError(f'LLM backend error: {exc}') from exc
-        # Pure API time — the latency sample recorded next to the tokens (ISSUE_32).
-        api_ms = (perf_counter() - call_start) * 1000.0
-
-        content = response.choices[0].message.content or ''
-        try:
-            data = json.loads(content)
-        except json.JSONDecodeError as exc:
-            raise LLMParseError(f'LLM returned non-JSON output: {exc}') from exc
+        response = answered.value
 
         # Capture the paid usage (ISSUE_23) and the *served* model: `response.model` is
         # the dated snapshot the alias actually resolved to — a silent alias retarget
-        # becomes visible in the series, like a prompt-hash change (ISSUE_33).
+        # becomes visible in the series, like a prompt-hash change (ISSUE_33). Recorded
+        # BEFORE the payload is parsed: a completion that is not JSON was still billed.
         raw = getattr(response, 'usage', None)
         usage = LlmUsage(
             prompt_tokens=getattr(raw, 'prompt_tokens', 0) or 0,
@@ -167,13 +188,21 @@ class OpenAIProvider(AbstractLLMProvider):
         recorded_usd = 0.0
         if self._cost_recorder is not None and (usage.prompt_tokens or usage.completion_tokens):
             # Priced by the *configured* name (the pricing-table key); the snapshot is
-            # stored alongside as the trace of what actually served the call.
+            # stored alongside as the trace of what actually served the call. The duration is
+            # the answering attempt alone — the failed ones before it are rows of their own.
             recorded_usd = self._cost_recorder.record(self._section, self._model,
                                        usage.prompt_tokens, usage.completion_tokens,
-                                       self._pipeline_id, duration_ms=api_ms,
-                                       model_snapshot=served_model)
+                                       self._pipeline_id, duration_ms=answered.duration_ms,
+                                       model_snapshot=served_model,
+                                       attempt=answered.attempt, outcome='ok')
         # A successful call proves quota is available → clear any suspend (auto-resume) and
         # feed the warn-only day accumulator (ISSUE_47).
         if self._budget_guard is not None:
             self._budget_guard.record_spend(recorded_usd)
+
+        content = response.choices[0].message.content or ''
+        try:
+            data = json.loads(content)
+        except json.JSONDecodeError as exc:
+            raise LLMParseError(f'LLM returned non-JSON output: {exc}') from exc
         return LlmCompletion(data=data, usage=usage, model=served_model)

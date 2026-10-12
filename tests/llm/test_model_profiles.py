@@ -32,10 +32,18 @@ def test_the_profiles_of_the_live_series_are_pinned() -> None:
     assert ModelProfiles().resolve('gpt-4o-mini') == ModelProfile(
         family='gpt-4o', accepts_temperature=True, strict_output=False, reasoning=False)
     assert ModelProfiles().resolve('gpt-5-mini') == ModelProfile(
-        family='gpt-5', accepts_temperature=False, strict_output=True, reasoning=True)
+        family='gpt-5', accepts_temperature=False, strict_output=True, reasoning=True,
+        call_timeout_seconds=120.0)
+
+
+def test_only_the_reasoning_family_declares_its_own_timeout() -> None:
+    # Everything else keeps the global `llm.timeout_seconds` — a hung 2 s call must not wait 120 s.
+    assert ModelProfiles().resolve('gpt-5-nano').call_timeout_seconds == 120.0
+    assert ModelProfiles().resolve('gpt-4o-mini').call_timeout_seconds is None
+    assert ModelProfiles().resolve('some-self-hosted-model').call_timeout_seconds is None
 
 
 def test_the_boot_wording() -> None:
     assert ModelProfiles().resolve('gpt-5-mini').describe() == (
-        'family gpt-5 · reasoning · strict output · no temperature')
+        'family gpt-5 · reasoning · strict output · no temperature · timeout 120 s')
     assert ModelProfiles().resolve('gpt-4o-mini').describe() == 'family gpt-4o · temperature'

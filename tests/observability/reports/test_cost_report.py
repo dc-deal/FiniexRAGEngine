@@ -186,3 +186,25 @@ def test_the_builder_actually_carries_the_date_onto_the_report(db_dsn):
     report = build_cost_report(db_dsn, prices_checked=date(2026, 8, 28))
     assert report.prices_checked == date(2026, 8, 28)
     assert 'prices verified 2026-08-28' in format_cost_report(report)
+
+
+# --- ISSUE_128: calls are answers, failed attempts are counted beside them --------------------
+
+def test_calls_count_answers_and_failed_attempts_are_counted_apart(clean_db):
+    recorder = CostRecorder(clean_db, _PRICING)
+    recorder.record('llm_eval', 'gpt-4o-mini', None, None, 'p1', attempt=1, outcome='timeout')
+    recorder.record('llm_eval', 'gpt-4o-mini', 1000, 500, 'p1', attempt=2)       # 0.00045
+    recorder.record('llm_eval', 'gpt-4o-mini', None, None, 'p2', attempt=1, outcome='rejected')
+    report = build_cost_report(clean_db, windows=['7d', 'all'])
+    week = report.real[0]
+    assert (week.calls, week.failed_attempts) == (1, 2)
+    assert week.usd == pytest.approx(0.00045)          # unknown spend is in no figure
+    by = {item.label: item for item in week.by_pipeline}
+    assert by['p1'].calls == 1 and by['p2'].calls == 0
+    text = format_cost_report(report)
+    assert 'failed attempts: this week 2 · all-time 2 (spend unknown' in text
+
+
+def test_no_failed_attempts_line_when_there_were_none():
+    text = format_cost_report(CostReport([RealWindow('this week', 3, 100, 0.01)], None, 0.01))
+    assert 'failed attempts' not in text

@@ -50,14 +50,16 @@ def test_sections_share_one_endpoint_by_default(monkeypatch):
     # llm.base_url unset -> both sections check against one catalog = one client.
     built = []
 
-    def _factory(base_url=None):
-        built.append(base_url)
+    def _factory(base_url=None, **options):
+        built.append((base_url, options))
         return _Client(ids=['text-embedding-3-small', 'gpt-4o-mini', 'gpt-4o', 'gpt-5-nano',
                             'gpt-5-mini', 'gpt-5'])
 
     monkeypatch.setattr('finiexragengine.core.llm.model_catalog.OpenAI', _factory)
     sections = check_configured_models(AppConfig())
-    assert built == [None]
+    # One client — bounded and not retried: the SDK default (600 s × 3 attempts) could hold the
+    # soft boot check for half an hour (ISSUE_128).
+    assert built == [(None, {'timeout': 15.0, 'max_retries': 0})]
     assert sections[0] == ('ingest — embedding model', {'text-embedding-3-small': True})
     assert sections[1][1] == {'gpt-4o-mini': True, 'gpt-4o': True, 'gpt-5-nano': True,
                               'gpt-5-mini': True, 'gpt-5': True}
@@ -66,7 +68,7 @@ def test_sections_share_one_endpoint_by_default(monkeypatch):
 def test_embedding_checks_default_endpoint_with_custom_llm_base_url(monkeypatch):
     # A self-hosted llm endpoint (vLLM) does not serve text-embedding-* — the embedding
     # model must be checked against the OpenAI default, not falsely reported MISSING.
-    def _factory(base_url=None):
+    def _factory(base_url=None, **_options):
         if base_url == 'http://vllm:8000/v1':
             return _Client(ids=['my-local-llm'])
         return _Client(ids=['text-embedding-3-small'])
@@ -83,7 +85,7 @@ def test_verify_warns_per_missing_model(caplog, monkeypatch):
     config = AppConfig(llm=LlmConfig(allowed_models=['gpt-4o-mini', 'typo-model']))
     monkeypatch.setattr(
         'finiexragengine.core.llm.model_catalog.OpenAI',
-        lambda base_url=None: _Client(ids=['gpt-4o-mini', 'text-embedding-3-small']))
+        lambda base_url=None, **_options: _Client(ids=['gpt-4o-mini', 'text-embedding-3-small']))
     with caplog.at_level('WARNING'):
         assert verify_configured_models(config) is True
     assert any('typo-model' in record.message for record in caplog.records)
@@ -95,7 +97,7 @@ def test_verify_warns_on_missing_embedding_model(caplog, monkeypatch):
     # The ingest section carries the same weight: a vanished embedding model warns too.
     monkeypatch.setattr(
         'finiexragengine.core.llm.model_catalog.OpenAI',
-        lambda base_url=None: _Client(ids=['gpt-4o-mini', 'gpt-4o']))
+        lambda base_url=None, **_options: _Client(ids=['gpt-4o-mini', 'gpt-4o']))
     with caplog.at_level('WARNING'):
         assert verify_configured_models(AppConfig()) is True
     assert any('text-embedding-3-small' in record.message and 'ingest' in record.message
@@ -106,7 +108,7 @@ def test_verify_is_soft_on_provider_failure(caplog, monkeypatch):
     # A transient outage (or a missing key) logs and moves on — boot is never blocked.
     monkeypatch.setattr(
         'finiexragengine.core.llm.model_catalog.OpenAI',
-        lambda base_url=None: _Client(exc=OpenAIError('down')))
+        lambda base_url=None, **_options: _Client(exc=OpenAIError('down')))
     with caplog.at_level('WARNING'):
         assert verify_configured_models(AppConfig()) is False
     assert any('skipped' in record.message for record in caplog.records)

@@ -120,11 +120,11 @@ and returns an `LlmCompletion(data, usage)`.
 (longest prefix; dated snapshots and `ft:` fine-tunes resolve to their base family; an unknown
 model keeps the behaviour it had before profiles). The provider asks it what to send:
 
-| Family | `temperature` | Schema | Reasoning |
-|---|---|---|---|
-| `gpt-5` (`gpt-5`, `-mini`, `-nano`) | omitted — a hard 400 otherwise | **strict** | yes |
-| `gpt-4o` (`gpt-4o`, `-mini`) | sent | hint | no |
-| anything else | sent | hint | no |
+| Family | `temperature` | Schema | Reasoning | Timeout per attempt |
+|---|---|---|---|---|
+| `gpt-5` (`gpt-5`, `-mini`, `-nano`) | omitted — a hard 400 otherwise | **strict** | yes | 120 s |
+| `gpt-4o` (`gpt-4o`, `-mini`) | sent | hint | no | `llm.timeout_seconds` (30) |
+| anything else | sent | hint | no | `llm.timeout_seconds` (30) |
 
 **Strict output** constrains decoding to the schema (`strict: true`, every property required,
 `default` removed, `Optional` fields stay nullable, ranges kept). The reasoning family needs it: with
@@ -133,8 +133,12 @@ and gpt-5-nano dropped `urgency` 12 times in its September trial. The `gpt-4o` r
 test — it produces the public live series, and changing how it is called would change those series
 without moving any fingerprint, so that is decided like a prompt bump.
 
+**The timeout is a property of the family too.** Reasoning calls take tens of seconds; a 2 s call of
+the fast family that hangs should not wait as long. So the reasoning family declares its own
+per-attempt ceiling and every other family keeps the global one (ISSUE_128).
+
 The boot log states each model's profile once (`[MODEL] gpt-5-mini · family gpt-5 · reasoning ·
-strict output · no temperature`), and `models_cli` shows it as a column.
+strict output · no temperature · timeout 120 s`), and `models_cli` shows it as a column.
 
 ## Model governance (per-pipeline model + allowlist)
 
@@ -224,12 +228,37 @@ Failures map to the taxonomy: timeout → `LLMTimeoutError` (LLM_TIMEOUT), backe
 `LLMApiError` (LLM_API_ERROR), non-JSON output → `LLMParseError` (LLM_PARSE_ERROR) — all rooted at
 `LLMError`. Token `usage` is captured on every call and, when a `CostRecorder` is set, logged under
 `section='llm_eval'` (ISSUE_23) — the LLM eval is where real spend appears. The call's `duration_ms`
-rides the same row (ISSUE_32), so the cost log doubles as the API-latency log (`perf_cli`).
+rides the same row (ISSUE_32), so the cost log doubles as the API-latency log (`perf_cli`). The
+usage is recorded **before** the payload is parsed: a completion that is not JSON was still billed.
+
+**Retries are ours, and every attempt is a row (ISSUE_128).** The OpenAI SDK retries on its own —
+2 retries by default — and nothing used to set `max_retries`, so a "90 s" timeout was ~271 s, the
+answering attempt's `duration_ms` held the hidden ones, an attempt that timed out left no trace, and
+a quota 429 was retried twice before the breaker saw it. Now every OpenAI client is built with
+`max_retries=0` and `core/llm/openai_call_runner.py` runs the loop — for the evaluation call, the
+price probe, and ingest and query embeddings alike:
+
+- **The SDK's policy, mirrored** (openai 3.3.1): retry timeouts, connection errors, 408/409/429 and
+  5xx; obey `x-should-retry`; wait `retry-after-ms` / `retry-after` up to 120 s, otherwise
+  `min(0.5 · 2ⁿ, 8 s)` with 0.75–1.0 jitter. **Never retried:** an exhausted quota (straight to the
+  breaker), any other 4xx, an error without a status.
+- **A pass deadline, not only a count.** `run_pass` binds the pass deadline into the context it
+  hands the thread; no retry starts with less than 5 s left after its backoff, and every attempt's
+  timeout shrinks to what the pass still has.
+- **One `cost_log` row per attempt** with `attempt` (1-based) and `outcome` (`ok` · `timeout` ·
+  `connection` · `rate_limited` · `server_error` · `rejected` · `quota`). A failed attempt's tokens
+  and USD are **NULL** — whether it was billed is unknown, and a plausible 0 would hide exactly that.
+  Embeddings write one row per batch request, so a batch that answered is kept when a later one fails.
+- **One WARNING per retry**, and one for the final failure once a retry has happened:
+  `[LLM] <pipeline> · gpt-5 · attempt 1/3 timeout after 120.0 s — retrying in 0.9 s`.
+- `llm.max_retries` / `embedding.max_retries` (default 2) are operational and outside the
+  fingerprint. The envelope is unchanged: a consumer would not act differently on a retry.
 
 **Cost circuit-breaker (ISSUE_47).** The provider is the authoritative spend ceiling — OpenAI returns
 429 `insufficient_quota` at the account limit — so a shared `BudgetGuard` *reacts* to that signal
 rather than re-estimating spend. A quota error at any paid seam (embeddings *or* LLM) routes to
-`BudgetExceededError` (a plain `rate_limit_exceeded` stays the retryable LLM_API_ERROR path); the
+`BudgetExceededError` on its first attempt (a plain `rate_limit_exceeded` is retried, then stays the
+LLM_API_ERROR path); the
 guard suspends paid work and `should_attempt()` gates every subsequent paid call, so the engine backs
 off instead of hammering a limited account. A suspended eval degrades to a clean HOLD
 (`BUDGET_EXCEEDED`, `basis='degraded'`, `status='partial'`); a suspended ingest pass logs

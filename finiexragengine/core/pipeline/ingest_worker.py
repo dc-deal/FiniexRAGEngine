@@ -205,9 +205,9 @@ class IngestWorker:
         with ExitStack() as stack:
             started = perf_counter()
             # This pass's own spend accumulator (ISSUE_74) — entered on the event loop, so the
-            # context copy `asyncio.to_thread` makes carries it into the worker thread. Replaces a
-            # session delta against the shared recorder, which was only correct while every pass
-            # was serialized. Without a recorder there is nothing to account. The scope also binds
+            # context copy `run_pass` makes carries it into the worker thread (ISSUE_128).
+            # Replaces a session delta against the shared recorder, which was only correct while
+            # every pass was serialized. Without a recorder there is nothing to account. The scope also binds
             # WHY the pass runs (ISSUE_87), so every embed row it writes carries it — the ingest
             # path has no envelope to carry the fact.
             spend = (stack.enter_context(self._cost_recorder.pass_scope(reason))

@@ -59,11 +59,13 @@ class _Client:
 class _RecRecorder:
     def __init__(self):
         self.calls = []
+        self.attempts = []
 
     def record(self, section, model, prompt_tokens, completion_tokens=0, pipeline_id=None,
-               duration_ms=None, model_snapshot=None):
+               duration_ms=None, model_snapshot=None, attempt=None, outcome='ok'):
         self.calls.append((section, model, prompt_tokens, completion_tokens, pipeline_id,
                            duration_ms, model_snapshot))
+        self.attempts.append((attempt, outcome))
         return 0.0
 
 
@@ -158,7 +160,8 @@ def test_bad_json_raises_parse_error():
         _provider(_Completions(content='not json')).complete_structured('p', {})
 
 
-def test_timeout_maps_to_llm_timeout_error():
+def test_timeout_maps_to_llm_timeout_error(monkeypatch):
+    monkeypatch.setattr('time.sleep', lambda seconds: None)
     exc = APITimeoutError(request=httpx.Request('POST', 'https://api.openai.com/v1/chat'))
     with pytest.raises(LLMTimeoutError):
         _provider(_Completions(exc=exc)).complete_structured('p', {})
@@ -213,3 +216,70 @@ def test_the_strict_schema_is_a_copy():
     _sent_format('gpt-5')
     assert json.dumps(SentimentLlmOutput.model_json_schema(), sort_keys=True) == before
 
+
+
+# --- retries are ours, every attempt recorded (ISSUE_128) ------------------------------------
+
+class _Flaky(_Completions):
+    """Raises the given errors in order, then answers; counts the requests."""
+
+    def __init__(self, content, *errors):
+        super().__init__(content=content)
+        self._errors = list(errors)
+        self.requests = 0
+
+    def create(self, **kwargs):
+        self.requests += 1
+        self.kwargs = kwargs
+        if self._errors:
+            raise self._errors.pop(0)
+        return _Response(self._content)
+
+
+def _timed_out():
+    return APITimeoutError(request=httpx.Request('POST', 'https://api.openai.com/v1/chat'))
+
+
+def test_the_client_is_built_without_sdk_retries():
+    # The SDK's own loop retried twice out of sight; the runner does it now, recording each try.
+    provider = OpenAIProvider(LlmConfig(), 'gpt-4o-mini', api_key='test-key')
+    assert provider._get_client().max_retries == 0
+
+
+@pytest.mark.parametrize('model, timeout', [('gpt-4o-mini', 30.0), ('gpt-5-mini', 120.0)])
+def test_each_family_is_called_with_its_own_timeout(model, timeout):
+    completions = _Completions(content='{}')
+    OpenAIProvider(LlmConfig(), model, client=_Client(completions)).complete_structured('p', {})
+    assert completions.kwargs['timeout'] == timeout
+
+
+def test_a_timed_out_attempt_is_recorded_and_the_retry_answers(monkeypatch):
+    monkeypatch.setattr('time.sleep', lambda seconds: None)
+    recorder = _RecRecorder()
+    completions = _Flaky('{"signal": "BUY"}', _timed_out())
+    result = _provider(completions, recorder).complete_structured('p', {})
+    assert result.data == {'signal': 'BUY'}
+    assert completions.requests == 2
+    assert recorder.attempts == [(1, 'timeout'), (2, 'ok')]
+    assert recorder.calls[0][2:4] == (None, None)        # unknown spend, not a plausible 0
+    assert recorder.calls[1][2:4] == (11, 7)
+
+
+def test_a_quota_stop_is_one_request_not_three(monkeypatch):
+    from openai import RateLimitError
+    monkeypatch.setattr('time.sleep', lambda seconds: pytest.fail('a quota stop was retried'))
+    quota = RateLimitError('quota', response=httpx.Response(
+        429, request=httpx.Request('POST', 'https://api.openai.com/v1/chat')),
+        body={'code': 'insufficient_quota'})
+    completions = _Flaky('{}', quota, quota, quota)
+    with pytest.raises(LLMApiError):                     # no breaker wired here — the taxonomy
+        _provider(completions).complete_structured('p', {})
+    assert completions.requests == 1
+
+
+def test_a_non_json_completion_is_recorded_before_it_raises():
+    # It was billed. Before ISSUE_128 the parse failure raised ahead of the record.
+    recorder = _RecRecorder()
+    with pytest.raises(LLMParseError):
+        _provider(_Completions(content='not json'), recorder).complete_structured('p', {})
+    assert recorder.attempts == [(1, 'ok')]

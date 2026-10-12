@@ -331,9 +331,11 @@ today, most load-bearing first:
   deterministic, zero-cost post-check and degraded to a clean `HOLD` (`partial` run, raw
   output kept) — a confidently-wrong signal never leaves the engine unmarked, and it can
   never trigger a breaking push.
-- **Cost & performance, captured at the call (#23, #32)**: one billing-log row per paid API
-  call (exact tokens + USD, frozen from the price table at record time) *and* its latency; a
-  shared stage timer; `cost` + `perf` CLIs with per-section avg/p95/max; every spending pass
+- **Cost & performance, captured at the call (#23, #32, #128)**: one billing-log row per API
+  call attempt (exact tokens + USD, frozen from the price table at record time) *and* its latency —
+  retries are run by the engine, not hidden in the SDK, so a timed-out attempt is a row too, with
+  its spend recorded as unknown; a shared stage timer; `cost` + `perf` CLIs with per-section
+  avg/p95/max and an attempts block (retried calls, failures by outcome); every spending pass
   ends with a `--- run metrics ---` footer. The store is the metrics warehouse — reports read
   from it, they are not a separate telemetry system.
 - **Weekly report & Telegram alert surface (#27)**: one typed `WeeklyReport` model — cost,
