@@ -352,6 +352,13 @@ here"; no poll because something might have arrived; no look at the start of a s
 No write without an explicit request. The failure mode to design against is a **read**, and it has
 already happened once.
 
+**Few messages, each complete.** A message carries everything the recipient needs to act without
+asking back — ids, semantics, dates, what changes when — and says whether a reply is expected; for an
+announcement the default is "no reply needed", sent as a `note` into the existing thread. Continue the
+existing thread rather than opening one, batch what is owed instead of sending it as it comes up, and
+never acknowledge an acknowledgement. A question the other side's own surfaces can answer is answered
+there, not asked. Every message is read by someone working in another project; ping-pong costs both.
+
 `bus_inbox` is never on its own evidence that nothing arrived — a `note` enters no inbox by design,
 which produced three false all-clears in one hour. Pair it with `bus_threads` and compare the count;
 report "nothing" only when both are empty. Client 1.1.0 appends that count itself, but only once a
