@@ -1,7 +1,7 @@
 """Pipeline assembler — builds the per-pipeline object graph behind a PipelineRunner (ISSUE_7)."""
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Dict
+from typing import Dict, List
 
 from finiexragengine.configuration.app_config_manager import AppConfigManager
 from finiexragengine.configuration.config_fingerprint import compute_config_fingerprint
@@ -154,7 +154,11 @@ class PipelineAssembler:
         cache = QueryVectorCache(query_embedder, self._database_url,
                                  model=self._cfg.embedding.model,
                                  dimensions=self._cfg.embedding.dimensions)
-        retriever = Retriever(cache, store, config.retrieval)
+        # Declared-scope sets of other pipelines stay out of this one's evidence (scope rule in
+        # SourceSetRegistry.excluded_source_ids) — filtered in the store's scan, every window.
+        retriever = Retriever(cache, store, config.retrieval,
+                              exclude_source_ids=self._source_sets.excluded_source_ids(
+                                  config.source_set))
         prompt_builder = PromptBuilder(self._app.get_prompt_dirs())
         # Provider seam: `llm.provider` names the implementation, the factory resolves
         # it — the assembler never hard-codes a provider class.
@@ -362,6 +366,32 @@ class PipelineAssembler:
             pipeline.set_runner(self.build_runner(
                 config, include_ingest=include_ingest,
                 private=registry.is_private(config.pipeline_id)))
+        self._announce_scopes(registry)
+
+    def _announce_scopes(self, registry: PipelineRegistry) -> None:
+        """One `[SCOPE]` line per declared set: who may read it, said where it is decided.
+
+        A declared set no pipeline is on is announced as such — it is ingested by nobody (ingest
+        workers follow the pipelines' `source_set`) and read by nobody, which is a configuration
+        that does nothing and should not look like one that does.
+        """
+        readers: Dict[str, List[str]] = {}
+        for pipeline in registry.list_pipelines():
+            config = pipeline.get_config()
+            readers.setdefault(config.source_set, []).append(config.pipeline_id)
+        for source_set in self._source_sets.list_sets():
+            if source_set.scope != 'declared':
+                continue
+            on_set = readers.get(source_set.source_set_id, [])
+            label = source_set.source_set_id
+            if not on_set:
+                logger.warning('[SCOPE] %s · declared · %d active feeds · no pipeline is on it — '
+                               'ingested by none, read by none', label,
+                               len(source_set.active_sources()))
+                continue
+            logger.info('[SCOPE] %s · declared · %d active feeds · readable by %d pipeline(s), '
+                        'excluded from every other', label, len(source_set.active_sources()),
+                        len(on_set))
 
     def _reconcile_stream(self, pipeline_id: str) -> None:
         """Bump this stream's epoch if its series was rewound; never fatal.

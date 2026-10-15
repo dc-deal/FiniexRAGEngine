@@ -106,6 +106,8 @@ PUBLIC_PATHS: Tuple[str, ...] = (
     'symbols.*.base',
     'symbols.*.quote',
     'symbols.*.query',
+    'retrieval.aside.anchor',           # query texts, like `symbols.*.query`: what a pipeline
+    'retrieval.aside.counter_anchor',   # retrieves by, never a credential
     'prompt.name',
     'prompt.version',
     'llm.model',
@@ -115,6 +117,7 @@ PUBLIC_PATHS: Tuple[str, ...] = (
     'trigger.timeframe',
     # source set: the catalogue itself
     'source_set_id',
+    'scope',
     'detection.cluster_unit',
     'detection.keywords.*',
     'sources.*.source_id',

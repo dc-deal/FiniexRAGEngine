@@ -30,7 +30,8 @@ class AbstractVectorStore(ABC):
     @abstractmethod
     def query(self, vector: List[float], top_k: int, since: datetime,
               min_importance: Optional[int] = None,
-              until: Optional[datetime] = None) -> List[ScoredArticle]:
+              until: Optional[datetime] = None,
+              exclude_source_ids: Optional[Sequence[str]] = None) -> List[ScoredArticle]:
         """Return the most similar articles published at/after `since` (and before `until`).
 
         Args:
@@ -42,6 +43,8 @@ class AbstractVectorStore(ABC):
                 (the deep/old tier of the two-tier retrieval policy, ISSUE_5).
             until: If set, exclusive upper bound on `published_at` — the background section
                 stops where the recent window begins, so the two never return the same article.
+            exclude_source_ids: Articles from these sources are never returned — the sources of
+                `declared`-scope sets the reading pipeline is not on. None/empty = unfiltered.
 
         Returns:
             The matches as ScoredArticle (cosine distance + stored embedding +

@@ -82,6 +82,22 @@ class SourceSetRegistry:
     def list_sets(self) -> List[SourceSetConfig]:
         return list(self._source_sets.values())
 
+    def excluded_source_ids(self, reader_set_id: str) -> List[str]:
+        """Sources a pipeline on `reader_set_id` must not retrieve: the declared sets of others.
+
+        A `declared`-scope set is read only by the pipelines whose `source_set` it is. Every other
+        pipeline excludes the active sources of such sets — minus any source also active in a shared
+        set, whose articles are everyone's by that set's own terms. Active sources only: a declared
+        but disabled feed ingests nothing, so it has nothing to hide. Sorted, so the list is stable
+        across boots and diffable in a log.
+        """
+        hidden = {source.source_id for config in self._source_sets.values()
+                  if config.scope == 'declared' and config.source_set_id != reader_set_id
+                  for source in config.active_sources()}
+        shared = {source.source_id for config in self._source_sets.values()
+                  if config.scope is None for source in config.active_sources()}
+        return sorted(hidden - shared)
+
     def get(self, source_set_id: str) -> SourceSetConfig:
         if source_set_id not in self._source_sets:
             raise ConfigurationError(

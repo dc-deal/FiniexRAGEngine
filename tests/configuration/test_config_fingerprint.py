@@ -133,6 +133,33 @@ def test_the_background_section_is_hashed_when_set_and_absent_when_unset(baselin
         assert _fingerprint(pipeline=retuned) != set_value, f'background.{leaf} must move it'
 
 
+def test_the_aside_section_is_hashed_when_set_and_absent_when_unset(baseline):
+    # Same rule as the background section: unset is how every earlier pass retrieved, set it
+    # decides what the prompt reads — and every one of its values does.
+    assert '"aside"' not in compute_config_fingerprint(
+        PipelineConfig(**_PIPELINE), SourceSetConfig(**_SOURCE_SET), AppConfig()).canonical
+    with_section = _edited(_PIPELINE)
+    with_section['retrieval']['aside'] = {'anchor': 'coin-sector news', 'top_k': 2}
+    set_value = _fingerprint(pipeline=with_section)
+    assert set_value != baseline
+    for leaf, value in (('anchor', 'other text'), ('counter_anchor', 'macro'), ('margin', 0.1),
+                        ('top_k', 3)):
+        retuned = _edited(with_section)
+        retuned['retrieval']['aside'][leaf] = value
+        assert _fingerprint(pipeline=retuned) != set_value, f'aside.{leaf} must move it'
+
+
+def test_a_declared_scope_is_hashed_and_shared_is_absent(baseline):
+    # A set's scope decides who may read it — for its own pipelines it changes nothing they
+    # retrieve, but it is a different corpus contract, so declaring it forks; leaving it unset
+    # (shared, every set before scopes existed) must not.
+    assert '"scope"' not in compute_config_fingerprint(
+        PipelineConfig(**_PIPELINE), SourceSetConfig(**_SOURCE_SET), AppConfig()).canonical
+    declared = _edited(_SOURCE_SET)
+    declared['scope'] = 'declared'
+    assert _fingerprint(source_set=declared) != baseline
+
+
 def test_stream_naming_does_not_change_it(baseline):
     # Identity is not an input: a renamed stream reads the same feeds. The envelope carries
     # `pipeline_id` and the ISSUE_42 variant hints separately, so the hash need not repeat them.

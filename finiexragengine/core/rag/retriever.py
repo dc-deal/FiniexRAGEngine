@@ -1,6 +1,6 @@
 """Retrieval stage — the RAG 'squeeze': only relevant, recent, deduped context."""
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 from finiexragengine.core.rag.abstract_vector_store import AbstractVectorStore
 from finiexragengine.core.rag.query_vector_cache import QueryVectorCache
@@ -10,17 +10,25 @@ from finiexragengine.types.article_types import (
     RetrievedContext,
     ScoredArticle,
 )
-from finiexragengine.types.config_types.pipeline_config_types import RetrievalConfig
+from finiexragengine.types.config_types.pipeline_config_types import (
+    AsideSectionConfig,
+    RetrievalConfig,
+)
 from finiexragengine.types.outcome_types import RetrievalFunnel
 
 RECENT: RetrievalTier = 'recent'
 DEEP: RetrievalTier = 'deep'
 BACKGROUND: RetrievalTier = 'background'
+ASIDE: RetrievalTier = 'aside'
 # Ordering rank per tier — NOT the label, and the distinction is load-bearing. The tier used to be
 # the integers 0/1 and `_rank_key` sorted on them directly; sorting the labels instead would order
 # them alphabetically, put 'deep' ahead of 'recent', and rank week-old articles above today's news.
 # That is the precise contamination ISSUE_30 exists to prevent, and it would be silent.
-_TIER_RANK = {RECENT: 0, DEEP: 1, BACKGROUND: 2}
+_TIER_RANK = {RECENT: 0, DEEP: 1, BACKGROUND: 2, ASIDE: 3}
+
+# The aside split, resolved once per retrieval: (anchor vector, counter vector, margin).
+_Anchors = Tuple[List[float], List[float], float]
+_Pair = Tuple[RetrievalTier, ScoredArticle]
 
 
 def _cosine(a: List[float], b: List[float]) -> float:
@@ -59,16 +67,28 @@ class Retriever:
     - *background section* (opt-in via `retrieval.background`) — selected AFTER the
       squeeze above, from the window that ends where the recent one begins, with its own
       cap and no importance gate; a candidate that near-duplicates anything already kept
-      is collapsed. Its articles are appended behind the others.
+      is collapsed. Its articles are appended behind the others;
+    - *aside section* (opt-in via `retrieval.aside`) — after the floor, every candidate the
+      anchor claims (similarity to the anchor minus similarity to the counter-anchor at or
+      above `margin`) leaves the sections above, which refill from what remains; the set-apart
+      candidates get their own cap and are appended last, so the prompt can fence them.
+
+    `exclude_source_ids` are the sources of `declared`-scope sets this pipeline is not on: their
+    articles are filtered in the store's scan, in every window, and never reach this pipeline.
     """
 
     _OVERFETCH = 2   # pull extra candidates per tier so dedup cannot starve top_k
+    # With an aside section the split removes candidates BEFORE the squeeze, so the sections that
+    # refill need more supply than dedup alone would.
+    _OVERFETCH_WITH_ASIDE = 3
 
     def __init__(self, query_cache: QueryVectorCache, store: AbstractVectorStore,
-                 config: RetrievalConfig) -> None:
+                 config: RetrievalConfig,
+                 exclude_source_ids: Optional[Sequence[str]] = None) -> None:
         self._query_cache = query_cache
         self._store = store
         self._config = config
+        self._exclude = list(exclude_source_ids or [])
 
     def retrieve(self, query: str) -> RetrievedContext:
         """Return the relevant, recent, deduped context for `query` — plus its funnel.
@@ -83,14 +103,19 @@ class Retriever:
         """
         vector = self._query_cache.get_vector(query)   # cached — embeds once, then reused (ISSUE_19)
         now = datetime.now(timezone.utc)
-        fetch_k = self._config.top_k * self._OVERFETCH
+        anchors = self._anchors(self._config.aside, vector)
+        overfetch = self._OVERFETCH if anchors is None else self._OVERFETCH_WITH_ASIDE
+        fetch_k = self._config.top_k * overfetch
         recent_since = now - timedelta(minutes=self._config.recency_window_minutes)
-        candidates = [(RECENT, hit) for hit in self._store.query(vector, fetch_k, recent_since)]
+        exclude = self._exclude or None
+        candidates = [(RECENT, hit) for hit in self._store.query(
+            vector, fetch_k, recent_since, exclude_source_ids=exclude)]
         deep = self._config.deep_tier
         if deep is not None:
             deep_since = now - timedelta(minutes=deep.window_minutes)
             candidates += [(DEEP, hit) for hit in self._store.query(
-                vector, fetch_k, deep_since, min_importance=deep.min_importance)]
+                vector, fetch_k, deep_since, min_importance=deep.min_importance,
+                exclude_source_ids=exclude)]
         # Funnel capture starts here: everything the windows offered, and the distance
         # spread *before* the floor — best doubles as the "nearest miss" when the floor
         # empties the set; together with the applied floor it places the cut in the spread.
@@ -105,18 +130,30 @@ class Retriever:
         if floor is not None:
             candidates = [(tier, hit) for tier, hit in candidates if hit.distance <= floor]
         floor_dropped = in_window - len(candidates)
+        # The aside split, after the floor (an off-topic article is not made relevant by being set
+        # apart) and before the squeeze, so the main section refills from what the anchor left.
+        candidates, set_apart = self._set_apart(candidates, anchors)
         candidates.sort(key=_rank_key)
         kept, tier_duplicates, near_duplicates = self._squeeze(candidates, self._config.top_k, [])
         # The background section runs after the main squeeze and is counted on its own, so every
         # counter above keeps meaning exactly what it meant before the section existed.
-        background: List[Tuple[RetrievalTier, ScoredArticle]] = []
+        background: List[_Pair] = []
         background_in_window = 0
         background_floor_dropped = 0
         if self._config.background is not None:
-            background, background_in_window, background_floor_dropped = self._background(
-                vector, now, recent_since, floor, kept)
+            background, background_in_window, background_floor_dropped, moved = self._background(
+                vector, now, recent_since, floor, kept, anchors, overfetch)
+            set_apart += moved
+        # The aside section: what the anchor claimed from every window, ranked as the windows rank
+        # (recent before background, then distance), collapsed against everything already kept, and
+        # capped on its own — then re-labelled, so the envelope says which citations it held.
+        aside: List[_Pair] = []
+        if anchors is not None:
+            ranked = sorted(set_apart, key=_rank_key)
+            chosen, _ids, _near = self._squeeze(ranked, self._config.aside.top_k, kept + background)
+            aside = [(ASIDE, hit) for _tier, hit in chosen]
         retrieved = [RetrievedArticle(article=hit.article, retrieval_tier=tier)
-                     for tier, hit in kept + background]
+                     for tier, hit in kept + background + aside]
         # Derived from the list rather than accumulated beside it (ISSUE_30): one computation, so
         # the funnel's count and the per-citation tiers in the envelope cannot disagree. They used
         # to be two, and two numbers meant to agree are the shape ISSUE_82 spent weeks on.
@@ -128,12 +165,43 @@ class Retriever:
             kept=len(kept), deep_kept=deep_kept,
             background_in_window=background_in_window,
             background_floor_dropped=background_floor_dropped,
-            background_kept=background_kept, best_distance=best_distance,
-            worst_distance=worst_distance, floor=floor))
+            background_kept=background_kept, aside_moved=len(set_apart), aside_kept=len(aside),
+            best_distance=best_distance, worst_distance=worst_distance, floor=floor))
+
+    def _anchors(self, aside: Optional[AsideSectionConfig],
+                 query_vector: List[float]) -> Optional[_Anchors]:
+        """The aside split's two reference vectors, or None without the section.
+
+        Both texts go through the query-vector cache, so each is embedded once and read from the
+        cache on every later pass. The counter-anchor defaults to the pipeline's own query: "closer
+        to the anchor than to what this pipeline is asking for".
+        """
+        if aside is None:
+            return None
+        anchor = self._query_cache.get_vector(aside.anchor)
+        counter = (self._query_cache.get_vector(aside.counter_anchor)
+                   if aside.counter_anchor else query_vector)
+        return anchor, counter, aside.margin
+
+    def _set_apart(self, pairs: List[_Pair],
+                   anchors: Optional[_Anchors]) -> Tuple[List[_Pair], List[_Pair]]:
+        """Split candidates into (stay, set apart) by the anchor score; everything stays without one.
+
+        The score is measured on each article's stored vector, so it costs no API call.
+        """
+        if anchors is None:
+            return pairs, []
+        anchor, counter, margin = anchors
+        stay: List[_Pair] = []
+        moved: List[_Pair] = []
+        for tier, hit in pairs:
+            score = _cosine(hit.embedding, anchor) - _cosine(hit.embedding, counter)
+            (moved if score >= margin else stay).append((tier, hit))
+        return stay, moved
 
     def _background(self, vector: List[float], now: datetime, recent_since: datetime,
-                    floor: Optional[float], prior: List[Tuple[RetrievalTier, ScoredArticle]]
-                    ) -> Tuple[List[Tuple[RetrievalTier, ScoredArticle]], int, int]:
+                    floor: Optional[float], prior: List[_Pair], anchors: Optional[_Anchors],
+                    overfetch: int) -> Tuple[List[_Pair], int, int, List[_Pair]]:
         """Select the background section: older, its own cap, no importance gate.
 
         The window is [now − window_minutes, recent_since) — half-open and ending exactly where the
@@ -141,23 +209,23 @@ class Retriever:
         applies (an off-topic article is not made relevant by being old), and a candidate that
         near-duplicates anything in `prior` is collapsed: an older copy of a story already in the
         prompt adds tokens, not evidence. Returns the kept pairs, the candidates the window offered,
-        and how many of those the floor dropped.
+        how many of those the floor dropped, and what the aside anchor set apart from it.
         """
         section = self._config.background
         since = now - timedelta(minutes=section.window_minutes)
-        hits = self._store.query(vector, section.top_k * self._OVERFETCH, since,
-                                 until=recent_since)
+        hits = self._store.query(vector, section.top_k * overfetch, since, until=recent_since,
+                                 exclude_source_ids=self._exclude or None)
         in_window = len(hits)
         if floor is not None:
             hits = [hit for hit in hits if hit.distance <= floor]
         floor_dropped = in_window - len(hits)
-        ranked = sorted(((BACKGROUND, hit) for hit in hits), key=_rank_key)
+        stay, moved = self._set_apart([(BACKGROUND, hit) for hit in hits], anchors)
+        ranked = sorted(stay, key=_rank_key)
         kept, _tier_duplicates, _near_duplicates = self._squeeze(ranked, section.top_k, prior)
-        return kept, in_window, floor_dropped
+        return kept, in_window, floor_dropped, moved
 
-    def _squeeze(self, ranked: List[Tuple[RetrievalTier, ScoredArticle]], cap: int,
-                 prior: List[Tuple[RetrievalTier, ScoredArticle]]
-                 ) -> Tuple[List[Tuple[RetrievalTier, ScoredArticle]], int, int]:
+    def _squeeze(self, ranked: List[_Pair], cap: int,
+                 prior: List[_Pair]) -> Tuple[List[_Pair], int, int]:
         """Collapse id- and near-duplicates in rank order and cap at `cap`.
 
         Returns the newly kept articles **paired with the tier that surfaced them**, plus the two
@@ -167,7 +235,7 @@ class Retriever:
         `prior` is what an earlier selection already kept: compared against for duplicates, never
         returned and never counted against `cap` (empty for the main squeeze).
         """
-        kept: List[Tuple[RetrievalTier, ScoredArticle]] = []
+        kept: List[_Pair] = []
         seen_ids = {hit.article.article_id for _tier, hit in prior}
         tier_duplicates = 0
         near_duplicates = 0

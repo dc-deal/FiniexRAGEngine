@@ -68,7 +68,11 @@ def main() -> None:
         pipeline.symbol_query_map(), cache, database_url,
         pipeline_id=args.pipeline, config_file=config_label,
         model=cfg.embedding.model,
-        window_minutes=pipeline.retrieval.recency_window_minutes, floor=floor)
+        window_minutes=pipeline.retrieval.recency_window_minutes, floor=floor,
+        # What this pipeline's retriever excludes (declared-scope sets of others), so the
+        # coverage is measured on the corpus it actually reads.
+        exclude_source_ids=app.build_source_set_registry().excluded_source_ids(
+            pipeline.source_set))
     print(format_coverage_report(report))
 
 

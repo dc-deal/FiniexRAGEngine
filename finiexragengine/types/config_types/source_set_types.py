@@ -149,8 +149,19 @@ class DetectionConfig(BaseModel):
     keywords: List[str] = Field(default_factory=list)
 
 
+# Who may retrieve a set's articles. Retrieval is corpus-wide by default — every pipeline reads every
+# set's articles — so a feed added to any set changes what every pipeline can read without moving their
+# fingerprints. A `declared` set is read only by the pipelines whose `source_set` it is: a new line can
+# widen its own corpus without reaching into anyone else's evidence. None = shared (the default).
+SourceSetScope = Literal['declared']
+SOURCE_SET_SCOPES: Tuple[str, ...] = get_args(SourceSetScope)
+
+
 class SourceSetConfig(BaseModel):
     source_set_id: str
+    # None = shared with every pipeline (how every set worked before scopes existed, and why the
+    # fingerprint omits it while unset); 'declared' = only pipelines on this set retrieve its articles.
+    scope: Optional[SourceSetScope] = None
     # NOTE: `sources` is the declared catalogue; `active_sources()` below is what actually runs.
     # Ingest cadence — deliberately faster than eval (RSS windows slide; a missed
     # article is gone forever) and LLM-free, so frequent is cheap. For near-continuous

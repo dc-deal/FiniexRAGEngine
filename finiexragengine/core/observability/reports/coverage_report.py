@@ -11,7 +11,7 @@ It is the tuning instrument for `retrieval.floor_distance`.
 """
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 import psycopg
 
@@ -81,7 +81,8 @@ class CoverageReport:
 def build_coverage_report(
         symbol_queries: Dict[str, str], cache: QueryVectorCache, database_url: str, *,
         pipeline_id: str, config_file: str, model: str, window_minutes: int,
-        article_table: str = 'articles', floor: float = COVERAGE_FLOOR) -> CoverageReport:
+        article_table: str = 'articles', floor: float = COVERAGE_FLOOR,
+        exclude_source_ids: Sequence[str] = ()) -> CoverageReport:
     """Per-symbol corpus coverage over three scopes, best-covered first.
 
     Ensures every symbol query is embedded and cached (idempotent — a cache hit spends
@@ -98,6 +99,8 @@ def build_coverage_report(
         window_minutes: recency window (the pipeline's retrieval.recency_window_minutes).
         article_table: corpus table name (migrations-owned; default matches pgvector_store).
         floor: relevance floor distance (the pipeline's retrieval.floor_distance).
+        exclude_source_ids: sources this pipeline does not retrieve (declared-scope sets of
+            others) — left out of every count, so the report measures what the pipeline sees.
 
     Returns:
         A CoverageReport with one SymbolCoverage per distinct query text (ascending best).
@@ -125,8 +128,8 @@ def build_coverage_report(
                     f'min(published_at), '
                     f'min(published_at) FILTER (WHERE published_at >= %(week)s), '
                     f'min(published_at) FILTER (WHERE published_at >= %(win)s) '
-                    f'FROM {article_table}',
-                    {'week': since_week, 'win': since_window})
+                    f'FROM {article_table} WHERE NOT (source_id = ANY(%(ex)s))',
+                    {'week': since_week, 'win': since_window, 'ex': list(exclude_source_ids)})
                 (total_articles, week_articles, window_articles,
                  oldest_all, oldest_week, oldest_window) = cur.fetchone()
 
@@ -142,8 +145,9 @@ def build_coverage_report(
                         f'avg(embedding <=> %(v)s::vector) FILTER (WHERE published_at >= %(win)s), '
                         f'count(*) FILTER (WHERE published_at >= %(win)s '
                         f'AND (embedding <=> %(v)s::vector) <= %(floor)s) '
-                        f'FROM {article_table}',
-                        {'v': vector, 'week': since_week, 'win': since_window, 'floor': floor})
+                        f'FROM {article_table} WHERE NOT (source_id = ANY(%(ex)s))',
+                        {'v': vector, 'week': since_week, 'win': since_window, 'floor': floor,
+                         'ex': list(exclude_source_ids)})
                     (best, mean, wk_best, wk_mean,
                      win_best, win_mean, in_floor) = cur.fetchone()
                     rows.append(SymbolCoverage(

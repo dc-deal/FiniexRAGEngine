@@ -115,6 +115,11 @@ class RetrievalFunnel(BaseModel):
     background_in_window: int = 0     # candidates in [now − window, recent window start)
     background_floor_dropped: int = 0  # of those, dropped by the same floor_distance
     background_kept: int = 0          # what reached the prompt from the section (<= its top_k)
+    # The aside section (`retrieval.aside`): candidates the anchor set apart from the sections above
+    # (after the floor, every window), and how many reached the prompt under its own cap. Both 0 for a
+    # pipeline without it; `aside_kept` is part of neither `kept` nor `background_kept`.
+    aside_moved: int = 0
+    aside_kept: int = 0
     best_distance: Optional[float] = None    # nearest candidate pre-floor (nearest miss on 0 kept)
     worst_distance: Optional[float] = None   # farthest candidate pre-floor
     floor: Optional[float] = None            # floor_distance applied this run (None = disabled)

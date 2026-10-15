@@ -61,6 +61,22 @@ def test_query_recency_and_similarity_order(store):
     assert result[0].importance is None                  # tag populated later by #11
 
 
+def test_excluded_sources_never_come_back_and_the_slot_is_refilled(store):
+    # A declared-scope set's articles are filtered in the scan itself: the nearest article is
+    # excluded, and top_k=2 is still filled from what remains rather than returning one result.
+    store.upsert([_article('scoped', _BASE, source_id='wn_feed'),
+                  _article('shared-1', _BASE, source_id='cointelegraph'),
+                  _article('shared-2', _BASE, source_id='coindesk')],
+                 [_vec(1.0), _vec(0.9, 0.1), _vec(0.8, 0.2)])
+    since = _BASE - timedelta(days=1)
+    assert [h.article.article_id for h in store.query(_vec(1.0), 2, since)] == [
+        'scoped', 'shared-1']
+    assert [h.article.article_id for h in store.query(
+        _vec(1.0), 2, since, exclude_source_ids=['wn_feed'])] == ['shared-1', 'shared-2']
+    # An empty list filters nothing — the same answer as no argument at all.
+    assert len(store.query(_vec(1.0), 3, since, exclude_source_ids=[])) == 3
+
+
 def test_query_min_importance_excludes_null(store):
     # upsert leaves importance NULL (populated later by #11) → filtered out when required
     store.upsert([_article('a', _BASE)], [_vec(1.0)])

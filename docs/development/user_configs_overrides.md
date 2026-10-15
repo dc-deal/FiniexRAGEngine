@@ -44,6 +44,11 @@ configs_private/
 - **Deploy:** `git -C configs_private pull` beside the main pull. On a service running as
   LocalSystem, add the directory to git's `safe.directory` like the main checkout, or `/v1/build`
   reports `private_commit: null`.
+- **A private source set reaches every pipeline unless it says otherwise.** Retrieval is
+  corpus-wide, so a private set's feeds enter the evidence of the public reference pipelines too —
+  without moving their fingerprints. Give such a set `"scope": "declared"` and only the pipelines on
+  it retrieve its articles (`docs/architecture/retrieval_policy.md`, "Corpus scope"); the boot log
+  says so per set (`[SCOPE] …`).
 
 ## What can be overridden
 

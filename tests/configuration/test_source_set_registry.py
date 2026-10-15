@@ -139,3 +139,45 @@ def test_registry_without_an_override_dir_at_all(tmp_path):
     registry = SourceSetRegistry(tmp_path)
     registry.load()
     assert len(registry.get('crypto_news').active_sources()) == 2
+
+
+# --- scope: who may retrieve a set's articles -----------------------------------------------
+
+def _set(set_id: str, *feeds: str, scope: str = None, off: tuple = ()) -> dict:
+    data = {'source_set_id': set_id,
+            'sources': [{'source_id': feed, 'type': 'rss', 'url': f'https://{feed}.test/rss',
+                         'enabled': feed not in off} for feed in feeds]}
+    if scope:
+        data['scope'] = scope
+    return data
+
+
+def test_a_declared_set_is_hidden_from_every_other_set_and_open_to_its_own(tmp_path):
+    registry = _registry(tmp_path, _set('crypto_news', 'coindesk'), _set('forex_news', 'ecb'),
+                         _set('world_news', 'bbc', 'guardian', scope='declared'))
+    assert registry.excluded_source_ids('crypto_news') == ['bbc', 'guardian']
+    assert registry.excluded_source_ids('forex_news') == ['bbc', 'guardian']
+    assert registry.excluded_source_ids('world_news') == []          # its own pipelines read it
+
+
+def test_a_feed_also_active_in_a_shared_set_stays_visible(tmp_path):
+    # The shared set publishes it to everyone by its own terms; the declared set cannot take that back.
+    registry = _registry(tmp_path, _set('forex_news', 'fed_press'),
+                         _set('world_news', 'bbc', 'fed_press', scope='declared'))
+    assert registry.excluded_source_ids('forex_news') == ['bbc']
+
+
+def test_a_disabled_feed_has_nothing_to_hide(tmp_path):
+    registry = _registry(tmp_path, _set('crypto_news', 'coindesk'),
+                         _set('world_news', 'bbc', 'yahoo', scope='declared', off=('yahoo',)))
+    assert registry.excluded_source_ids('crypto_news') == ['bbc']
+
+
+def test_without_declared_sets_nothing_is_excluded(tmp_path):
+    registry = _registry(tmp_path, _set('crypto_news', 'coindesk'), _set('forex_news', 'ecb'))
+    assert registry.excluded_source_ids('crypto_news') == []
+
+
+def test_an_unknown_scope_is_refused_at_load(tmp_path):
+    with pytest.raises(ConfigurationError, match='scope'):
+        _registry(tmp_path, _set('world_news', 'bbc', scope='private'))

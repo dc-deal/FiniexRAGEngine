@@ -172,7 +172,8 @@ def build_floor_profile_report(
         database_url: str, symbol_queries: Dict[str, str], cache: QueryVectorCache, *,
         pipeline_id: str, config_file: str, model: str, window_minutes: int, floor: float,
         own_source_ids: Set[str], no_data_rows: Sequence[NoDataRow], archive_label: str = '7d',
-        article_table: str = 'articles') -> FloorProfileReport:
+        article_table: str = 'articles',
+        exclude_source_ids: Sequence[str] = ()) -> FloorProfileReport:
     """Measure every query's distance profile against the live window.
 
     Args:
@@ -181,6 +182,8 @@ def build_floor_profile_report(
         own_source_ids: the source ids of this pipeline's own set. The corpus is *shared*
             (`pgvector_store.query` applies no source-set filter), so anything outside this set
             reaching a prompt is a query pulling in another pipeline's feeds.
+        exclude_source_ids: sources this pipeline does not retrieve (declared-scope sets of
+            others) — left out of every count, so the profile is the window the pipeline sees.
         no_data_rows: the archive half, from `build_no_data_report`. It only returns symbols that
             had a no-data pass, so an absent symbol means zero — which is what lets the decisive
             never-starved rows render at all.
@@ -199,14 +202,16 @@ def build_floor_profile_report(
         with psycopg.connect(database_url) as conn:
             ensure_pgvector_types(conn)                # binds Python vectors to `%(v)s::vector`
             with conn.cursor() as cur:
-                cur.execute(f'SELECT count(*) FROM {article_table} WHERE published_at >= %s',
-                            (since_window,))
+                cur.execute(f'SELECT count(*) FROM {article_table} WHERE published_at >= %s '
+                            'AND NOT (source_id = ANY(%s))',
+                            (since_window, list(exclude_source_ids)))
                 window_articles = int(cur.fetchone()[0])
                 for query_text, symbols in sorted(by_query.items()):
                     vector = cache.get_vector(query_text)     # cached -> no API call on a hit
                     rows.append(_measure(cur, query_text, sorted(symbols), vector,
                                          since_window=since_window, floor=floor,
                                          own_source_ids=own_source_ids,
+                                         exclude_source_ids=exclude_source_ids,
                                          window_articles=window_articles,
                                          archive=archive, article_table=article_table))
     except psycopg.Error as exc:
@@ -222,7 +227,7 @@ def build_floor_profile_report(
 
 def _measure(cur: psycopg.Cursor, query_text: str, symbols: List[str], vector: Any, *,
              since_window: datetime, floor: float, own_source_ids: Set[str],
-             window_articles: int, archive: Dict[str, _Archive],
+             exclude_source_ids: Sequence[str], window_articles: int, archive: Dict[str, _Archive],
              article_table: str) -> FloorProfileRow:
     """One query: the distribution, the in-floor counts, and the knee."""
     # The distribution in one scan. `percentile_cont` is what separates this from coverage_report:
@@ -234,14 +239,16 @@ def _measure(cur: psycopg.Cursor, query_text: str, symbols: List[str], vector: A
         'count(*) FILTER (WHERE (embedding <=> %(v)s::vector) <= %(floor)s), '
         'count(*) FILTER (WHERE (embedding <=> %(v)s::vector) <= %(floor)s '
         '                 AND NOT (source_id = ANY(%(own)s))) '
-        f'FROM {article_table} WHERE published_at >= %(win)s',
-        {'v': vector, 'win': since_window, 'floor': floor, 'own': list(own_source_ids)})
+        f'FROM {article_table} WHERE published_at >= %(win)s AND NOT (source_id = ANY(%(ex)s))',
+        {'v': vector, 'win': since_window, 'floor': floor, 'own': list(own_source_ids),
+         'ex': list(exclude_source_ids)})
     nearest, p10, median, in_floor, foreign = cur.fetchone()
     # The knee needs the curve, not an aggregate — the nearest N distances, ascending.
     cur.execute(
         f'SELECT embedding <=> %(v)s::vector AS distance FROM {article_table} '
-        'WHERE published_at >= %(win)s ORDER BY distance LIMIT %(cap)s',
-        {'v': vector, 'win': since_window, 'cap': _KNEE_SAMPLE})
+        'WHERE published_at >= %(win)s AND NOT (source_id = ANY(%(ex)s)) '
+        'ORDER BY distance LIMIT %(cap)s',
+        {'v': vector, 'win': since_window, 'cap': _KNEE_SAMPLE, 'ex': list(exclude_source_ids)})
     curve = [float(row[0]) for row in cur.fetchall()]
 
     blank: _Archive = (0, 0, None, None)

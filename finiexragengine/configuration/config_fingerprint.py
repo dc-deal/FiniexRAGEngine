@@ -80,6 +80,14 @@ _PIPELINE_EXCLUDED: Dict[str, str] = {
 _PIPELINE_OMIT_WHEN_NONE: Dict[str, str] = {
     'retrieval.background': 'the second, older retrieval section — '
                             'unset means no section, which is how every earlier pass retrieved',
+    'retrieval.aside': 'the anchored aside section — unset means nothing is set apart, which is '
+                       'how every earlier pass retrieved',
+}
+
+# The source-set twin of the list above: optional blocks whose absence is the historical behaviour.
+_SOURCE_SET_OMIT_WHEN_NONE: Dict[str, str] = {
+    'scope': 'who may retrieve the set — unset means shared, which is how every set worked before '
+             'scopes existed',
 }
 
 _SOURCE_SET_EXCLUDED: Dict[str, str] = {
@@ -159,7 +167,8 @@ def _source_set_half(source_set: SourceSetConfig) -> Dict[str, Any]:
     engine never builds cannot change what was ingested. Without that, adding a disabled
     candidate to the catalogue forked the signal series for a provable no-op.
     """
-    data = _prune(source_set.model_dump(mode='json'), _SOURCE_SET_EXCLUDED)
+    data = _omit_when_none(_prune(source_set.model_dump(mode='json'), _SOURCE_SET_EXCLUDED),
+                           _SOURCE_SET_OMIT_WHEN_NONE)
     data['sources'] = [_prune(source.model_dump(mode='json'), _SOURCE_EXCLUDED)
                        for source in source_set.active_sources()]
     return data

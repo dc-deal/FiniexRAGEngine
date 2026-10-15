@@ -131,6 +131,23 @@ class BackgroundSectionConfig(BaseModel):
     top_k: int = 8                       # its own cap, on top of the recent section's top_k
 
 
+class AsideSectionConfig(BaseModel):
+    """Opt-in: candidates of one kind are set apart into their own labelled section, with its own cap.
+
+    A candidate's score is its similarity to `anchor` minus its similarity to `counter_anchor`
+    (default: the pipeline's own query), both measured on the article's stored vector. A score at or
+    above `margin` takes the article out of the recent/deep squeeze and the background section — they
+    refill from what remains — and into this section, capped at `top_k` and appended last with tier
+    `aside`. The use it was built for: a view whose prompt says a whole class of news is context, not
+    evidence; fencing that class does the sorting the prompt otherwise asks the model to do, and frees
+    the main sections for the evidence they are meant to carry.
+    """
+    anchor: str = Field(min_length=1)     # describes the class to set apart (embedded once, cached)
+    counter_anchor: Optional[str] = None  # describes the rest; None = the pipeline's query
+    margin: float = Field(default=0.05, ge=-1.0, le=1.0)
+    top_k: int = Field(default=2, ge=1)
+
+
 class RetrievalConfig(BaseModel):
     top_k: int = 12
     recency_window_minutes: int = 1440   # recency window for retrieval (ISSUE_3)
@@ -149,6 +166,9 @@ class RetrievalConfig(BaseModel):
     # None = no background section — exactly how every pipeline retrieved before it existed, which
     # is why the fingerprint omits it while unset (config_fingerprint._PIPELINE_OMIT_WHEN_NONE).
     background: Optional[BackgroundSectionConfig] = None
+    # None = no aside section, which is how every pipeline retrieved before it existed — omitted from
+    # the fingerprint while unset, like `background`.
+    aside: Optional[AsideSectionConfig] = None
 
     @model_validator(mode='after')
     def _background_reaches_past_recent(self) -> 'RetrievalConfig':

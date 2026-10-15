@@ -14,6 +14,7 @@ from finiexragengine.core.rag.abstract_vector_store import AbstractVectorStore
 from finiexragengine.core.rag.retriever import Retriever
 from finiexragengine.types.article_types import Article, ScoredArticle
 from finiexragengine.types.config_types.pipeline_config_types import (
+    AsideSectionConfig,
     BackgroundSectionConfig,
     DeepTierConfig,
     RetrievalConfig,
@@ -54,9 +55,11 @@ class _FakeStore(AbstractVectorStore):
     def existing_ids(self, article_ids: List[str]) -> set:
         raise AssertionError('retrieval must not check existence')
 
-    def query(self, vector, top_k, since, min_importance=None, until=None):
+    def query(self, vector, top_k, since, min_importance=None, until=None,
+              exclude_source_ids=None):
         self.calls.append({'top_k': top_k, 'since': since,
-                           'min_importance': min_importance, 'until': until})
+                           'min_importance': min_importance, 'until': until,
+                           'exclude_source_ids': exclude_source_ids})
         return self._responses.pop(0) if self._responses else []
 
 
@@ -320,3 +323,147 @@ def test_a_background_window_inside_the_recent_one_is_refused():
         RetrievalConfig(recency_window_minutes=2880,
                         background=BackgroundSectionConfig(window_minutes=2880, top_k=8))
 
+
+
+# --- the aside section (retrieval.aside) ------------------------------------------------------
+#
+# Geometry, so every score below can be checked by hand: the anchor is axis 60, the counter-anchor
+# axis 61. A "coin" article lies on the anchor (score 1 − 0 = +1), a "macro" article on the counter
+# (0 − 1 = −1), a "mixed" one halfway (cos 0.707 to both, score 0 — below the 0.05 margin, so it
+# stays in the main section, as a mixed story carrying a macro event should).
+
+_ANCHOR, _COUNTER = 60, 61
+
+
+class _AnchorCache(_FakeQueryVectorCache):
+    """Query → axis 0; the anchor and counter texts → their own axes."""
+
+    def get_vector(self, query_text: str) -> List[float]:
+        self.queries.append(query_text)
+        return {'ANCHOR': _unit(_ANCHOR), 'COUNTER': _unit(_COUNTER)}.get(query_text, _unit(0))
+
+
+def _toward(*axes: int) -> List[float]:
+    vector = [0.0] * _DIMS
+    for axis in axes:
+        vector[axis] = 1.0 / len(axes) ** 0.5
+    return vector
+
+
+def _coin(article_id: str, distance: float) -> ScoredArticle:
+    return _hit(article_id, distance, embedding=_toward(_ANCHOR))
+
+
+def _macro(article_id: str, distance: float) -> ScoredArticle:
+    return _hit(article_id, distance, embedding=_toward(_COUNTER))
+
+
+def _aside_retriever(store: _FakeStore, cache: Optional[_FakeQueryVectorCache] = None,
+                     **aside) -> Retriever:
+    section = AsideSectionConfig(**{'anchor': 'ANCHOR', 'counter_anchor': 'COUNTER',
+                                    'top_k': 2, **aside})
+    return Retriever(cache or _AnchorCache(), store,
+                     RetrievalConfig(top_k=2, floor_distance=None, dedup_similarity=1.01,
+                                     aside=section))
+
+
+def test_the_anchor_sets_coin_items_apart_and_the_main_section_refills():
+    # Ranked by distance the coin items would take both main slots; set apart, the main section
+    # refills with the two macro items and the coin items get the aside's own two slots.
+    store = _FakeStore([[_coin('c1', 0.1), _coin('c2', 0.2), _macro('m1', 0.3), _macro('m2', 0.4),
+                         _coin('c3', 0.5)]])
+    context = _aside_retriever(store).retrieve('q')
+    assert [(a.article.article_id, a.retrieval_tier) for a in context.retrieved] == [
+        ('m1', 'recent'), ('m2', 'recent'), ('c1', 'aside'), ('c2', 'aside')]
+    assert (context.funnel.kept, context.funnel.aside_moved, context.funnel.aside_kept) == (2, 3, 2)
+
+
+def test_a_mixed_item_stays_in_the_main_section():
+    mixed = _hit('mix', 0.1, embedding=_toward(_ANCHOR, _COUNTER))      # score 0 < margin 0.05
+    store = _FakeStore([[mixed, _coin('c1', 0.2)]])
+    context = _aside_retriever(store).retrieve('q')
+    tiers = {a.article.article_id: a.retrieval_tier for a in context.retrieved}
+    assert tiers == {'mix': 'recent', 'c1': 'aside'}
+
+
+def test_the_margin_decides_what_counts_as_set_apart():
+    # With a margin above the mixed item's score of 0 it stays; with one below it, it moves.
+    mixed = _hit('mix', 0.1, embedding=_toward(_ANCHOR, _COUNTER))
+    stays = _aside_retriever(_FakeStore([[mixed]]), margin=0.05).retrieve('q')
+    moves = _aside_retriever(_FakeStore([[mixed]]), margin=-0.05).retrieve('q')
+    assert stays.retrieved[0].retrieval_tier == 'recent'
+    assert moves.retrieved[0].retrieval_tier == 'aside'
+
+
+def test_the_counter_anchor_defaults_to_the_pipeline_query():
+    # No counter text: the query vector (axis 0) is the counter, so an article on axis 0 scores
+    # 0 − 1 = −1 and stays, and the cache is asked for the anchor only.
+    cache = _AnchorCache()
+    on_query = _hit('q-like', 0.1, embedding=_unit(0))
+    store = _FakeStore([[on_query, _coin('c1', 0.2)]])
+    context = _aside_retriever(store, cache=cache, counter_anchor=None).retrieve('the query')
+    assert {a.article.article_id: a.retrieval_tier for a in context.retrieved} == {
+        'q-like': 'recent', 'c1': 'aside'}
+    assert cache.queries == ['the query', 'ANCHOR']
+
+
+def test_the_aside_section_also_claims_background_candidates_recent_first():
+    store = _FakeStore([
+        [_macro('m1', 0.1), _coin('recent-coin', 0.6)],                       # recent window
+        [_macro('old-m', 0.1), _coin('old-coin', 0.2), _coin('old-coin-2', 0.3)],  # background
+    ])
+    retriever = Retriever(_AnchorCache(), store, RetrievalConfig(
+        top_k=2, floor_distance=None, dedup_similarity=1.01,
+        background=BackgroundSectionConfig(window_minutes=20160, top_k=2),
+        aside=AsideSectionConfig(anchor='ANCHOR', counter_anchor='COUNTER', top_k=2)))
+    context = retriever.retrieve('q')
+    assert [(a.article.article_id, a.retrieval_tier) for a in context.retrieved] == [
+        ('m1', 'recent'), ('old-m', 'background'), ('recent-coin', 'aside'), ('old-coin', 'aside')]
+    assert context.funnel.aside_moved == 3 and context.funnel.background_kept == 1
+
+
+def test_near_duplicates_inside_the_aside_section_collapse():
+    # Two feeds carrying one liquidation story: identical vectors, one slot.
+    store = _FakeStore([[_coin('feed-a', 0.1), _coin('feed-b', 0.2)]])
+    retriever = Retriever(_AnchorCache(), store, RetrievalConfig(
+        top_k=2, floor_distance=None, dedup_similarity=0.92,
+        aside=AsideSectionConfig(anchor='ANCHOR', counter_anchor='COUNTER', top_k=2)))
+    context = retriever.retrieve('q')
+    assert [a.article.article_id for a in context.retrieved] == ['feed-a']
+
+
+def test_with_an_aside_section_the_store_is_asked_for_more_candidates():
+    store = _FakeStore([[]])
+    _aside_retriever(store).retrieve('q')
+    assert store.calls[0]['top_k'] == 6           # top_k 2 × overfetch 3 (2 without the section)
+
+
+def test_without_an_aside_section_the_anchor_is_never_embedded():
+    cache = _AnchorCache()
+    Retriever(cache, _FakeStore([[_coin('c1', 0.1)]]), RetrievalConfig()).retrieve('q')
+    assert cache.queries == ['q']
+
+
+@pytest.mark.parametrize('bad', [{'anchor': ''}, {'anchor': 'x', 'top_k': 0},
+                                 {'anchor': 'x', 'margin': 1.5}])
+def test_an_aside_section_that_cannot_work_is_refused(bad):
+    with pytest.raises(ValueError):
+        AsideSectionConfig(**bad)
+
+
+# --- declared-scope sets: the exclusion reaches every window -----------------------------------
+
+def test_excluded_sources_are_passed_to_every_store_call():
+    store = _FakeStore([[], [], []])
+    retriever = Retriever(_FakeQueryVectorCache(), store, RetrievalConfig(
+        deep_tier=DeepTierConfig(window_minutes=10080, min_importance=2),
+        background=BackgroundSectionConfig(window_minutes=20160, top_k=8)),
+        exclude_source_ids=['wn_a', 'wn_b'])
+    retriever.retrieve('q')
+    assert [call['exclude_source_ids'] for call in store.calls] == [['wn_a', 'wn_b']] * 3
+
+
+def test_no_exclusion_reaches_the_store_as_none():
+    store = _FakeStore([[]])
+    _retriever(store).retrieve('q')
+    assert store.calls[0]['exclude_source_ids'] is None

@@ -637,8 +637,19 @@ Retrieval runs **per symbol**. Top-down, one symbol's query flows through:
    `background`, counted on its own in the funnel (`background_in_window` /
    `background_floor_dropped` / `background_kept`).
 
+7. **Aside section (opt-in) — `Retriever._set_apart`.** Only for a pipeline that declares
+   `retrieval.aside`: after the floor, each candidate of every window is scored on its stored
+   vector (similarity to the anchor minus similarity to the counter-anchor); what reaches the
+   margin leaves the main and background selections — which refill — and is capped on its own,
+   appended last with tier `aside` and counted as `aside_moved` / `aside_kept`.
+
+**Every store call carries the pipeline's exclusion** — the active sources of `declared`-scope
+sets it is not on (`SourceSetRegistry.excluded_source_ids`, computed once at assembly) — so a set
+scoped to another line never reaches this one's candidates.
+
 The retrieval parameters (`top_k`, `recency_window_minutes`, `dedup_similarity`, the
-optional two-tier `deep_tier`, the optional `background` section) and the ranking tie-breaks are
+optional two-tier `deep_tier`, the optional `background` and `aside` sections, the source-set
+`scope`) and the ranking tie-breaks are
 documented in `../retrieval_policy.md`.
 
 ## What leaves retrieval — and what does not

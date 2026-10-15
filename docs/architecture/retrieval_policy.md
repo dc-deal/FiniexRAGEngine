@@ -42,6 +42,41 @@ Resolution order (`SymbolQueryMap.query_for`):
   is not the deep tier: the deep tier admits only what the keyword detector flagged (measured as
   almost nothing) and fills only the slots recent news leaves (rarely any) — it answers *what was
   important*, the background section answers *what has been building up*.
+- **Aside section (opt-in per pipeline, `retrieval.aside`):** a class of articles set apart into its
+  own labelled section. Each candidate gets a score — its similarity to `aside.anchor` minus its
+  similarity to `aside.counter_anchor` (default: the pipeline's own query), both measured on the
+  article's **stored** vector, so it costs no API call per pass; the two texts are embedded once and
+  served from the query-vector cache. After the floor, a candidate scoring at or above `aside.margin`
+  leaves the recent/deep squeeze **and** the background section, which refill from what remains
+  (over-fetch rises to 3× while the section is set). The set-apart candidates are ranked like the
+  windows they came from (recent before background, then distance), collapsed against everything
+  already kept, capped at `aside.top_k` and appended last with tier `aside`. The use it was built for:
+  a view whose prompt declares a whole class of news to be context rather than evidence. Fencing that
+  class does the sorting the prompt otherwise leaves to the model — and the measured reason to do it
+  is that a smaller model does not do that sorting reliably — while the main sections are freed for
+  the evidence they exist to carry. A story that is half one class and half the other scores near
+  zero and stays in the main section, which is what a story carrying the main class's event should do.
+
+## Corpus scope — `declared` source sets
+
+Retrieval is **corpus-wide** by default: a pipeline reads every set's articles, and its `source_set`
+decides only ingest, breaking wakes and source reach. The consequence is easy to miss — a feed added
+to *any* set enters the evidence of *every* pipeline without moving their fingerprints. A set with
+`"scope": "declared"` is read only by the pipelines whose `source_set` it is: every other pipeline's
+retriever excludes its active sources in the store's scan itself (`AND NOT (source_id = ANY(...))`),
+in every window, so an excluded article can never take a candidate slot. A source also active in a
+shared set stays visible — that set publishes it to everyone by its own terms. One computation
+(`SourceSetRegistry.excluded_source_ids`) serves the pipelines and the corpus reports (`coverage`,
+`floor_profile`), so a report measures the corpus the pipeline actually reads. At boot each declared
+set is announced with how many pipelines may read it — a declared set no pipeline is on is warned
+about, since it is ingested by none and read by none:
+
+```
+[SCOPE] <set> · declared · 5 active feeds · readable by 1 pipeline(s), excluded from every other
+```
+
+What it is for: a new line of work can widen its own corpus without reaching into anyone else's
+evidence — in particular not into a series inside a measurement's held-out window.
 
 ## Ordering
 
@@ -102,7 +137,10 @@ re-sort by `published_at`, mixing both into one numbered list. It now returns
 derived from that list rather than accumulated beside it — one computation, so the funnel's count
 and the envelope's per-citation tiers cannot disagree. The background section is counted on its
 own — `background_in_window`, `background_floor_dropped`, `background_kept` — so every counter above
-keeps exactly the meaning it had in the archive, and `background_kept` is not part of `kept`. The tier is a closed vocabulary
+keeps exactly the meaning it had in the archive, and `background_kept` is not part of `kept`. The
+aside section adds `aside_moved` (candidates the anchor set apart, every window, after the floor) and
+`aside_kept` (what reached the prompt under its own cap), part of neither `kept` nor
+`background_kept`; both are 0 for a pipeline without it. The tier is a closed vocabulary
 (`RetrievalTier`), named in full because *tier* already means the **importance** tier (1/2/3)
 elsewhere; the retriever's rank key maps it back to an explicit order, since sorting the labels
 would put `deep` ahead of `recent` alphabetically and rank week-old articles above today's news.
@@ -125,12 +163,20 @@ See `docs/architecture/weekly_report_and_alerts.md`.
 | `floor_distance` | 0.55 | query↔article distance > this drops the candidate; `null` disables; crypto constellation: 0.68 (see calibration note) (ISSUE_24) |
 | `deep_tier` | absent | opt-in: `{ "min_importance": 2, "window_minutes": 43200 }` |
 | `background` | absent | opt-in: `{ "window_minutes": 20160, "top_k": 8 }` — its window must exceed `recency_window_minutes` (refused at load otherwise); absent is omitted from `config_fingerprint`, so adding the key to the schema forked no existing series |
+| `aside` | absent | opt-in: `{ "anchor": "…", "counter_anchor": "…", "margin": 0.05, "top_k": 2 }` — `counter_anchor` defaults to the pipeline's query; an empty anchor, `top_k < 1` or a margin outside [−1, 1] is refused at load; absent is omitted from `config_fingerprint` |
+
+On the source set: `scope` — absent (shared with every pipeline) or `"declared"` (read only by the
+pipelines on the set); absent is omitted from the source-set half of `config_fingerprint`.
 
 `symbol_queries` sits at the top level of the constellation, next to `symbols`.
 
 ## Tests
 
 `tests/rag/test_retriever.py` (mocked embedder/store: recency, cap, dedup, deep tier,
-background section — window bounds, own cap, cross-section dedup, its counters — tie-breaks), `tests/rag/test_symbol_query_map.py` (alias + fallback), and the paid live
+background section — window bounds, own cap, cross-section dedup, its counters — the aside section —
+anchor split, main and background refill, mixed items staying, the margin, the counter defaulting to
+the query, cap and dedup inside the section, overfetch — the exclusion reaching every window —
+tie-breaks), `tests/configuration/test_source_set_registry.py` (which sources each set excludes),
+`tests/rag/test_symbol_query_map.py` (alias + fallback), and the paid live
 round-trip in `tests/rag/test_rag_live.py` (real embeddings → pgvector → retrieve) — see
 [testing](../testing.md).

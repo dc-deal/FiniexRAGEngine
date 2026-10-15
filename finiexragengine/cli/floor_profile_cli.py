@@ -75,7 +75,8 @@ def main() -> None:
     # The profile needs two things coverage does not: the pipeline's own feed ids (the corpus is
     # shared, so 'foreign' is only meaningful against the set this pipeline declares) and the
     # archive's no-data shares, which come from the report that already computes them.
-    source_set = app.build_source_set_registry().get(pipeline.source_set)
+    source_sets = app.build_source_set_registry()
+    source_set = source_sets.get(pipeline.source_set)
     own_source_ids = {source.source_id for source in source_set.active_sources()}
     since, since_label = parse_since(args.archive_since)
     no_data = build_no_data_report(database_url, since, since_label=since_label)
@@ -85,7 +86,8 @@ def main() -> None:
         model=cfg.embedding.model,
         window_minutes=pipeline.retrieval.recency_window_minutes, floor=floor,
         own_source_ids=own_source_ids, no_data_rows=no_data.rows,
-        archive_label=since_label)
+        archive_label=since_label,
+        exclude_source_ids=source_sets.excluded_source_ids(pipeline.source_set))
     print(format_floor_profile_report(profile))
 
 
