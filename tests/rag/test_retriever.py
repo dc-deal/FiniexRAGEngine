@@ -18,6 +18,7 @@ from finiexragengine.types.config_types.pipeline_config_types import (
     BackgroundSectionConfig,
     DeepTierConfig,
     RetrievalConfig,
+    SetSectionConfig,
 )
 
 _TS = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
@@ -56,10 +57,11 @@ class _FakeStore(AbstractVectorStore):
         raise AssertionError('retrieval must not check existence')
 
     def query(self, vector, top_k, since, min_importance=None, until=None,
-              exclude_source_ids=None):
+              exclude_source_ids=None, only_source_ids=None):
         self.calls.append({'top_k': top_k, 'since': since,
                            'min_importance': min_importance, 'until': until,
-                           'exclude_source_ids': exclude_source_ids})
+                           'exclude_source_ids': exclude_source_ids,
+                           'only_source_ids': only_source_ids, 'vector': vector})
         return self._responses.pop(0) if self._responses else []
 
 
@@ -467,3 +469,137 @@ def test_no_exclusion_reaches_the_store_as_none():
     store = _FakeStore([[]])
     _retriever(store).retrieve('q')
     assert store.calls[0]['exclude_source_ids'] is None
+
+
+# --- the set section: one source set, its own query, floor and cap ------------------------------
+
+_SECTION_AXIS = 62   # its own axis: neither the query (0) nor the anchors (60, 61)
+
+
+class _SectionCache(_AnchorCache):
+    """The anchor cache plus a distinct vector for the section query."""
+
+    def get_vector(self, query_text: str) -> List[float]:
+        if query_text == 'SECTION':
+            self.queries.append(query_text)
+            return _unit(_SECTION_AXIS)
+        return super().get_vector(query_text)
+
+
+def _section_retriever(store: _FakeStore, ids=('set_a', 'set_b'), cache=None, aside=None,
+                       exclude=None, **section) -> Retriever:
+    config = RetrievalConfig(top_k=2, floor_distance=None, dedup_similarity=1.01, aside=aside,
+                             set_section=SetSectionConfig(**{'source_set': 'general', 'query': 'SECTION',
+                                                             'top_k': 2, **section}))
+    return Retriever(cache or _SectionCache(), store, config, exclude_source_ids=exclude,
+                     set_section_source_ids=list(ids) if ids is not None else None)
+
+
+def test_the_set_section_reads_its_own_feeds_by_its_own_query_and_comes_last():
+    cache = _SectionCache()
+    store = _FakeStore([[_hit('m1', 0.1), _hit('m2', 0.2)],          # main window
+                        [_hit('w1', 0.3), _hit('w2', 0.4)]])         # the section's window
+    context = _section_retriever(store, cache=cache).retrieve('q')
+    assert [(a.article.article_id, a.retrieval_tier) for a in context.retrieved] == [
+        ('m1', 'recent'), ('m2', 'recent'), ('w1', 'set_section'), ('w2', 'set_section')]
+    assert cache.queries == ['q', 'SECTION']
+    section_call = store.calls[1]
+    assert section_call['only_source_ids'] == ['set_a', 'set_b']
+    assert section_call['vector'] == _unit(_SECTION_AXIS)
+    assert section_call['top_k'] == 4                 # top_k 2 × overfetch 2 (no aside section)
+    funnel = context.funnel
+    assert (funnel.kept, funnel.set_section_in_window, funnel.set_section_kept) == (2, 2, 2)
+
+
+def test_its_own_floor_cuts_on_its_own_scale_and_is_counted():
+    store = _FakeStore([[_hit('m1', 0.9)],
+                        [_hit('w1', 0.5), _hit('w2', 0.7), _hit('w3', 0.8)]])
+    context = _section_retriever(store, floor_distance=0.7).retrieve('q')
+    assert [a.article.article_id for a in context.retrieved] == ['m1', 'w1', 'w2']
+    assert (context.funnel.set_section_in_window, context.funnel.set_section_floor_dropped,
+            context.funnel.set_section_kept) == (3, 1, 2)
+
+
+def test_the_pipeline_floor_never_applies_to_the_section():
+    # A main floor of 0.3 would drop every section article; the section has none of its own here.
+    store = _FakeStore([[_hit('m1', 0.1)], [_hit('w1', 0.6)]])
+    config = RetrievalConfig(top_k=2, floor_distance=0.3, dedup_similarity=1.01,
+                             set_section=SetSectionConfig(source_set='general', query='SECTION'))
+    context = Retriever(_SectionCache(), store, config,
+                        set_section_source_ids=['set_a']).retrieve('q')
+    assert [a.article.article_id for a in context.retrieved] == ['m1', 'w1']
+
+
+def test_an_article_already_in_the_prompt_is_not_cited_twice():
+    same = _hit('shared', 0.1)
+    store = _FakeStore([[same], [_hit('shared', 0.2, embedding=same.embedding), _hit('w1', 0.3)]])
+    context = _section_retriever(store).retrieve('q')
+    assert [(a.article.article_id, a.retrieval_tier) for a in context.retrieved] == [
+        ('shared', 'recent'), ('w1', 'set_section')]
+
+
+def test_a_near_duplicate_of_a_kept_story_is_collapsed():
+    kept = _hit('m1', 0.1)
+    copy = _hit('w-copy', 0.2, embedding=kept.embedding)
+    store = _FakeStore([[kept], [copy, _hit('w1', 0.3)]])
+    config = RetrievalConfig(top_k=2, floor_distance=None, dedup_similarity=0.92,
+                             set_section=SetSectionConfig(source_set='general', query='SECTION'))
+    context = Retriever(_SectionCache(), store, config,
+                        set_section_source_ids=['set_a']).retrieve('q')
+    assert [a.article.article_id for a in context.retrieved] == ['m1', 'w1']
+
+
+def test_what_the_aside_anchor_claims_from_the_section_goes_to_the_aside_section():
+    store = _FakeStore([[_macro('m1', 0.1)], [_coin('w-coin', 0.2), _macro('w-macro', 0.3)]])
+    aside = AsideSectionConfig(anchor='ANCHOR', counter_anchor='COUNTER', top_k=2)
+    context = _section_retriever(store, aside=aside).retrieve('q')
+    assert {a.article.article_id: a.retrieval_tier for a in context.retrieved} == {
+        'm1': 'recent', 'w-coin': 'aside', 'w-macro': 'set_section'}
+    assert (context.funnel.aside_moved, context.funnel.set_section_kept) == (1, 1)
+    assert store.calls[1]['top_k'] == 6               # overfetch 3 with the aside section
+
+
+def test_the_section_is_capped_at_its_own_top_k():
+    store = _FakeStore([[], [_hit(f'w{i}', 0.1 * i) for i in range(1, 6)]])
+    context = _section_retriever(store, top_k=3).retrieve('q')
+    assert [a.article.article_id for a in context.retrieved] == ['w1', 'w2', 'w3']
+
+
+def test_without_its_ids_the_section_asks_for_nothing_rather_than_everything():
+    # None would mean "every source" to the store; a section without its feeds must stay empty.
+    store = _FakeStore([[], []])
+    _section_retriever(store, ids=None).retrieve('q')
+    assert store.calls[1]['only_source_ids'] == []
+
+
+def test_the_exclusion_reaches_the_section_call_too():
+    store = _FakeStore([[], []])
+    _section_retriever(store, exclude=['other_declared']).retrieve('q')
+    assert store.calls[1]['exclude_source_ids'] == ['other_declared']
+
+
+def test_the_window_is_the_recent_one_unless_the_section_names_its_own():
+    store = _FakeStore([[], []])
+    _section_retriever(store).retrieve('q')
+    assert store.calls[1]['since'] == store.calls[0]['since']
+    store = _FakeStore([[], []])
+    _section_retriever(store, window_minutes=10080).retrieve('q')
+    gap = store.calls[0]['since'] - store.calls[1]['since']
+    assert timedelta(minutes=10080 - 1440 - 1) < gap < timedelta(minutes=10080 - 1440 + 1)
+
+
+def test_without_a_set_section_nothing_changes():
+    cache = _SectionCache()
+    store = _FakeStore([[_hit('m1', 0.1)]])
+    context = Retriever(cache, store, RetrievalConfig()).retrieve('q')
+    assert cache.queries == ['q'] and len(store.calls) == 1
+    assert (context.funnel.set_section_in_window, context.funnel.set_section_kept) == (0, 0)
+
+
+@pytest.mark.parametrize('bad', [{'source_set': '', 'query': 'x'}, {'source_set': 's', 'query': ''},
+                                 {'source_set': 's', 'query': 'x', 'top_k': 0},
+                                 {'source_set': 's', 'query': 'x', 'window_minutes': 0},
+                                 {'source_set': 's', 'query': 'x', 'floor_distance': -0.1}])
+def test_a_set_section_that_cannot_work_is_refused(bad):
+    with pytest.raises(ValueError):
+        SetSectionConfig(**bad)

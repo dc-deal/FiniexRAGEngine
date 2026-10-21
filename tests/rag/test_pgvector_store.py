@@ -77,6 +77,24 @@ def test_excluded_sources_never_come_back_and_the_slot_is_refilled(store):
     assert len(store.query(_vec(1.0), 3, since, exclude_source_ids=[])) == 3
 
 
+def test_only_sources_restrict_the_scan_and_the_limit_counts_only_them(store):
+    # The set section asks its feeds alone: a nearer article from another source can never take
+    # one of its slots, and the exclusion still applies on top.
+    store.upsert([_article('crypto-near', _BASE, source_id='cointelegraph'),
+                  _article('set-1', _BASE, source_id='set_feed_1'),
+                  _article('set-2', _BASE, source_id='set_feed_2'),
+                  _article('set-3', _BASE, source_id='set_feed_2')],
+                 [_vec(1.0), _vec(0.9, 0.1), _vec(0.8, 0.2), _vec(0.7, 0.3)])
+    since = _BASE - timedelta(days=1)
+    assert [h.article.article_id for h in store.query(
+        _vec(1.0), 2, since, only_source_ids=['set_feed_1', 'set_feed_2'])] == ['set-1', 'set-2']
+    assert [h.article.article_id for h in store.query(
+        _vec(1.0), 3, since, only_source_ids=['set_feed_1', 'set_feed_2'],
+        exclude_source_ids=['set_feed_1'])] == ['set-2', 'set-3']
+    # An empty list is "no source", never "every source".
+    assert store.query(_vec(1.0), 3, since, only_source_ids=[]) == []
+
+
 def test_query_min_importance_excludes_null(store):
     # upsert leaves importance NULL (populated later by #11) → filtered out when required
     store.upsert([_article('a', _BASE)], [_vec(1.0)])

@@ -13,6 +13,7 @@ from finiexragengine.types.article_types import (
 from finiexragengine.types.config_types.pipeline_config_types import (
     AsideSectionConfig,
     RetrievalConfig,
+    SetSectionConfig,
 )
 from finiexragengine.types.outcome_types import RetrievalFunnel
 
@@ -20,11 +21,12 @@ RECENT: RetrievalTier = 'recent'
 DEEP: RetrievalTier = 'deep'
 BACKGROUND: RetrievalTier = 'background'
 ASIDE: RetrievalTier = 'aside'
+SET_SECTION: RetrievalTier = 'set_section'
 # Ordering rank per tier — NOT the label, and the distinction is load-bearing. The tier used to be
 # the integers 0/1 and `_rank_key` sorted on them directly; sorting the labels instead would order
 # them alphabetically, put 'deep' ahead of 'recent', and rank week-old articles above today's news.
 # That is the precise contamination ISSUE_30 exists to prevent, and it would be silent.
-_TIER_RANK = {RECENT: 0, DEEP: 1, BACKGROUND: 2, ASIDE: 3}
+_TIER_RANK = {RECENT: 0, DEEP: 1, BACKGROUND: 2, ASIDE: 3, SET_SECTION: 4}
 
 # The aside split, resolved once per retrieval: (anchor vector, counter vector, margin).
 _Anchors = Tuple[List[float], List[float], float]
@@ -71,7 +73,11 @@ class Retriever:
     - *aside section* (opt-in via `retrieval.aside`) — after the floor, every candidate the
       anchor claims (similarity to the anchor minus similarity to the counter-anchor at or
       above `margin`) leaves the sections above, which refill from what remains; the set-apart
-      candidates get their own cap and are appended last, so the prompt can fence them.
+      candidates get their own cap and are appended last, so the prompt can fence them;
+    - *set section* (opt-in via `retrieval.set_section`) — one source set's feeds alone
+      (`set_section_source_ids`), ranked by the section's own query, behind its own floor and cap.
+      The aside anchor applies to it like to every other window (what it claims joins the aside
+      pool); the rest is collapsed against everything already kept and appended last.
 
     `exclude_source_ids` are the sources of `declared`-scope sets this pipeline is not on: their
     articles are filtered in the store's scan, in every window, and never reach this pipeline.
@@ -84,11 +90,15 @@ class Retriever:
 
     def __init__(self, query_cache: QueryVectorCache, store: AbstractVectorStore,
                  config: RetrievalConfig,
-                 exclude_source_ids: Optional[Sequence[str]] = None) -> None:
+                 exclude_source_ids: Optional[Sequence[str]] = None,
+                 set_section_source_ids: Optional[Sequence[str]] = None) -> None:
         self._query_cache = query_cache
         self._store = store
         self._config = config
         self._exclude = list(exclude_source_ids or [])
+        # Always a list, never None: the store reads None as "every source", and a set section asked
+        # without its ids must come back empty, not rank the whole corpus by its query.
+        self._set_section_ids = list(set_section_source_ids or [])
 
     def retrieve(self, query: str) -> RetrievedContext:
         """Return the relevant, recent, deduped context for `query` — plus its funnel.
@@ -144,6 +154,16 @@ class Retriever:
             background, background_in_window, background_floor_dropped, moved = self._background(
                 vector, now, recent_since, floor, kept, anchors, overfetch)
             set_apart += moved
+        # The set section's candidates are drawn BEFORE the aside squeeze, so what the anchor claims
+        # from them competes for the aside section like a claim from any other window.
+        section_candidates: List[_Pair] = []
+        section_in_window = 0
+        section_floor_dropped = 0
+        section = self._config.set_section
+        if section is not None:
+            section_candidates, section_in_window, section_floor_dropped, moved = (
+                self._set_section_candidates(section, now, anchors, overfetch))
+            set_apart += moved
         # The aside section: what the anchor claimed from every window, ranked as the windows rank
         # (recent before background, then distance), collapsed against everything already kept, and
         # capped on its own — then re-labelled, so the envelope says which citations it held.
@@ -152,8 +172,15 @@ class Retriever:
             ranked = sorted(set_apart, key=_rank_key)
             chosen, _ids, _near = self._squeeze(ranked, self._config.aside.top_k, kept + background)
             aside = [(ASIDE, hit) for _tier, hit in chosen]
+        # The set section last: collapsed against everything above, so an article the main query
+        # already brought in is not cited twice, and an older copy of a kept story adds nothing.
+        set_section: List[_Pair] = []
+        if section is not None:
+            ranked = sorted(section_candidates, key=_rank_key)
+            set_section, _ids, _near = self._squeeze(ranked, section.top_k,
+                                                     kept + background + aside)
         retrieved = [RetrievedArticle(article=hit.article, retrieval_tier=tier)
-                     for tier, hit in kept + background + aside]
+                     for tier, hit in kept + background + aside + set_section]
         # Derived from the list rather than accumulated beside it (ISSUE_30): one computation, so
         # the funnel's count and the per-citation tiers in the envelope cannot disagree. They used
         # to be two, and two numbers meant to agree are the shape ISSUE_82 spent weeks on.
@@ -166,6 +193,9 @@ class Retriever:
             background_in_window=background_in_window,
             background_floor_dropped=background_floor_dropped,
             background_kept=background_kept, aside_moved=len(set_apart), aside_kept=len(aside),
+            set_section_in_window=section_in_window,
+            set_section_floor_dropped=section_floor_dropped,
+            set_section_kept=len(set_section),
             best_distance=best_distance, worst_distance=worst_distance, floor=floor))
 
     def _anchors(self, aside: Optional[AsideSectionConfig],
@@ -223,6 +253,29 @@ class Retriever:
         ranked = sorted(stay, key=_rank_key)
         kept, _tier_duplicates, _near_duplicates = self._squeeze(ranked, section.top_k, prior)
         return kept, in_window, floor_dropped, moved
+
+    def _set_section_candidates(self, section: SetSectionConfig, now: datetime,
+                                anchors: Optional[_Anchors],
+                                overfetch: int) -> Tuple[List[_Pair], int, int, List[_Pair]]:
+        """The set section's candidates: its own feeds, its own query, window and floor.
+
+        The section query goes through the query-vector cache like the pipeline's own, so it is
+        embedded once and read from the cache on every later pass. Every distance here is to that
+        query, which is why its floor is the section's own and never the pipeline's. Returns the
+        candidates that stay, how many the window offered, how many the floor dropped, and what the
+        aside anchor claimed from it.
+        """
+        vector = self._query_cache.get_vector(section.query)
+        minutes = section.window_minutes or self._config.recency_window_minutes
+        hits = self._store.query(vector, section.top_k * overfetch, now - timedelta(minutes=minutes),
+                                 exclude_source_ids=self._exclude or None,
+                                 only_source_ids=self._set_section_ids)
+        in_window = len(hits)
+        if section.floor_distance is not None:
+            hits = [hit for hit in hits if hit.distance <= section.floor_distance]
+        floor_dropped = in_window - len(hits)
+        stay, moved = self._set_apart([(SET_SECTION, hit) for hit in hits], anchors)
+        return stay, in_window, floor_dropped, moved
 
     def _squeeze(self, ranked: List[_Pair], cap: int,
                  prior: List[_Pair]) -> Tuple[List[_Pair], int, int]:

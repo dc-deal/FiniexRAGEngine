@@ -148,6 +148,24 @@ class AsideSectionConfig(BaseModel):
     top_k: int = Field(default=2, ge=1)
 
 
+class SetSectionConfig(BaseModel):
+    """Opt-in: a section filled only from one source set, ranked by its own query, with its own cap.
+
+    Every other section ranks the whole corpus against the pipeline's query, so a set whose articles
+    are far from that query never reaches the prompt however relevant they are to what the pipeline
+    is about — a general-news set behind a market-flavoured query is the measured case. This section
+    asks `source_set`'s active feeds alone, by `query`, within the recent window (or `window_minutes`),
+    drops what lies beyond its own `floor_distance`, collapses what is already in the prompt, and
+    appends the best `top_k` last with tier `set_section`. The floor is never inherited: distances to
+    a different query live on a different scale.
+    """
+    source_set: str = Field(min_length=1)     # whose active feeds fill it (checked at assembly)
+    query: str = Field(min_length=1)          # its own ranking text (embedded once, cached)
+    top_k: int = Field(default=3, ge=1)
+    floor_distance: Optional[float] = Field(default=None, ge=0.0, le=2.0)
+    window_minutes: Optional[int] = Field(default=None, ge=1)   # None = recency_window_minutes
+
+
 class RetrievalConfig(BaseModel):
     top_k: int = 12
     recency_window_minutes: int = 1440   # recency window for retrieval (ISSUE_3)
@@ -169,6 +187,9 @@ class RetrievalConfig(BaseModel):
     # None = no aside section, which is how every pipeline retrieved before it existed — omitted from
     # the fingerprint while unset, like `background`.
     aside: Optional[AsideSectionConfig] = None
+    # None = no set section — likewise how every pipeline retrieved before it existed, and likewise
+    # omitted from the fingerprint while unset.
+    set_section: Optional[SetSectionConfig] = None
 
     @model_validator(mode='after')
     def _background_reaches_past_recent(self) -> 'RetrievalConfig':

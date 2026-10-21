@@ -56,6 +56,23 @@ Resolution order (`SymbolQueryMap.query_for`):
   is that a smaller model does not do that sorting reliably — while the main sections are freed for
   the evidence they exist to carry. A story that is half one class and half the other scores near
   zero and stays in the main section, which is what a story carrying the main class's event should do.
+- **Set section (opt-in per pipeline, `retrieval.set_section`):** a section filled **only** from one
+  source set's active feeds, ranked by **its own query**, behind its own floor and cap. The case it
+  was built for is measured: every other section ranks the whole corpus against the pipeline's query,
+  and the retriever fetches only `top_k × overfetch` nearest candidates, so a set whose articles are
+  far from that query never reaches the prompt — however relevant they are to what the pipeline is
+  about. A pipeline with a market-flavoured query and a set of general news saw the set
+  reach **0 of 1,056** evidence slots over two days; its best items ranked 33rd to 102nd of 279 in the
+  recent window. A per-source cap does not fix that (the freed slots go to the next-nearest outlets
+  of the same kind), and lowering the floor lets in more of what is already nearest. Ranked by a
+  description of what the pipeline is about, the same set surfaces exactly the items it was added
+  for. The section's window defaults to the recent one; its floor is **never inherited** — distances
+  to a different query live on a different scale. The aside anchor applies to its candidates as to
+  every other window. What is already in the prompt is collapsed (id and near-duplicate), the rest
+  capped at `set_section.top_k` and appended last with tier `set_section`. The set must be readable by
+  the pipeline (shared, or `declared` and the pipeline's own) and ingested (some pipeline is on it);
+  either failing, or a set with no active feed, is a **boot refusal** — a section that could only
+  ever be empty must not look configured. One `[SECTION]` boot line per pipeline that has one.
 
 ## Corpus scope — `declared` source sets
 
@@ -140,7 +157,10 @@ own — `background_in_window`, `background_floor_dropped`, `background_kept` �
 keeps exactly the meaning it had in the archive, and `background_kept` is not part of `kept`. The
 aside section adds `aside_moved` (candidates the anchor set apart, every window, after the floor) and
 `aside_kept` (what reached the prompt under its own cap), part of neither `kept` nor
-`background_kept`; both are 0 for a pipeline without it. The tier is a closed vocabulary
+`background_kept`; both are 0 for a pipeline without it. The set section adds
+`set_section_in_window`, `set_section_floor_dropped` (against its own floor) and `set_section_kept`
+— counted apart because its distances are to a different query; what the aside anchor claims from it
+counts in `aside_moved`. The tier is a closed vocabulary
 (`RetrievalTier`), named in full because *tier* already means the **importance** tier (1/2/3)
 elsewhere; the retriever's rank key maps it back to an explicit order, since sorting the labels
 would put `deep` ahead of `recent` alphabetically and rank week-old articles above today's news.
@@ -164,6 +184,7 @@ See `docs/architecture/weekly_report_and_alerts.md`.
 | `deep_tier` | absent | opt-in: `{ "min_importance": 2, "window_minutes": 43200 }` |
 | `background` | absent | opt-in: `{ "window_minutes": 20160, "top_k": 8 }` — its window must exceed `recency_window_minutes` (refused at load otherwise); absent is omitted from `config_fingerprint`, so adding the key to the schema forked no existing series |
 | `aside` | absent | opt-in: `{ "anchor": "…", "counter_anchor": "…", "margin": 0.05, "top_k": 2 }` — `counter_anchor` defaults to the pipeline's query; an empty anchor, `top_k < 1` or a margin outside [−1, 1] is refused at load; absent is omitted from `config_fingerprint` |
+| `set_section` | absent | opt-in: `{ "source_set": "…", "query": "…", "top_k": 3, "floor_distance": null, "window_minutes": null }` — `floor_distance` is against the section's own query (null = none), `window_minutes` null = the recent window; an empty set or query, `top_k < 1` or `window_minutes < 1` is refused at load, an unreadable, never-ingested or feedless set at boot; absent is omitted from `config_fingerprint` |
 
 On the source set: `scope` — absent (shared with every pipeline) or `"declared"` (read only by the
 pipelines on the set); absent is omitted from the source-set half of `config_fingerprint`.
@@ -175,8 +196,11 @@ pipelines on the set); absent is omitted from the source-set half of `config_fin
 `tests/rag/test_retriever.py` (mocked embedder/store: recency, cap, dedup, deep tier,
 background section — window bounds, own cap, cross-section dedup, its counters — the aside section —
 anchor split, main and background refill, mixed items staying, the margin, the counter defaulting to
-the query, cap and dedup inside the section, overfetch — the exclusion reaching every window —
-tie-breaks), `tests/configuration/test_source_set_registry.py` (which sources each set excludes),
+the query, cap and dedup inside the section, overfetch — the set section: its own feeds and query,
+its own floor and window, collapse against what is kept, anchor claims going to aside, the cap —
+the exclusion reaching every window — tie-breaks), `tests/configuration/test_source_set_registry.py`
+(which sources each set excludes, which a set section may read),
+`tests/pipeline/test_set_section_assembly.py` (the boot check),
 `tests/rag/test_symbol_query_map.py` (alias + fallback), and the paid live
 round-trip in `tests/rag/test_rag_live.py` (real embeddings → pgvector → retrieve) — see
 [testing](../testing.md).

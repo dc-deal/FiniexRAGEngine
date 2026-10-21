@@ -178,6 +178,30 @@ def test_without_declared_sets_nothing_is_excluded(tmp_path):
     assert registry.excluded_source_ids('crypto_news') == []
 
 
+def test_a_set_section_reads_its_own_declared_set_and_any_shared_one(tmp_path):
+    registry = _registry(tmp_path, _set('crypto_news', 'coindesk', 'cointelegraph'),
+                         _set('general_news', 'feed_b', 'feed_a', 'feed_c', scope='declared', off=('feed_c',)))
+    assert registry.set_section_source_ids('general_news', 'general_news') == ['feed_a', 'feed_b']
+    assert registry.set_section_source_ids('crypto_news', 'general_news') == [
+        'coindesk', 'cointelegraph']
+
+
+def test_another_pipelines_declared_set_is_refused_as_a_section(tmp_path):
+    registry = _registry(tmp_path, _set('crypto_news', 'coindesk'),
+                         _set('general_news', 'feed_a', scope='declared'))
+    with pytest.raises(ConfigurationError, match='declared-scope'):
+        registry.set_section_source_ids('general_news', 'crypto_news')
+
+
+def test_a_section_set_without_an_active_feed_or_unknown_is_refused(tmp_path):
+    registry = _registry(tmp_path, _set('crypto_news', 'coindesk'),
+                         _set('quiet', 'only', off=('only',)))
+    with pytest.raises(ConfigurationError, match='no active feed'):
+        registry.set_section_source_ids('quiet', 'crypto_news')
+    with pytest.raises(ConfigurationError, match='unknown source_set'):
+        registry.set_section_source_ids('nowhere', 'crypto_news')
+
+
 def test_an_unknown_scope_is_refused_at_load(tmp_path):
     with pytest.raises(ConfigurationError, match='scope'):
         _registry(tmp_path, _set('world_news', 'bbc', scope='private'))

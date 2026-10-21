@@ -739,6 +739,8 @@ instrument rather than in somebody's head:
 | 2026-09-20 19:40 → 09-21 08:39 | host reset, engine down **12 h 50 m** | ~77 envelopes missing per stream |
 | 2026-09-27 13:32 → 09-30 07:53 | engine froze 10–18 min every ~4.5–6 h (12 freezes ≥ 5 min: full GC over a paged-out heap), plus restarts 07:48–07:53 and 09:30–09:33 | missing envelopes in every freeze window; ingest paused, articles fetched late rather than lost |
 | 2026-10-10 10:10 → 10:32 | planned maintenance: Python 3.14.2 → 3.14.7, engine down 10:17–10:31. The reboot test before it (10:01–10:04) fell between two ticks and cost nothing | 2 envelopes missing per stream (the 10:20 and 10:30 ticks) |
+| 2026-10-18 13:14 → 13:33 | host reboot by Contabo — an urgent kernel patch on all VPS hosts, applied with host reboots and no individual notice (ticket DE-262381). Clean power-off; engine back as a service ~3 min after the VM | 2 envelopes missing per M10 stream (13:20, 13:30); no H1 slot lost |
+| 2026-10-20 04:21 → 04:37 | the same Contabo patch, this time a hard stop without shutdown; the run lock was re-claimed cleanly at boot | 1 envelope missing per M10 stream (04:30); no H1 slot lost |
 
 Two boundaries are about *fields* rather than data, and they bite the same way: the archive's
 integrity fields begin **2026-08-22**, and the bar archive has a quality step at **2026-09-15**

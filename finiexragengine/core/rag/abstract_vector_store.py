@@ -31,7 +31,8 @@ class AbstractVectorStore(ABC):
     def query(self, vector: List[float], top_k: int, since: datetime,
               min_importance: Optional[int] = None,
               until: Optional[datetime] = None,
-              exclude_source_ids: Optional[Sequence[str]] = None) -> List[ScoredArticle]:
+              exclude_source_ids: Optional[Sequence[str]] = None,
+              only_source_ids: Optional[Sequence[str]] = None) -> List[ScoredArticle]:
         """Return the most similar articles published at/after `since` (and before `until`).
 
         Args:
@@ -45,6 +46,8 @@ class AbstractVectorStore(ABC):
                 stops where the recent window begins, so the two never return the same article.
             exclude_source_ids: Articles from these sources are never returned — the sources of
                 `declared`-scope sets the reading pipeline is not on. None/empty = unfiltered.
+            only_source_ids: If set, ONLY articles from these sources are returned — the set
+                section's feeds. None = every source. Combines with `exclude_source_ids`.
 
         Returns:
             The matches as ScoredArticle (cosine distance + stored embedding +

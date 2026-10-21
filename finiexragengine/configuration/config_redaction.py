@@ -108,6 +108,8 @@ PUBLIC_PATHS: Tuple[str, ...] = (
     'symbols.*.query',
     'retrieval.aside.anchor',           # query texts, like `symbols.*.query`: what a pipeline
     'retrieval.aside.counter_anchor',   # retrieves by, never a credential
+    'retrieval.set_section.source_set',
+    'retrieval.set_section.query',
     'prompt.name',
     'prompt.version',
     'llm.model',

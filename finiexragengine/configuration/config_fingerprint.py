@@ -82,6 +82,8 @@ _PIPELINE_OMIT_WHEN_NONE: Dict[str, str] = {
                             'unset means no section, which is how every earlier pass retrieved',
     'retrieval.aside': 'the anchored aside section — unset means nothing is set apart, which is '
                        'how every earlier pass retrieved',
+    'retrieval.set_section': 'the section filled from one source set by its own query — unset means '
+                             'no such section, which is how every earlier pass retrieved',
 }
 
 # The source-set twin of the list above: optional blocks whose absence is the historical behaviour.

@@ -156,9 +156,15 @@ class PipelineAssembler:
                                  dimensions=self._cfg.embedding.dimensions)
         # Declared-scope sets of other pipelines stay out of this one's evidence (scope rule in
         # SourceSetRegistry.excluded_source_ids) — filtered in the store's scan, every window.
+        # The set section reads one set's feeds alone; resolving them here also refuses a section
+        # that could only ever be empty (unknown set, another pipeline's declared set, no feed).
+        section = config.retrieval.set_section
+        section_ids = (self._source_sets.set_section_source_ids(section.source_set, config.source_set)
+                       if section is not None else None)
         retriever = Retriever(cache, store, config.retrieval,
                               exclude_source_ids=self._source_sets.excluded_source_ids(
-                                  config.source_set))
+                                  config.source_set),
+                              set_section_source_ids=section_ids)
         prompt_builder = PromptBuilder(self._app.get_prompt_dirs())
         # Provider seam: `llm.provider` names the implementation, the factory resolves
         # it — the assembler never hard-codes a provider class.
@@ -367,6 +373,7 @@ class PipelineAssembler:
                 config, include_ingest=include_ingest,
                 private=registry.is_private(config.pipeline_id)))
         self._announce_scopes(registry)
+        self._announce_set_sections(registry)
 
     def _announce_scopes(self, registry: PipelineRegistry) -> None:
         """One `[SCOPE]` line per declared set: who may read it, said where it is decided.
@@ -392,6 +399,29 @@ class PipelineAssembler:
             logger.info('[SCOPE] %s · declared · %d active feeds · readable by %d pipeline(s), '
                         'excluded from every other', label, len(source_set.active_sources()),
                         len(on_set))
+
+    def _announce_set_sections(self, registry: PipelineRegistry) -> None:
+        """One `[SECTION]` line per pipeline with a set section — or a refusal if it cannot fill.
+
+        Ingest workers follow the pipelines' `source_set`, so a set no pipeline is on is never
+        polled: a section drawing from it would stay empty on every pass while looking configured.
+        That needs the whole registry, which is why it is checked here and not per evaluator.
+        """
+        on_a_pipeline = {pipeline.get_config().source_set for pipeline in registry.list_pipelines()}
+        for pipeline in registry.list_pipelines():
+            config = pipeline.get_config()
+            section = config.retrieval.set_section
+            if section is None:
+                continue
+            if section.source_set not in on_a_pipeline:
+                raise ConfigurationError(
+                    f"{config.pipeline_id}: retrieval.set_section.source_set '{section.source_set}' "
+                    'is on no pipeline, so it is never ingested — the section could only ever be '
+                    'empty')
+            feeds = self._source_sets.set_section_source_ids(section.source_set, config.source_set)
+            floor = section.floor_distance if section.floor_distance is not None else 'none'
+            logger.info('[SECTION] %s · set_section from %s · %d active feeds · top_k %d · floor %s',
+                        config.pipeline_id, section.source_set, len(feeds), section.top_k, floor)
 
     def _reconcile_stream(self, pipeline_id: str) -> None:
         """Bump this stream's epoch if its series was rewound; never fatal.

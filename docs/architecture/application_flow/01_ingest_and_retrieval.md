@@ -643,12 +643,21 @@ Retrieval runs **per symbol**. Top-down, one symbol's query flows through:
    margin leaves the main and background selections — which refill — and is capped on its own,
    appended last with tier `aside` and counted as `aside_moved` / `aside_kept`.
 
+8. **Set section (opt-in) — `Retriever._set_section_candidates`.** Only for a pipeline that
+   declares `retrieval.set_section`: one more store call, restricted to the named set's active feeds
+   (`only_source_ids`, resolved at assembly by `SourceSetRegistry.set_section_source_ids`) and ranked
+   by the section's own query (embedded once, cached). Its own floor and window; the aside anchor
+   applies to its candidates like to every other window — what it claims joins the aside pool,
+   which is why these candidates are drawn before the aside squeeze. The rest is collapsed against
+   everything already kept, capped at its own `top_k`, appended last with tier `set_section` and
+   counted as `set_section_in_window` / `set_section_floor_dropped` / `set_section_kept`.
+
 **Every store call carries the pipeline's exclusion** — the active sources of `declared`-scope
 sets it is not on (`SourceSetRegistry.excluded_source_ids`, computed once at assembly) — so a set
 scoped to another line never reaches this one's candidates.
 
 The retrieval parameters (`top_k`, `recency_window_minutes`, `dedup_similarity`, the
-optional two-tier `deep_tier`, the optional `background` and `aside` sections, the source-set
+optional two-tier `deep_tier`, the optional `background`, `aside` and `set_section` sections, the source-set
 `scope`) and the ranking tie-breaks are
 documented in `../retrieval_policy.md`.
 

@@ -102,7 +102,7 @@ def test_the_vocabularies_are_still_declared():
     assert DETECTION_TRIGGERS == ('cluster', 'keyword')
     assert GENERATION_REASONS == ('boot', 'reload', 'rollback')
     assert TEXT_NORMALIZER_PROFILES == ('v1',)
-    assert RETRIEVAL_TIERS == ('recent', 'deep', 'background', 'aside')
+    assert RETRIEVAL_TIERS == ('recent', 'deep', 'background', 'aside', 'set_section')
     assert SOURCE_SET_SCOPES == ('declared',)
 
 

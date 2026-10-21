@@ -149,6 +149,20 @@ def test_the_aside_section_is_hashed_when_set_and_absent_when_unset(baseline):
         assert _fingerprint(pipeline=retuned) != set_value, f'aside.{leaf} must move it'
 
 
+def test_the_set_section_is_hashed_when_set_and_absent_when_unset(baseline):
+    assert '"set_section"' not in compute_config_fingerprint(
+        PipelineConfig(**_PIPELINE), SourceSetConfig(**_SOURCE_SET), AppConfig()).canonical
+    with_section = _edited(_PIPELINE)
+    with_section['retrieval']['set_section'] = {'source_set': 'world', 'query': 'macro', 'top_k': 3}
+    set_value = _fingerprint(pipeline=with_section)
+    assert set_value != baseline
+    for leaf, value in (('source_set', 'other'), ('query', 'other text'), ('top_k', 2),
+                        ('floor_distance', 0.7), ('window_minutes', 4320)):
+        retuned = _edited(with_section)
+        retuned['retrieval']['set_section'][leaf] = value
+        assert _fingerprint(pipeline=retuned) != set_value, f'set_section.{leaf} must move it'
+
+
 def test_a_declared_scope_is_hashed_and_shared_is_absent(baseline):
     # A set's scope decides who may read it — for its own pipelines it changes nothing they
     # retrieve, but it is a different corpus contract, so declaring it forks; leaving it unset

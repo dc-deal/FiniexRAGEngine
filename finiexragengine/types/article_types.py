@@ -18,7 +18,9 @@ from finiexragengine.types.outcome_types import RetrievalFunnel
 # archived envelope carrying a value a later version introduces still parses.
 # `aside`: an article the pipeline's anchor set apart into its own labelled section (retrieval.aside)
 # — kept as context, fenced so the prompt can say what it is.
-RetrievalTier = Literal['recent', 'deep', 'background', 'aside']
+# `set_section`: an article from the one source set `retrieval.set_section` names, chosen by that
+# section's own query — a different ranking than every other tier, so the prompt fences it too.
+RetrievalTier = Literal['recent', 'deep', 'background', 'aside', 'set_section']
 RETRIEVAL_TIERS: Tuple[str, ...] = get_args(RetrievalTier)
 
 

@@ -120,6 +120,13 @@ class RetrievalFunnel(BaseModel):
     # pipeline without it; `aside_kept` is part of neither `kept` nor `background_kept`.
     aside_moved: int = 0
     aside_kept: int = 0
+    # The set section (`retrieval.set_section`): its own window over one source set, ranked by its own
+    # query, its own floor and cap — counted on its own because its distances are to a different
+    # query than every counter above. All three 0 for a pipeline without it; candidates the aside
+    # anchor claims from it count in `aside_moved`, not here.
+    set_section_in_window: int = 0       # candidates its window offered (the fetch, before its floor)
+    set_section_floor_dropped: int = 0   # of those, dropped by its own floor_distance
+    set_section_kept: int = 0            # what reached the prompt from it (<= its top_k)
     best_distance: Optional[float] = None    # nearest candidate pre-floor (nearest miss on 0 kept)
     worst_distance: Optional[float] = None   # farthest candidate pre-floor
     floor: Optional[float] = None            # floor_distance applied this run (None = disabled)

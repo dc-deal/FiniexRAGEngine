@@ -244,7 +244,8 @@ class PgVectorStore(AbstractVectorStore):
     def query(self, vector: List[float], top_k: int, since: datetime,
               min_importance: Optional[int] = None,
               until: Optional[datetime] = None,
-              exclude_source_ids: Optional[Sequence[str]] = None) -> List[ScoredArticle]:
+              exclude_source_ids: Optional[Sequence[str]] = None,
+              only_source_ids: Optional[Sequence[str]] = None) -> List[ScoredArticle]:
         table = _TABLE
         columns = ', '.join(self._COLUMNS)
         # <=> is pgvector's cosine-distance operator (0.0 = identical direction).
@@ -269,6 +270,11 @@ class PgVectorStore(AbstractVectorStore):
             # scan itself, so an excluded article can never take a candidate slot and leave a gap.
             sql += ' AND NOT (source_id = ANY(%s))'
             params.append(list(exclude_source_ids))
+        if only_source_ids is not None:
+            # The set section asks its own feeds alone: filtered in the scan, so the LIMIT counts
+            # only their articles and a nearer article from elsewhere cannot crowd one out.
+            sql += ' AND source_id = ANY(%s)'
+            params.append(list(only_source_ids))
         sql += ' ORDER BY distance LIMIT %s'
         params.append(top_k)
         try:

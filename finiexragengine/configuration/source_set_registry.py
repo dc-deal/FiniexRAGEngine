@@ -98,6 +98,29 @@ class SourceSetRegistry:
                   if config.scope is None for source in config.active_sources()}
         return sorted(hidden - shared)
 
+    def set_section_source_ids(self, section_set_id: str, reader_set_id: str) -> List[str]:
+        """The feeds a pipeline on `reader_set_id` may fill its set section from — or a refusal.
+
+        Three configurations could only ever produce an empty section, and each is refused here
+        rather than discovered in a funnel weeks later: an unknown set; a `declared` set that is not
+        the reader's own, which the scope rule hides from it in every window; and a set with no
+        active feed. Sorted, like `excluded_source_ids`, so the list is stable across boots.
+        """
+        section_set = self.get(section_set_id)
+        if section_set.scope == 'declared' and section_set_id != reader_set_id:
+            raise ConfigurationError(
+                f"retrieval.set_section.source_set '{section_set_id}' is declared-scope and not this "
+                f"pipeline's source_set ('{reader_set_id}') — the scope rule hides it from this "
+                'pipeline, so the section could only ever be empty')
+        hidden = set(self.excluded_source_ids(reader_set_id))
+        ids = sorted(source.source_id for source in section_set.active_sources()
+                     if source.source_id not in hidden)
+        if not ids:
+            raise ConfigurationError(
+                f"retrieval.set_section.source_set '{section_set_id}' has no active feed this "
+                'pipeline may read — the section could only ever be empty')
+        return ids
+
     def get(self, source_set_id: str) -> SourceSetConfig:
         if source_set_id not in self._source_sets:
             raise ConfigurationError(
