@@ -43,7 +43,7 @@ and M eval workers run concurrently, so a single row per stage would let them cl
 │            forex_news              last 3s    170 fetched · 69 new · …          │
 │ RETRIEVAL  crypto_sentiment        last 5m    14 retrieved · 2 symbols          │
 │            forex_macro_sentiment   last 5m    9 retrieved · 2 symbols           │
-│ LLM        crypto_sentiment        last 5m    12520 tok · $0.002 · 9 sym / 8 calls → BTCUSD:SELL · ETH·USD/EUR:HOLD · … │
+│ LLM        crypto_sentiment        last 5m    gpt-4o-mini · prompt 5 · fp 435f3f8e · 12520 tok · $0.002 · 9 sym / 8 calls → BTCUSD:SELL · ETH·USD/EUR:HOLD · … │
 │            forex_macro_sentiment   last 5m    4102 tok · $0.0007 → EURUSD:HOLD · GBPUSD:BUY · USDJPY:BUY · … │
 │ BUDGET                             ok         re-probe —                        │
 │ BREAKING                           last 42s   9 detected · 3 confirmed · engine 1.4m/e2e 6.2m │
@@ -62,6 +62,11 @@ Notes on the rows:
   deploy actually land?" is answered by inference — commit timestamps against process uptime, or
   spotting a changed word in a report footer, which is how it had to be answered on 2026-08-15.
   Omitted when no config is wired (CLI and test paths render `FiniexRAGEngine — up …`).
+- **LLM series identity first** — the model, `prompt <version>` and `fp <first 8 of
+  config_fingerprint>` of the last pass, taken from the envelope it produced. These are the values
+  that define a stream's series, so a prompt bump or a configuration fork shows on the console the
+  moment it happens instead of only in the archive. A producer older than the fields renders the row
+  as before (each part only when present), and the viewer reads both.
 - **LLM `→ SYMBOL:signal`, merged by asset** (ISSUE_70) — one signal per symbol, but symbols fanned
   from *one* analysis (same query → same LLM call) merge into a single chip: `ETH·USD/EUR:HOLD` for
   ETHUSD+ETHEUR. The summary shows `N sym / M calls` when grouping shrank the call count below the

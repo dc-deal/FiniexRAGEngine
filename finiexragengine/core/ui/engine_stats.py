@@ -89,6 +89,12 @@ class LlmSnapshot:
     # the display merges fanned same-query symbols by (ISSUE_70); base is for the merged chip label.
     signals: List[Tuple[str, str, str, str]] = field(default_factory=list)
     calls: int = 0                          # LLM analysis units (unique queries); < len(signals) if grouped
+    # What produced the pass — the three values that define a stream's series, so a console shows a
+    # boundary the moment it happens instead of only in the envelopes. Empty = a producer older than
+    # the fields (a viewer reading an older engine keeps rendering, just without them).
+    model: str = ''
+    prompt_version: str = ''
+    config_fingerprint: str = ''
 
 
 @dataclass(frozen=True)

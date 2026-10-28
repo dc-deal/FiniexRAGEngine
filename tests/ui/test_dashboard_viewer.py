@@ -142,3 +142,17 @@ def test_a_due_poll_reads_as_polling_and_no_loop_means_no_countdown() -> None:
 
     viewer._next_poll_at = _SNAPSHOT_AT
     assert '· polling' in _draw(viewer, _SNAPSHOT_AT + timedelta(seconds=1))
+
+
+
+def test_a_viewer_reads_the_series_identity_and_an_older_engine_without_it() -> None:
+    """The three LLM-row fields are additive: present they are read, absent they default."""
+    row = {'last': '2026-09-22T13:29:00Z', 'tokens': 1, 'cost_usd': 0.0, 'duration_ms': 1.0,
+           'signals': [], 'calls': 0}
+    newer = dict(_PAYLOAD, state=dict(_PAYLOAD['state'], llm={'p': dict(
+        row, model='gpt-5-mini', prompt_version='5', config_fingerprint='134da80b17e3')}))
+    older = dict(_PAYLOAD, state=dict(_PAYLOAD['state'], llm={'p': row}))
+    read = RemoteEngineState.from_payload(newer).llm()['p']
+    assert (read.model, read.prompt_version, read.config_fingerprint) == (
+        'gpt-5-mini', '5', '134da80b17e3')
+    assert RemoteEngineState.from_payload(older).llm()['p'].prompt_version == ''

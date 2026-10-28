@@ -241,6 +241,27 @@ def test_eval_worker_runs_pipeline_and_tracks_state():
     assert state.last_detail.startswith('scheduled · ')
 
 
+def test_the_live_llm_row_carries_the_series_identity_of_the_pass():
+    class _Fingerprinted(_FakePipeline):
+        def run(self, reason) -> PipelineRunResult:
+            result = super().run(reason)
+            result.envelope.config_fingerprint = '134da80b17e3'
+            return result
+
+    stats = EngineStats(pipeline_ids=['p'])
+
+    async def _scenario():
+        worker = EvalWorker(_Fingerprinted(), IntervalTrigger(0.005), engine_stats=stats)
+        task = asyncio.create_task(worker.start())
+        await _until(lambda: stats.llm().get('p') is not None)
+        await worker.stop()
+        await task
+
+    _run(_scenario())
+    row = stats.llm()['p']
+    assert (row.model, row.prompt_version, row.config_fingerprint) == ('gpt-4o-mini', '2', '134da80b17e3')
+
+
 # --- supervisor build (uses the real registries over tmp configs) ---------------------
 
 def test_supervisor_builds_one_ingest_per_referenced_set_and_one_eval_per_stream(

@@ -202,7 +202,10 @@ class EvalWorker:
             last=now, tokens=tokens, cost_usd=m.cost_usd, duration_ms=duration_ms,
             signals=[(r.symbol, r.signal, r.base_currency or '', qmap.get(r.symbol, r.symbol))
                      for r in envelope.result],
-            calls=len(m.per_symbol_tokens)))
+            calls=len(m.per_symbol_tokens),
+            # The series identity of this pass, straight off the envelope it produced.
+            model=m.model or '', prompt_version=envelope.prompt_version or '',
+            config_fingerprint=envelope.config_fingerprint or ''))
         stats.push_event('LLM', f'{pipeline_id} {self._state.last_detail}')
         # BREAKING (confirmed side): one activity line + one recorded episode per NEW episode —
         # bumps the count, sets the frozen reaction detail, and feeds the BREAKING section with the

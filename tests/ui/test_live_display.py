@@ -393,3 +393,23 @@ def test_an_unestablished_journal_identity_is_not_an_unnamed_one():
     assert 'journal identity not established' in unknown
     assert 'journal unnamed' not in unknown
     assert 'journal' not in _render(_stats(), worker_count=4, journal_named=True)
+
+
+def test_the_llm_row_names_model_prompt_version_and_fingerprint():
+    # A stream's series identity on the console, so a boundary is visible the moment it happens.
+    stats = _stats()
+    stats.set_llm('crypto_sentiment', LlmSnapshot(
+        last=_NOW, tokens=13971, cost_usd=0.0059, duration_ms=19368,
+        signals=[('BTCUSD', 'SELL', 'BTC', 'q')], model='gpt-5-mini', prompt_version='5',
+        config_fingerprint='134da80b17e3'))
+    text = _render(stats, worker_count=4)
+    assert 'gpt-5-mini · prompt 5 · fp 134da80b · 13971 tok' in text
+
+
+def test_an_llm_row_from_an_older_producer_renders_as_before():
+    stats = _stats()
+    stats.set_llm('crypto_sentiment', LlmSnapshot(
+        last=_NOW, tokens=6698, cost_usd=0.0011, duration_ms=2800,
+        signals=[('BTCUSD', 'SELL', 'BTC', 'q')]))
+    text = _render(stats, worker_count=4)
+    assert '6698 tok · $0.001100 · 2800ms' in text and 'prompt' not in text

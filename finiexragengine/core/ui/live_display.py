@@ -390,7 +390,14 @@ class LiveDisplay:
         # Spend + the per-symbol signals, with fanned same-base symbols merged into one chip
         # (ETH·USD/EUR:HOLD, ISSUE_70); when grouping shrank the calls below the symbol count, say so
         # (`N sym / M calls`) so the consolidation is visible, not hidden behind row-count parity.
-        summary = f'{snapshot.tokens} tok · ${snapshot.cost_usd:.6f} · {snapshot.duration_ms:.0f}ms'
+        # The series identity first — model, prompt version, the fingerprint's first eight characters —
+        # each only when the producer reports it, so an older engine renders as it always did.
+        identity = [part for part in (
+            snapshot.model,
+            f'prompt {snapshot.prompt_version}' if snapshot.prompt_version else '',
+            f'fp {snapshot.config_fingerprint[:8]}' if snapshot.config_fingerprint else '') if part]
+        summary = ' · '.join(identity + [f'{snapshot.tokens} tok', f'${snapshot.cost_usd:.6f}',
+                                         f'{snapshot.duration_ms:.0f}ms'])
         if snapshot.calls and snapshot.calls < len(snapshot.signals):
             summary += f' · {len(snapshot.signals)} sym / {snapshot.calls} calls'
         chips = _merge_signal_chips(snapshot.signals)
