@@ -123,6 +123,18 @@ class DispatcherInfo(BaseModel):
 HEALTH_STATUSES: Tuple[str, ...] = ('ok', 'degraded')
 
 
+class HeartbeatInfo(BaseModel):
+    """What the outside check's sender did: the service sees only that pings arrived, so this says
+    why they stopped — an unhealthy engine withholds them, a broken path fails them. Never the address,
+    and never the reasons, which can name a private worker on this public route (the log has them)."""
+    state: str = 'starting'      # 'starting' | 'ok' | 'withheld' | 'failing'
+    interval_seconds: int = 0
+    beats_sent: int = 0
+    beats_withheld: int = 0
+    beats_failed: int = 0
+    last_sent_at: Optional[datetime] = None
+
+
 class HealthResponse(BaseModel):
     # 'ok' | 'degraded'. A plain str with the domain kept as data (engineering_rules.md): a monitor polling
     # this endpoint must keep parsing a value a later version introduces. It was a hardcoded 'ok'
@@ -174,6 +186,9 @@ class HealthResponse(BaseModel):
     # The live stream's push path (ISSUE_9). Present whenever the transport is enabled — which is
     # independent of `--workers`, because the stream is a read surface over the journal.
     stream: Optional[DispatcherInfo] = None
+    # The outside check's sender (`monitoring`). Absent when this process pings nothing: no address configured, or
+    # a process without workers, which has no work whose health a ping could vouch for.
+    heartbeat: Optional[HeartbeatInfo] = None
 
 
 class PipelineInfo(BaseModel):

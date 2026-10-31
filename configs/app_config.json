@@ -159,6 +159,10 @@
     "floor_minutes": 15,
     "check_interval_seconds": 60
   },
+  "monitoring": {
+    "heartbeat_url": "",
+    "heartbeat_interval_seconds": 60
+  },
   "telegram": {
     "enabled": false,
     "bot_token": "",

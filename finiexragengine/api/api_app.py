@@ -46,9 +46,11 @@ from finiexragengine.core.llm.model_catalog import verify_configured_models
 from finiexragengine.core.llm.model_profiles import ModelProfiles
 from finiexragengine.core.observability.budget_guard import BudgetGuard
 from finiexragengine.core.observability.build_info import sample_build_info
+from finiexragengine.core.observability.health_verdict import engine_problems
 from finiexragengine.core.observability.logging_setup import configure_logging
 from finiexragengine.core.observability.reports.weekly_report import collect_weekly_report
 from finiexragengine.core.observability.memory_census import MemoryCensus
+from finiexragengine.core.observability.outside_heartbeat import OutsideHeartbeat
 from finiexragengine.core.observability.resource_gauge import ResourceGauge
 from finiexragengine.core.observability.resource_sample_store import ResourceSampleStore
 from finiexragengine.core.observability.stall_watchdog import StallWatchdog
@@ -287,6 +289,7 @@ def create_app(attach_runners: Optional[bool] = None,
     # without a context) leaves `gc.callbacks` untouched.
     memory_census = MemoryCensus(
         tracemalloc_frames=config_manager.get_config().diagnostics.tracemalloc_frames)
+    heartbeat: Optional[OutsideHeartbeat] = None
     if supervisor is not None:
         stall_watchdog = StallWatchdog(config_manager.get_config().stall_watchdog,
                                        supervisor.states)
@@ -301,6 +304,13 @@ def create_app(attach_runners: Optional[bool] = None,
             memory_log_minutes=diagnostics.memory_log_minutes,
             gc_pause_warn_seconds=diagnostics.gc_pause_warn_seconds)
         stall_watchdog.set_gauge(resource_gauge)
+        # The outside check: only where workers run, because a ping vouches for the work, and only
+        # where this machine was given an address — a development machine has none.
+        monitoring = config_manager.get_config().monitoring
+        if monitoring.heartbeat_url:
+            heartbeat = OutsideHeartbeat(monitoring, lambda: engine_problems(
+                supervisor.states(), stall_watchdog.stalled_workers(),
+                run_lock.status()['held'] if run_lock is not None else None))
 
     # Operator alert surface (ISSUE_27): /report command loop + the weekly cron. Lives in
     # the API process like the workers (guaranteed event loop); pure store reads + a
@@ -432,6 +442,7 @@ def create_app(attach_runners: Optional[bool] = None,
         # event loop exists, stopped on shutdown after in-flight passes finish.
         live_task: Optional[asyncio.Task] = None
         watchdog_task: Optional[asyncio.Task] = None
+        heartbeat_task: Optional[asyncio.Task] = None
         stream_task: Optional[asyncio.Task] = None
         # Before anything allocates in earnest: the collector hook times every pause from here on,
         # and tracemalloc (when configured) only sees allocations made after it starts.
@@ -447,6 +458,8 @@ def create_app(attach_runners: Optional[bool] = None,
         # passes is exactly as blinding as one on day nine.
         if stall_watchdog is not None:
             watchdog_task = asyncio.create_task(stall_watchdog.run(), name='stall-watchdog')
+        if heartbeat is not None:
+            heartbeat_task = asyncio.create_task(heartbeat.run(), name='outside-heartbeat')
         # The dashboard renders on its own task once the workers exist (ISSUE_26).
         if live_display is not None:
             live_task = asyncio.create_task(live_display.run(), name='live-display')
@@ -461,6 +474,14 @@ def create_app(attach_runners: Optional[bool] = None,
             await command_poller.stop()
         if telegram_client is not None:
             await telegram_client.close()
+        # Silence from here on: the drain is not something to vouch for, and the outside check's
+        # grace period is what absorbs a restart. Cancelled, so a ping in flight cannot hold it up.
+        if heartbeat is not None:
+            await heartbeat.stop()
+            if heartbeat_task is not None:
+                heartbeat_task.cancel()
+                await asyncio.gather(heartbeat_task, return_exceptions=True)
+            await heartbeat.close()
         # Stop watching before the workers drain — an orderly shutdown is not a stall.
         if stall_watchdog is not None:
             await stall_watchdog.stop()
@@ -525,7 +546,8 @@ def create_app(attach_runners: Optional[bool] = None,
                                  resource_gauge=resource_gauge, outcome_store=outcome_store,
                                  run_lock=run_lock,
                                  stream_dispatcher=stream_dispatcher,
-                                 public_worker_names=worker_aliases)
+                                 public_worker_names=worker_aliases,
+                                 heartbeat=heartbeat)
     # Sampled once, here, so it describes the code THIS process imported rather than whatever the
     # working tree holds at request time (see `build_info.sample_build_info`). One sample, two
     # consumers: `/v1/build` and the dashboard snapshot's `engine_started_at` — so the uptime a

@@ -49,6 +49,20 @@ described a re-assertion the code did not perform.
 "something here is wrong" — but it is a new cause, so a monitor that alerts on it will now also alert
 on two producers. Named here rather than discovered, because `status` is what an external check polls.
 
+## `heartbeat`, and why it says so little
+
+The outside check is a dead man's switch at an external service: the engine pings an address while it
+would answer `ok`, and the service raises the alarm when the pings stop. That service knows only that
+pings arrived. This block says why they stopped — `beats_withheld` growing means the engine is not
+healthy, `beats_failed` growing means the path to the service is broken, and `state` is the current
+one of `starting`, `ok`, `withheld` and `failing`.
+
+The ping and `status` read one computation (`health_verdict.engine_problems`), so a ping cannot vouch
+for an engine this route calls `degraded`. The block carries no address, which is a credential, and no
+reasons, which can name a private worker on this open route; the log has them under `[HEARTBEAT]`. It
+is absent where nothing is pinged: no `monitoring.heartbeat_url` on this machine, or no workers in
+this process. An orderly stop simply goes silent, and the check's grace period absorbs a restart.
+
 ## Two things the fields do not do
 
 - **`budget.suspended` does not depend on `soft_daily_usd`.** The two are easy to conflate and are

@@ -531,4 +531,6 @@ uvicorn the same orderly shutdown the console Ctrl+C triggers on Windows.
 
 **Liveness from outside.** A service that restarts still needs somebody outside the process to notice
 when it does not — `/v1/health` cannot report that it is unreachable. That is its own small piece of
-work, not part of the service.
+work, not part of the service: the dead man's switch behind `monitoring.heartbeat_url`, described in
+[diagnostics.md](diagnostics.md) under "Is the engine still working at all?". A service restart stays
+below the check's grace period and raises nothing.

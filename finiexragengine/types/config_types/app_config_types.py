@@ -492,6 +492,19 @@ class StreamConfig(BaseModel):
     fallback_poll_seconds: int = Field(default=5, ge=1, le=300)
 
 
+class MonitoringConfig(BaseModel):
+    """The outside check: a dead man's switch at an external service.
+
+    The process pings `heartbeat_url` while it reports itself healthy, and the service raises the alarm
+    when the pings stop. Every guard inside the process goes silent with the process, so a dead
+    machine, a dead process and a frozen event loop can only be noticed from outside. Empty means
+    off. The address is a credential — whoever holds it can report this engine healthy — so it
+    belongs in the machine's `user_configs/`, and a development machine simply has none.
+    """
+    heartbeat_url: str = ''
+    heartbeat_interval_seconds: int = Field(default=60, ge=10)
+
+
 class AppConfig(BaseModel):
     version: str = '0.3.3'
     schema_version: str = '1.0'
@@ -546,6 +559,7 @@ class AppConfig(BaseModel):
     source_health: SourceHealthConfig = Field(default_factory=SourceHealthConfig)
     diagnostics: DiagnosticsConfig = Field(default_factory=DiagnosticsConfig)
     stall_watchdog: StallWatchdogConfig = Field(default_factory=StallWatchdogConfig)
+    monitoring: MonitoringConfig = Field(default_factory=MonitoringConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     weekly_report: WeeklyReportConfig = Field(default_factory=WeeklyReportConfig)
     # Per-report defaults a call may override (ISSUE_104) — see report_config_types.

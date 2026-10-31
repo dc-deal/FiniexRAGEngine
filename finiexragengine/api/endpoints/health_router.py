@@ -5,6 +5,8 @@ from fastapi import APIRouter
 
 from finiexragengine.configuration.app_config_manager import AppConfigManager
 from finiexragengine.core.observability.budget_guard import BudgetGuard
+from finiexragengine.core.observability.health_verdict import engine_problems
+from finiexragengine.core.observability.outside_heartbeat import OutsideHeartbeat
 from finiexragengine.core.observability.resource_gauge import ResourceGauge
 from finiexragengine.core.observability.stall_watchdog import StallWatchdog
 from finiexragengine.core.outcome.outcome_store import OutcomeStore
@@ -15,6 +17,7 @@ from finiexragengine.types.api_types import (
     BudgetInfo,
     DispatcherInfo,
     HealthResponse,
+    HeartbeatInfo,
     ResourceInfo,
     RunLockInfo,
     StallInfo,
@@ -30,7 +33,8 @@ def build_health_router(config_manager: AppConfigManager,
                         outcome_store: Optional[OutcomeStore] = None,
                         run_lock: Optional[RunLock] = None,
                         stream_dispatcher: Optional[StreamDispatcher] = None,
-                        public_worker_names: Optional[Dict[str, str]] = None) -> APIRouter:
+                        public_worker_names: Optional[Dict[str, str]] = None,
+                        heartbeat: Optional[OutsideHeartbeat] = None) -> APIRouter:
     """Build the health router — the one route deliberately reachable without a token.
 
     `supervisor` (ISSUE_10) adds the live worker states to /health — the first
@@ -46,6 +50,8 @@ def build_health_router(config_manager: AppConfigManager,
     this route is reachable without a token, and a private pipeline's name is business logic. Its
     `last_detail` is blanked for the same reason — it can name feeds — while the state stays exact,
     so liveness is still observable from outside.
+    `heartbeat` adds what the dead man's switch sender did, which is what tells an unhealthy
+    engine from a broken network path once the external service has raised its alarm.
     """
     aliases = public_worker_names or {}
     router = APIRouter(prefix='/v1', tags=['health'])
@@ -75,19 +81,10 @@ def build_health_router(config_manager: AppConfigManager,
         lock = RunLockInfo(**run_lock.status()) if run_lock is not None else None
         # Resolved, never declared: an unmapped or unidentifiable journal is honestly `unknown`.
         environment = config_manager.get_config().journal_names.get(journal_id or '', 'unknown')
-        # 'ok' is a claim, not a default. A worker whose task ended is the strongest reason to
-        # withdraw it — everything that worker feeds is frozen until a restart — and a stall is the
-        # weaker one. Reported together so an external check sees a single field change, which is
-        # the only thing a monitor polls: this endpoint answered 'ok' for the whole 37 hours the
-        # crypto ingest worker lay dead on 2026-08-20.
-        unhealthy = ([worker.name for worker in workers if worker.stopped_at is not None]
-                     + (list(stall.stalled) if stall is not None else []))
-        # A producer that has lost its exclusivity while another process holds it is not healthy:
-        # two instances may be writing one stream and paying for both. Reporting the field while
-        # leaving the verdict at 'ok' would be a field that reads as a measurement and measures
-        # nothing — the shape this endpoint was fixed for once already.
-        if lock is not None and not lock.held:
-            unhealthy.append('run_lock')
+        # One computation with the outside check's sender, so the two cannot disagree.
+        unhealthy = engine_problems(supervisor.states() if supervisor is not None else [],
+                                    stall.stalled if stall is not None else [],
+                                    lock.held if lock is not None else None)
         return HealthResponse(status='degraded' if unhealthy else 'ok',
                               version=config_manager.get_config().version,
                               pass_timeout_seconds=config_manager.get_config().pass_timeout_seconds,
@@ -96,7 +93,9 @@ def build_health_router(config_manager: AppConfigManager,
                               run_lock=lock,
                               environment=environment,
                               workers=workers, budget=budget, stall=stall,
-                              resources=resources, stream=stream)
+                              resources=resources, stream=stream,
+                              heartbeat=(HeartbeatInfo(**heartbeat.status())
+                                         if heartbeat is not None else None))
 
     return router
 

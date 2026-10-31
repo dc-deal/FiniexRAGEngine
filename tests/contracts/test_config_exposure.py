@@ -1,8 +1,8 @@
 """Every string in a published config model is classified, by hand, before it can be served.
 
 `GET /v1/configs/{name}` publishes the effective configuration so a remote diagnosis can read what a
-machine actually runs. The config models hold three credentials — and the risk is not those three,
-which are written down; it is the fourth one, added a year from now to a model nobody re-reads while
+machine actually runs. The config models hold four credentials — and the risk is not those four,
+which are written down; it is the fifth one, added a year from now to a model nobody re-reads while
 a route quietly serves it.
 
 So this sweep walks the model trees themselves and asserts that every string leaf is *classified*:
@@ -97,14 +97,15 @@ def test_no_path_is_both_public_and_secret():
     assert not (set(SENSITIVE_PATHS) & set(PUBLIC_PATHS))
 
 
-def test_the_three_credentials_are_the_ones_we_think_they_are():
+def test_the_four_credentials_are_the_ones_we_think_they_are():
     """Written out rather than counted: the list changing should require reading this line.
 
     `DATABASE_URL` and `OPENAI_API_KEY` are environment variables and were never in these models,
-    which is why the surface is this small — and why a fourth entry appearing here is worth a
+    which is why the surface is this small — and why a fifth entry appearing here is worth a
     second look rather than a passing test.
     """
-    assert set(SENSITIVE_PATHS) == {'api.tokens.*.token', 'telegram.bot_token', 'telegram.chat_id'}
+    assert set(SENSITIVE_PATHS) == {'api.tokens.*.token', 'telegram.bot_token', 'telegram.chat_id',
+                                    'monitoring.heartbeat_url'}
 
 
 @pytest.mark.parametrize('root', _ROOTS)

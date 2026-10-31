@@ -247,3 +247,33 @@ def test_private_workers_appear_on_the_public_route_by_alias_only():
     assert body['workers'][0]['last_detail'] == 'scheduled · success'   # public ones untouched
     assert body['status'] == 'degraded'                                 # the verdict still counts it
 
+
+
+def test_health_has_no_heartbeat_block_where_nothing_is_pinged(client: TestClient) -> None:
+    assert client.get('/v1/health').json()['heartbeat'] is None
+
+
+def test_health_says_what_the_outside_check_did_and_never_where_it_pings() -> None:
+    """The external service knows only that pings arrived; this block says why they stopped — and
+    the route is open, so neither the address nor the reasons may appear on it."""
+    import asyncio
+
+    import httpx
+    from fastapi import FastAPI
+
+    from finiexragengine.api.endpoints.health_router import build_health_router
+    from finiexragengine.core.observability.outside_heartbeat import OutsideHeartbeat
+    from finiexragengine.types.config_types.app_config_types import MonitoringConfig
+
+    transport = httpx.MockTransport(lambda request: httpx.Response(200))
+    heartbeat = OutsideHeartbeat(MonitoringConfig(heartbeat_url='https://ping.example/secret-address'),
+                                 lambda: ['eval:a_private_worker'],
+                                 httpx.AsyncClient(transport=transport))
+    asyncio.run(heartbeat.beat())
+    app = FastAPI()
+    app.include_router(build_health_router(AppConfigManager(), heartbeat=heartbeat))
+    response = TestClient(app).get('/v1/health')
+    block = response.json()['heartbeat']
+    assert (block['state'], block['beats_withheld'], block['beats_sent']) == ('withheld', 1, 0)
+    assert block['interval_seconds'] == 60
+    assert 'secret-address' not in response.text and 'a_private_worker' not in response.text

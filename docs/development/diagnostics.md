@@ -427,6 +427,22 @@ A standing stall keeps being announced, at a widening interval (1 h, then doubli
 ceiling). It used to be announced exactly once: on 2026-08-20 that single line, fifteen minutes in,
 was the only thing ever said about a worker that stayed dead for 37 hours.
 
+All of that runs inside the process and goes silent with it, so since 2026-10-31 the engine is also
+watched from outside: a dead man's switch at an external service, armed by `monitoring.heartbeat_url`
+in the machine's `user_configs/`. A ping goes out every `heartbeat_interval_seconds` from the event
+loop that carries the work, only while `/v1/health` would say `ok`, the first one after one interval.
+When the service reports silence, `heartbeat` in `/v1/health` says which silence it is:
+
+| `heartbeat` | Means | Look at |
+|---|---|---|
+| route does not answer | machine or process gone, or the event loop frozen | the host, then the log's last line |
+| `state: withheld`, `beats_withheld` growing | the engine is not healthy and said so | `[HEARTBEAT]` in the log names the reasons |
+| `state: failing`, `beats_failed` growing | the engine is fine, the path to the service is not | `[HEARTBEAT]` in the log names the failure |
+| `state: ok`, `last_sent_at` recent | pings are leaving; the question is on the service's side | the check's period and grace |
+
+The address is a credential: whoever holds it can report this engine healthy. It stands in no log line
+and no status, and `/v1/configs` masks it.
+
 To check by hand, the newest poll in the journal is the engine's pulse:
 
 ```sql
@@ -875,7 +891,7 @@ database and no shell, and `POST /run` is not registered in production, so nothi
 
 | Route | Grant | Answers |
 |---|---|---|
-| `GET /v1/health` | *open* | alive, worker cadences and last runs, `journal_id` + `instance_id`, budget, stall state |
+| `GET /v1/health` | *open* | alive, worker cadences and last runs, `journal_id` + `instance_id`, budget, stall state, what the outside check's sender did |
 | `GET /v1/build` | *open* | version, commit, dirty-at-startup, process start, interpreter version — **which code is actually running, on what** |
 | `GET /v1/pipelines` | `pipelines:<id>` | the constellations this token may see: symbols, trigger type, cadence — plus the stream settings |
 | `GET /v1/pipelines/{id}/latest` | `pipelines:<id>` | the newest persisted envelope, served from the store |

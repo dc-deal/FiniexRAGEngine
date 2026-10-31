@@ -214,7 +214,10 @@ project reported it on the bus twelve hours in. That is structural. `/v1/health`
 (#75) and the dead-worker check (#97) all run **inside the process**, so they go silent with the
 thing they measure; a dead engine does not answer `down`, it fails to answer, and nothing was
 asking. So **liveness is observed from outside the process or it is not observed** — an in-process
-alarm proposed for it is the same mistake a third time. The measured case, with the four-instrument
+alarm proposed for it is the same mistake a third time. Since 2026-10-31 that outside observer exists:
+a dead man's switch the engine pings while it is healthy (`docs/development/diagnostics.md`, "Is the
+engine still working at all?"). It says *that* the engine went silent, not why, and an outage shorter
+than the check's grace period raises nothing, so the holes table is still measured. The measured case, with the four-instrument
 timeline, 48,215 missed polls across 22 feeds and why the corpus hole is an exposure that cannot be
 counted, is `github_issues/root_internal_archive/INTERNAL_host_reset_2026-09-20.md`. One reading trap
 from it: the envelope series overstates an outage by one cadence interval, because it measures

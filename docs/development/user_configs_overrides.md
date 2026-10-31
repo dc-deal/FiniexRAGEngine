@@ -54,7 +54,7 @@ configs_private/
 
 | Override file | Base file | Typical use |
 |---|---|---|
-| `user_configs/app_config.json` | `configs/app_config.json` | secrets (telegram token), budgets, `llm.allowed_models` (admit a `ft:...` model), `llm.base_url` (self-hosted endpoint) |
+| `user_configs/app_config.json` | `configs/app_config.json` | secrets (telegram token, the outside check's `monitoring.heartbeat_url`), budgets, `llm.allowed_models` (admit a `ft:...` model), `llm.base_url` (self-hosted endpoint) |
 | `user_configs/pipelines/<id>.json` | `configs/pipelines/<id>.json` | thin a symbol list, flip a model variant off, try a retrieval floor |
 | `user_configs/source_sets/<id>.json` | `configs/source_sets/<id>.json` | disable a feed this machine's egress IP cannot reach |
 
@@ -183,7 +183,7 @@ GET /v1/configs/source_sets?id=crypto_news   → documents + overrides + layers
 
 Two things it deliberately does not do. It does not re-read the files — the views are built at boot
 over the objects the engine loaded, so the answer describes the running process rather than the
-current disk. And it does not publish secrets: the three credential leaves are masked by policy, and
+current disk. And it does not publish secrets: the four credential leaves are masked by policy, and
 the *override entries* pass the same projection, because `user_configs/app_config.json` is exactly
 the file the bearer tokens and the bot token live in. Contract:
 [connect_contract.md](../architecture/connect_contract.md).
