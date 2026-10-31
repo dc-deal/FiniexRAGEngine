@@ -13,7 +13,7 @@ They were never combined, which is why `sources_reached` used to be `configured 
 subtraction the runner could only make from its *own* pass. In worker mode it has no pass at all
 (the ingest worker owns acquisition), so the number was `configured` every single run — a full
 reach the run never attempted. Reading health instead works in both modes, because acquisition
-records every poll there regardless of who ran it (CLAUDE.md — capture at the call, report from
+records every poll there regardless of who ran it (engineering_rules.md — capture at the call, report from
 the store).
 
 A source within its own poll floor needs no special case here: a floor skip deliberately records

@@ -308,7 +308,7 @@ own: dev container and suite first, then the server, never the other way round.
 ### The private configuration layer on the server
 
 Our own pipelines, prompts and source sets live in `configs_private/` — a private repository
-cloned inside the checkout (CLAUDE.md, "What gets published"). On the server it is cloned once and
+cloned inside the checkout (engineering_rules.md, "What gets published"). On the server it is cloned once and
 then pulled with every deploy:
 
 ```powershell

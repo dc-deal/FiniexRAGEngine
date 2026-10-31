@@ -19,7 +19,7 @@ class ResolvedSetting:
     """
     name: str
     # Genuinely dynamic: a DSN string, a path, a parsed `name -> token` mapping. Explicitly `Any`
-    # rather than omitted (CLAUDE.md) — the resolver does not care what it carries.
+    # rather than omitted (engineering_rules.md) — the resolver does not care what it carries.
     value: Any
     source: SettingSource
     # Whether the value may be echoed. False for a credential; True for something like a

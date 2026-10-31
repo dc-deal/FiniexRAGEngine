@@ -1,6 +1,6 @@
 """Source-health report (ISSUE_11) — feed reliability + the debugging-ready problem log.
 
-Reads the `source_health` rows the ingest worker captured (CLAUDE.md — report from the store)
+Reads the `source_health` rows the ingest worker captured (engineering_rules.md — report from the store)
 and renders the shared console pattern: per-feed poll counts / success rate / flag+quarantine
 state, a capped list of the most recent warnings/errors (so the operator debugs a feed without
 digging through logs), and an **orphan notice** for sources still in the store but no longer in

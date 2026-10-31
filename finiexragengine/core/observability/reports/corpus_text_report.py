@@ -4,7 +4,7 @@ The normaliser's effect was measurable in exactly one place: a SQL prompt on the
 Everything the engine surfaced was the *at-the-call* echo — `normalised N (M chars)` on a pass line,
 gone as soon as the next pass overwrote it. So "is the treatment still working, and how far has the
 corpus turned over" was a question only an operator with a shell could answer, which is the shape
-CLAUDE.md names as a threshold nobody can tune.
+engineering_rules.md names as a threshold nobody can tune.
 
 Four questions, one surface:
 

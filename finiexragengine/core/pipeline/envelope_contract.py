@@ -5,7 +5,7 @@ depend on it — the `PipelineRunner` (a stage failed mid-pass) and the API's ca
 (`sentiment_router`, an internal failure before any pass ran). Neither should have to import
 the other's machinery to honour the contract, so the contract lives on its own.
 
-The invariants it serves (CLAUDE.md "Engine output contract"): every requested symbol is always
+The invariants it serves (engineering_rules.md "Engine output contract"): every requested symbol is always
 present in `result` — a failed symbol degrades to a clean HOLD row, never a gap — and every
 `RunError.type` comes from a fixed taxonomy, never a free string.
 """

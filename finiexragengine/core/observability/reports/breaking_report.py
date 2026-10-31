@@ -1,7 +1,7 @@
 """Breaking-detection report — reaction time, episodes and the stories behind them (ISSUE_11).
 
 Aggregated **from the store**, never from logs: the persisted envelopes are the source of truth
-(CLAUDE.md — capture at the call, report from the store). Reaction time is a live measurement that
+(engineering_rules.md — capture at the call, report from the store). Reaction time is a live measurement that
 cannot be rebuilt after the fact, so it rides on fields captured at the event: the envelope's
 `timestamp` (t3), each source's `published_at` (t0) and `fetched_at` (t1). The detector's
 `flagged_at` lives in the corpus and feeds the funnel's numerator.
@@ -59,7 +59,7 @@ class PipelineBreaking:
 class BreakingEpisodeRow:
     """One confirmed episode in the window — for the per-episode listing (ISSUE_64): when it started,
     how long it lasted, and why (the LLM's `reasoning`, frozen at the episode start like the reaction
-    time). A report-local shape, built and consumed here (CLAUDE.md — self-contained unit)."""
+    time). A report-local shape, built and consumed here (engineering_rules.md — self-contained unit)."""
     pipeline_id: str
     symbol: str
     signal: str

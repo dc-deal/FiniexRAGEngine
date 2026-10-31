@@ -58,7 +58,7 @@ def main() -> None:
     # Both reports need inputs only the config can answer — the configured and disabled source ids,
     # and each feed's own fetch deadline. That resolution lives in the report catalog (ISSUE_104),
     # so the console and the API build the identical report from the identical inputs; this CLI is
-    # back to what CLAUDE.md says it is, parameter reception.
+    # back to what engineering_rules.md says it is, parameter reception.
     manager = AppConfigManager()
     reports_config = manager.get_config().reports
 

@@ -405,7 +405,7 @@ Top-down, each new article flows through these units in order:
    an aborted pass — counted as reached; and in **worker mode the runner has no pass at all**
    (acquisition is the ingest worker's clock), so the field was `configured` on every single run:
    a full reach the run never attempted, in the one mode that ships. Reading health works in both
-   modes because acquisition records every poll there regardless of who ran it (CLAUDE.md —
+   modes because acquisition records every poll there regardless of who ran it (engineering_rules.md —
    *capture at the call, report from the store*).
 
    A source within its **poll floor** needs no special case: a floor skip deliberately records no

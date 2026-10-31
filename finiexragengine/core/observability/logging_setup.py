@@ -88,7 +88,7 @@ def configure_logging(config: AppConfig, *, live_mode: bool = False) -> None:
                 path, maxBytes=log_conf.max_bytes, backupCount=log_conf.backup_count,
                 encoding='utf-8')
         else:
-            # Daily rollover at UTC midnight (all datetimes are UTC, CLAUDE.md) — yesterday
+            # Daily rollover at UTC midnight (all datetimes are UTC, engineering_rules.md) — yesterday
             # becomes finiex.log.2026-07-14, `backup_count` days kept.
             file_handler = logging.handlers.TimedRotatingFileHandler(
                 path, when='midnight', backupCount=log_conf.backup_count, utc=True,

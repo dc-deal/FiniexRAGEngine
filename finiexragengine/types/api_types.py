@@ -124,7 +124,7 @@ HEALTH_STATUSES: Tuple[str, ...] = ('ok', 'degraded')
 
 
 class HealthResponse(BaseModel):
-    # 'ok' | 'degraded'. A plain str with the domain kept as data (CLAUDE.md): a monitor polling
+    # 'ok' | 'degraded'. A plain str with the domain kept as data (engineering_rules.md): a monitor polling
     # this endpoint must keep parsing a value a later version introduces. It was a hardcoded 'ok'
     # until 2026-08-22 — including for the 37 hours an ingest worker lay dead, which is exactly the
     # window an external check exists to catch.

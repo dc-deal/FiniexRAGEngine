@@ -303,7 +303,7 @@ class PipelineRunner:
                                          'base_currency': spec.base, 'quote_currency': spec.quote})
 
     def _error(self, error_type: str, message: str) -> RunError:
-        # Every RunError is logged with its taxonomy type (CLAUDE.md) — but the durable
+        # Every RunError is logged with its taxonomy type (engineering_rules.md) — but the durable
         # error statistics aggregate from the persisted envelopes' errors, never from logs.
         logger.warning('[%s] %s: %s', error_type, self._config.pipeline_id, message)
         return RunError(type=error_type, message=message,

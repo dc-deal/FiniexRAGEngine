@@ -1,6 +1,6 @@
 """Source-health store (ISSUE_11, ISSUE_84) — one row per feed, capturing every poll.
 
-Follows CLAUDE.md "capture at the call, report from the store": the ingest worker records each
+Follows engineering_rules.md "capture at the call, report from the store": the ingest worker records each
 poll (success *and* failure) into a rolling per-source row here; the Sources report and the
 weekly aggregate read it back — no log parsing. A feed that keeps failing (rate-limit, malformed
 body, TLS drop) is flagged and quarantined for a cool-off window, then probed once; the last few

@@ -1,15 +1,12 @@
-# CLAUDE.md — FiniexRAGEngine Project Rules
+# Engineering rules — FiniexRAGEngine
 
-**The project's engineering rulebook** — shared conventions and design decisions for
-FiniexRAGEngine, including how the codebase is built with an AI assistant. Public, so the
-workflow is transparent.
+The conventions and design decisions this engine is built by. Code comments and documentation cite
+this file by section (`engineering_rules.md`, "Code conventions", …).
 
-**Living document.** These rules grow as the build proceeds — when a convention, contract, or
-design decision is agreed during a session, record it here in the same change so it survives
-into the next session. Only codify what is actually decided; leave still-open recommendations out.
-
-**Changes to this file need sign-off.** Never edit CLAUDE.md unilaterally — present the proposed
-change to the operator and get explicit confirmation first; only then apply it.
+Until 2026-10-28 these sections were the public part of the project's rulebook, `CLAUDE.md`. The
+working rules for the AI assistant that pair-programs this codebase — how it plans, asks, reports and
+coordinates — now live in a private configuration beside the checkout; what a contributor needs to
+build on the engine stays here, unchanged in wording.
 
 ## AI-assisted development
 
@@ -19,58 +16,6 @@ the product's own LLM usage (OpenAI API) is a core feature, described openly.
 
 Discipline: the assistant proposes and drafts; the human owns architecture and review;
 every change is committed manually after review.
-
-## Working style
-
-- **State confidence, ask when low.** Communicate implementation confidence as a
-  percentage; when it is below ~95%, or a change is public-facing / hard to reverse,
-  ask focused, numbered questions before executing instead of guessing.
-- **Addressing.** The human is "the operator"; German (informal *du*) is fine in chat.
-  All artifacts — code, comments, docs, issues, commit messages, handover documents — stay
-  English. **The language of the conversation never sets the language of a file**, and a doc
-  written *for* the operator, about their own workflow, is still an artifact: a German chat about
-  a runbook produces an English runbook. That is where it slipped once.
-  **Gitignored is not an exemption.** `ISSUE_*.md`, `INTERNAL_*.md` and `HANDOFF_*.md` are
-  artifacts too — private, not exempt. Neither a file's audience nor its visibility changes its
-  language; only chat is German.
-
-## Architecture planning
-
-Before committing to a design for a non-trivial feature or change:
-
-- **Check /app/.vscode/launch.json**
-  As a central launch library, it provides a quick overview of the project's most important capabilities from the operator's perspective. Every command listed here has its own purpose and justification. If something is not included, it may have been intentionally omitted for clarity and overview reasons. The `launch.json` is structured into sections. Make sure to extend the appropriate sections when adding new entries, and always consider the section headings and comments as guidance.
-- **Plan first, build second — the two-eyes principle.** Implementation starts only after
-  the operator has seen the plan. For an **issue-feature: always** — the operator may have
-  read the issue days ago; the plan re-anchors it. Small-but-real changes get a short pitch
-  in chat; anything bigger — and when in doubt — runs through **plan mode**. Only trivial
-  few-liners skip the step. Explicit skip: only when the operator explicitly says to
-  implement directly, without a plan. Explicit plan: when the operator asks for a plan,
-  plan mode runs regardless of size.
-- **A plan shows the target mechanics.** The anchor points (files/units to touch), the
-  architecture and conversion steps, how the design carries planned future issues — and
-  **exemplary target outputs** where they exist: a mock console output, a live-output line,
-  a DB row, an envelope/JSON fragment. Every plan ends with an **architecture confidence
-  in %**; below ~95% the plan asks **numbered questions** instead of guessing. Architecture
-  decisions that surface *mid-build* come back to the table, never silently into the diff.
-- **Look at the established systems.** Is there a comparable, mainstream system? Does it
-  hit the same problem, and how does it solve it? Present the industry/established approach
-  next to your own recommendation — not just an opinion.
-- **Look at existing modules.** Check whether a well-established Python package already
-  solves it well (or better) before hand-rolling. Adopt one only with a clear, lasting
-  reason; when you do, update `requirements.txt` in the same change.
-
-## Commit policy
-
-- **Never create git commits.** The operator commits manually after reviewing each change.
-- **Commit messages describe the change, not the tooling** — concise and imperative, no automated trailers.
-- **Every closing report ends with a proposed commit message**, ready to paste into
-  `git commit -m`: ONE short line, roughly 50–70 characters, naming what changed rather than
-  repeating the issue's title. Where the work splits into commits a reviewer would want apart — a
-  behaviour change sitting beside a rename, say — propose one line per commit and say which goes
-  first and why. **Never a `Co-Authored-By` trailer and never an AI attribution**: the workflow is
-  described openly at the top of this file, so it does not need signing into every commit. The
-  assistant proposes the text; the operator commits.
 
 ## What gets published — the scaffolding, not the business logic
 
@@ -292,92 +237,6 @@ serves any stretch of a pipeline's envelopes in bounded UTC windows (≤ 24 h, �
 need the server. There is no tunnel and no exposed database, and asking
 for either has costs the operator has already weighed — the edge that exists was built deliberately,
 route by route, and is not an opening to widen casually.
-
-## The container is disposable — its home is not
-
-**Never recommend or confirm a container rebuild without first checking the transcript backup, and
-say what you found.** `~/.claude/projects/` holds the session transcripts, and it lives inside the
-container: a rebuild deletes whatever is not on a volume or a bind mount — silently, irreversibly,
-and with no prompt.
-
-Two tiers exist here and only the first is automatic. `devhome:/root` is a named volume: it survives
-every rebuild, and dies with `docker compose down -v`. `.devcontainer/local/home-seed`, written by
-`backup_home.sh` and restored by `restore_home.sh` on container create, survives volume deletion —
-but is only ever as fresh as its last manual run.
-
-**This is a rule for the assistant, not documentation for the operator**, and that distinction is
-the whole point: nobody opens a rulebook at the moment they click rebuild, and a pre-rebuild
-instruction living in a script header is read by whoever is already looking at the script. The
-assistant is in the conversation when a rebuild comes up — usually because it proposed one — so that
-is where the check belongs. Report the seed's age and transcript count *before* the rebuild runs,
-not after.
-
-And prefer the mechanical fix to the reminder: a bind mount of `projects/` needs nothing remembered,
-which is the difference between a backup and an intention.
-
-## The cross-project bus is operator-initiated
-
-**Never read or write the bus unless the operator asks for it.** A shared folder mounted at `/bus`
-carries questions and answers between this project and its siblings, through `bus_*` tools from a
-client that lives on the bus itself. Its inbox is not something to check on your own initiative —
-not at session start, not in passing while looking for something else, and not because a question
-at hand happens to suit it.
-
-The reason is not tidiness. A message written to the bus lands in another project's inbox and is
-read by whoever works there, so sending one is an outward-facing act; reading one pulls another
-project's material into this conversation. Neither is a step taken to be helpful.
-
-**There is no mechanical gate, and that is a decision rather than an omission.** Two were built,
-both worked, and both were removed. A later session must not read their absence as an oversight and
-rebuild them, so the reasons are recorded here.
-
-A `permissions.ask` rule on the bus tool names fires correctly and costs nothing. It was removed
-anyway: the policy is that the rule above governs bus access by itself, and a prompt standing behind
-it invites the discipline to be delegated to a dialog box. The discipline is the whole protection.
-
-A PreToolUse hook covering the shell route also works — a `cat` on a message file raises a prompt
-that a tool-name rule cannot reach. It was removed because **a tool carrying a matching PreToolUse
-entry stops being auto-accepted**: a catch-all matcher does not add friction to bus access, it ends
-auto mode for every tool in every session, and it arrives disguised as "suddenly everything asks"
-rather than as a bus problem. Answering `permissionDecision: "allow"` for non-matching calls would
-restore auto mode and is worse — a hook that answers "allow" overrides the operator's other
-permission rules, including denials. A protection that suspends a larger protection is not one.
-
-There is likewise no SessionStart hook: one that prints the inbox at every start is precisely the
-unbidden read this rule forbids.
-
-So nothing stands between the assistant and that folder except the rule. Concretely: no unprompted
-read — not `bus_inbox`, not `bus_threads`, not a `cat` on a message file; no check "while I am
-here"; no poll because something might have arrived; no look at the start of a session or a task.
-No write without an explicit request. The failure mode to design against is a **read**, and it has
-already happened once.
-
-**Few messages, each complete.** A message carries everything the recipient needs to act without
-asking back — ids, semantics, dates, what changes when — and says whether a reply is expected; for an
-announcement the default is "no reply needed", sent as a `note` into the existing thread. Continue the
-existing thread rather than opening one, batch what is owed instead of sending it as it comes up, and
-never acknowledge an acknowledgement. A question the other side's own surfaces can answer is answered
-there, not asked. Every message is read by someone working in another project; ping-pong costs both.
-
-`bus_inbox` is never on its own evidence that nothing arrived — a `note` enters no inbox by design,
-which produced three false all-clears in one hour. Pair it with `bus_threads` and compare the count;
-report "nothing" only when both are empty. Client 1.1.0 appends that count itself, but only once a
-session has restarted: the stdio server imports the client at spawn and does not reload it.
-
-Adding `"disabledMcpjsonServers": ["finiex-bus"]` removes the tools from context altogether.
-
-## Session start
-
-Read first, in order:
-- The roadmap — GitHub issue #1 (`FiniexRAGEngine — Vision & Roadmap`).
-- The latest `HANDOFF_*.md` in the project root — current build state and next steps.
-  **A handoff is a snapshot, not a document.** It opens with the UTC timestamp it was written at and
-  the live commit it describes, so staleness is visible in one line — check that stamp against
-  `/v1/build` before trusting a number in it. The operator **deletes it once the new chat has taken
-  it in**, and that is deliberate: a handoff left lying around is read weeks later as if it were
-  current. Anything worth keeping for the record moves to `github_issues/root_internal_archive/`;
-  the project root holds only what is currently in play.
-- `docs/architecture/pipeline_engine_architecture.md` — how the engine is structured.
 
 ## Code conventions
 
@@ -723,7 +582,7 @@ come out negative was not a measurement.
   so the measurement is an analysis in the dev container — production has no price access and gets
   none.
 - **The bus is the channel of last resort**, for agreeing something with that project rather than
-  fetching a file — and it stays operator-initiated, exactly as its own section says.
+  fetching a file — and it stays operator-initiated.
 - **Results that touch the strategy stay private** (gitignored `experiments/private/`), even when the
   instrument that produced them is public.
 
@@ -802,45 +661,6 @@ tests/                  pytest suite — one folder per domain, mirroring the pa
   suite with less coverage.
 - New behavior gets tests. New test suites get a doc note (`docs/testing.md`).
 
-## Issues
-
-- `ISSUE_*.md` in the project root are drafts for transfer to the issue tracker (gitignored).
-  Cross-reference related issues with a `**Related:**` line near the top.
-- **Draft → operator review → upload on OK.** New issue drafts land as `ISSUE_*.md` in the
-  project root; the operator reads them first. Only on explicit OK does the assistant create
-  them on GitHub (`gh issue create`, one at a time) — never push an issue to the tracker
-  unprompted. (The bulk re-import script is retired; issues are added individually now.)
-- **An upload is finished only when the draft is gone and the roadmap knows.** On the operator's OK:
-  create or patch on GitHub, **verify by re-reading what the tracker now holds** (a `200` is not
-  evidence that the body arrived intact), then **delete the root `ISSUE_*.md`**, refresh its
-  `github_issues/` snapshot, and **place the issue on roadmap #1 in the same step**. All of it is the
-  assistant's, not the operator's. A draft left in the root after upload is a second copy that drifts
-  from the tracker and is edited by whoever finds it first; an issue that exists only in the tracker
-  is invisible to the one document meant to show what is ahead.
-  **Place it where its reason lives** — beside the issue it completes, or inside the batch whose
-  theme it shares — never appended at the end, and never in a release whose theme it does not belong
-  to. An issue that *is* another issue's Definition-of-Done item cannot sit in a different release
-  than the issue it completes; if the draft's own milestone line says otherwise, the draft is what
-  gets corrected, before upload.
-- **Comments vs body:** additions to a **not-yet-begun** issue always go into the **body**
-  (the body stays the spec). Once implementation has started, progress, deviations and
-  decisions land as dated **implementation-notes comments** — effectively: comments only on
-  issues whose build has begun. The snapshot export includes comment threads; re-run it
-  before sessions that need fresh issue context.
-- Mention test + docs follow-ups at the bottom of an issue where relevant.
-- **List issues as a checklist, never a table:** `- [ ]` / `- [x]` + `#N` + a short description
-  — **not** the title (GitHub renders the title from the `#N` reference). The checkbox carries the
-  done state; do not add a separate "done"/status column or word.
-- **Never close/resolve issues.** The operator closes them at merge via `resolves #…`. The
-  assistant may tick the roadmap checkbox (`[x]`) to show progress, but must never run
-  `gh issue close` (or otherwise resolve an issue) — ticked ≠ closed; the issue stays open until merge.
-- Root-level gitignored working files (`INTERNAL_*.md`, `HANDOFF_*.md`, and any `ISSUE_*.md` that
-  was never uploaded) are the operator's scratch space; the **operator prunes them once processed**
-  (by processing status). An uploaded issue draft is not among them — the assistant removes that
-  one at upload, per the rule above. A missing
-  one means "done / transferred", not data loss — GitHub is the durable copy for issues. Do not
-  re-create a pruned file unless asked.
-
 ## Documentation
 
 - Docs in `docs/`. New structures/features get documented; review `README.md` per change.
@@ -853,7 +673,7 @@ tests/                  pytest suite — one folder per domain, mirroring the pa
 
 "Code done" is not "done". When a feature or fix is finished, walk these six and state
 what each needs (the operator decides and applies), and **end the report with a proposed commit
-message** — Commit policy above says what it has to look like:
+message** — one short line naming what changed:
 
 1. **Tests** — new behavior gets tests; changed behavior updates them.
 2. **Docs** — always review; new structures/features get documented, touched flows get

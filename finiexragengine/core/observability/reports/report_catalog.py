@@ -8,7 +8,7 @@ and two assemblies of one thing drift: ISSUE_82 spent weeks with two episode gro
 supposed to agree and quietly did not.
 
 So the assembly lives here, once, and both surfaces call it. The CLIs keep their `format_*`
-rendering and lose the resolution — which also returns them to what CLAUDE.md says a CLI is,
+rendering and lose the resolution — which also returns them to what engineering_rules.md says a CLI is,
 parameter reception with no logic in it.
 
 **Every entry is a read.** `build_coverage_report` is deliberately absent and must stay absent: it

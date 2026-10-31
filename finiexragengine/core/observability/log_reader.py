@@ -5,7 +5,7 @@ the reports were not enough — four DNS outages on 2026-09-08, whose cause was 
 (`getaddrinfo failed`) buried in a traceback — needed an RDP session and a copied file.
 
 **The timezone is the whole difficulty, and it is not a detail.** The engine is UTC throughout, as
-CLAUDE.md requires. The *logging formatter* is not: it stamps the OS clock, and the server runs
+engineering_rules.md requires. The *logging formatter* is not: it stamps the OS clock, and the server runs
 GMT+2. One production line carries both at once —
 
     2026-09-08T04:40:43.978+02:00 … [HOST] host connectivity — … retry 02:45:43 UTC

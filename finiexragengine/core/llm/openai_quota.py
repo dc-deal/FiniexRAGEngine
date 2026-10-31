@@ -1,6 +1,6 @@
 """OpenAI error classification — vendor knowledge, kept behind the provider seam.
 
-CLAUDE.md: *provider-specific behavior stays inside the concrete provider*. The cost
+engineering_rules.md: *provider-specific behavior stays inside the concrete provider*. The cost
 circuit-breaker (`BudgetGuard`, ISSUE_47) is deliberately provider-agnostic — it suspends, backs
 off, re-probes and resumes without knowing whose quota ran out. **Deciding** that a given
 exception *is* a quota stop is the opposite: it reads one vendor's error vocabulary. So it lives

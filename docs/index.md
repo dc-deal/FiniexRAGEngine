@@ -67,4 +67,4 @@ you need.**
 - **[Vision & Roadmap](https://github.com/dc-deal/FiniexRAGEngine/issues/1)** (issue #1) —
   the full vision, the phased plan, and where the build stands.
 - [`../README.md`](../README.md) — project overview, quickstart, feature status.
-- [`../CLAUDE.md`](../CLAUDE.md) — the engineering rulebook (conventions + design decisions).
+- [`development/engineering_rules.md`](development/engineering_rules.md) — the engineering rules (conventions + design decisions).

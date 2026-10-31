@@ -317,7 +317,7 @@ throttling the prime sources would defeat the breaking channel.
 
 Reaction time = how fast the engine turns a breaking story into a confirmed signal. It is a **live
 measurement, irreconstructable afterwards** (like token usage), so it is captured at the event and
-reported from the store (CLAUDE.md — *capture at the call, report from the store*).
+reported from the store (engineering_rules.md — *capture at the call, report from the store*).
 
 **The timeline** (a breaking is a *flow* over several ingest passes and articles, not a point):
 

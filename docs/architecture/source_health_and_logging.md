@@ -37,7 +37,7 @@ place. Unset ⇒ our continuous tempo applies.
 
 ## Source health (`source_health` table)
 
-Every poll — success *and* failure — is captured into one rolling row per feed (CLAUDE.md: *capture
+Every poll — success *and* failure — is captured into one rolling row per feed (engineering_rules.md: *capture
 at the call, report from the store*). Identity is the config `source_id` (joins to
 `articles.source_id`; one row = one poller); a normalized `host` rides along so the report can group
 the same feed appearing under different source-sets.

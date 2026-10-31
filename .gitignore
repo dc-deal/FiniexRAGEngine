@@ -28,8 +28,13 @@ env/
 data/
 logs/
 
-# CLAUDE.md is published (the engineering rulebook — workflow transparency).
+# The AI assistant's working configuration lives in .claude/, a private repository of its own (since
+# 2026-10-28); the engineering rules it links to are public in docs/development/engineering_rules.md.
+# CLAUDE.md is named here as a safety net: a copy anywhere in the tree never reaches this repository.
+.claude/
+CLAUDE.md
 # Internal working docs stay private — never published.
+JOBS_*.md
 INTERNAL_*.md
 ISSUE_*.md
 HANDOFF_*.md
@@ -65,7 +70,7 @@ user_configs/*
 # OS / editor
 .DS_Store
 
-# Suite output written on the production machine during the version-bump run (CLAUDE.md). An
+# Suite output written on the production machine during the version-bump run (engineering_rules.md). An
 # untracked file in the repo root makes `git status --porcelain` non-empty, which is what
 # `/v1/build`'s `dirty` flag reports — and a dirty flag that cries wolf stops being read, which is
 # the one thing it must not do: it exists because an in-place edit on an RDP-reached server is

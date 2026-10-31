@@ -3,7 +3,7 @@
 Sits with the other reporting units rather than in the evaluator: producing an evaluation and
 painting one are different jobs, and the engine must not depend on a console (the twin of
 `envelope_report`, which renders a whole run). Ends on the shared `RunFooter`, so a spending
-pass reports its own cost where it runs (CLAUDE.md).
+pass reports its own cost where it runs (engineering_rules.md).
 """
 import textwrap
 from typing import Optional

@@ -261,7 +261,7 @@ class DetectionResult:
     max_tier: int = 0            # highest tier written this pass (0 = nothing) — drives the wake
     # Per-path counts for this pass (ISSUE_106), keyed by `DetectionTrigger`. The pass log can then
     # say which channel did the work instead of only how much was flagged — the durable answer is
-    # the persisted column, this is the at-the-call echo (CLAUDE.md: a run reports its own effect).
+    # the persisted column, this is the at-the-call echo (engineering_rules.md: a run reports its own effect).
     by_trigger: Dict[str, int] = field(default_factory=dict)
     # The HIGH flags themselves, in flag order (ISSUE_26). Bounded by what one pass stored, and only
     # the HIGH tier: the wake and the operator's attention are both about that tier.

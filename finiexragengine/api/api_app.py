@@ -141,7 +141,7 @@ def create_app(attach_runners: Optional[bool] = None,
     # here means a stray FINIEX_LIVE never suppresses the console without a dashboard to replace it.
     live_mode = (os.environ.get('FINIEX_LIVE') == '1'
                  and os.environ.get('FINIEX_WORKERS') == '1')
-    # Levelled logging per app config (CLAUDE.md): uvicorn only configures its own loggers —
+    # Levelled logging per app config (engineering_rules.md): uvicorn only configures its own loggers —
     # without this the workers' INFO pass lines (incl. spend, ISSUE_10) would be invisible.
     # configure_logging adds a console handler (unless live_mode) *and* a daily-rotating file so an
     # overnight worker run survives the scrollback (ISSUE_11), and quiets httpx's per-request noise.
@@ -513,7 +513,7 @@ def create_app(attach_runners: Optional[bool] = None,
     # *unthrottled*, because the rate limiter lives on the public wrapper. The flag documented as
     # "moves it behind the token" removed the only protection an anonymous caller met.
     # Private pipelines and source sets keep their state on the public route but not their names
-    # (CLAUDE.md, "What gets published"): the aliases are fixed here, once, from the registries
+    # (engineering_rules.md, "What gets published"): the aliases are fixed here, once, from the registries
     # this process loaded.
     worker_aliases = private_worker_aliases(
         [pipeline.get_config().pipeline_id for pipeline in registry.list_pipelines()

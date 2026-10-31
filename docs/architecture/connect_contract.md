@@ -288,7 +288,7 @@ difference between a log route and an arbitrary read primitive.
 | `limit` | entries returned, default 200, capped by `max_lines` (2000); the **newest** end is what a limit keeps |
 
 **The clocks differ, and the route is where that is resolved.** The engine is UTC throughout, as
-CLAUDE.md requires — but the logging formatter stamps the OS clock, and the server runs GMT+2. One
+engineering_rules.md requires — but the logging formatter stamps the OS clock, and the server runs GMT+2. One
 production line carries both at once:
 
 ```

@@ -6,7 +6,7 @@ few: `DATABASE_URL` and `OPENAI_API_KEY` are environment variables and were neve
 at all, so the surface is small and enumerable rather than open-ended.
 
 **A string is published because its name is written down here.** That is this codebase's own access
-rule (`CLAUDE.md`: granted by name, never by omission) applied to a second surface. The failure mode
+rule (`engineering_rules.md`: granted by name, never by omission) applied to a second surface. The failure mode
 of the alternative — a denylist of secret-looking names — is a field nobody re-read: Spring Boot
 Actuator's default sanitiser (`password|secret|key|token|…`) would mask `bot_token` and publish
 `chat_id`, because it is a heuristic about names rather than a decision about fields.

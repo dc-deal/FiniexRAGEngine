@@ -1,4 +1,4 @@
-"""The typing convention, enforced instead of remembered (CLAUDE.md "Fully typed").
+"""The typing convention, enforced instead of remembered (engineering_rules.md "Fully typed").
 
 Two checks over `finiexragengine/`, and they catch different things:
 
@@ -12,7 +12,7 @@ Two checks over `finiexragengine/`, and they catch different things:
    Building ISSUE_89 turned up a second instance (`SourcePoll` in `ingest_worker`), which is what
    made this a test rather than a note.
 
-**The sanctioned exception is honoured.** CLAUDE.md allows `if TYPE_CHECKING:` + a string
+**The sanctioned exception is honoured.** engineering_rules.md allows `if TYPE_CHECKING:` + a string
 annotation where a runtime import would cycle (`CostRecorder` in the paid-call units). Those names
 are collected from the module's own `if TYPE_CHECKING:` block and treated as resolvable — flagging
 them would punish the documented pattern.

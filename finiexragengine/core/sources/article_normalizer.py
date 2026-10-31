@@ -55,7 +55,7 @@ class ArticleNormalizer:
     """
 
     def __init__(self, profile: TextNormalizerProfile = 'v1') -> None:
-        # Strict at the producing seam (CLAUDE.md's closed-vocabulary rule): a profile that does not
+        # Strict at the producing seam (engineering_rules.md's closed-vocabulary rule): a profile that does not
         # exist must fail where it is configured, not silently normalise with the wrong treatment
         # and stamp a name nothing implements.
         if profile not in TEXT_NORMALIZER_PROFILES:

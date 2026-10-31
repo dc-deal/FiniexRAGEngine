@@ -13,7 +13,7 @@ class EmbedResult:
     """One `embed()` call's outcome — vectors plus what it cost and what it could not do.
 
     Replaced a bare `List[List[float]]` when the call gained a second and third thing to report
-    (CLAUDE.md: a stage boundary returns a result object, and a bare return that needs another
+    (engineering_rules.md: a stage boundary returns a result object, and a bare return that needs another
     value gets converted rather than bolted onto a tuple).
 
     **Every list is index-aligned with the input `texts`**, including the failures — that is what

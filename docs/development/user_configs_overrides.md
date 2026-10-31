@@ -15,7 +15,7 @@ at load, per machine, and is never committed.
 
 ## The private layer (`configs_private/`)
 
-Why it exists: this repository is public and carries the engine, not our use of it (CLAUDE.md, *What
+Why it exists: this repository is public and carries the engine, not our use of it (engineering_rules.md, *What
 gets published*). The private layer is where our own pipelines, prompts, source sets and calibration
 results live — a private git repository checked out at `configs_private/` and gitignored by this one.
 

@@ -22,7 +22,7 @@ _USER_PIPELINES_DIR = _PROJECT_ROOT / 'user_configs' / 'pipelines'
 _SOURCE_SETS_DIR = _PROJECT_ROOT / 'configs' / 'source_sets'
 _USER_SOURCE_SETS_DIR = _PROJECT_ROOT / 'user_configs' / 'source_sets'
 _PROMPTS_DIR = _PROJECT_ROOT / 'prompts'
-# The private layer (CLAUDE.md, "What gets published"): our own pipelines, source sets and prompts,
+# The private layer (engineering_rules.md, "What gets published"): our own pipelines, source sets and prompts,
 # a private repository checked out here and gitignored by this one. Absent = the public reference.
 _PRIVATE_DIR = _PROJECT_ROOT / 'configs_private'
 _MIGRATIONS_DIR = _PROJECT_ROOT / 'migrations'

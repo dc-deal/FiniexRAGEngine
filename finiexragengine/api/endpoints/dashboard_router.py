@@ -9,7 +9,7 @@ so it moves to a separate process on another machine, and this is the seam it re
 process alive and are the workers turning — and `docs/architecture/health_contract.md` names the
 fields a consumer already derives behaviour from. Hanging a panel payload off it would put every
 future rendering change inside another project's contract, and it would make one route answer two
-questions (CLAUDE.md: one report, one command, one route).
+questions (engineering_rules.md: one report, one command, one route).
 
 **`{name}` is an identity segment over a closed set**, exactly as the feed doctor's `{name}` is. Not
 decoration: a collection route has no path parameter, so the grant model can only apply its surface

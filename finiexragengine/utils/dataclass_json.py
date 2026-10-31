@@ -21,7 +21,7 @@ this module exists to prevent.
 read `TIMESTAMPTZ` columns, and psycopg hands those back in the *session's* timezone — on a server
 running Europe/Berlin that is `+02:00`, so a report payload carried local time while every envelope
 carried UTC. Same instant, two renderings, one of them silently dependent on the host's clock
-settings, and CLAUDE.md says every datetime in this codebase is timezone-aware UTC.
+settings, and engineering_rules.md says every datetime in this codebase is timezone-aware UTC.
 
 The `Z` matters for a second reason: a `+` in a query string decodes as a space, so an offset-form
 timestamp taken from one report could not be fed back into another (`?episode_start=...+02:00`

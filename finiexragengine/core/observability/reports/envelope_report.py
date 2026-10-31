@@ -3,7 +3,7 @@
 Sits with the other reporting units rather than in the runner: producing an envelope and
 painting one are different jobs, and the engine must not depend on a console. Renders the
 shared console pattern (title + aligned columns + the `--- run metrics ---` footer), so a
-spending pass reports its own cost where it runs (CLAUDE.md).
+spending pass reports its own cost where it runs (engineering_rules.md).
 """
 from finiexragengine.core.observability.run_footer import RunFooter
 from finiexragengine.types.outcome_types import AnalysisEnvelope

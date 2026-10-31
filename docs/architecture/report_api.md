@@ -120,7 +120,7 @@ two episode groupings that were supposed to agree and quietly did not.
 
 So `core/observability/reports/report_catalog.py` owns both: per report, the builder *and* its
 resolution. The API calls it, and so do `sources_cli` and `breaking_cli`, which kept their `format_*`
-rendering and lost the assembly — returning them to what CLAUDE.md says a CLI is.
+rendering and lost the assembly — returning them to what engineering_rules.md says a CLI is.
 
 Adding a report is one catalog entry. It is then listed, callable, window-bounded and authenticated,
 without a route being touched.

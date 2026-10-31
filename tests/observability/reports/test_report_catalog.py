@@ -83,7 +83,7 @@ def test_the_catalog_has_no_entry_that_can_spend() -> None:
 
 
 def test_the_sweep_answers_for_every_set_and_narrows_to_one(clean_db: str) -> None:
-    """`source_set_id` narrows an answer; it never selects a different report (CLAUDE.md).
+    """`source_set_id` narrows an answer; it never selects a different report (engineering_rules.md).
 
     The console has always swept every configured set by default, so the route does too — a report
     that answered for one set under the same name would be a second program wearing the first

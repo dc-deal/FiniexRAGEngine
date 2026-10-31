@@ -17,5 +17,7 @@
       "mcp__finiex-bus__bus_thread",
       "Bash(python3 -m pytest experiments/private/signal_outcome -q)"
     ]
-  }
+  },
+  "autoMemoryEnabled": false,
+  "idleCompaction": false
 }

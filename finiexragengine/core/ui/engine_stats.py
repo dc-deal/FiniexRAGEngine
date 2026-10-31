@@ -29,7 +29,7 @@ from typing import Deque, Dict, List, Optional, Tuple
 
 # --- per-stage snapshots -------------------------------------------------------------------
 # Built and consumed inside the display domain (the worker fills them, the renderer reads them),
-# so they live with this module rather than in types/ (CLAUDE.md: a self-contained shape stays
+# so they live with this module rather than in types/ (engineering_rules.md: a self-contained shape stays
 # with its unit). Frozen = the immutability the lock-free swap relies on. Every row carries a
 # `last` so the blindness test works: a dead engine shows as all ages growing together — absence
 # becomes visible because it *ages*, not because a line goes missing.
@@ -153,7 +153,7 @@ class EngineStats:
     keyed by pipeline id — because N ingest + M eval workers run concurrently and a single slot
     per stage would let them clobber each other (last-writer-wins). Plus a bounded activity deque.
     The BUDGET row is not held here: it is read live from the `BudgetGuard` at render time, which
-    is already a queryable source (CLAUDE.md — report from the live source, do not duplicate).
+    is already a queryable source (engineering_rules.md — report from the live source, do not duplicate).
 
     Keys are **pre-registered** from the known worker ids, so the dicts never resize after
     construction — a worker only ever reassigns its own key (atomic under the GIL). That keeps the
