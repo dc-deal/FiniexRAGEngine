@@ -153,14 +153,18 @@ class DetectionConfig(BaseModel):
 # set's articles — so a feed added to any set changes what every pipeline can read without moving their
 # fingerprints. A `declared` set is read only by the pipelines whose `source_set` it is: a new line can
 # widen its own corpus without reaching into anyone else's evidence. None = shared (the default).
-SourceSetScope = Literal['declared']
+# A `collect` set (#137) is ingested by a worker of its own and read by no pipeline at all: a source is
+# kept from the day it is worth keeping, months before any measurement asks whether it adds anything,
+# without entering a single pipeline's evidence or fingerprint.
+SourceSetScope = Literal['declared', 'collect']
 SOURCE_SET_SCOPES: Tuple[str, ...] = get_args(SourceSetScope)
 
 
 class SourceSetConfig(BaseModel):
     source_set_id: str
     # None = shared with every pipeline (how every set worked before scopes existed, and why the
-    # fingerprint omits it while unset); 'declared' = only pipelines on this set retrieve its articles.
+    # fingerprint omits it while unset); 'declared' = only pipelines on this set retrieve its articles;
+    # 'collect' = ingested, retrieved by no pipeline, and no pipeline may be on it (#137).
     scope: Optional[SourceSetScope] = None
     # NOTE: `sources` is the declared catalogue; `active_sources()` below is what actually runs.
     # Ingest cadence — deliberately faster than eval (RSS windows slide; a missed

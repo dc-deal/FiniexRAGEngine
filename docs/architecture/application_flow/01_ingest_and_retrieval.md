@@ -23,7 +23,9 @@ Top-down, each new article flows through these units in order:
    once, referenced by constellations via `source_set`). Acquisition runs faster than
    eval deliberately: RSS windows slide, a missed article is gone forever — and this
    path never touches the LLM, so frequent is cheap. One worker feeds every pipeline
-   referencing the set (1× fetch, N× read).
+   referencing the set (1× fetch, N× read). A set with `"scope": "collect"` (#137) gets a
+   worker although no pipeline references it — kept, read by none, no breaking detection
+   (`retrieval_policy.md`, "Corpus scope").
 
    **The catalogue vs. what runs.** A set's `sources` is the *declared catalogue*;
    `SourceSetConfig.active_sources()` is what the engine actually builds and polls — the

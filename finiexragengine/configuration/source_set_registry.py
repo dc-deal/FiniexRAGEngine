@@ -82,17 +82,26 @@ class SourceSetRegistry:
     def list_sets(self) -> List[SourceSetConfig]:
         return list(self._source_sets.values())
 
+    def collect_set_ids(self) -> List[str]:
+        """The `collect` sets (#137): ingested by a worker of their own, read by no pipeline."""
+        return sorted(config.source_set_id for config in self._source_sets.values()
+                      if config.scope == 'collect')
+
     def excluded_source_ids(self, reader_set_id: str) -> List[str]:
-        """Sources a pipeline on `reader_set_id` must not retrieve: the declared sets of others.
+        """Sources a pipeline on `reader_set_id` must not retrieve: the declared sets of others, and
+        every collect set.
 
         A `declared`-scope set is read only by the pipelines whose `source_set` it is. Every other
         pipeline excludes the active sources of such sets — minus any source also active in a shared
-        set, whose articles are everyone's by that set's own terms. Active sources only: a declared
-        but disabled feed ingests nothing, so it has nothing to hide. Sorted, so the list is stable
-        across boots and diffable in a log.
+        set, whose articles are everyone's by that set's own terms. A `collect` set is hidden from
+        every pipeline unconditionally: no pipeline may be on one (`PipelineAssembler.build_runner`),
+        so there is no reader it could be open to. Active sources only: a disabled feed ingests
+        nothing, so it has nothing to hide. Sorted, so the list is stable across boots and diffable
+        in a log.
         """
         hidden = {source.source_id for config in self._source_sets.values()
-                  if config.scope == 'declared' and config.source_set_id != reader_set_id
+                  if (config.scope == 'declared' and config.source_set_id != reader_set_id)
+                  or config.scope == 'collect'
                   for source in config.active_sources()}
         shared = {source.source_id for config in self._source_sets.values()
                   if config.scope is None for source in config.active_sources()}
@@ -107,6 +116,10 @@ class SourceSetRegistry:
         active feed. Sorted, like `excluded_source_ids`, so the list is stable across boots.
         """
         section_set = self.get(section_set_id)
+        if section_set.scope == 'collect':
+            raise ConfigurationError(
+                f"retrieval.set_section.source_set '{section_set_id}' is a collect set — it is "
+                'ingested to be kept, not read; a set a pipeline reads is not a collect set (#137)')
         if section_set.scope == 'declared' and section_set_id != reader_set_id:
             raise ConfigurationError(
                 f"retrieval.set_section.source_set '{section_set_id}' is declared-scope and not this "

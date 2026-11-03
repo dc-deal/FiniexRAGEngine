@@ -202,6 +202,24 @@ def test_a_section_set_without_an_active_feed_or_unknown_is_refused(tmp_path):
         registry.set_section_source_ids('nowhere', 'crypto_news')
 
 
+def test_a_collect_set_is_hidden_from_every_set(tmp_path):
+    # No pipeline may be on a collect set (#137), so there is no reader it is open to.
+    registry = _registry(tmp_path, _set('crypto_news', 'coindesk'),
+                         _set('world_news', 'bbc', scope='declared'),
+                         _set('research_feeds', 'feed_a', 'feed_b', scope='collect', off=('feed_b',)))
+    assert registry.collect_set_ids() == ['research_feeds']
+    assert registry.excluded_source_ids('crypto_news') == ['bbc', 'feed_a']
+    assert registry.excluded_source_ids('world_news') == ['feed_a']
+    assert registry.excluded_source_ids('research_feeds') == ['bbc', 'feed_a']
+
+
+def test_a_collect_set_is_refused_as_a_section(tmp_path):
+    registry = _registry(tmp_path, _set('crypto_news', 'coindesk'),
+                         _set('research_feeds', 'feed_a', scope='collect'))
+    with pytest.raises(ConfigurationError, match='collect set'):
+        registry.set_section_source_ids('research_feeds', 'crypto_news')
+
+
 def test_an_unknown_scope_is_refused_at_load(tmp_path):
     with pytest.raises(ConfigurationError, match='scope'):
         _registry(tmp_path, _set('world_news', 'bbc', scope='private'))

@@ -289,9 +289,12 @@ def test_supervisor_builds_one_ingest_per_referenced_set_and_one_eval_per_stream
 
     class _FakeSets:
         def get(self, source_set_id):
-            assert source_set_id == 'crypto_news'
             return SourceSetConfig(**json.loads(
-                (tmp_path / 'sets' / 'crypto_news.json').read_text()))
+                (tmp_path / 'sets' / f'{source_set_id}.json').read_text()))
+
+        def collect_set_ids(self):
+            return sorted(path.stem for path in (tmp_path / 'sets').glob('*.json')
+                          if json.loads(path.read_text()).get('scope') == 'collect')
 
     class _FakeAssembler:
         def get_source_sets(self):
@@ -321,6 +324,58 @@ def test_supervisor_builds_one_ingest_per_referenced_set_and_one_eval_per_stream
     # Eval cadence is a bar-close timeframe; interval_seconds is derived (M10 = 600s).
     assert by_name['eval:crypto_sentiment'].timeframe == 'M10'
     assert by_name['eval:crypto_sentiment'].interval_seconds == 600
+
+
+def test_supervisor_starts_a_worker_for_a_collect_set_no_pipeline_is_on(tmp_path):
+    # #137: the pipelines' sets get workers as before, and a collect set gets one of its own.
+    (tmp_path / 'sets').mkdir()
+    for set_id, scope in (('crypto_news', None), ('research_feeds', 'collect')):
+        data = {'source_set_id': set_id, 'trigger': {'type': 'interval', 'interval_seconds': 300},
+                'sources': [{'source_id': f'{set_id}_1', 'url': 'https://example.test'}]}
+        if scope:
+            data['scope'] = scope
+        (tmp_path / 'sets' / f'{set_id}.json').write_text(json.dumps(data))
+    (tmp_path / 'pipes').mkdir()
+    (tmp_path / 'pipes' / 'crypto.json').write_text(json.dumps({
+        'pipeline_id': 'crypto_sentiment', 'outcome_type': 'sentiment_fear_greed',
+        'market': 'crypto', 'symbols': [{'key': 'BTCUSD', 'base': 'BTC', 'quote': 'USD'}],
+        'source_set': 'crypto_news', 'trigger': {'type': 'interval', 'timeframe': 'M10'},
+        'llm': {'model': 'gpt-4o-mini'}}))
+
+    from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
+    from finiexragengine.core.pipeline.worker_supervisor import WorkerSupervisor
+
+    registry = PipelineRegistry(tmp_path / 'pipes')
+    registry.load()
+    built: List[str] = []
+
+    class _FakeSets:
+        def get(self, source_set_id):
+            return SourceSetConfig(**json.loads((tmp_path / 'sets' / f'{source_set_id}.json').read_text()))
+
+        def collect_set_ids(self):
+            return ['research_feeds']
+
+    class _FakeAssembler:
+        def get_source_sets(self):
+            return _FakeSets()
+
+        def build_ingestor(self, source_set_id, billing_label=''):
+            built.append(source_set_id)
+            return _FakeIngestor()
+
+        def get_cost_recorder(self):
+            return None
+
+        def get_episode_tracker(self, config):
+            return BreakingEpisodeTracker()
+
+    async def _scenario():
+        return WorkerSupervisor(_FakeAssembler(), registry).states()
+
+    names = sorted(state.name for state in _run(_scenario()))
+    assert names == ['eval:crypto_sentiment', 'ingest:crypto_news', 'ingest:research_feeds']
+    assert built == ['crypto_news', 'research_feeds']
 
 
 def test_supervisor_refuses_unknown_trigger_type():

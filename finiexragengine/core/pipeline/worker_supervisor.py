@@ -62,8 +62,10 @@ class WorkerSupervisor:
         self._stopping: bool = False
 
         # One ingest worker per source-set actually referenced by a pipeline — a set
-        # nobody evaluates over would only burn embedding budget.
+        # nobody evaluates over would only burn embedding budget — and one per `collect` set (#137),
+        # which is exactly a set nobody evaluates over, declared on purpose: kept now, measured later.
         referenced = {p.get_config().source_set for p in registry.list_pipelines()}
+        referenced |= set(assembler.get_source_sets().collect_set_ids())
         for source_set_id in sorted(referenced):
             source_set = assembler.get_source_sets().get(source_set_id)
             # Bind this set's publish so the ingest worker can nudge its eval workers (ISSUE_11).

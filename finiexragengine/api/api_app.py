@@ -198,8 +198,11 @@ def create_app(attach_runners: Optional[bool] = None,
     engine_stats: Optional[EngineStats] = None
     if start_workers:
         pipeline_ids = [pipeline.get_config().pipeline_id for pipeline in registry.list_pipelines()]
+        # The sets the supervisor will start a worker for: the pipelines' own plus every collect set
+        # (#137), so the dashboard pre-registers a row for each.
         source_set_ids = sorted({pipeline.get_config().source_set
-                                 for pipeline in registry.list_pipelines()})
+                                 for pipeline in registry.list_pipelines()}
+                                | set(config_manager.build_source_set_registry().collect_set_ids()))
         engine_stats = EngineStats(source_set_ids=source_set_ids, pipeline_ids=pipeline_ids)
     if attach_runners:
         if not database_url:

@@ -271,9 +271,11 @@ class PipelineAssembler:
         # the query counted the whole corpus, so a macro story carried by another set inflated this
         # set's cluster size against this set's thresholds. `active_sources()` is the one definition
         # of what runs, the same one the ingestor and `SourceReach` read.
-        detector = BreakingDetector(
+        # A collect set (#137) gets none: there is no pipeline to wake, and a detector calibrated on
+        # nobody's evidence would write importance flags into the shared corpus for nothing.
+        detector = (None if source_set.scope == 'collect' else BreakingDetector(
             store, source_set.detection,
-            source_ids={source.source_id for source in source_set.active_sources()})
+            source_ids={source.source_id for source in source_set.active_sources()}))
         # Source health (ISSUE_11): every poll is recorded; a persistently failing feed is flagged
         # and quarantined. One store per ingestor (long-lived on the worker → in-memory quarantine).
         health_store = SourceHealthStore(self._database_url, self._cfg.source_health)
@@ -313,6 +315,11 @@ class PipelineAssembler:
         # per pipeline at boot costs one query each.
         self._reconcile_stream(config.pipeline_id)
         source_set = self._source_sets.get(config.source_set)   # fail-fast reference check
+        if source_set.scope == 'collect':
+            raise ConfigurationError(
+                f"pipeline '{config.pipeline_id}': source_set '{config.source_set}' is a collect set — "
+                'it is ingested to be kept and read by no pipeline; a set a pipeline is on is not a '
+                'collect set (#137)')
         ingestor = (self.build_ingestor(config.source_set, billing_label=config.pipeline_id)
                     if include_ingest else None)
         evaluator = self.build_evaluator(config)
@@ -376,17 +383,23 @@ class PipelineAssembler:
         self._announce_set_sections(registry)
 
     def _announce_scopes(self, registry: PipelineRegistry) -> None:
-        """One `[SCOPE]` line per declared set: who may read it, said where it is decided.
+        """One `[SCOPE]` line per declared or collect set: who may read it, said where it is decided.
 
         A declared set no pipeline is on is announced as such — it is ingested by nobody (ingest
         workers follow the pipelines' `source_set`) and read by nobody, which is a configuration
-        that does nothing and should not look like one that does.
+        that does nothing and should not look like one that does. A collect set (#137) is the
+        deliberate form of "read by nobody": it has a worker of its own, so it is ingested.
         """
         readers: Dict[str, List[str]] = {}
         for pipeline in registry.list_pipelines():
             config = pipeline.get_config()
             readers.setdefault(config.source_set, []).append(config.pipeline_id)
         for source_set in self._source_sets.list_sets():
+            if source_set.scope == 'collect':
+                logger.info('[SCOPE] %s · collect · %d active feeds · ingested, read by no pipeline '
+                            '· breaking detection off', source_set.source_set_id,
+                            len(source_set.active_sources()))
+                continue
             if source_set.scope != 'declared':
                 continue
             on_set = readers.get(source_set.source_set_id, [])

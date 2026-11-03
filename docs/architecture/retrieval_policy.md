@@ -95,6 +95,24 @@ about, since it is ingested by none and read by none:
 What it is for: a new line of work can widen its own corpus without reaching into anyone else's
 evidence — in particular not into a series inside a measurement's held-out window.
 
+### `collect` — ingested, read by no pipeline (#137)
+
+A source can be worth keeping long before any pipeline should read it: a measurement that asks
+"does this source add anything?" needs months of its articles, and those months exist only if they
+were collected while they happened — a feed's window rolls over within hours. A set with
+`"scope": "collect"` gets an ingest worker of its own (ingest workers otherwise follow the pipelines'
+`source_set`) and is excluded from every pipeline's retrieval, in every window and in the corpus
+reports, through the same `excluded_source_ids` computation. No pipeline may be on a collect set — the
+assembler refuses it at boot — and a set section may not read one. Breaking detection is off for it:
+there is no pipeline to wake. No fingerprint moves, because no pipeline's own set changes.
+
+```
+[SCOPE] research_feeds · collect · 3 active feeds · ingested, read by no pipeline · breaking detection off
+```
+
+Turning a collect set into evidence later is a deliberate change of its scope, which forks the
+fingerprint of every pipeline that then reads it — the moment a measurement has said it should.
+
 ## Ordering
 
 Candidates rank by: tier (recent before deep) → ascending cosine distance → higher

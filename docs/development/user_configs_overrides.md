@@ -48,7 +48,8 @@ configs_private/
   corpus-wide, so a private set's feeds enter the evidence of the public reference pipelines too —
   without moving their fingerprints. Give such a set `"scope": "declared"` and only the pipelines on
   it retrieve its articles (`docs/architecture/retrieval_policy.md`, "Corpus scope"); the boot log
-  says so per set (`[SCOPE] …`).
+  says so per set (`[SCOPE] …`). A set only to be **kept** — ingested now, read by no pipeline until a
+  measurement says otherwise — takes `"scope": "collect"` (#137).
 
 ## What can be overridden
 
