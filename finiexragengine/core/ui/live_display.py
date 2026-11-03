@@ -36,6 +36,7 @@ from finiexragengine.core.ui.engine_stats import (
     EngineStats,
     IngestSnapshot,
     LlmSnapshot,
+    MailSnapshot,
     RetrievalSnapshot,
     SourcesSnapshot,
 )
@@ -293,6 +294,11 @@ class LiveDisplay:
         self._keyed_rows(table, now, 'RETRIEVAL', self._stats.retrieval(),
                          self._retrieval_detail, 'eval')
         self._keyed_rows(table, now, 'LLM', self._stats.llm(), self._llm_detail, 'eval')
+        # MAIL rows only where e-mail sources exist (#138) — an engine without one shows no idle line.
+        mail = self._stats.mail()
+        if mail:
+            self._keyed_rows(table, now, 'MAIL', mail,
+                             lambda snapshot: self._mail_detail(snapshot, now), 'mail')
         # BUDGET + BREAKING are engine-wide (no per-worker id column).
         table.add_row('BUDGET', '', self._budget_last(), self._budget_detail())
         table.add_row('BREAKING', '', _last(now, self._stats.breaking().last),
@@ -375,6 +381,24 @@ class LiveDisplay:
             text.append(f'    {snapshot.truncated} truncated', style='yellow')
         if snapshot.suspended:
             text = Text('suspended (quota) · ', style='yellow') + text
+        return text
+
+    @staticmethod
+    def _mail_detail(snapshot: Optional[MailSnapshot], now: datetime) -> Text:
+        if snapshot is None:
+            return Text('—', style='dim')
+        text = Text(f'{snapshot.account} · ' if snapshot.account else '')
+        text.append(f'today {snapshot.today_mails} mails → {snapshot.today_items} items · '
+                    f'week {snapshot.week_mails} → {snapshot.week_items}')
+        if snapshot.backlog:
+            text.append(f' · backlog {snapshot.backlog}', style='yellow')
+        if snapshot.week_rejected:
+            text.append(f' · {snapshot.week_rejected} rejected', style='yellow')
+        if snapshot.state == 'failing':
+            since = (f' since {snapshot.failing_since:%H:%M}' if snapshot.failing_since else '')
+            text.append(f' · ⚠ {snapshot.failure}{since}', style='red')
+        elif snapshot.state == 'ok':
+            text.append(' · ok', style='green')
         return text
 
     @staticmethod

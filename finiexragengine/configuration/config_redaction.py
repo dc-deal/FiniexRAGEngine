@@ -1,7 +1,7 @@
 """Which configuration leaves may be published, decided per field rather than guessed (2026-09-08).
 
 `GET /v1/configs/{name}` serves the effective configuration so a remote diagnosis can read what a
-machine actually runs. The config objects carry four credentials, and the interesting part is how
+machine actually runs. The config objects carry six credentials, and the interesting part is how
 few: `DATABASE_URL` and `OPENAI_API_KEY` are environment variables and were never in these models
 at all, so the surface is small and enumerable rather than open-ended.
 
@@ -30,13 +30,15 @@ LeafClass = Literal['public', 'sensitive', 'unclassified']
 # (`sources.0`). Concrete paths carry the real key; patterns carry the star.
 _WILDCARD = '*'
 
-# --- the four that must never leave the process -------------------------------------------------
+# --- the six that must never leave the process --------------------------------------------------
 SENSITIVE_PATHS: Tuple[str, ...] = (
     'api.tokens.*.token',        # the bearer tokens themselves
     'telegram.bot_token',        # the bot's identity — anyone holding it can post as the engine
     'telegram.chat_id',          # the one chat the bot serves; a target, not a credential, but
                                  # publishing it invites exactly one kind of nuisance
     'monitoring.heartbeat_url',  # whoever holds it can report this engine healthy to the outside
+    'mail.mailboxes.*.account',       # the bot's mailbox (#138): a target, like `chat_id`
+    'mail.mailboxes.*.app_password',  # reads that mailbox
 )
 
 # --- everything else, one line per string leaf, classified by hand -------------------------------
@@ -80,6 +82,7 @@ PUBLIC_PATHS: Tuple[str, ...] = (
     # app: per-report defaults (ISSUE_104) — window strings, one per report
     'reports.source_latency.window',
     'reports.source_quarantine.window',
+    'reports.mail_intake.window',
     'reports.breaking.window',
     'reports.breaking_timeline.window',
     'reports.prompt_drift.window',
@@ -96,6 +99,12 @@ PUBLIC_PATHS: Tuple[str, ...] = (
     'pricing.probe.model',
     'pricing.probe.day_of_week',
     'pricing.probe.timezone',
+    # app: the e-mail sources' non-secret settings (#138) — who may send, whose verdict counts, how
+    # mails are extracted. Publishing them is what lets a reader see why a mail was accepted.
+    'mail.mailboxes.*.authserv_id',
+    'mail.mailboxes.*.senders.*',
+    'mail.mailboxes.*.extract.model',
+    'mail.mailboxes.*.extract.prompt_name',
     # pipeline: what it is and what it evaluates
     'pipeline_id',
     'outcome_type',

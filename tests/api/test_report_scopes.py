@@ -18,6 +18,7 @@ from finiex_auth.token_registry import TokenRegistry
 
 from finiexragengine.api.api_app import _build_protected_router
 from finiexragengine.api.endpoints.archive_router import build_archive_router
+from finiexragengine.api.endpoints.mail_router import build_mail_router
 from finiexragengine.api.endpoints.report_router import build_report_router
 from finiexragengine.api.endpoints.stream_router import build_stream_router
 from finiexragengine.configuration.app_config_manager import AppConfigManager
@@ -246,6 +247,7 @@ def test_no_route_with_an_identity_segment_is_ungated(clean_db: str) -> None:
                 _pipelines(), stream_config, build_grant_dependency(tokens)),
             build_archive_router(OutcomeArchiveExporter(clean_db), _pipelines(),
                                  build_grant_dependency(tokens)),
+            build_mail_router(tokens, ['newsletter_a'], None, lambda: []),
         ]))
     client = TestClient(app)
 
@@ -262,6 +264,8 @@ def test_no_route_with_an_identity_segment_is_ungated(clean_db: str) -> None:
                   # even with no provider — a route that vanishes with a boot mode is one this
                   # walk cannot see, and an ungated one would hand the panel to any valid token.
                   ('/v1/dashboard/{name}', 'get'),
+                  # 2026-11-03: the e-mail sources' status (#138), `mail:status`.
+                  ('/v1/mail/{name}', 'get'),
                   # 2026-09-13: the series beyond the replay window — the same `pipelines:<id>`
                   # grant as `/latest`, so a token holding nothing must be refused here too.
                   ('/v1/pipelines/{pipeline_id}/archive', 'get'),

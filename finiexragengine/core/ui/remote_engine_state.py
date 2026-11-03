@@ -24,6 +24,7 @@ from finiexragengine.core.ui.engine_stats import (
     BreakingSnapshot,
     IngestSnapshot,
     LlmSnapshot,
+    MailSnapshot,
     RetrievalSnapshot,
     SourcesSnapshot,
     StreamEvent,
@@ -113,6 +114,9 @@ class RemoteEngineState:
 
     def llm(self) -> Dict[str, Optional[LlmSnapshot]]:
         return self._state.llm
+
+    def mail(self) -> Dict[str, Optional[MailSnapshot]]:
+        return self._state.mail
 
     def breaking(self) -> BreakingSnapshot:
         return self._state.breaking

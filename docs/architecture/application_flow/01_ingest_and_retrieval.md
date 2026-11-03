@@ -530,6 +530,34 @@ Top-down, each new article flows through these units in order:
    recorded into `source_health`; a feed that keeps failing is flagged and quarantined so
    the loop backs off. See [`source_health_and_logging.md`](../source_health_and_logging.md).
 
+   **The e-mail source — `core/sources/email_source.py` (#138).** Some text never appears in a
+   feed: editorial newsletters arrive by mail only. A source with `"type": "email"` reads one IMAP
+   folder of a mailbox dedicated to the engine, **read-only** (`EXAMINE`, `BODY.PEEK[]`: nothing is
+   labelled, flagged, moved or deleted — the mailbox stays a pure archive), and does three things per
+   pass, in this order:
+   1. **Intake.** New mails above the stored UID cursor are judged by the **sender gate**
+      (`core/mail/sender_gate.py`): an allowlisted address *and* `dmarc=pass` in the receiving
+      provider's own topmost `Authentication-Results` header (headers further down are written by
+      the sender and never read; a forward fails by design). Each mail is stored at once as a **raw
+      mail** (`mail_raw`, migration 020) — visible text only, with URLs, addresses and tokens
+      stripped; a refused mail keeps its verdict but no text.
+   2. **Extract.** At most `extract.max_mails_per_pass` stored mails without an extract at the
+      current version go to an LLM (`core/mail/mail_extractor.py`, instruction
+      `prompts/mail_extract/`): an English headline and one to three factual sentences per story,
+      opinion and advertising dropped. Cost under section `mail_extract`. **This step never raises**:
+      a provider outage is written to the extract row and retried on a later pass (at most three
+      attempts per version), so intake never stops — the reason raw and extract are two steps.
+   3. **Deliver.** Each story becomes an `Article` (`published_at` = the mail's sending time, id from
+      Message-ID + story index + extract version) and goes through steps 3–4 below like any feed's.
+      Delivery is confirmed on the next pass; a pass that fetched but did not store re-hands them
+      (`reset_conditional_get`). Delivering a new extract version retires the mail's articles of older
+      versions, so a re-extraction never puts a story into the corpus twice.
+
+   Its settings live in `mail.mailboxes.<source_id>` of the app config, not on the source — a field
+   on `SourceConfig` would enter every pipeline's fingerprint. A mail source sits in a `collect` set
+   (#137) until a reading says a pipeline should read it. Mails received before the mailbox existed
+   come in through `email_backfill_cli` (raw mails only; the source extracts them at its own pace).
+
 3. **Embed — `core/rag/openai_embedder.py` (`OpenAIEmbedder.embed`).**
    Sends the article text to OpenAI and gets back a 1536-dimension vector — a point
    in "meaning space", where direction encodes meaning. OpenAI returns the vectors

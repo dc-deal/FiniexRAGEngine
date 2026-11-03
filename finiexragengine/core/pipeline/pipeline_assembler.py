@@ -1,7 +1,7 @@
 """Pipeline assembler — builds the per-pipeline object graph behind a PipelineRunner (ISSUE_7)."""
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from finiexragengine.configuration.app_config_manager import AppConfigManager
 from finiexragengine.configuration.config_fingerprint import compute_config_fingerprint
@@ -29,7 +29,12 @@ from finiexragengine.core.rag.query_vector_cache import QueryVectorCache
 from finiexragengine.core.rag.retriever import Retriever
 from finiexragengine.core.schema.identity_guard import verify_instance_identity
 from finiexragengine.core.schema.schema_guard import verify_schema_current
+from finiexragengine.core.mail.imap_mailbox import ImapMailbox
+from finiexragengine.core.mail.mail_extractor import MailExtractor
+from finiexragengine.core.mail.mail_store import MailStore
+from finiexragengine.core.mail.sender_gate import SenderGate
 from finiexragengine.core.sources.article_normalizer import ArticleNormalizer
+from finiexragengine.core.sources.email_source import EmailSource, parse_mailbox_url
 from finiexragengine.core.sources.source_factory import build_source
 from finiexragengine.exceptions.ragengine_errors import (
     ConfigurationError,
@@ -37,6 +42,7 @@ from finiexragengine.exceptions.ragengine_errors import (
     LLMError,
     VectorStoreError,
 )
+from finiexragengine.types.config_types.source_set_types import SourceConfig
 from finiexragengine.types.config_types.pipeline_config_types import PipelineConfig
 
 logger = logging.getLogger(__name__)
@@ -293,11 +299,58 @@ class PipelineAssembler:
         normalizer = ArticleNormalizer(self._cfg.ingest.text_normalizer)
         # A disabled source is never built, so it is never polled and produces no health event —
         # the same "defined but toggled off" semantics a disabled model variant has.
-        return Ingestor([build_source(source, source_set.fetch_timeout_seconds, normalizer)
+        return Ingestor([self.build_email_source(source, normalizer) if source.type == 'email'
+                         else build_source(source, source_set.fetch_timeout_seconds, normalizer)
                          for source in source_set.active_sources()],
                         news_embedder, store, breaking_detector=detector,
                         health_store=health_store, source_set_id=source_set_id,
                         poll_log=poll_log, fetch_workers=source_set.fetch_workers)
+
+    def build_email_source(self, source: SourceConfig,
+                           normalizer: Optional[ArticleNormalizer] = None) -> EmailSource:
+        """An e-mail source (#138) with its mailbox, sender gate, store and extract step.
+
+        Its settings live in `mail.mailboxes.<source_id>` rather than on the source, because a field on
+        `SourceConfig` would enter every pipeline's fingerprint. Everything that can be wrong is refused
+        here, at assembly: no mailbox block, no credentials, no allowlisted sender, no provider name to
+        read the verdict of, a model outside `llm.allowed_models`, an unknown extract instruction.
+        """
+        mailbox_config = self._cfg.mail.mailboxes.get(source.source_id)
+        if mailbox_config is None:
+            raise ConfigurationError(
+                f"email source '{source.source_id}' has no `mail.mailboxes.{source.source_id}` block")
+        missing = [name for name, value in (('account', mailbox_config.account),
+                                            ('app_password', mailbox_config.app_password),
+                                            ('authserv_id', mailbox_config.authserv_id))
+                   if not value.strip()]
+        if missing or not mailbox_config.senders:
+            raise ConfigurationError(
+                f"email source '{source.source_id}': `mail.mailboxes.{source.source_id}` needs "
+                + ', '.join(missing + ([] if mailbox_config.senders else ['senders']))
+                + ' (credentials in the machine\'s user_configs/app_config.json)')
+        extract = mailbox_config.extract
+        allowed = self._cfg.llm.allowed_models
+        if allowed and extract.model not in allowed:
+            raise ConfigurationError(
+                f"email source '{source.source_id}': extract model '{extract.model}' is not in "
+                f'llm.allowed_models {allowed}')
+        try:
+            host, port, folder = parse_mailbox_url(source.url)
+        except ValueError as exc:
+            raise ConfigurationError(f"email source '{source.source_id}': {exc}") from exc
+        provider = build_provider(self._cfg.llm, extract.model, cost_recorder=self._recorder,
+                                  section='mail_extract', pipeline_id=source.source_id,
+                                  budget_guard=self._budget_guard)
+        extractor = MailExtractor(provider, PromptBuilder(self._app.get_prompt_dirs()), extract,
+                                  self._cfg.pricing.models.get(extract.model))
+        return EmailSource(
+            source, mailbox_config,
+            ImapMailbox(host, port, folder, mailbox_config.account, mailbox_config.app_password,
+                        mailbox_config.timeout_seconds),
+            folder, MailStore(self._database_url),
+            SenderGate(mailbox_config.senders, mailbox_config.authserv_id,
+                       mailbox_config.max_mail_bytes),
+            extractor, normalizer)
 
     def build_runner(self, config: PipelineConfig,
                      include_ingest: bool = True, private: bool = False) -> PipelineRunner:

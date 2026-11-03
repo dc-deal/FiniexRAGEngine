@@ -98,6 +98,26 @@ class LlmSnapshot:
 
 
 @dataclass(frozen=True)
+class MailSnapshot:
+    """MAIL row (#138) — one e-mail source: whose mailbox, how its intake and extract went.
+
+    The account is shortened before it gets here (`bot@…`): this row is the operator's, and a
+    dashboard route serves it to grant holders only, but the full address has no business on a screen.
+    """
+    last: datetime
+    account: str = ''
+    state: str = 'waiting'                       # 'waiting' | 'ok' | 'failing'
+    today_mails: int = 0
+    today_items: int = 0
+    week_mails: int = 0
+    week_items: int = 0
+    week_rejected: int = 0
+    backlog: int = 0
+    failure: str = ''
+    failing_since: Optional[datetime] = None
+
+
+@dataclass(frozen=True)
 class BreakingSnapshot:
     """BREAKING row — cumulative over the session (detected by ingest, confirmed by eval)."""
     last: Optional[datetime]
@@ -163,6 +183,7 @@ class EngineStats:
 
     def __init__(self, *, source_set_ids: Optional[List[str]] = None,
                  pipeline_ids: Optional[List[str]] = None,
+                 mail_source_ids: Optional[List[str]] = None,
                  max_events: int = 200) -> None:
         # Pre-register every worker's key with a None snapshot — the renderer shows a dim idle row
         # until that worker's first pass fills it. Insertion order = display order.
@@ -174,6 +195,9 @@ class EngineStats:
             pipeline_id: None for pipeline_id in (pipeline_ids or [])}
         self._llm: Dict[str, Optional[LlmSnapshot]] = {
             pipeline_id: None for pipeline_id in (pipeline_ids or [])}
+        # One MAIL row per e-mail source (#138), keyed by its source id — none without mail sources.
+        self._mail: Dict[str, Optional[MailSnapshot]] = {
+            source_id: None for source_id in (mail_source_ids or [])}
         # Breaking is session-cumulative and engine-wide (detected by any ingest, confirmed by any
         # eval) — one global row, not per worker. Starts at zero, never None.
         self._breaking: BreakingSnapshot = BreakingSnapshot(last=None, detected=0, confirmed=0)
@@ -199,6 +223,10 @@ class EngineStats:
 
     def set_llm(self, pipeline_id: str, snapshot: LlmSnapshot) -> None:
         self._llm[pipeline_id] = snapshot
+
+    def set_mail(self, source_id: str, snapshot: MailSnapshot) -> None:
+        if source_id in self._mail:          # pre-registered keys only — the render loop never sees a resize
+            self._mail[source_id] = snapshot
 
     def add_breaking_detected(self, count: int, *, at: datetime,
                               by_trigger: Optional[Dict[str, int]] = None) -> None:
@@ -292,6 +320,9 @@ class EngineStats:
 
     def llm(self) -> Dict[str, Optional[LlmSnapshot]]:
         return self._llm
+
+    def mail(self) -> Dict[str, Optional[MailSnapshot]]:
+        return self._mail
 
     def breaking(self) -> BreakingSnapshot:
         return self._breaking

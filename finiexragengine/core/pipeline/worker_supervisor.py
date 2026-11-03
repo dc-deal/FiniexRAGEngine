@@ -13,6 +13,7 @@ from finiexragengine.core.pipeline.pass_executor import build_pass_executor
 from finiexragengine.core.pipeline.pipeline_assembler import PipelineAssembler
 from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
 from finiexragengine.core.triggers.event_trigger import EventTrigger
+from finiexragengine.types.mail_types import MailSourceStatus
 from finiexragengine.types.config_types.app_config_types import DiagnosticsConfig
 from finiexragengine.core.triggers.interval_trigger import IntervalTrigger
 from finiexragengine.core.ui.engine_stats import EngineStats
@@ -97,6 +98,11 @@ class WorkerSupervisor:
                 episode_tracker=assembler.get_episode_tracker(config)))
 
         self._attach_pass_executor()
+
+    def mail_statuses(self) -> List[MailSourceStatus]:
+        """Every running e-mail source's status (#138), across the ingest workers."""
+        return [status for worker in self._workers if isinstance(worker, IngestWorker)
+                for status in worker.mail_statuses()]
 
     def _attach_pass_executor(self) -> None:
         """Give every worker the shared pass pool, sized to how many there are (2026-09-08).

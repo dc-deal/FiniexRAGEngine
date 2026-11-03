@@ -392,6 +392,10 @@ that never arrived intact, and nothing reachable remotely could say so.
 
 New grant surface `diagnose`; `diagnose:feed` reaches nobody by default.
 
+**2026-11-03 (#138):** new grant surface `mail` — `GET /v1/mail/status` behind `mail:status`, reaching
+nobody by default. It answers the state of the engine's e-mail sources and never an account or an
+address.
+
 **This is the first route that reaches *outward* on request.** Every other one reads the journal,
 the health tables or a local file. That is a genuine change of kind, so what bounds it is written
 down rather than assumed:

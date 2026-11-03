@@ -56,6 +56,17 @@ and M eval workers run concurrently, so a single row per stage would let them cl
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
+With an e-mail source (#138) a **MAIL** row per source follows the LLM rows — absent without one:
+
+```
+│ MAIL       newsletter_a            last 40s   bot@… · today 3 mails → 34 items · week 14 → 151 · ok │
+│            newsletter_b            last 6m    bot@… · today 2 → 21 · week 13 → 140 · 1 rejected · ⚠ IMAP login refused since 11:59 │
+```
+
+The account is shortened on screen; `backlog N` appears while stored mails wait for their extract,
+`N rejected` when the sender gate refused mails this week. The row is pushed by the ingest worker of
+the source's set from the source's own status.
+
 Notes on the rows:
 
 - **The header names the running build** (`v0.3.2`, from `app_config.version`). Without it "did the

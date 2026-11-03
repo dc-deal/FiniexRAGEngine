@@ -416,6 +416,23 @@ python -m finiexragengine.cli.server_cli                  # API only: no passes,
 $0.03/hour). `/v1/health` reports `budget.day_spend_usd`; if it shows `soft_daily_usd: 0.0` there is
 **no cap configured** and the cost circuit breaker (ISSUE_47) will not engage.
 
+## Is the mail intake running?
+
+An e-mail source (#138) is visible in three places, from fast to deep:
+
+- the **MAIL** row of the live console — `ok`, a backlog, refusals this week, or `⚠ <failure> since HH:MM`;
+- `GET /v1/mail/status` (grant `mail:status`) — the same per source, from anywhere;
+- the report `mail_intake` (`python -m finiexragengine.cli.mail_intake_cli --since 30d`, or
+  `GET /v1/reports/mail_intake`) — per day of intake and source: seen, accepted, refused by reason
+  (sender / DMARC / size), stories, extract USD and seconds.
+
+Reading it: a **`dmarc` refusal** from an allowlisted sender means the sender changed how it signs or
+sends — check before widening anything. A **`sender` refusal** is the gate working (a forward, a new
+newsletter address not yet allowlisted). A **backlog that does not shrink** is the extract step failing
+(`extract failed` lines under `[MAIL]` in the log name the error); intake keeps running regardless. A
+**failing** source walks the quarantine ladder like a feed: a refused login is durable — the app
+password was revoked — and needs a new one in `user_configs`, not a restart.
+
 ## Is the engine still working at all?
 
 The stall watchdog (ISSUE_75) answers this without being asked: no completed pass within
@@ -904,6 +921,7 @@ database and no shell, and `POST /run` is not registered in production, so nothi
 | `GET /v1/logs/{name}` | `logs:<name>` | the engine log over a **UTC** range, redacted (`engine` is the only stream) |
 | `GET /v1/configs` · `/{name}` | `configs:<name>` | the **effective** configuration this process runs — `app`, `pipelines`, `source_sets` — `user_configs/` included, credentials masked |
 | `GET /v1/dashboard/{name}` | `dashboard:<view>` | the live console's state as **one reading** — the stage rows, the breaking episodes, the activity feed and the verdicts behind them, stamped with the engine's own clock (`engine` is the only view). `503` when this process runs no workers: nothing is collecting, which is a different fact from nothing happening |
+| `GET /v1/mail/{name}` | `mail:status` | `status`: each e-mail source (#138) — state, last poll and success, failure and since when, mails/stories/refusals today and this week, extract backlog. No account, no address. A configured source this process does not poll answers its stored counts as `not_polled_here` |
 | `GET /v1/diagnose/{name}` | `diagnose:<name>` | `feed`: one **configured** feed, fetched and parsed live — the raw bytes that machine receives. `memory`: what the process holds — GC pauses, top types, live counts, tracemalloc growth when enabled |
 
 Two things a reading has to respect. **A `403` is a grant, not a bug** — access is by name, so a
@@ -924,6 +942,8 @@ and `instance_id` tells two *deployments* apart even when they share one.
 | `cost_log` | one row per API call attempt: tokens, USD, duration, `attempt`, `outcome` (failed attempts with NULL spend) | forever (billing) |
 | `outcomes` | every produced envelope | forever |
 | `articles` | the corpus + embed token counts + breaking flags | forever |
+| `mail_raw` | one row per mail an e-mail source took in (#138): sender, sending time, the gate's verdict, the visible text (none when refused) | forever; one mail by hand: `email_purge_cli` |
+| `mail_extracts` | one row per mail and extract version: the stories, tokens, USD, error, attempts, delivery | forever (with its mail) |
 
 `source_health` and `source_poll_log` are deliberately separate: health answers **"may we poll this
 feed"** on the hot path and must be correct, so it raises on failure; the journal answers **"how has

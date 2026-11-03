@@ -163,6 +163,9 @@
     "heartbeat_url": "",
     "heartbeat_interval_seconds": 60
   },
+  "mail": {
+    "mailboxes": {}
+  },
   "telegram": {
     "enabled": false,
     "bot_token": "",
@@ -187,6 +190,9 @@
     },
     "source_latency": {
       "window": "7d"
+    },
+    "mail_intake": {
+      "window": "30d"
     },
     "source_quarantine": {
       "window": "30d"

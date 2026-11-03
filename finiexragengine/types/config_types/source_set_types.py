@@ -22,7 +22,9 @@ CLUSTER_UNITS: Tuple[str, ...] = get_args(ClusterUnit)
 class SourceConfig(BaseModel):
     """One feed inside a source-set (moved here from the constellation, ISSUE_10)."""
     source_id: str
-    type: Literal['rss', 'blog', 'socket', 'api'] = 'rss'
+    # 'email' (#138): a mailbox read over IMAP; its settings live in the app config's `mail.mailboxes`
+    # keyed by this `source_id`, because any field added here enters every pipeline's fingerprint.
+    type: Literal['rss', 'blog', 'socket', 'api', 'email'] = 'rss'
     url: str
     weight: float = 1.0          # source trust / weight (ISSUE_5)
     # Declared but switched off: the feed keeps its entry (url, weight, comment) and is never

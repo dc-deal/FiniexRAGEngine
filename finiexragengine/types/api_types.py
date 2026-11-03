@@ -507,3 +507,26 @@ class MemoryDiagnosisResponse(BaseModel):
     name: str
     generated_at: datetime
     diagnosis: Any
+
+
+class MailWindowInfo(BaseModel):
+    mails: int = 0
+    items: int = 0
+    rejected: int = 0
+
+
+class MailSourceInfo(BaseModel):
+    """One e-mail source (#138). No account and no address: what a mailbox is, not whose."""
+    source_id: str
+    state: str                      # 'waiting' | 'ok' | 'failing' | 'not_polled_here'
+    last_poll_at: Optional[datetime] = None
+    last_success_at: Optional[datetime] = None
+    failing_since: Optional[datetime] = None
+    failure: str = ''
+    today: MailWindowInfo = MailWindowInfo()
+    week: MailWindowInfo = MailWindowInfo()
+    extract_backlog: int = 0
+
+
+class MailStatusResponse(BaseModel):
+    sources: List[MailSourceInfo] = []

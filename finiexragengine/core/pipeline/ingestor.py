@@ -13,12 +13,14 @@ from finiexragengine.core.pipeline.breaking_detector import BreakingDetector
 from finiexragengine.core.rag.abstract_embedder import AbstractEmbedder
 from finiexragengine.core.rag.abstract_vector_store import AbstractVectorStore
 from finiexragengine.core.sources.abstract_source import AbstractSource
+from finiexragengine.core.sources.email_source import EmailSource
 from finiexragengine.exceptions.ragengine_errors import (
     BudgetExceededError,
     EmbeddingError,
     SourceFetchError,
 )
 from finiexragengine.types.article_types import Article
+from finiexragengine.types.mail_types import MailSourceStatus
 from finiexragengine.types.ingest_types import (
     IngestResult,
     PollSample,
@@ -89,6 +91,10 @@ class Ingestor:
         if self._poll_log is not None:
             self._poll_log.record(sample)
 
+
+    def mail_statuses(self) -> List[MailSourceStatus]:
+        """The e-mail sources' state (#138) — what the MAIL rows and `/v1/mail/status` show."""
+        return [source.mail_status() for source in self._sources if isinstance(source, EmailSource)]
     def run(self) -> IngestResult:
         """Fetch, embed only the new articles and upsert; return per-source + totals."""
         # The health decisions of this pass are resolved together at the end (ISSUE_84): whether

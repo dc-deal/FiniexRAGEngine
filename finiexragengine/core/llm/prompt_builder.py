@@ -3,7 +3,7 @@
 import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 from jinja2 import Environment, StrictUndefined, Template
 
@@ -123,6 +123,15 @@ class PromptBuilder:
     def metadata(self, name: str, version: str) -> PromptMetadata:
         """The prompt's front-matter identity (id/version/hash) — for the outcome record."""
         return self._load(name, version)[0]
+
+    def render(self, name: str, version: str, **variables: Any) -> str:
+        """Render a non-sentiment template with exactly the variables it declares (#138).
+
+        `build` is shaped for the sentiment prompts (query, articles, retrieval tiers); a template of
+        another kind — the mail extract — names its own variables, and a typo still fails loudly
+        (StrictUndefined). Same loading, cache, layer rule and content hash as `build`.
+        """
+        return self._load(name, version)[1].render(**variables)
 
     def build(self, name: str, prompt_version: str, query: str, articles: List[Article], *,
               retrieved: Optional[List[RetrievedArticle]] = None) -> str:

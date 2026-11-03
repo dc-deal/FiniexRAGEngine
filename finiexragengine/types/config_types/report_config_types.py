@@ -56,6 +56,11 @@ class SourceQuarantineReportConfig(BaseModel):
     window: str = '30d'
 
 
+class MailIntakeReportConfig(BaseModel):
+    # A month: refusals are rare events, and a week would hide a sender that changed slowly.
+    window: str = '30d'
+
+
 class BreakingReportConfig(BaseModel):
     window: str = '7d'
 
@@ -188,6 +193,7 @@ class ReportsConfig(BaseModel):
     source_quarantine: SourceQuarantineReportConfig = Field(
         default_factory=SourceQuarantineReportConfig)
     breaking: BreakingReportConfig = Field(default_factory=BreakingReportConfig)
+    mail_intake: MailIntakeReportConfig = Field(default_factory=MailIntakeReportConfig)
     breaking_timeline: BreakingTimelineReportConfig = Field(
         default_factory=BreakingTimelineReportConfig)
     prompt_drift: PromptDriftReportConfig = Field(default_factory=PromptDriftReportConfig)

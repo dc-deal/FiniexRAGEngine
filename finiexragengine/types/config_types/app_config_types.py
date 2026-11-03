@@ -16,7 +16,7 @@ from finiexragengine.types.ingest_types import TextNormalizerProfile
 # an operator writing the config — so a typo like `report:source_health` must fail at boot rather
 # than turn into a silent denial nobody can see (engineering_rules.md, closed vocabularies).
 GRANT_SURFACES: Tuple[str, ...] = ('reports', 'pipelines', 'logs', 'configs',
-                                  'diagnose', 'dashboard')
+                                  'diagnose', 'dashboard', 'mail')
 
 
 class ConsumerToken(ConsumerTokenBase):
@@ -505,6 +505,38 @@ class MonitoringConfig(BaseModel):
     heartbeat_interval_seconds: int = Field(default=60, ge=10)
 
 
+class MailExtractConfig(BaseModel):
+    """The extract step of one mail source (#138): which instruction, which model, how many per pass."""
+    model: str = 'gpt-5-mini'
+    prompt_name: str = 'mail_extract'
+    prompt_version: int = Field(default=1, ge=1)
+    # Bounded so a backlog (a backfill, a provider outage) drains over several passes instead of
+    # pushing one ingest pass past its deadline: ~40 s per mail against a 300 s pass.
+    max_mails_per_pass: int = Field(default=3, ge=1, le=20)
+
+
+class MailboxConfig(BaseModel):
+    """One mail source's mailbox, keyed by the source's `source_id` (#138).
+
+    Kept off `SourceConfig` on purpose: every field there enters every pipeline's config fingerprint.
+    The account and the app password are credentials and belong in the machine's `user_configs/`.
+    """
+    account: str = ''
+    app_password: str = ''
+    # The receiving provider's name in its own `Authentication-Results` header — the only such header
+    # the sender gate reads, because headers further down are writable by whoever sent the mail.
+    authserv_id: str = ''
+    senders: List[str] = Field(default_factory=list)
+    max_mail_bytes: int = Field(default=2_000_000, ge=10_000)
+    timeout_seconds: float = Field(default=30.0, gt=0)
+    extract: MailExtractConfig = Field(default_factory=MailExtractConfig)
+
+
+class MailConfig(BaseModel):
+    """The e-mail sources' mailboxes (#138); empty means no mail source can be built."""
+    mailboxes: Dict[str, MailboxConfig] = Field(default_factory=dict)
+
+
 class AppConfig(BaseModel):
     version: str = '0.3.3'
     schema_version: str = '1.0'
@@ -560,6 +592,7 @@ class AppConfig(BaseModel):
     diagnostics: DiagnosticsConfig = Field(default_factory=DiagnosticsConfig)
     stall_watchdog: StallWatchdogConfig = Field(default_factory=StallWatchdogConfig)
     monitoring: MonitoringConfig = Field(default_factory=MonitoringConfig)
+    mail: MailConfig = Field(default_factory=MailConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     weekly_report: WeeklyReportConfig = Field(default_factory=WeeklyReportConfig)
     # Per-report defaults a call may override (ISSUE_104) — see report_config_types.

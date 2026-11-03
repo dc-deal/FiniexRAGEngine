@@ -38,6 +38,7 @@ from finiexragengine.core.ui.engine_stats import (
     EngineStats,
     IngestSnapshot,
     LlmSnapshot,
+    MailSnapshot,
     RetrievalSnapshot,
     SourcesSnapshot,
     StreamEvent,
@@ -96,6 +97,7 @@ class DashboardState:
     ingest: Dict[str, Optional[IngestSnapshot]] = field(default_factory=dict)
     retrieval: Dict[str, Optional[RetrievalSnapshot]] = field(default_factory=dict)
     llm: Dict[str, Optional[LlmSnapshot]] = field(default_factory=dict)
+    mail: Dict[str, Optional[MailSnapshot]] = field(default_factory=dict)      # #138; empty without one
     recent_breaking: List[BreakingRecord] = field(default_factory=list)
     events: List[StreamEvent] = field(default_factory=list)
     # Each of the four below: None = the engine has no such collaborator, so the viewer knows it
@@ -170,6 +172,7 @@ def sample_dashboard(stats: EngineStats,
         ingest=stats.ingest(),
         retrieval=stats.retrieval(),
         llm=stats.llm(),
+        mail=stats.mail(),
         recent_breaking=stats.recent_breaking(),
         events=stats.events(),
         workers=workers,

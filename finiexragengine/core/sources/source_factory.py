@@ -25,5 +25,11 @@ def build_source(config: SourceConfig, default_timeout_seconds: int = 10,
     """
     if config.type == 'rss':
         return RssSource(config, default_timeout_seconds, normalizer)
+    if config.type == 'email':
+        # Needs its mailbox settings, a store and an LLM provider — the assembler builds it
+        # (`PipelineAssembler.build_email_source`), so a caller here holds the wrong seam.
+        raise SourceFetchError(
+            f"source '{config.source_id}': an email source is built by the assembler from "
+            '`mail.mailboxes` (#138), not by this factory')
     raise SourceFetchError(
         f"source '{config.source_id}': type '{config.type}' is not implemented yet")

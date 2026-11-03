@@ -581,6 +581,54 @@
             }
         },
         {
+            // "What did the e-mail sources take in?" (#138) — per day and source: mails seen,
+            // accepted, refused by reason (sender / DMARC / size), stories, extract cost. The live
+            // status is GET /v1/mail/status; this is the history behind it. Read-only.
+            "name": "\ud83d\udcca RAGEngine: Mail Intake (30d)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/finiexragengine/cli/mail_intake_cli.py",
+            "args": ["--since", "30d"],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "04_diagnostics",
+                "order": 21
+            }
+        },
+        {
+            // Mails received before the mailbox existed (#138): a folder of .eml files into raw mails,
+            // judged by the same gate as live intake. Dry run first — it writes nothing and prints the
+            // census. --authserv-id names the provider that received the files. Delete the folder after.
+            "name": "\ud83d\uddc4 RAGEngine: Email Backfill (dry run)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/finiexragengine/cli/email_backfill_cli.py",
+            "args": ["--source", "<source_id>", "--dir", "<folder of .eml files>",
+                     "--authserv-id", "<provider>", "--dry-run"],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "07_database",
+                "order": 4
+            }
+        },
+        {
+            // One mail out of the archive, with its extracts and articles (#138). Manual only —
+            // nothing in the engine deletes mails on its own. Dry run counts what would go.
+            "name": "\ud83d\uddc4 RAGEngine: Email Purge One Mail (dry run)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/finiexragengine/cli/email_purge_cli.py",
+            "args": ["--message-id", "<Message-ID>", "--dry-run"],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "07_database",
+                "order": 5
+            }
+        },
+        {
             // ISSUE_108: stamps breaking_episode_id/_start onto archived envelopes that predate
             // ISSUE_65. WRITES when --apply is added — without it this is a dry run that reports
             // what it would do and refuses to write if its self-check disagreed with any identity

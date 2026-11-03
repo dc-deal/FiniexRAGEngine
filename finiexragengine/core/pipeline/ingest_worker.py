@@ -16,11 +16,14 @@ from finiexragengine.core.observability.cost_recorder import CostRecorder, PassS
 from finiexragengine.core.pipeline.ingestor import Ingestor
 from finiexragengine.core.pipeline.pass_executor import build_pass_executor, run_pass
 from finiexragengine.core.triggers.abstract_trigger import AbstractTrigger
+from finiexragengine.core.mail.mail_text import shorten_account
 from finiexragengine.core.ui.engine_stats import (
     EngineStats,
     IngestSnapshot,
+    MailSnapshot,
     SourcesSnapshot,
 )
+from finiexragengine.types.mail_types import MailSourceStatus
 from finiexragengine.types.alert_types import AlertCallback
 from finiexragengine.types.config_types.app_config_types import DiagnosticsConfig
 from finiexragengine.types.config_types.source_set_types import SourceSetConfig
@@ -315,6 +318,10 @@ class IngestWorker:
             self._state.runs += 1
             self._state.last_duration_ms = (perf_counter() - started) * 1000.0
 
+    def mail_statuses(self) -> List[MailSourceStatus]:
+        """This set's e-mail sources (#138) as they stand — for `GET /v1/mail/status`."""
+        return self._ingestor.mail_statuses()
+
     def _push_stats(self, result: IngestResult, usd: float, duration_ms: float,
                     eventful: bool) -> None:
         """Push this pass into the live dashboard's shared state (ISSUE_26); a no-op without one."""
@@ -351,6 +358,14 @@ class IngestWorker:
             host_detail=event.fleet if event and not event.resumed else ''))
         # INGEST row + the activity line (only an eventful pass streams — mirrors the log level so
         # a warm 304-ing corpus does not flood the stream).
+        # MAIL rows (#138): one per e-mail source of this set, from the source's own status.
+        for status in self._ingestor.mail_statuses():
+            stats.set_mail(status.source_id, MailSnapshot(
+                last=status.last_poll_at or now, account=shorten_account(status.account),
+                state=status.state, today_mails=status.today.mails, today_items=status.today.items,
+                week_mails=status.week.mails, week_items=status.week.items,
+                week_rejected=status.week.rejected, backlog=status.extract_backlog,
+                failure=status.failure, failing_since=status.failing_since))
         stats.set_ingest(source_set_id, IngestSnapshot(last=now, fetched=result.fetched,
                                                        new=result.stored, cost_usd=usd,
                                                        duration_ms=duration_ms,

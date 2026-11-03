@@ -28,6 +28,7 @@ from finiexragengine.api.token_loader import load_token_registry
 from finiexragengine.api.endpoints.config_router import build_config_router
 from finiexragengine.api.endpoints.dashboard_router import build_dashboard_router
 from finiexragengine.api.endpoints.diagnose_router import build_diagnose_router
+from finiexragengine.api.endpoints.mail_router import build_mail_router
 from finiexragengine.configuration.abstract_config_view import AbstractConfigView
 from finiexragengine.configuration.app_config_manager import AppConfigManager
 from finiexragengine.configuration.app_config_view import AppConfigView
@@ -44,6 +45,7 @@ from finiexragengine.core.observability.price_probe import drift_notice, probe_p
 from finiexragengine.core.observability.price_probe_store import PriceProbeStore
 from finiexragengine.core.llm.model_catalog import verify_configured_models
 from finiexragengine.core.llm.model_profiles import ModelProfiles
+from finiexragengine.core.mail.mail_store import MailStore
 from finiexragengine.core.observability.budget_guard import BudgetGuard
 from finiexragengine.core.observability.build_info import sample_build_info
 from finiexragengine.core.observability.health_verdict import engine_problems
@@ -203,7 +205,14 @@ def create_app(attach_runners: Optional[bool] = None,
         source_set_ids = sorted({pipeline.get_config().source_set
                                  for pipeline in registry.list_pipelines()}
                                 | set(config_manager.build_source_set_registry().collect_set_ids()))
-        engine_stats = EngineStats(source_set_ids=source_set_ids, pipeline_ids=pipeline_ids)
+        # One MAIL row per active e-mail source in a set that gets a worker (#138).
+        mail_source_ids = sorted(
+            source.source_id
+            for source_set in config_manager.build_source_set_registry().list_sets()
+            if source_set.source_set_id in source_set_ids
+            for source in source_set.active_sources() if source.type == 'email')
+        engine_stats = EngineStats(source_set_ids=source_set_ids, pipeline_ids=pipeline_ids,
+                                   mail_source_ids=mail_source_ids)
     if attach_runners:
         if not database_url:
             raise RuntimeError('attach_runners=True requires DATABASE_URL')
@@ -589,6 +598,11 @@ def create_app(attach_runners: Optional[bool] = None,
     if database_url:
         protected_extra.append(build_archive_router(
             OutcomeArchiveExporter(database_url), registry, build_grant_dependency(tokens)))
+        # The e-mail sources' live status (#138), behind `mail:status`. Configured mailboxes this
+        # process does not poll still answer their stored counts, marked `not_polled_here`.
+        protected_extra.append(build_mail_router(
+            tokens, sorted(config_manager.get_config().mail.mailboxes), MailStore(database_url),
+            supervisor.mail_statuses if supervisor is not None else (lambda: [])))
     app.include_router(_build_protected_router(
         registry, api_config, tokens, outcome_store=outcome_store,
         extra_routers=protected_extra,

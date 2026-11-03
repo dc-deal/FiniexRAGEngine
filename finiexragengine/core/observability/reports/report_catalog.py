@@ -63,6 +63,7 @@ from finiexragengine.core.observability.reports.source_health_report import (
 from finiexragengine.core.observability.reports.source_latency_report import (
     build_source_latency_report,
 )
+from finiexragengine.core.observability.reports.mail_intake_report import build_mail_intake_report
 from finiexragengine.core.observability.reports.source_quarantine_report import (
     build_quarantine_episode,
     build_source_quarantine_report,
@@ -247,6 +248,11 @@ def _build_source_quarantine(database_url: str, manager: AppConfigManager,
         database_url, params.source_id, params.since,
         since_label=params.window_label or '30d',
         ladder_reset_hours=manager.get_config().source_health.ladder_reset_hours)
+
+
+def _build_mail_intake(database_url: str, manager: AppConfigManager, params: ReportParams) -> Any:
+    return build_mail_intake_report(database_url, params.since,
+                                    since_label=params.window_label or '30d')
 
 
 def _build_quarantine_episode(database_url: str, manager: AppConfigManager,
@@ -510,6 +516,11 @@ _CATALOG: Dict[str, ReportSpec] = {
         defaults=lambda config: {'window': config.source_quarantine.window},
         summary="One feed's quarantine episodes in the window, priced against its own poll cadence "
                 '— which feeds fail repeatedly, and at which rung of the cool-off ladder.'),
+    'mail_intake': ReportSpec(
+        build=_build_mail_intake, params=('window',),
+        defaults=lambda config: {'window': config.mail_intake.window},
+        summary='What the e-mail sources took in per day: mails seen, accepted and refused by reason, '
+                'the stories their extracts produced, and what the extracts cost.'),
     'source_quarantine_episode': ReportSpec(
         build=_build_quarantine_episode, params=('source_id', 'episode_start'),
         required=('source_id', 'episode_start'),

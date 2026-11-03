@@ -86,7 +86,14 @@ def test_trigger_stop_interrupts_the_wait():
 
 # --- workers: pass logging, resilience ------------------------------------------------
 
-class _FakeIngestor:
+class _NoMailSources:
+    """An ingestor double without e-mail sources (#138) — the worker asks every ingestor for them."""
+
+    def mail_statuses(self) -> list:
+        return []
+
+
+class _FakeIngestor(_NoMailSources):
     def __init__(self, exc=None):
         self.runs = 0
         self._exc = exc
@@ -139,7 +146,7 @@ def test_failing_pass_never_kills_the_loop():
 # --- ISSUE_74: isolation + the pass deadline ------------------------------------------
 
 
-class _BlockingIngestor:
+class _BlockingIngestor(_NoMailSources):
     """Its pass never returns promptly — the 2026-08-01 shape (a hung TLS handshake)."""
     def __init__(self, block_seconds: float):
         self.runs = 0
@@ -503,7 +510,7 @@ def test_an_orderly_shutdown_is_not_reported_as_a_death():
 # --- 2026-09-08: an unreachable embedding provider is degraded, not invisible -------------------
 
 
-class _EmbedFailedIngestor:
+class _EmbedFailedIngestor(_NoMailSources):
     """A pass that fetched, could not embed, and said so on its result rather than raising."""
     def __init__(self):
         self.runs = 0
@@ -540,7 +547,7 @@ def test_a_pass_that_could_not_embed_says_so_on_its_own_line():
 # --- 2026-09-08: the back-off must not also be a blind spot -------------------------------------
 
 
-class _BackedOffIngestor:
+class _BackedOffIngestor(_NoMailSources):
     """A pass the host back-off skipped entirely — polls nothing, fetches nothing."""
     def __init__(self, backed_off: bool = True):
         self.runs = 0
@@ -630,7 +637,7 @@ def test_the_probe_can_be_switched_off(caplog, monkeypatch):
 # --- 2026-09-14: a flag reaches the screen as a sentence, not only as a counter (ISSUE_26) -------
 
 
-class _FlaggingIngestor:
+class _FlaggingIngestor(_NoMailSources):
     """A pass that flagged two HIGH candidates — one per path, as a mixed pass really arrives."""
     def __init__(self):
         self.runs = 0
@@ -668,7 +675,7 @@ def test_a_flagging_pass_writes_one_activity_line_naming_the_term_and_the_feed()
     assert stats.breaking().by_trigger == {'keyword': ingestor.runs, 'cluster': ingestor.runs}
 
 
-class _FloorIngestor:
+class _FloorIngestor(_NoMailSources):
     """A healthy pass where one feed was held back by its own poll floor — the 2026-09-23 shape."""
     def __init__(self):
         self.runs = 0
