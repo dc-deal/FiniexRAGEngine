@@ -115,6 +115,7 @@ class MailSnapshot:
     backlog: int = 0
     failure: str = ''
     failing_since: Optional[datetime] = None
+    extract_mode: str = 'live'                   # 'manual': extraction runs outside the service
 
 
 @dataclass(frozen=True)

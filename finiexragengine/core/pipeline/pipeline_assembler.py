@@ -328,21 +328,11 @@ class PipelineAssembler:
                 f"email source '{source.source_id}': `mail.mailboxes.{source.source_id}` needs "
                 + ', '.join(missing + ([] if mailbox_config.senders else ['senders']))
                 + ' (credentials in the machine\'s user_configs/app_config.json)')
-        extract = mailbox_config.extract
-        allowed = self._cfg.llm.allowed_models
-        if allowed and extract.model not in allowed:
-            raise ConfigurationError(
-                f"email source '{source.source_id}': extract model '{extract.model}' is not in "
-                f'llm.allowed_models {allowed}')
+        extractor = self.build_mail_extractor(source.source_id)
         try:
             host, port, folder = parse_mailbox_url(source.url)
         except ValueError as exc:
             raise ConfigurationError(f"email source '{source.source_id}': {exc}") from exc
-        provider = build_provider(self._cfg.llm, extract.model, cost_recorder=self._recorder,
-                                  section='mail_extract', pipeline_id=source.source_id,
-                                  budget_guard=self._budget_guard)
-        extractor = MailExtractor(provider, PromptBuilder(self._app.get_prompt_dirs()), extract,
-                                  self._cfg.pricing.models.get(extract.model))
         return EmailSource(
             source, mailbox_config,
             ImapMailbox(host, port, folder, mailbox_config.account, mailbox_config.app_password,
@@ -351,6 +341,24 @@ class PipelineAssembler:
             SenderGate(mailbox_config.senders, mailbox_config.authserv_id,
                        mailbox_config.max_mail_bytes),
             extractor, normalizer)
+
+    def build_mail_extractor(self, source_id: str) -> MailExtractor:
+        """The extract step of one e-mail source — for the source itself and for a separate run
+        (`email_extract_cli`), so both use one model check, one provider and one instruction."""
+        mailbox_config = self._cfg.mail.mailboxes.get(source_id)
+        if mailbox_config is None:
+            raise ConfigurationError(f"email source '{source_id}' has no `mail.mailboxes.{source_id}` block")
+        extract = mailbox_config.extract
+        allowed = self._cfg.llm.allowed_models
+        if allowed and extract.model not in allowed:
+            raise ConfigurationError(
+                f"email source '{source_id}': extract model '{extract.model}' is not in "
+                f'llm.allowed_models {allowed}')
+        provider = build_provider(self._cfg.llm, extract.model, cost_recorder=self._recorder,
+                                  section='mail_extract', pipeline_id=source_id,
+                                  budget_guard=self._budget_guard)
+        return MailExtractor(provider, PromptBuilder(self._app.get_prompt_dirs()), extract,
+                             self._cfg.pricing.models.get(extract.model))
 
     def build_runner(self, config: PipelineConfig,
                      include_ingest: bool = True, private: bool = False) -> PipelineRunner:

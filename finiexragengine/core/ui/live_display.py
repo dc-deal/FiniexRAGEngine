@@ -391,7 +391,11 @@ class LiveDisplay:
         text.append(f'today {snapshot.today_mails} mails → {snapshot.today_items} items · '
                     f'week {snapshot.week_mails} → {snapshot.week_items}')
         if snapshot.backlog:
-            text.append(f' · backlog {snapshot.backlog}', style='yellow')
+            # In manual mode a backlog is the plan, not a stall: a separate run works it off.
+            text.append(f' · backlog {snapshot.backlog}',
+                        style='dim' if snapshot.extract_mode == 'manual' else 'yellow')
+        if snapshot.extract_mode == 'manual':
+            text.append(' · extract manual', style='dim')
         if snapshot.week_rejected:
             text.append(f' · {snapshot.week_rejected} rejected', style='yellow')
         if snapshot.state == 'failing':

@@ -114,6 +114,22 @@
             }
         },
         {
+            // 💸 One extract batch of an e-mail source outside the service (#138 addendum), oldest mails
+            // first. Only while the source's extract.mode is "manual" (refused otherwise). Dry run first;
+            // then 10 → 25 → 40 → rest, judging the Mail Extract Quality report between batches.
+            "name": "\ud83d\udcb8 RAGEngine: Email Extract Batch (dry run)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/finiexragengine/cli/email_extract_cli.py",
+            "args": ["--source", "<source_id>", "--limit", "10", "--dry-run"],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "03_stage_clis",
+                "order": 9
+            }
+        },
+        {
             "name": "💸 RAGEngine: Ingest (fetch→embed→upsert, paid)",
             "type": "debugpy",
             "request": "launch",
@@ -578,6 +594,22 @@
             "presentation": {
                 "group": "04_diagnostics",
                 "order": 20
+            }
+        },
+        {
+            // "How well was each newsletter format extracted?" (#138 addendum) — per sender: stories per
+            // 1,000 words, empty extracts, numbers found literally in the source, cost. Read before every
+            // next extract batch. The raw text beside its stories: GET /v1/mail/sample?sender=…
+            "name": "\ud83d\udcca RAGEngine: Mail Extract Quality (30d)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/finiexragengine/cli/mail_extract_quality_cli.py",
+            "args": ["--since", "30d"],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "04_diagnostics",
+                "order": 22
             }
         },
         {

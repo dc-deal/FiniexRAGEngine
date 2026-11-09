@@ -61,6 +61,10 @@ class MailIntakeReportConfig(BaseModel):
     window: str = '30d'
 
 
+class MailExtractQualityReportConfig(BaseModel):
+    window: str = '30d'
+
+
 class BreakingReportConfig(BaseModel):
     window: str = '7d'
 
@@ -194,6 +198,8 @@ class ReportsConfig(BaseModel):
         default_factory=SourceQuarantineReportConfig)
     breaking: BreakingReportConfig = Field(default_factory=BreakingReportConfig)
     mail_intake: MailIntakeReportConfig = Field(default_factory=MailIntakeReportConfig)
+    mail_extract_quality: MailExtractQualityReportConfig = Field(
+        default_factory=MailExtractQualityReportConfig)
     breaking_timeline: BreakingTimelineReportConfig = Field(
         default_factory=BreakingTimelineReportConfig)
     prompt_drift: PromptDriftReportConfig = Field(default_factory=PromptDriftReportConfig)

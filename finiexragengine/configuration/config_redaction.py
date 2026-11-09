@@ -83,6 +83,7 @@ PUBLIC_PATHS: Tuple[str, ...] = (
     'reports.source_latency.window',
     'reports.source_quarantine.window',
     'reports.mail_intake.window',
+    'reports.mail_extract_quality.window',
     'reports.breaking.window',
     'reports.breaking_timeline.window',
     'reports.prompt_drift.window',
@@ -105,6 +106,7 @@ PUBLIC_PATHS: Tuple[str, ...] = (
     'mail.mailboxes.*.senders.*',
     'mail.mailboxes.*.extract.model',
     'mail.mailboxes.*.extract.prompt_name',
+    'mail.mailboxes.*.extract.mode',
     # pipeline: what it is and what it evaluates
     'pipeline_id',
     'outcome_type',

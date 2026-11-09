@@ -194,6 +194,9 @@
     "mail_intake": {
       "window": "30d"
     },
+    "mail_extract_quality": {
+      "window": "30d"
+    },
     "source_quarantine": {
       "window": "30d"
     },

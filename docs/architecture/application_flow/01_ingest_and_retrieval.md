@@ -556,7 +556,10 @@ Top-down, each new article flows through these units in order:
    Its settings live in `mail.mailboxes.<source_id>` of the app config, not on the source — a field
    on `SourceConfig` would enter every pipeline's fingerprint. A mail source sits in a `collect` set
    (#137) until a reading says a pipeline should read it. Mails received before the mailbox existed
-   come in through `email_backfill_cli` (raw mails only; the source extracts them at its own pace).
+   come in through `email_backfill_cli` (raw mails only; the source extracts them at its own pace). With
+   `extract.mode: "manual"` the service skips step 2 and a separate run works the backlog off
+   (`email_extract_cli`, batch by batch, oldest first), so a bulk extraction never shares the signal
+   pipelines' pass pool, budget or provider quota; the service still delivers what that run extracted.
 
 3. **Embed — `core/rag/openai_embedder.py` (`OpenAIEmbedder.embed`).**
    Sends the article text to OpenAI and gets back a 1536-dimension vector — a point

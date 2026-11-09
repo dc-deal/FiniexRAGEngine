@@ -111,3 +111,23 @@ def test_a_backfill_dry_run_writes_nothing_and_a_rerun_adds_nothing(tmp_path, st
     assert again.already_stored == 3
     pending = store.pending('newsletter_a', 1, 10)
     assert len(pending) == 2 and pending[0].sent_at == datetime(2026, 11, 3, 4, 9, 1, tzinfo=timezone.utc)
+
+
+def test_quality_rows_split_by_format_and_samples_show_text_beside_stories(store):
+    store.store_mail('newsletter_a', 'INBOX', 9, 1, _mail(1, text='Die Notenbank hob den Satz auf 4,85 Prozent.'),
+                     GateVerdict(True))
+    alert = ParsedMail(message_id='<a1@example.com>', sender='alert@example.com', subject='Eil', sent_at=_SENT,
+                       text='Kurz.', size_bytes=10)
+    store.store_mail('newsletter_a', 'INBOX', 9, 2, alert, GateVerdict(True))
+    store.record_extract(mail_id('<m1@example.com>'), 1, model='m', prompt_hash='h',
+                         stories=[MailStory(headline='Rate raised', facts='To 4.85 %, not 5.10 %.', topic='other')],
+                         dropped=['ad'], prompt_tokens=1, completion_tokens=1, usd=0.01, duration_ms=2000)
+    store.record_extract(mail_id('<a1@example.com>'), 1, model='m', prompt_hash='h', stories=[], dropped=[],
+                         prompt_tokens=1, completion_tokens=1, usd=0.001, duration_ms=500)
+    rows = {row['sender']: row for row in store.quality_rows(_SENT - timedelta(days=1))}
+    briefing = rows['briefing@example.com']
+    assert (briefing['mails'], briefing['stories'], briefing['numbers_found'], briefing['numbers_total']) == (1, 1, 1, 2)
+    assert (rows['alert@example.com']['mails'], rows['alert@example.com']['empty']) == (1, 1)
+    sample = store.samples('Briefing@Example.com', 3)
+    assert sample[0]['text'].startswith('Die Notenbank') and sample[0]['stories'][0]['headline'] == 'Rate raised'
+    assert store.samples('briefing@example.com', 3, version=2) == []

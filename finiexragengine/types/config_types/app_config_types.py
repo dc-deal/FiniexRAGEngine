@@ -509,10 +509,16 @@ class MailExtractConfig(BaseModel):
     """The extract step of one mail source (#138): which instruction, which model, how many per pass."""
     model: str = 'gpt-5-mini'
     prompt_name: str = 'mail_extract'
-    prompt_version: int = Field(default=1, ge=1)
+    # v2 (2026-11-09): v1 plus "the newsletter itself is never a story" and "a list pointing to other
+    # articles is not either" — found by judging the first staged batch per format (#138 addendum).
+    prompt_version: int = Field(default=2, ge=1)
     # Bounded so a backlog (a backfill, a provider outage) drains over several passes instead of
     # pushing one ingest pass past its deadline: ~40 s per mail against a 300 s pass.
     max_mails_per_pass: int = Field(default=3, ge=1, le=20)
+    # 'live': the source extracts during its ingest pass. 'manual': the service only takes mails in and
+    # delivers existing stories; extraction runs outside it (`email_extract_cli`), batch by batch — the
+    # way a backlog is worked off without touching the signal pipelines' pool, budget or quota.
+    mode: Literal['live', 'manual'] = 'live'
 
 
 class MailboxConfig(BaseModel):

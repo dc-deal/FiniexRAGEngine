@@ -34,3 +34,10 @@ def test_a_failing_mailbox_says_why_and_since_when():
     assert 'backlog 2 · 1 rejected · ⚠ IMAP login refused since 11:59' in text
     stats.set_mail('unknown_source', MailSnapshot(last=_NOW))          # never registered: ignored
     assert 'unknown_source' not in _render(stats)
+
+
+def test_a_manual_source_says_so_and_its_backlog_is_not_an_alarm():
+    stats = EngineStats(mail_source_ids=['newsletter_a'])
+    stats.set_mail('newsletter_a', MailSnapshot(last=_NOW, state='ok', backlog=40, extract_mode='manual'))
+    text = _render(stats)
+    assert 'backlog 40 · extract manual · ok' in text

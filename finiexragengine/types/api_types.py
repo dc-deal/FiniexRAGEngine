@@ -523,6 +523,7 @@ class MailSourceInfo(BaseModel):
     last_success_at: Optional[datetime] = None
     failing_since: Optional[datetime] = None
     failure: str = ''
+    extract_mode: str = 'live'      # 'manual': this source extracts only in a separate run
     today: MailWindowInfo = MailWindowInfo()
     week: MailWindowInfo = MailWindowInfo()
     extract_backlog: int = 0
@@ -530,3 +531,19 @@ class MailSourceInfo(BaseModel):
 
 class MailStatusResponse(BaseModel):
     sources: List[MailSourceInfo] = []
+
+
+class MailSampleInfo(BaseModel):
+    """One extracted mail beside its source text (#138 addendum) — subscriber content, `mail:sample` only."""
+    message_id: str
+    subject: str = ''
+    sent_at: datetime
+    extract_version: int
+    text: str
+    stories: List[Dict[str, Any]] = []
+    dropped: List[str] = []
+
+
+class MailSampleResponse(BaseModel):
+    sender: str
+    mails: List[MailSampleInfo] = []

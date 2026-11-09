@@ -43,6 +43,7 @@ class PendingMail:
     message_id: str
     sent_at: datetime
     text: str
+    sender: str = ''
 
 
 class MailStory(BaseModel):
@@ -103,6 +104,7 @@ class MailSourceStatus:
     last_success_at: Optional[datetime] = None
     failing_since: Optional[datetime] = None
     failure: str = ''
+    extract_mode: str = 'live'           # 'live' | 'manual' — whether this process extracts at all
     today: MailWindowCounts = MailWindowCounts()
     week: MailWindowCounts = MailWindowCounts()
     extract_backlog: int = 0

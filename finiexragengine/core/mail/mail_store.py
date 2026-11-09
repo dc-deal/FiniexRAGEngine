@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import psycopg
 
+from finiexragengine.core.mail.extract_fidelity import stories_fidelity
 from finiexragengine.core.mail.mail_message import mail_id as mail_key
 from finiexragengine.core.mail.story_articles import story_article_id
 from finiexragengine.exceptions.ragengine_errors import VectorStoreError
@@ -77,7 +78,7 @@ class MailStore:
     def pending(self, source_id: str, version: int, limit: int) -> List[PendingMail]:
         """Accepted mails without a usable extract at `version`, oldest first."""
         rows = self._all(
-            'SELECT r.mail_id, r.source_id, r.message_id, r.sent_at, r.text FROM mail_raw r '
+            'SELECT r.mail_id, r.source_id, r.message_id, r.sent_at, r.text, r.sender FROM mail_raw r '
             'LEFT JOIN mail_extracts e ON e.mail_id = r.mail_id AND e.extract_version = %s '
             "WHERE r.source_id = %s AND r.verdict = 'accepted' "
             'AND (e.mail_id IS NULL OR (e.stories IS NULL AND e.attempts < %s)) '
@@ -193,6 +194,47 @@ class MailStore:
                  'rejected_dmarc': int(row[5]), 'rejected_size': int(row[6]), 'stories': int(row[7]),
                  'usd': round(float(row[8]), 6), 'extract_seconds': round(int(row[9]) / 1000, 1)}
                 for row in rows]
+
+    def quality_rows(self, since: datetime) -> List[Dict[str, Any]]:
+        """Per sender (= newsletter format) and extract version: how the extract went (#138 addendum).
+
+        Fidelity is computed here from the stored text and stories rather than stored, so a better check
+        applies to every extract already made.
+        """
+        rows = self._all(
+            'SELECT r.sender, e.extract_version, r.text, e.stories, e.dropped, e.usd, e.duration_ms, '
+            'e.error FROM mail_extracts e JOIN mail_raw r ON r.mail_id = e.mail_id '
+            'WHERE e.extracted_at >= %s ORDER BY r.sender, e.extract_version', (since,))
+        grouped: Dict[Tuple[str, int], Dict[str, Any]] = {}
+        for sender, version, text, stories, dropped, usd, duration_ms, error in rows:
+            row = grouped.setdefault((sender, version), {
+                'sender': sender, 'extract_version': version, 'mails': 0, 'failed': 0, 'empty': 0,
+                'words': 0, 'stories': 0, 'numbers_found': 0, 'numbers_total': 0, 'dropped': 0,
+                'usd': 0.0, 'seconds': 0.0})
+            if stories is None:
+                row['failed'] += 1 if error else 0
+                continue
+            found, total = stories_fidelity(stories, text or '')
+            row['mails'] += 1
+            row['empty'] += 0 if stories else 1
+            row['words'] += len((text or '').split())
+            row['stories'] += len(stories)
+            row['numbers_found'] += found
+            row['numbers_total'] += total
+            row['dropped'] += len(dropped or [])
+            row['usd'] = round(row['usd'] + (usd or 0.0), 6)
+            row['seconds'] = round(row['seconds'] + (duration_ms or 0) / 1000, 1)
+        return list(grouped.values())
+
+    def samples(self, sender: str, n: int, version: Optional[int] = None) -> List[Dict[str, Any]]:
+        """The `n` newest extracted mails of one sender: raw text beside its stories — the judge's view."""
+        rows = self._all(
+            'SELECT r.subject, r.sent_at, r.text, e.extract_version, e.stories, e.dropped, r.message_id '
+            'FROM mail_extracts e JOIN mail_raw r ON r.mail_id = e.mail_id '
+            'WHERE r.sender = %s AND e.stories IS NOT NULL AND (%s::int IS NULL OR e.extract_version = %s) '
+            'ORDER BY r.sent_at DESC LIMIT %s', (sender.lower(), version, version, n))
+        return [{'subject': row[0], 'sent_at': row[1], 'text': row[2] or '', 'extract_version': row[3],
+                 'stories': row[4] or [], 'dropped': row[5] or [], 'message_id': row[6]} for row in rows]
 
     def tables_exist(self) -> bool:
         row = self._one("SELECT count(*) FROM information_schema.tables "

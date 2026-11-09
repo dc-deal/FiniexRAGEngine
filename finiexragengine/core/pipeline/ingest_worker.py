@@ -365,7 +365,8 @@ class IngestWorker:
                 state=status.state, today_mails=status.today.mails, today_items=status.today.items,
                 week_mails=status.week.mails, week_items=status.week.items,
                 week_rejected=status.week.rejected, backlog=status.extract_backlog,
-                failure=status.failure, failing_since=status.failing_since))
+                failure=status.failure, failing_since=status.failing_since,
+                extract_mode=status.extract_mode))
         stats.set_ingest(source_set_id, IngestSnapshot(last=now, fetched=result.fetched,
                                                        new=result.stored, cost_usd=usd,
                                                        duration_ms=duration_ms,

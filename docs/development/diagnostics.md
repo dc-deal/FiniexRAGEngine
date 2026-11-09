@@ -426,6 +426,16 @@ An e-mail source (#138) is visible in three places, from fast to deep:
   `GET /v1/reports/mail_intake`) — per day of intake and source: seen, accepted, refused by reason
   (sender / DMARC / size), stories, extract USD and seconds.
 
+**Working off a backlog without the service** (#138 addendum). With `mail.mailboxes.<id>.extract.mode:
+"manual"` the service takes mails in and delivers stories but extracts nothing; a separate run does, batch
+by batch, oldest first — `python -m finiexragengine.cli.email_extract_cli --source <id> --limit 10` (💸,
+refused while the mode is `live`). Each batch prints a census per sender. Before the next batch, judge it:
+the report `mail_extract_quality` (`mail_extract_quality_cli`, `GET /v1/reports/mail_extract_quality`)
+gives per sender — one sender is one newsletter format — stories per 1,000 words, empty extracts and the
+share of the extract's numbers found literally in the source; `GET /v1/mail/sample?sender=…` puts raw text
+beside the stories. A format that does badly gets a new instruction version before the next batch; once
+every format reads well, the mode goes back to `live`.
+
 Reading it: a **`dmarc` refusal** from an allowlisted sender means the sender changed how it signs or
 sends — check before widening anything. A **`sender` refusal** is the gate working (a forward, a new
 newsletter address not yet allowlisted). A **backlog that does not shrink** is the extract step failing
@@ -921,7 +931,7 @@ database and no shell, and `POST /run` is not registered in production, so nothi
 | `GET /v1/logs/{name}` | `logs:<name>` | the engine log over a **UTC** range, redacted (`engine` is the only stream) |
 | `GET /v1/configs` · `/{name}` | `configs:<name>` | the **effective** configuration this process runs — `app`, `pipelines`, `source_sets` — `user_configs/` included, credentials masked |
 | `GET /v1/dashboard/{name}` | `dashboard:<view>` | the live console's state as **one reading** — the stage rows, the breaking episodes, the activity feed and the verdicts behind them, stamped with the engine's own clock (`engine` is the only view). `503` when this process runs no workers: nothing is collecting, which is a different fact from nothing happening |
-| `GET /v1/mail/{name}` | `mail:status` | `status`: each e-mail source (#138) — state, last poll and success, failure and since when, mails/stories/refusals today and this week, extract backlog. No account, no address. A configured source this process does not poll answers its stored counts as `not_polled_here` |
+| `GET /v1/mail/{name}` | `mail:<name>` | `status`: each e-mail source (#138) — state, extract mode, last poll and success, failure and since when, mails/stories/refusals today and this week, extract backlog. No account, no address. A configured source this process does not poll answers its stored counts as `not_polled_here`. `sample` (`mail:sample`, a grant of its own): `?sender=…&n=…` — the raw text of a sender's newest extracted mails beside their stories; subscriber content, the judge's view of one newsletter format |
 | `GET /v1/diagnose/{name}` | `diagnose:<name>` | `feed`: one **configured** feed, fetched and parsed live — the raw bytes that machine receives. `memory`: what the process holds — GC pauses, top types, live counts, tracemalloc growth when enabled |
 
 Two things a reading has to respect. **A `403` is a grant, not a bug** — access is by name, so a

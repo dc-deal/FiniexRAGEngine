@@ -48,3 +48,35 @@ def test_another_grant_is_refused_and_an_unknown_name_is_404():
     assert _get('other-token').status_code == 403
     assert _get('mail-token', name='everything').status_code == 403   # the grant names `status` only
     assert _get('not-a-token').status_code == 401
+
+
+def _sample_client() -> TestClient:
+    api_config = ApiConfig(tokens={
+        'judge': {'token': 'judge-token', 'grants': ['mail:sample']},
+        'mail': {'token': 'mail-token', 'grants': ['mail:status']}})
+    tokens = TokenRegistry(api_config.tokens)
+
+    class _Store:
+        def samples(self, sender, n, version):
+            return [{'message_id': '<m@x>', 'subject': 's', 'sent_at': datetime(2026, 11, 9, tzinfo=timezone.utc),
+                     'extract_version': 1, 'text': 'raw text', 'stories': [{'headline': 'H'}], 'dropped': []}][:n]
+
+    manager = AppConfigManager()
+    registry = PipelineRegistry(manager.get_pipelines_dir(), manager.get_user_pipelines_dir())
+    registry.load()
+    app = FastAPI()
+    app.include_router(_build_protected_router(registry, api_config, tokens, extra_routers=[
+        build_mail_router(tokens, ['newsletter_a'], _Store(), lambda: [])]))
+    return TestClient(app)
+
+
+def test_the_sample_is_its_own_grant_and_shows_text_beside_stories():
+    client = _sample_client()
+    def get(token, query):
+        return client.get(f'/v1/mail/sample{query}', headers={'Authorization': f'Bearer {token}'})
+    response = get('judge-token', '?sender=Briefing@X.test&n=1')
+    assert response.status_code == 200
+    assert response.json()['mails'][0]['text'] == 'raw text' and response.json()['sender'] == 'briefing@x.test'
+    assert get('mail-token', '?sender=b@x').status_code == 403          # status holders never see raw text
+    assert get('judge-token', '').status_code == 422                    # one format per call
+    assert get('judge-token', '?sender=b@x&n=50').status_code == 422    # capped

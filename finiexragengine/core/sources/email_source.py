@@ -65,7 +65,8 @@ class EmailSource(AbstractSource):
         # Extracts handed to the ingestor by the last call, confirmed at the start of the next one.
         self._handed_out: List[Tuple[str, int]] = []
         self._status = MailSourceStatus(source_id=config.source_id, state='waiting',
-                                        account=mailbox_config.account)
+                                        account=mailbox_config.account,
+                                        extract_mode=mailbox_config.extract.mode)
         self.last_census: Optional[MailIntakeCensus] = None
 
     def get_fetch_deadline_ms(self) -> Optional[float]:
@@ -122,7 +123,13 @@ class EmailSource(AbstractSource):
                         census.rejected.get(verdict.reason or 'unknown', 0) + 1
 
     def _extract(self, census: MailIntakeCensus) -> None:
-        """Never raises: a failure is written to the extract row and retried on a later pass."""
+        """Never raises: a failure is written to the extract row and retried on a later pass.
+
+        In `manual` mode it does nothing: extraction runs outside the service (`email_extract_cli`),
+        and the stories that run writes are delivered by `_deliver` like any others.
+        """
+        if self._mailbox_config.extract.mode == 'manual':
+            return
         source_id = self.get_source_id()
         try:
             pending = self._store.pending(source_id, self._extractor.version,
@@ -180,7 +187,8 @@ class EmailSource(AbstractSource):
             today, week, backlog = self._status.today, self._status.week, self._status.extract_backlog
         self._status = MailSourceStatus(
             source_id=source_id, state='ok', account=self._mailbox_config.account,
-            last_poll_at=now, last_success_at=now, today=today, week=week, extract_backlog=backlog)
+            last_poll_at=now, last_success_at=now, extract_mode=self._mailbox_config.extract.mode,
+            today=today, week=week, extract_backlog=backlog)
         if census.seen or census.extracted or census.extract_failed or census.stories_delivered:
             rejected = sum(census.rejected.values())
             logger.info('[MAIL] %s · %d new · %d accepted · %d rejected%s · %d extracted ($%.4f)%s · '
@@ -195,7 +203,7 @@ class EmailSource(AbstractSource):
             source_id=self.get_source_id(), state='failing', account=self._mailbox_config.account,
             last_poll_at=now, last_success_at=self._status.last_success_at,
             failing_since=self._status.failing_since or now, failure=reason[:200],
-            today=self._status.today, week=self._status.week,
+            extract_mode=self._mailbox_config.extract.mode, today=self._status.today, week=self._status.week,
             extract_backlog=self._status.extract_backlog)
 
 

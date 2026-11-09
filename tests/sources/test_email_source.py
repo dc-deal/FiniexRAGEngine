@@ -172,3 +172,15 @@ def test_the_mailbox_url_is_imaps_only():
     assert parse_mailbox_url('imaps://imap.test/Newsletters') == ('imap.test', 993, 'Newsletters')
     with pytest.raises(ValueError):
         parse_mailbox_url('imap://imap.test/INBOX')
+
+
+def test_in_manual_mode_the_service_extracts_nothing_but_delivers_what_a_separate_run_extracted():
+    store = _Store()
+    source = _source(_Mailbox([1]), store, _Extractor())
+    source._mailbox_config = source._mailbox_config.model_copy(update={
+        'extract': source._mailbox_config.extract.model_copy(update={'mode': 'manual'})})
+    assert source.fetch() == [] and not any(e.startswith('extract') for e in store.events)
+    assert source.mail_status().extract_mode == 'manual' and source.mail_status().extract_backlog == 1
+    key = next(iter(store.mails))
+    store.record_extract(key, 1, stories=[MailStory(headline='H', facts='F.', topic='other')])   # the separate run
+    assert [article.title for article in source.fetch()] == ['H']
