@@ -89,3 +89,14 @@ def test_an_unreachable_server_is_typed_as_such(monkeypatch):
     with pytest.raises(SourceFetchError) as caught:
         _mailbox().read_new(None, 0, max_mail_bytes=1_000)
     assert caught.value.error_type == 'UNREACHABLE'
+
+
+def test_a_session_closed_at_the_greeting_is_typed_and_transient(monkeypatch):
+    # Gmail answered a second connect within seconds with `socket error: EOF` (2026-11-12): imaplib raises
+    # its own `abort` from the constructor, which must not escape untyped and end the ingest pass.
+    def closed(*args, **kwargs):
+        raise imaplib.IMAP4.abort('socket error: EOF')
+    monkeypatch.setattr(imap_mailbox.imaplib, 'IMAP4_SSL', closed)
+    with pytest.raises(SourceFetchError) as caught:
+        _mailbox().read_new(None, 0, max_mail_bytes=1_000)
+    assert (caught.value.error_type, caught.value.status) == ('HTTP_ERROR', 503)

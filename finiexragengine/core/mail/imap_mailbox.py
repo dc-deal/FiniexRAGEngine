@@ -55,6 +55,12 @@ class ImapMailbox:
             client = imaplib.IMAP4_SSL(self._host, self._port, timeout=self._timeout)
         except OSError as exc:
             raise _unreachable(exc) from exc
+        except imaplib.IMAP4.error as exc:
+            # The server closed the session at its greeting (`socket error: EOF`, measured against Gmail
+            # on a second connect within seconds, 2026-11-12). Transient, and typed — an untyped exception
+            # here would end the whole ingest pass, not just this source's poll.
+            raise SourceFetchError(f'IMAP server closed the session at connect: {_reason(exc)}',
+                                   error_type='HTTP_ERROR', status=503) from exc
         try:
             try:
                 client.login(self._account, self._password)
