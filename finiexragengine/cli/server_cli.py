@@ -4,6 +4,7 @@ import os
 import sys
 
 import uvicorn
+from pydantic import ValidationError
 
 from finiexragengine.exceptions.ragengine_errors import (
     AlreadyRunningError,
@@ -84,7 +85,10 @@ def main() -> None:
                 'finiexragengine.api.api_app:create_app',
                 host=args.host, port=args.port, reload=args.reload, factory=True,
             )
-    except (ConfigurationError, AlreadyRunningError) as exc:
+    except (ConfigurationError, AlreadyRunningError, ValidationError) as exc:
+        # A configuration the schema refuses (`ValidationError`) is the same kind of refusal: a grant
+        # naming a surface this build does not know — written into `user_configs` before the code
+        # that adds the surface was deployed — would otherwise exit 1 and be restarted in a loop.
         print(f'\nThe server did not start:\n\n  {exc}\n', file=sys.stderr)
         # Exit 2 = "this must not run", and it is addressed to the service manager
         # (ISSUE_126). NSSM restarts on exit by default, which is right for a crash and

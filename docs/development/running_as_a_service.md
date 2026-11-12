@@ -470,10 +470,17 @@ why no write-ahead log is needed here.
 |---|---|---|
 | `0` | stopped on request | nothing |
 | `1` | crashed — **including a database that is not up yet**, which is the one failure here that a restart actually fixes | restart |
-| `2` | **this must not run** — a configuration refusal (schema behind, instance identity missing or malformed, token problem), or **another live process already owns this journal's worker role** | **do not restart** (`AppExit 2 Exit`) |
+| `2` | **this must not run** — a configuration refusal (schema behind, instance identity missing or malformed, token problem, a configuration the schema refuses — e.g. a grant naming a surface this build does not know), or **another live process already owns this journal's worker role** | **do not restart** (`AppExit 2 Exit`) |
 
 None of the exit-2 causes improves by being retried, and a restart loop over one of them buries the
 actual message under identical log entries.
+
+**Code before grants.** A new surface (the signal packages' `packages`, `receipts`,
+`package_schedule`, 2026-11) exists only in the build that adds it. A token in `user_configs` that
+names it before that build is deployed refuses the configuration — exit 2 since 2026-11, a restart
+loop before. Deploy, verify the build from outside, then write the grants and restart. And no deploy
+across the weekly package run (Sunday 01:30 UTC, `signal_packages.md`): the deploy pulls the new code
+while the old process still runs, and a package run started in that window imports the new code.
 
 ## The acceptance test is a reboot
 

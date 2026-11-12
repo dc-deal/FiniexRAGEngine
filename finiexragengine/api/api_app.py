@@ -4,7 +4,8 @@ import logging
 import os
 import socket
 from contextlib import asynccontextmanager
-from typing import AsyncIterator, Callable, Dict, List, Optional
+from pathlib import Path
+from typing import Any, AsyncIterator, Callable, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, FastAPI
 from finiex_auth.bearer_auth import build_bearer_dependency
@@ -29,6 +30,7 @@ from finiexragengine.api.endpoints.config_router import build_config_router
 from finiexragengine.api.endpoints.dashboard_router import build_dashboard_router
 from finiexragengine.api.endpoints.diagnose_router import build_diagnose_router
 from finiexragengine.api.endpoints.mail_router import build_mail_router
+from finiexragengine.api.endpoints.package_router import build_package_routers, public_package_names
 from finiexragengine.configuration.abstract_config_view import AbstractConfigView
 from finiexragengine.configuration.app_config_manager import AppConfigManager
 from finiexragengine.configuration.app_config_view import AppConfigView
@@ -60,6 +62,10 @@ from finiexragengine.core.outcome.outcome_exporter import OutcomeArchiveExporter
 from finiexragengine.core.outcome.outcome_store import OutcomeStore
 from finiexragengine.core.outcome.stream_dispatcher import StreamDispatcher
 from finiexragengine.core.outcome.stream_replay import StreamReplay
+from finiexragengine.core.packages.package_ledger import PackageLedger
+from finiexragengine.core.packages.package_loop import PackageLoop, PackChildRunner
+from finiexragengine.core.packages.package_schedule import PackageSchedule
+from finiexragengine.core.packages.package_store import PackageStore
 from finiexragengine.core.pipeline.detection_preflight import log_detection_preflight
 from finiexragengine.core.pipeline.pipeline_assembler import PipelineAssembler
 from finiexragengine.core.pipeline.pipeline_registry import PipelineRegistry
@@ -448,6 +454,27 @@ def create_app(attach_runners: Optional[bool] = None,
 
         dashboard_provider = sample_engine_dashboard
 
+    # Signal packages (testingide#120): closed days of every pipeline, zipped weekly for the Testing IDE
+    # on the collector's contract. Only with a journal and `packages.enabled`. The engine keeps the
+    # clock and serves the files; every run is a child process (`package_loop`), so a run's memory is
+    # returned when it exits and a pass of the signal pipelines never waits behind it. Independent of
+    # Telegram, unlike the weekly report's scheduler — Telegram only carries the run report when set up.
+    packages_cfg = config_manager.get_config().packages
+    package_store: Optional[PackageStore] = None
+    package_ledger: Optional[PackageLedger] = None
+    package_schedule: Optional[PackageSchedule] = None
+    package_loop: Optional[PackageLoop] = None
+    package_runner: Optional[PackChildRunner] = None
+    if packages_cfg.enabled and database_url:
+        package_root = Path(packages_cfg.output_dir)
+        package_store, package_ledger = PackageStore(package_root), PackageLedger(package_root)
+        package_schedule = PackageSchedule(
+            package_root, packages_cfg,
+            lambda: sorted(pipeline.get_config().pipeline_id for pipeline in registry.list_pipelines()))
+        package_runner = PackChildRunner(packages_cfg.pack_timeout_seconds)
+        package_loop = PackageLoop(package_schedule, package_ledger, package_runner,
+                                   on_report=telegram_client.send_message if telegram_client else None)
+
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # The background heartbeat lives inside the server process: started once the
@@ -456,6 +483,7 @@ def create_app(attach_runners: Optional[bool] = None,
         watchdog_task: Optional[asyncio.Task] = None
         heartbeat_task: Optional[asyncio.Task] = None
         stream_task: Optional[asyncio.Task] = None
+        package_task: Optional[asyncio.Task] = None
         # Before anything allocates in earnest: the collector hook times every pause from here on,
         # and tracemalloc (when configured) only sees allocations made after it starts.
         memory_census.install()
@@ -479,7 +507,18 @@ def create_app(attach_runners: Optional[bool] = None,
             await command_poller.start()
         if weekly_scheduler is not None:
             weekly_scheduler.start()
+        if package_loop is not None:
+            package_task = asyncio.create_task(package_loop.run(), name='package-loop')
         yield
+        # The package clock first: no run starts during the drain, and one in flight is stopped — it
+        # leaves a `.part` and a lock that the next run cleans up and takes over.
+        if package_loop is not None:
+            await package_loop.stop()
+            if package_runner is not None:
+                package_runner.terminate()
+            if package_task is not None:
+                package_task.cancel()
+                await asyncio.gather(package_task, return_exceptions=True)
         if weekly_scheduler is not None:
             weekly_scheduler.stop()
         if command_poller is not None:
@@ -566,17 +605,36 @@ def create_app(attach_runners: Optional[bool] = None,
     # viewer draws and the start time this route reports cannot disagree.
     build = build_build_router(build_info)
     exempt = ((health, api_config.health_public), (build, api_config.build_info_public))
+    # The package routes: health and the schedule's view are open (a consumer's park check reads them,
+    # and they describe the service — private pipelines only by alias); the packages themselves are
+    # behind `packages` / `receipts` / `package_schedule`. Built here because they need the token registry.
+    # One registry, every user: the bearer dependency verifies against it, and each gated surface asks
+    # it what a verified consumer may read (ISSUE_104). Built here rather than inside the protected
+    # router so all see the identical object — a second load could disagree with the first about who
+    # exists.
+    tokens = load_token_registry(api_config.tokens)
+    package_public: List[APIRouter] = []
+    package_protected: List[APIRouter] = []
+    if (package_store is not None and package_ledger is not None and package_schedule is not None
+            and package_loop is not None):
+        loop = package_loop
+        open_packages, gated_packages = build_package_routers(
+            store=package_store, ledger=package_ledger, schedule=package_schedule, config=packages_cfg,
+            tokens=tokens, loop_status=loop.status,
+            heartbeat_status=lambda: _package_heartbeat(heartbeat),
+            packer={'program': 'finiex-rag-packages', 'version': build_info.version,
+                    'commit': build_info.commit, 'dirty': build_info.dirty},
+            public_names=public_package_names(
+                [pipeline.get_config().pipeline_id for pipeline in registry.list_pipelines()
+                 if registry.is_private(pipeline.get_config().pipeline_id)]))
+        package_public.append(open_packages)
+        package_protected.append(gated_packages)
     app.include_router(_build_public_router(
-        api_config, [router for router, is_public in exempt if is_public]))
+        api_config, [router for router, is_public in exempt if is_public] + package_public))
     # Diagnostic reports (ISSUE_104) — protected like everything else, and only where there is a
     # store to read: without a database the catalog has nothing to answer from, and a route that
     # can only 503 is worse than one that is honestly absent.
-    # One registry, two users: the bearer dependency verifies against it, and the report surface
-    # asks it what a verified consumer may read (ISSUE_104). Built here rather than inside the
-    # protected router so both see the identical object — a second load could disagree with the
-    # first about who exists.
-    tokens = load_token_registry(api_config.tokens)
-    protected_extra = [router for router, is_public in exempt if not is_public]
+    protected_extra = [router for router, is_public in exempt if not is_public] + package_protected
     if database_url:
         protected_extra.append(build_report_router(
             database_url, config_manager, tokens,
@@ -626,6 +684,15 @@ def create_app(attach_runners: Optional[bool] = None,
         # The live state this process collects (ISSUE_126 Phase 2), or None when nothing does.
         dashboard_provider=dashboard_provider))
     return app
+
+
+def _package_heartbeat(heartbeat: Optional[OutsideHeartbeat]) -> Dict[str, Any]:
+    """The engine's outside heartbeat in the package health's shape (the collector's keys)."""
+    if heartbeat is None:
+        return {'enabled': False, 'sent': 0, 'withheld': 0, 'failed': 0}
+    status = heartbeat.status()
+    return {'enabled': True, 'sent': status.get('beats_sent'), 'withheld': status.get('beats_withheld'),
+            'failed': status.get('beats_failed')}
 
 
 def _build_config_views(config_manager: AppConfigManager,

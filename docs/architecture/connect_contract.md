@@ -256,6 +256,23 @@ neither route writes `archive_export_log`, so pulling a day over HTTP never mark
 over. The incremental export (`export_cli --incremental`, the weekly auto-export) keeps deciding
 from its own record, and `/archive/days` only reads that record (`exported`).
 
+## Signal packages: closed days, zipped weekly, confirmed by receipt
+
+```
+GET  /v1/packages?unacknowledged=true          packages
+GET  /v1/packages/{package_id}                 packages:<id>     the manifest
+GET  /v1/packages/{package_id}/zip             packages:<id>     application/zip, Range → 206
+POST /v1/packages/{package_id}/receipt         receipts:<id>     {"zip_sha256": …, "note": …}
+GET  /v1/packages/health · /v1/packages/schedule                 open
+```
+
+For a consumer that imports whole days rather than following the stream: one package per pipeline
+and week, chained by `previous_package_id`, each member one UTC day named
+`<pipeline_id>_<YYYY-MM-DD>.jsonl` — byte for byte the export file of that day. A receipt is accepted
+only with the zip's hash **and** after a complete download by the same token; it moves the package to
+`delivered`. The contract is the collector's tick packages', so one client reads both. Everything —
+manifest, rules, schedule, the go-live order — is in `signal_packages.md`.
+
 ## Diagnostics: `GET /v1/reports`
 
 Token-gated like everything else. It serves the engine's own metrics surfaces — source health and

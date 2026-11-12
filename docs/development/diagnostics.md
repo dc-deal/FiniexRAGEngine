@@ -443,6 +443,26 @@ newsletter address not yet allowlisted). A **backlog that does not shrink** is t
 **failing** source walks the quarantine ladder like a feed: a refused login is durable — the app
 password was revoked — and needs a new one in `user_configs`, not a restart.
 
+## Are the signal packages being made and fetched?
+
+The package service (`signal_packages.md`) answers in three places:
+
+- `GET /v1/packages/health` (open) — `ok` or `degraded` with reasons (`disk_low`, `receipt_overdue`,
+  `last_run_failed`, `last_run_refused`), the next weekly and special run, whether a run is in flight,
+  and each source's last run (private pipelines under their alias);
+- `GET /v1/packages?unacknowledged=true` (grant `packages`) — what is made and not yet confirmed;
+  `GET /v1/packages/ledger?package_id=…` — every step of one package: `packed`, each download with the
+  bytes it handed over, the receipt or why it was refused;
+- `python -m finiexragengine.cli.package_cli check` on the machine — mint, folder, free disk, and per
+  source its packages and last run.
+
+Reading it: **`receipt_overdue`** means the consumer has not confirmed a package for two weeks — ask
+there before touching anything here; the package waits, unchanged. **`last_run_refused`** names its reason
+in `last_run.json` (and on health): a disk below `min_free_percent`, no mint, a held lock — a lock
+held by a process that no longer exists is taken over by the next run on its own. **A `409` on a
+receipt** is the contract working: either the hash is not the package's, or the token never downloaded
+the whole zip (the ledger shows its `served` lines and their `bytes_sent`).
+
 ## Is the engine still working at all?
 
 The stall watchdog (ISSUE_75) answers this without being asked: no completed pass within
@@ -932,6 +952,9 @@ database and no shell, and `POST /run` is not registered in production, so nothi
 | `GET /v1/configs` · `/{name}` | `configs:<name>` | the **effective** configuration this process runs — `app`, `pipelines`, `source_sets` — `user_configs/` included, credentials masked |
 | `GET /v1/dashboard/{name}` | `dashboard:<view>` | the live console's state as **one reading** — the stage rows, the breaking episodes, the activity feed and the verdicts behind them, stamped with the engine's own clock (`engine` is the only view). `503` when this process runs no workers: nothing is collecting, which is a different fact from nothing happening |
 | `GET /v1/mail/{name}` | `mail:<name>` | `status`: each e-mail source (#138) — state, extract mode, last poll and success, failure and since when, mails/stories/refusals today and this week, extract backlog. No account, no address. A configured source this process does not poll answers its stored counts as `not_polled_here`. `sample` (`mail:sample`, a grant of its own): `?sender=…&n=…` — the raw text of a sender's newest extracted mails beside their stories; subscriber content, the judge's view of one newsletter format |
+| `GET /v1/packages/health` · `/v1/packages/schedule` | *open* | the signal packages' verdict and clock: reasons, next weekly and special run, a run in flight, each source's last run (private pipelines by alias); the weekly runs ahead, the special runs, the limits (`signal_packages.md`) |
+| `GET /v1/packages` · `/ledger` | `packages:<id>` | the packages this token may fetch (`?unacknowledged=true`), and every step of each — downloads with their bytes, receipts, refusals |
+| `GET /v1/packages/{id}` · `/{id}/zip` | `packages:<id>` | one package's manifest (with its receipt), and its zip (`Range` → 206) |
 | `GET /v1/diagnose/{name}` | `diagnose:<name>` | `feed`: one **configured** feed, fetched and parsed live — the raw bytes that machine receives. `memory`: what the process holds — GC pauses, top types, live counts, tracemalloc growth when enabled |
 
 Two things a reading has to respect. **A `403` is a grant, not a bug** — access is by name, so a

@@ -74,6 +74,11 @@ PUBLIC_PATHS: Tuple[str, ...] = (
     'weekly_report.day_of_week',
     'weekly_report.timezone',
     'weekly_report.export_dir',
+    # Signal packages: a folder, a weekday, and the token NAMES whose receipts are rehearsals — a name
+    # is not a credential (the configs route lists token names the same way).
+    'packages.output_dir',
+    'packages.weekday',
+    'packages.dev_consumers.*',
     # The connectivity probe's targets (2026-09-08) — a public DNS name and a literal address the
     # engine dials during an outage. Publishing them is the point: a reader has to know WHICH
     # destination a probe verdict is about before the verdict means anything.

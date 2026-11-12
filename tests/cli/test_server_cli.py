@@ -7,6 +7,7 @@ human at a terminal.
 import sys
 
 import pytest
+from pydantic import ValidationError
 
 from finiexragengine.cli import server_cli
 from finiexragengine.exceptions.ragengine_errors import (
@@ -14,6 +15,7 @@ from finiexragengine.exceptions.ragengine_errors import (
     ConfigurationError,
     VectorStoreError,
 )
+from finiexragengine.types.config_types.app_config_types import ApiConfig
 from finiexragengine.utils import windows_console
 
 
@@ -135,3 +137,26 @@ def test_the_exit_code_separates_a_refusal_from_a_retryable_failure(
     err = capsys.readouterr().err
     assert 'did not start' in err
     assert 'Traceback' not in err
+
+
+def test_a_grant_the_schema_refuses_is_a_refusal_not_a_crash(
+        monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
+    """A grant naming a surface this build does not know fails the config at parse time.
+
+    It happens when a token's grants are written into `user_configs` before the code that adds the
+    surface is deployed. Exit 1 there meant NSSM restarting a configuration that cannot heal, in a
+    loop; it is a refusal like any other and leaves with 2 and the schema's own message.
+    """
+    def boom(*args: object, **kwargs: object) -> None:
+        ApiConfig(tokens={'consumer': {'token': 'x' * 32, 'grants': ['no_such_surface:*']}})
+
+    monkeypatch.setattr(server_cli.uvicorn, 'run', boom)
+    monkeypatch.setattr(sys, 'argv', ['server_cli'])
+
+    with pytest.raises(SystemExit) as exit_info:
+        server_cli.main()
+
+    assert exit_info.value.code == 2
+    err = capsys.readouterr().err
+    assert 'did not start' in err and 'no_such_surface' in err
+    assert issubclass(ValidationError, ValueError)     # why it escaped the old handler as a crash

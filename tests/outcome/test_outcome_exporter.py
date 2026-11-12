@@ -11,6 +11,7 @@ import pytest
 
 from finiexragengine.core.outcome.outcome_exporter import (
     OutcomeArchiveExporter,
+    archive_text,
     auto_export_weekly,
 )
 from finiexragengine.core.outcome.outcome_store import OutcomeStore
@@ -194,3 +195,48 @@ def test_nothing_skipped_means_no_closing_time(seeded, tmp_path):
     assert result.skipped_open == []
     assert result.open_closes_at is None
 
+
+
+def test_incremental_reads_only_the_buckets_it_writes(seeded, monkeypatch, tmp_path):
+    """The journal is never read whole. Until 2026-11 every weekly run loaded every envelope ever
+    written to hand over a handful of new days — a +200 MB step in the live process each Saturday.
+    Selection now runs on a count-only index; a bucket's rows are read only when it is written."""
+    exporter = OutcomeArchiveExporter(seeded)
+    exporter.export(tmp_path, incremental=True, now=_NOW)            # flags the 20th and the 21st
+    OutcomeStore(seeded).save(_env('crypto_sentiment', datetime(2026, 7, 23, 6, 0, tzinfo=timezone.utc)))
+    reads = []
+    original = exporter.read_window
+
+    def spy(pipeline, start, end):
+        reads.append((pipeline, start.date().isoformat()))
+        return original(pipeline, start, end)
+
+    monkeypatch.setattr(exporter, 'read_window', spy)
+    later = datetime(2026, 7, 24, 8, 0, tzinfo=timezone.utc)
+    result = exporter.export(tmp_path, incremental=True, now=later)
+
+    assert {f.bucket for f in result.files} == {'2026-07-22', '2026-07-23'}
+    assert reads == [('crypto_sentiment', '2026-07-22'), ('crypto_sentiment', '2026-07-23')]
+
+
+def test_a_weekly_bucket_holds_its_days_in_order(seeded, tmp_path):
+    """Read by its span, a weekly bucket is its days concatenated — the same lines, the same order."""
+    later = datetime(2026, 8, 3, 8, 0, tzinfo=timezone.utc)          # ISO week 30 closed
+    daily = OutcomeArchiveExporter(seeded).export(tmp_path / 'd', now=later)
+    weekly = OutcomeArchiveExporter(seeded).export(tmp_path / 'w', boundary='weekly', now=later)
+
+    assert [f.bucket for f in weekly.files] == ['2026-W30']
+    days = ''.join((tmp_path / 'd' / 'crypto_sentiment' / f'{f.bucket}.jsonl').read_text()
+                   for f in sorted(daily.files, key=lambda f: f.bucket))
+    assert (tmp_path / 'w' / 'crypto_sentiment' / '2026-W30.jsonl').read_text() == days
+    assert weekly.total_lines == daily.total_lines == 4
+
+
+def test_a_window_read_rendered_is_the_exported_file(seeded, tmp_path):
+    """`read_window` + `archive_text` is the file, byte for byte — what a package member relies on."""
+    exporter = OutcomeArchiveExporter(seeded)
+    exporter.export(tmp_path, now=_NOW)
+    day = datetime(2026, 7, 20, tzinfo=timezone.utc)
+    rendered = archive_text(exporter.read_window('crypto_sentiment', day, day.replace(day=21)))
+
+    assert rendered.encode('utf-8') == (tmp_path / 'crypto_sentiment' / '2026-07-20.jsonl').read_bytes()

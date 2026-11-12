@@ -5,18 +5,22 @@ Defaults mirror configs/app_config.json exactly (operator-visible, tunable).
 from datetime import date
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from finiex_auth.consumer_token_base import ConsumerTokenBase
 
 from finiexragengine.types.config_types.report_config_types import ReportsConfig
 from finiexragengine.types.ingest_types import TextNormalizerProfile
+from finiexragengine.utils.quiet_minutes import quiet_minute_of_day
 
 
 # The surfaces a grant can name. A closed vocabulary on purpose: this is the *producing* seam —
 # an operator writing the config — so a typo like `report:source_health` must fail at boot rather
 # than turn into a silent denial nobody can see (engineering_rules.md, closed vocabularies).
+# `packages` and `receipts` are the signal packages' consumer surfaces, named as the collector's tick
+# packages name them so one client reads both services; `package_schedule` is the operator's.
 GRANT_SURFACES: Tuple[str, ...] = ('reports', 'pipelines', 'logs', 'configs',
-                                  'diagnose', 'dashboard', 'mail')
+                                  'diagnose', 'dashboard', 'mail',
+                                  'packages', 'receipts', 'package_schedule')
 
 
 class ConsumerToken(ConsumerTokenBase):
@@ -437,8 +441,9 @@ class WeeklyReportConfig(BaseModel):
     minute: int = 0
     timezone: str = 'UTC'
     # Alongside each weekly report, dump the closed-day JSONL archive (ISSUE_13 export path).
-    # All closed buckets are (re)written idempotently — whole buckets only, so it stays
-    # byte-identical to a manual `export_cli` run. Default on; `report_cli --no-export` skips it.
+    # Incremental: only the days closed since the last export are read and written — whole buckets,
+    # so it stays byte-identical to a manual `export_cli` run. Default on; `report_cli --no-export`
+    # skips it.
     export_outcomes: bool = True
     export_dir: str = 'data/signal_export'   # archive root: <dir>/<stream_id>/<bucket>.jsonl
 
@@ -503,6 +508,60 @@ class MonitoringConfig(BaseModel):
     """
     heartbeat_url: str = ''
     heartbeat_interval_seconds: int = Field(default=60, ge=10)
+
+
+PACKAGE_WEEKDAYS: Tuple[str, ...] = ('mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun')
+
+
+class PackagesConfig(BaseModel):
+    """Signal packages: closed UTC days of every pipeline, zipped weekly, fetched with a receipt.
+
+    The contract is the collector's tick packages' (testingide#120), so the Testing IDE reads both
+    services with one client. A package run is a child process the engine starts; the routes only
+    read what it wrote. Times are UTC. The weekly run packs everything closed before 00:00 of its
+    own day; a special run packs to a cutoff the operator names. Off by default: a development
+    machine packs nothing unless asked to.
+    """
+    enabled: bool = False
+    output_dir: str = 'data/packages'
+    # The weekly run (UTC). Sunday 01:30: after the day cut and its quiet minutes, so the cutoff is the
+    # same Sunday 00:00 the collector's tick packages use — a week's signals and ticks cover one span.
+    weekday: str = 'sun'
+    hour: int = Field(default=1, ge=0, le=23)
+    minute: int = Field(default=30, ge=0, le=59)
+    # Special runs (operator, `package_schedule` grant): their default start on the cutoff day, and the
+    # limits that keep a schedule from piling packages up.
+    special_hour: int = Field(default=1, ge=0, le=23)
+    special_minute: int = Field(default=0, ge=0, le=59)
+    special_after_seal_minutes: int = Field(default=30, ge=20, le=720)
+    special_max_per_week: int = Field(default=2, ge=0, le=7)
+    special_blackout_hours: int = Field(default=24, ge=0, le=72)
+    # A run refuses when the disk holding `output_dir` has less free than this. The packages are small
+    # (a week of every pipeline is ~11 MB zipped); the guard is against a full disk, not their size.
+    min_free_percent: float = Field(default=10, ge=0, le=95)
+    # A ready package without a verified receipt after this long turns the package health `degraded`.
+    receipt_overdue_days: int = Field(default=14, ge=1, le=365)
+    # Token names whose receipts are rehearsals: every check runs, nothing is marked delivered. The
+    # operator's and the assistant's tokens belong here; a consumer's never does.
+    dev_consumers: List[str] = Field(default_factory=list)
+    # A package run that has not finished after this long is stopped and recorded as failed.
+    pack_timeout_seconds: int = Field(default=1800, ge=60, le=7200)
+
+    @field_validator('weekday')
+    @classmethod
+    def _a_known_weekday(cls, value: str) -> str:
+        if value.lower() not in PACKAGE_WEEKDAYS:
+            raise ValueError(f'packages.weekday {value!r} is not one of {", ".join(PACKAGE_WEEKDAYS)}')
+        return value.lower()
+
+    @model_validator(mode='after')
+    def _no_start_in_the_quiet_minutes(self) -> 'PackagesConfig':
+        for label, hour, minute in (('weekly', self.hour, self.minute),
+                                    ('special', self.special_hour, self.special_minute)):
+            if quiet_minute_of_day(hour * 60 + minute):
+                raise ValueError(f'packages: the {label} time {hour:02d}:{minute:02d} UTC lies in the '
+                                 'quiet minutes 23:55-00:15 UTC, where no package run starts')
+        return self
 
 
 class MailExtractConfig(BaseModel):
@@ -601,5 +660,6 @@ class AppConfig(BaseModel):
     mail: MailConfig = Field(default_factory=MailConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     weekly_report: WeeklyReportConfig = Field(default_factory=WeeklyReportConfig)
+    packages: PackagesConfig = Field(default_factory=PackagesConfig)
     # Per-report defaults a call may override (ISSUE_104) — see report_config_types.
     reports: ReportsConfig = Field(default_factory=ReportsConfig)

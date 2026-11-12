@@ -34,7 +34,7 @@ import psycopg
 
 from finiexragengine.exceptions.ragengine_errors import VectorStoreError
 from finiexragengine.types.config_types.app_config_types import WeeklyReportConfig
-from finiexragengine.utils.archive_layout import Boundary, bucket_closes_at, bucket_name
+from finiexragengine.utils.archive_layout import Boundary, bucket_closes_at, bucket_name, bucket_span
 
 
 @dataclass
@@ -112,14 +112,18 @@ class OutcomeArchiveExporter:
         target = bucket_name(_parse_day(day), boundary) if day else None
         since_bucket = bucket_name(_parse_day(since), boundary) if since else None
 
-        buckets = self._grouped_lines(boundary, pipeline)   # {(stream, bucket): [line, ...]}
+        # The index first — which (stream, bucket) pairs hold rows — from an aggregate that never
+        # touches the envelope column. Selection happens on the index, and only a selected bucket's
+        # rows are ever read: the journal is never loaded whole, in any mode (it once was, on
+        # every weekly run, for a handful of new days — the Saturday memory step).
+        index = self._bucket_index(boundary, pipeline)       # {(stream, bucket): bucket start}
         # Incremental consults the flag; every other mode ignores it for *selection* (but still
         # writes it below), so a re-export of an already-handed-over day stays possible on demand.
         flagged = self._flagged_buckets(boundary) if incremental else set()
 
         result = ExportResult()
         written_flags: List[Tuple[str, str, int]] = []       # (stream, bucket, lines) to flag
-        for (stream, bucket), lines in sorted(buckets.items()):
+        for (stream, bucket), bucket_start in sorted(index.items()):
             if target is not None and bucket != target:
                 continue
             if since_bucket is not None and bucket < since_bucket:
@@ -134,9 +138,12 @@ class OutcomeArchiveExporter:
             if incremental and not is_open and (stream, bucket) in flagged:
                 result.skipped_flagged.append(f'{stream}/{bucket}')
                 continue
+            # One bucket in memory at a time: read, write, let go.
+            start, end = bucket_span(bucket_start, boundary)
+            lines = self.read_window(stream, start, end)
             path = out_dir / stream / f'{bucket}.jsonl'
             path.parent.mkdir(parents=True, exist_ok=True)
-            _atomic_write(path, ''.join(json.dumps(line) + '\n' for line in lines))
+            _atomic_write(path, archive_text(lines))
             result.files.append(ExportedFile(path, stream, bucket, len(lines)))
             result.total_lines += len(lines)
             # A finished (closed) handover is flagged; an --include-open peek is not — the day
@@ -152,32 +159,53 @@ class OutcomeArchiveExporter:
         result.skipped_flagged.sort()
         return result
 
-    def _grouped_lines(self, boundary: Boundary, pipeline: Optional[str],
-                       ) -> Dict[Tuple[str, str], List[Dict[str, Any]]]:
-        """Read the journal (oldest first) and fold rows into per-(stream, bucket) lines."""
+    def _bucket_index(self, boundary: Boundary, pipeline: Optional[str],
+                      ) -> Dict[Tuple[str, str], datetime]:
+        """Every (stream, bucket) that holds rows, with the bucket's first UTC day — counts only.
+
+        The aggregate groups by UTC day in SQL and folds days into buckets here, through
+        `bucket_name`: one definition of a bucket, never a second one written in SQL date formats.
+        """
         where, params = ('', [])
         if pipeline is not None:
             where, params = ('WHERE pipeline_id = %s', [pipeline])
         try:
             with psycopg.connect(self._database_url) as conn, conn.cursor() as cur:
                 # No table yet = nothing produced; an empty export, not a crash.
-                cur.execute('SELECT count(*) FROM information_schema.tables '
-                            'WHERE table_name = %s', (self._table,))
-                if cur.fetchone()[0] == 0:
+                if not _table_exists(cur, self._table):
                     return {}
                 cur.execute(
-                    f'SELECT pipeline_id, ts, envelope FROM {self._table} {where} '
-                    'ORDER BY pipeline_id, ts, id', params)
+                    f"SELECT DISTINCT pipeline_id, to_char(ts AT TIME ZONE 'UTC', 'YYYY-MM-DD') "
+                    f'FROM {self._table} {where}', params)
+                days = cur.fetchall()
+        except psycopg.Error as exc:
+            raise VectorStoreError(f'outcome export failed: {exc}') from exc
+        index: Dict[Tuple[str, str], datetime] = {}
+        for stream, day in days:
+            moment = _parse_day(day)
+            key = (stream, bucket_name(moment, boundary))
+            index[key] = min(index.get(key, moment), moment)
+        return index
+
+    def read_window(self, pipeline: str, start: datetime, end: datetime) -> List[Dict[str, Any]]:
+        """One stream's archive lines with `start <= ts < end`, oldest first — the bucket read.
+
+        The one read every whole-bucket consumer shares: the file export and the package builder.
+        Ordered (ts, id) and shaped by `_archive_line`, so a day read here, rendered with
+        `archive_text`, is byte for byte the exported file of that day.
+        """
+        try:
+            with psycopg.connect(self._database_url) as conn, conn.cursor() as cur:
+                if not _table_exists(cur, self._table):
+                    return []
+                cur.execute(
+                    f'SELECT ts, envelope FROM {self._table} '
+                    'WHERE pipeline_id = %s AND ts >= %s AND ts < %s ORDER BY ts, id',
+                    (pipeline, start, end))
                 rows = cur.fetchall()
         except psycopg.Error as exc:
             raise VectorStoreError(f'outcome export failed: {exc}') from exc
-
-        grouped: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
-        for pipeline_id, ts, envelope in rows:
-            ts = ts.astimezone(timezone.utc)
-            grouped.setdefault((pipeline_id, bucket_name(ts, boundary)), []).append(
-                _archive_line(ts, envelope))
-        return grouped
+        return [_archive_line(ts, envelope) for ts, envelope in rows]
 
     def lines_between(self, pipeline: str, start: datetime, end: datetime,
                       max_lines: int) -> ArchiveSlice:
@@ -277,6 +305,15 @@ def _archive_line(ts: datetime, envelope: Any) -> Dict[str, Any]:
     return {'collected_msc': int(ts.timestamp() * 1000), 'collected_msc_timebase': 'utc', **env}
 
 
+def archive_text(lines: List[Dict[str, Any]]) -> str:
+    """A bucket file's whole text: one JSON line per archive line, each ending in a newline.
+
+    THE file rendering — the export writes it, the package builder zips its UTF-8 bytes — so a
+    package member and the exported file of the same day cannot drift apart.
+    """
+    return ''.join(json.dumps(line) + '\n' for line in lines)
+
+
 def _table_exists(cur: psycopg.Cursor, table: str) -> bool:
     """A missing table (fresh DB, migration pending) means nothing was produced — never a crash."""
     cur.execute('SELECT count(*) FROM information_schema.tables WHERE table_name = %s', (table,))
@@ -303,10 +340,10 @@ def auto_export_weekly(weekly_cfg: WeeklyReportConfig, database_url: str, *,
     """Dump the closed-day archive alongside a weekly report, when enabled (ISSUE_13).
 
     The shared coupling for the CLI (`report_cli`) and the scheduled weekly (API lifespan). Runs
-    **incrementally**: only days that have closed since the last export are written (the
-    `archive_export_log` flag), so the weekly never rebuilds the whole history. Whole buckets
-    only — byte-identical to a manual `export_cli` run. Returns None when the knob is off, so the
-    caller can stay silent.
+    **incrementally**: only days that have closed since the last export are read and written (the
+    `archive_export_log` flag), so the weekly never rebuilds — nor loads — the whole history. Whole
+    buckets only — byte-identical to a manual `export_cli` run. Returns None when the knob is off,
+    so the caller can stay silent.
     """
     if not weekly_cfg.export_outcomes:
         return None

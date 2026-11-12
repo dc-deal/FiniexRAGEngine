@@ -183,6 +183,22 @@
     "export_outcomes": true,
     "export_dir": "data/signal_export"
   },
+  "packages": {
+    "enabled": false,
+    "output_dir": "data/packages",
+    "weekday": "sun",
+    "hour": 1,
+    "minute": 30,
+    "special_hour": 1,
+    "special_minute": 0,
+    "special_after_seal_minutes": 30,
+    "special_max_per_week": 2,
+    "special_blackout_hours": 24,
+    "min_free_percent": 10,
+    "receipt_overdue_days": 14,
+    "dev_consumers": [],
+    "pack_timeout_seconds": 1800
+  },
   "reports": {
     "source_health": {
       "recent_problems": 10,

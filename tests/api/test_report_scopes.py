@@ -19,6 +19,7 @@ from finiex_auth.token_registry import TokenRegistry
 from finiexragengine.api.api_app import _build_protected_router
 from finiexragengine.api.endpoints.archive_router import build_archive_router
 from finiexragengine.api.endpoints.mail_router import build_mail_router
+from finiexragengine.api.endpoints.package_router import build_package_routers
 from finiexragengine.api.endpoints.report_router import build_report_router
 from finiexragengine.api.endpoints.stream_router import build_stream_router
 from finiexragengine.configuration.app_config_manager import AppConfigManager
@@ -29,7 +30,10 @@ from finiexragengine.core.outcome.outcome_exporter import OutcomeArchiveExporter
 from finiexragengine.core.outcome.outcome_store import OutcomeStore
 from finiexragengine.core.outcome.stream_dispatcher import StreamDispatcher
 from finiexragengine.core.outcome.stream_replay import StreamReplay
-from finiexragengine.types.config_types.app_config_types import StreamConfig
+from finiexragengine.core.packages.package_ledger import PackageLedger
+from finiexragengine.core.packages.package_schedule import PackageSchedule
+from finiexragengine.core.packages.package_store import PackageStore
+from finiexragengine.types.config_types.app_config_types import PackagesConfig, StreamConfig
 from finiexragengine.types.config_types.app_config_types import ApiConfig
 
 _NARROW = 'narrow-consumer-token'
@@ -217,7 +221,7 @@ def test_an_empty_scope_reads_nothing(clean_db: str) -> None:
     assert client.get('/v1/pipelines', headers=_as('signals-token')).status_code == 200
 
 
-def test_no_route_with_an_identity_segment_is_ungated(clean_db: str) -> None:
+def test_no_route_with_an_identity_segment_is_ungated(clean_db: str, tmp_path) -> None:
     """The structural guarantee, asserted behaviourally rather than by introspection.
 
     The surface half of a grant is declared per router (`Security(..., scopes=['reports'])`), which
@@ -237,6 +241,11 @@ def test_no_route_with_an_identity_segment_is_ungated(clean_db: str) -> None:
     # authenticated, ungated, and invisible to exactly this test.
     store = OutcomeStore(clean_db)
     stream_config = StreamConfig()
+    packages_config = PackagesConfig(enabled=True, output_dir=str(tmp_path))
+    _open_packages, gated_packages = build_package_routers(
+        store=PackageStore(tmp_path), ledger=PackageLedger(tmp_path),
+        schedule=PackageSchedule(tmp_path, packages_config, lambda: []), config=packages_config,
+        tokens=tokens, loop_status=lambda: {}, heartbeat_status=lambda: {}, packer={}, public_names={})
     app.include_router(_build_protected_router(
         _pipelines(), api_config, tokens,
         extra_routers=[
@@ -248,6 +257,7 @@ def test_no_route_with_an_identity_segment_is_ungated(clean_db: str) -> None:
             build_archive_router(OutcomeArchiveExporter(clean_db), _pipelines(),
                                  build_grant_dependency(tokens)),
             build_mail_router(tokens, ['newsletter_a'], None, lambda: []),
+            gated_packages,
         ]))
     client = TestClient(app)
 
@@ -266,6 +276,12 @@ def test_no_route_with_an_identity_segment_is_ungated(clean_db: str) -> None:
                   ('/v1/dashboard/{name}', 'get'),
                   # 2026-11-03: the e-mail sources' status (#138), `mail:status`.
                   ('/v1/mail/{name}', 'get'),
+                  # 2026-11-12: signal packages (testingide#120) — a manifest and its zip behind
+                  # `packages:<id>`, a receipt behind `receipts:<id>`, a schedule change behind
+                  # `package_schedule:<id>`. The receipt is a POST: refused before its body is read.
+                  ('/v1/packages/{package_id}', 'get'), ('/v1/packages/{package_id}/zip', 'get'),
+                  ('/v1/packages/{package_id}/receipt', 'post'),
+                  ('/v1/packages/schedule/{special_id}', 'delete'),
                   # 2026-09-13: the series beyond the replay window — the same `pipelines:<id>`
                   # grant as `/latest`, so a token holding nothing must be refused here too.
                   ('/v1/pipelines/{pipeline_id}/archive', 'get'),

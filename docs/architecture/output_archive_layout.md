@@ -161,5 +161,13 @@ weekly report (`weekly_report.export_outcomes`, default `true`) — both the sch
 weekly and every `report_cli` run — writing to `weekly_report.export_dir`
 (default `data/signal_export`). It runs in **`--incremental`** mode
 (`auto_export_weekly` → `OutcomeArchiveExporter.export`), so a weekly run only writes the days
-that closed since the last export — never a full-history rebuild. `report_cli --no-export` skips
+that closed since the last export — never a full-history rebuild.
+
+**Every mode reads one bucket at a time.** The export selects from a count-only index (which
+`(stream, day)` pairs hold rows, folded into buckets by `bucket_name`) and reads a bucket's rows only
+when it writes that bucket, through the window `bucket_span` names. Until 2026-11 it loaded the whole
+journal on every run to hand over a handful of new days, and the live process carried that as a
+step in memory after each weekly report. The bucket read (`read_window`) and the file rendering
+(`archive_text`) are shared with every other whole-day consumer, so their bytes cannot drift from
+the file's. `report_cli --no-export` skips
 it for one run.

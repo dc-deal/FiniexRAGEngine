@@ -803,6 +803,43 @@
             }
         },
         {
+            // Signal packages (signal_packages.md): what a package run depends on — the mint, the
+            // folder, free disk, each pipeline's packages and last run. Reads only. No API cost.
+            "name": "📦 RAGEngine: Packages — check",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "finiexragengine.cli.package_cli",
+            "args": [
+                "check"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "06_output",
+                "order": 4
+            }
+        },
+        {
+            // A hand pack of every pipeline to today 00:00 UTC — what the weekly run does, and how a
+            // new installation makes its first packages (the whole history). Needs packages.enabled
+            // in user_configs; writes data/packages/. No API cost.
+            "name": "📦 RAGEngine: Packages — pack all (hand run)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "finiexragengine.cli.package_cli",
+            "args": [
+                "pack",
+                "--source",
+                "all"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "06_output",
+                "order": 5
+            }
+        },
+        {
             // 🧪 SYNTHETIC — this writes MOCK envelopes, not engine output. It sits in this group
             // because it produces the same archive shape for the same consumer (the Testing IDE),
             // which is exactly why the distinction has to be loud: never point --out at

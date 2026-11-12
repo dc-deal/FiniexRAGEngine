@@ -11,6 +11,7 @@ from finiexragengine.utils.archive_layout import (
     bucket_closes_at,
     bucket_name,
     bucket_path,
+    bucket_span,
     buckets_for_range,
 )
 
@@ -103,3 +104,22 @@ def test_the_close_is_always_after_the_moment_it_is_asked_about():
         for boundary in ('daily', 'weekly'):
             assert bucket_closes_at(moment, boundary) > moment, (moment, boundary)
 
+
+
+def test_a_bucket_span_is_the_window_its_name_covers():
+    """The read side of the name: an exporter reading one bucket at a time asks the journal for
+    exactly this window. Every moment inside it carries the bucket's name; the end is the close."""
+    friday = datetime(2026, 8, 28, 22, 59, tzinfo=timezone.utc)
+
+    day_start, day_end = bucket_span(friday, 'daily')
+    assert (day_start, day_end) == (datetime(2026, 8, 28, tzinfo=timezone.utc),
+                                    datetime(2026, 8, 29, tzinfo=timezone.utc))
+    week_start, week_end = bucket_span(friday, 'weekly')
+    assert (week_start, week_end) == (datetime(2026, 8, 24, tzinfo=timezone.utc),
+                                      datetime(2026, 8, 31, tzinfo=timezone.utc))
+    for boundary in ('daily', 'weekly'):
+        start, end = bucket_span(friday, boundary)
+        assert bucket_name(start, boundary) == bucket_name(friday, boundary)
+        assert bucket_name(end - timedelta(microseconds=1), boundary) == bucket_name(friday, boundary)
+        assert bucket_name(end, boundary) != bucket_name(friday, boundary)
+        assert end == bucket_closes_at(friday, boundary)

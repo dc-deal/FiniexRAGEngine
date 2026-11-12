@@ -12,9 +12,9 @@ Contract in three sentences: an envelope lands in the bucket of its **`collected
 one boundary kept for its whole history; a closed bucket is immutable, and a range read
 loads exactly the buckets overlapping the range, concatenated in order.
 """
-from datetime import datetime, timedelta, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import PurePosixPath
-from typing import List, Literal
+from typing import List, Literal, Tuple
 
 Boundary = Literal['daily', 'weekly']
 
@@ -51,6 +51,19 @@ def bucket_closes_at(moment: datetime, boundary: Boundary) -> datetime:
         return midnight + timedelta(days=1)
     # Weekly buckets are ISO weeks, Monday start — so the close is the next Monday 00:00 UTC.
     return midnight + timedelta(days=7 - moment.isoweekday() + 1)
+
+
+def bucket_span(moment: datetime, boundary: Boundary) -> Tuple[datetime, datetime]:
+    """The half-open window `[start, end)` of the bucket containing `moment`, in UTC.
+
+    The read side of `bucket_name`: an exporter that reads one bucket at a time asks the journal for
+    exactly this window, so a bucket file and the rows it was built from can never disagree about
+    where the bucket begins or ends. `end` is `bucket_closes_at`, by the same definition.
+    """
+    moment = _require_utc(moment)
+    midnight = moment.replace(hour=0, minute=0, second=0, microsecond=0)
+    start = midnight if boundary == 'daily' else midnight - timedelta(days=moment.isoweekday() - 1)
+    return start, bucket_closes_at(moment, boundary)
 
 
 def bucket_path(stream_id: str, moment: datetime, boundary: Boundary) -> PurePosixPath:
