@@ -5,12 +5,15 @@ time. The pid alone is not an identity — Windows reuses pids quickly — so a 
 while a process with that pid AND that creation time is alive. A lock left by a dead process (a
 killed run, a host reboot) is taken over; the run that finds it says so.
 
-Created with `O_EXCL`, so two packers starting together cannot both pass a check-then-write: one
-creates the file, the other finds it. (The collector's lock wrote without `O_EXCL` and left that
-window open; ours closes it.)
+**Taken in one atomic step.** The complete record is written to a temporary file first and then linked
+under the lock's name with `os.link`, which fails when the name exists — two packers starting together
+cannot both win, and nobody ever reads a half-written lock. (Creating the name with `O_EXCL` and writing
+it afterwards would leave a moment in which the lock is empty and reads as stale, so a second packer
+would take it over. The collector found that in our first version, 2026-11-13; both locks now link.)
 """
 import json
 import os
+import uuid
 from pathlib import Path
 from types import TracebackType
 from typing import Optional, Type
@@ -35,26 +38,32 @@ class PackLock:
 
     def __enter__(self) -> 'PackLock':
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        for _ in range(2):
-            try:
-                descriptor = os.open(self._path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            except FileExistsError:
-                holder = _live_holder(self._path)
-                if holder is not None:
-                    raise PackLockHeld(f'pack lock held by pid {holder} ({self._path})')
-                # Stale: its holder is gone. Remove it and try once more — a second packer racing for
-                # the same stale lock loses at O_EXCL, which is the point.
-                self.took_over = _read_pid(self._path)
+        me = psutil.Process()
+        temp = self._path.parent / f'{LOCK_FILENAME}.{me.pid}.{uuid.uuid4().hex}.tmp'
+        with open(temp, 'w', encoding='utf-8') as handle:
+            json.dump({'pid': me.pid, 'create_time': me.create_time()}, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            for _ in range(2):
                 try:
-                    self._path.unlink()
-                except FileNotFoundError:
-                    pass
-                continue
-            me = psutil.Process()
-            with os.fdopen(descriptor, 'w', encoding='utf-8') as handle:
-                json.dump({'pid': me.pid, 'create_time': me.create_time()}, handle)
-            self._held = True
-            return self
+                    os.link(temp, self._path)      # the complete record appears at once, or not at all
+                except FileExistsError:
+                    holder = _live_holder(self._path)
+                    if holder is not None:
+                        raise PackLockHeld(f'pack lock held by pid {holder} ({self._path})') from None
+                    # Stale: its holder is gone. Remove it and try once more — a second packer racing for
+                    # the same stale lock loses at the link, which is the point.
+                    self.took_over = _read_pid(self._path)
+                    try:
+                        self._path.unlink()
+                    except FileNotFoundError:
+                        pass
+                    continue
+                self._held = True
+                return self
+        finally:
+            temp.unlink(missing_ok=True)
         raise PackLockHeld(f'pack lock could not be taken ({self._path})')
 
     def __exit__(self, exc_type: Optional[Type[BaseException]], exc: Optional[BaseException],

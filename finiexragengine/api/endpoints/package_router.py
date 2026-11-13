@@ -15,13 +15,14 @@ need any `packages` grant and are filtered per token. Health and the schedule's 
 describe the service, and private pipelines appear there only under their public alias
 (`private-1`, …), as on `/v1/health`.
 
-**Receipts**, checked in the collector's order: 400 for a bad note or hash; 404 for no such package;
-409 when the hash is not this package's; 409 when the same token has not downloaded the whole zip
-(the hash is public, so it proves nothing alone — a resumed download adds up across its attempts);
-a token in `packages.dev_consumers` rehearses (`dev_received`, nothing moves); otherwise 201 for
-the first verified receipt and 200 with the original for a repeat. The package then moves to
-`delivered`. A receipt without `zip_sha256` is booked in the ledger and changes nothing — it never
-takes the receipt slot, so it cannot block a verified one later (the collector's store let it).
+**Receipts**, checked in the collector's order: 400 for a bad note, a missing hash ("zip_sha256 is
+required", booked as `receipt_refused`) or a malformed one; 404 for no such package; 409 when the hash
+is not this package's; 409 when the same token has not downloaded the whole zip (the hash is public,
+so it proves nothing alone — a resumed download adds up across its attempts); a token in
+`packages.dev_consumers` rehearses (`dev_received`, nothing moves); otherwise 201 for the first
+verified receipt and 200 with the original for a repeat. The package then moves to `delivered`. A
+receipt without the hash never reaches the slot, so it cannot block a verified one later and the
+package stays in `?unacknowledged=true` (aligned with the collector, 2026-11-13).
 """
 import re
 from datetime import date, datetime, timezone
@@ -201,25 +202,23 @@ def build_package_routers(*, store: PackageStore, ledger: PackageLedger, schedul
         if not isinstance(note, str) or len(note) > NOTE_MAX_CHARS:
             raise HTTPException(status_code=400, detail=f"'note' is text of at most {NOTE_MAX_CHARS} characters")
         reported = body.get('zip_sha256')
-        if reported is not None:
-            if not isinstance(reported, str) or not _SHA256.match(reported.lower()):
-                raise HTTPException(status_code=400, detail="'zip_sha256' is 64 hexadecimal characters")
-            reported = reported.lower()
+        consumer = consumer_of(request)
+        if reported is None:
+            # Required, as the collector answers it (2026-11-13): a receipt without the hash proves nothing,
+            # so it is refused and booked — it never takes the slot, and the package stays unacknowledged.
+            ledger.append('receipt_refused', package_id=package_id, consumer=consumer, reason='no zip_sha256')
+            raise HTTPException(status_code=400, detail='zip_sha256 is required')
+        if not isinstance(reported, str) or not _SHA256.match(reported.lower()):
+            raise HTTPException(status_code=400, detail="'zip_sha256' is 64 hexadecimal characters")
+        reported = reported.lower()
         found = store.find(package_id)
         if found is None:
             raise HTTPException(status_code=404, detail='no such package')
-        consumer = consumer_of(request)
         expected = found.manifest['zip']['sha256']
-        if reported is not None and reported != expected:
+        if reported != expected:
             ledger.append('receipt_refused', package_id=package_id, consumer=consumer,
                           reported_sha256=reported, expected_sha256=expected)
             raise HTTPException(status_code=409, detail='what you hold is not this package')
-        if reported is None:
-            ledger.append('received', package_id=package_id, consumer=consumer, note=note,
-                          zip_sha256=None, verified=False)
-            return JSONResponse({'package_id': package_id, 'verified': False, 'created': False,
-                                 'detail': 'recorded; a receipt without zip_sha256 proves nothing — '
-                                           'the package stays ready'})
         dev = consumer is not None and consumer in config.dev_consumers
         served_events = ledger.read(package_id=package_id, event='served').events
         if (dev or found.receipt is None) and not downloaded_whole(

@@ -248,13 +248,16 @@ def test_a_rehearsal_receipt_marks_nothing_and_never_stands_on_a_real_one(servic
     assert _receipt(service, package[0], 'ide', zip_sha256=sha).status_code == 201
 
 
-def test_a_receipt_without_a_hash_proves_nothing_and_blocks_nothing(service, package):
-    """The collector's store let a hashless first receipt take the slot; a hashed one could then no
-    longer deliver the package. Here it is booked and changes nothing."""
+def test_a_receipt_without_a_hash_is_refused_and_blocks_nothing(service, package):
+    """The collector's store once let a hashless first receipt take the slot, and the package dropped out
+    of `?unacknowledged=true` for good. Both services now refuse it with 400 before the slot (2026-11-13)."""
     data = _download(service, package[0], 'ide')
     hashless = _receipt(service, package[0], 'ide', note='checking')
-    assert hashless.status_code == 200 and hashless.json()['verified'] is False
-    assert service.store.find(package[0]).state == 'ready'
+    assert hashless.status_code == 400 and hashless.json()['detail'] == 'zip_sha256 is required'
+    refused = service.ledger.read(package_id=package[0], event='receipt_refused').events
+    assert refused[0]['reason'] == 'no zip_sha256' and refused[0]['consumer'] == 'ide'
+    listed = service.client.get('/v1/packages?unacknowledged=true', headers=_auth('ide')).json()
+    assert [entry['package_id'] for entry in listed['packages']] == [package[0]]
 
     hashed = _receipt(service, package[0], 'ide', zip_sha256=hashlib.sha256(data).hexdigest())
     assert hashed.status_code == 201 and service.store.find(package[0]).state == 'delivered'

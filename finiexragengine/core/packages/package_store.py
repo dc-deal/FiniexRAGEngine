@@ -13,10 +13,9 @@ run removes it. A delivered package stays listed and its bytes never change.
 
 **Receipts: the first verified one wins.** It is written to a unique temp file and linked into place
 with `os.link`, which fails when a receipt already exists — two consumers confirming at once cannot
-both win. Only a receipt carrying the zip's hash occupies the slot; one without proves nothing and is
-booked in the ledger only (`package_router`), so it can never block the real one later. The
-collector's store let a hashless first receipt take the slot, after which a hashed one could no
-longer deliver the package.
+both win. Only a receipt carrying the zip's hash reaches the slot: one without is refused before it
+(`package_router`, 400, booked as `receipt_refused`), so it can never block the real one later — the
+collector's store once let a hashless first receipt take the slot for good.
 
 Ported from the collector's package service (FiniexDataCollector `python/packages/package_store.py`,
 MIT), reduced to what a package rebuilt from a journal needs: there are no originals to stage.

@@ -126,7 +126,8 @@ packages is a few hundred megabytes, and the files can be rebuilt from the journ
 
 **The receipt** (`{"zip_sha256": "<hex>", "note": "…"}`, sent once the zip is verified, imported and
 filed) is checked in this order:
-1. 400 for a note longer than 500 characters or a hash that is not 64 hex digits.
+1. 400 for a note longer than 500 characters, a missing hash (`zip_sha256 is required`, booked as
+   `receipt_refused`) or a hash that is not 64 hex digits.
 2. 404 for no such package.
 3. 409 when the hash is not this package's.
 4. 409 when the same token has not downloaded the whole zip. The list publishes the hash, so the hash
@@ -136,9 +137,9 @@ filed) is checked in this order:
 6. Otherwise 201 for the first verified receipt, and the package moves to `delivered`. A repeat answers
    200 with the original.
 
-A receipt **without** `zip_sha256` is booked and changes nothing. It never takes the receipt slot, so it
-cannot block a verified receipt later. The collector's store let a hashless first receipt take that
-slot.
+A receipt **without** `zip_sha256` is refused before the receipt slot, so it can never block a verified
+receipt later, and the package stays in `?unacknowledged=true` for the next try. Both services answer it
+the same way since 2026-11-13; the collector's store once let a hashless first receipt take the slot.
 
 ## The schedule
 
