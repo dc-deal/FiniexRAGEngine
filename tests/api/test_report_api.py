@@ -292,6 +292,22 @@ def test_the_log_route_answers_in_UTC_for_a_locally_stamped_file(tmp_path):
     assert miss['matched'] == 0
 
 
+def test_a_bound_without_a_zone_is_read_as_utc_not_a_500(tmp_path):
+    """The bounds are UTC by contract. A value without a zone was compared with the file's zoned stamps,
+    raised, and answered 500 (F-4, 2026-10-31); it is read as UTC now, and finds what `Z` finds."""
+    log = tmp_path / 'finiex.log'
+    log.write_text('2026-09-08T11:05:03.750+02:00 ERROR mod: [HOST] connectivity\n', encoding='utf-8')
+    app = FastAPI()
+    app.include_router(build_log_router(str(log), TokenRegistry()))
+    client = TestClient(app)
+
+    naive = client.get('/v1/logs/engine?since=2026-09-08T09:00:00&until=2026-09-08T09:10:00')
+    zoned = client.get('/v1/logs/engine?since=2026-09-08T09:00:00Z&until=2026-09-08T09:10:00Z')
+
+    assert naive.status_code == 200
+    assert naive.json()['matched'] == zoned.json()['matched'] == 1
+
+
 def test_the_log_route_says_file_logging_is_off_rather_than_serving_an_empty_log():
     """`logging.file: null` is a supported mode; an empty page would read as a quiet engine."""
     app = FastAPI()

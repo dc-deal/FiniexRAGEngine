@@ -15,7 +15,7 @@ the *name* is the path parameter, exactly as `reports:<name>` works. One log str
 a second would need its own name written into a token, which is the point.
 """
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -64,7 +64,9 @@ def build_log_router(log_file: Optional[str], tokens: TokenRegistry,
             # A configuration fact, not a failure to read: `logging.file: null` is a supported mode.
             raise HTTPException(status_code=503,
                                 detail='file logging is disabled (logging.file is null)')
-        page = read_log(Path(log_file), since=since, until=until,
+        # The bounds are UTC by contract: a value without a zone is read as UTC instead of being compared
+        # with the file's zoned stamps, which raised a TypeError and answered 500 (seen 2026-10-31, F-4).
+        page = read_log(Path(log_file), since=_as_utc(since), until=_as_utc(until),
                         min_level=min_level, limit=limit)
         return LogPageResponse(
             stream=name, since=page.since, until=page.until, min_level=page.min_level,
@@ -73,3 +75,9 @@ def build_log_router(log_file: Optional[str], tokens: TokenRegistry,
             entries=[LogEntryInfo(**to_jsonable(entry)) for entry in page.entries])
 
     return router
+
+
+def _as_utc(moment: Optional[datetime]) -> Optional[datetime]:
+    if moment is None:
+        return None
+    return moment.replace(tzinfo=timezone.utc) if moment.tzinfo is None else moment.astimezone(timezone.utc)
