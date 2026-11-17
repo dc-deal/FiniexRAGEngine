@@ -48,6 +48,10 @@ def backfill(directory: Path, source_id: str, gate: SenderGate, store: MailStore
             census.accepted += 1
         else:
             census.rejected[verdict.reason or 'unknown'] = census.rejected.get(verdict.reason or 'unknown', 0) + 1
-        if not dry_run and not store.store_mail(source_id, BACKFILL_FOLDER, None, None, mail, verdict):
+        # A dry run asks the store (read only) what a real run would find there, so a dry rerun after a
+        # real one says `already stored` instead of a misleading 0 — it read that way on the server once.
+        stored = (store.is_stored(mail.message_id) if dry_run
+                  else not store.store_mail(source_id, BACKFILL_FOLDER, None, None, mail, verdict))
+        if stored:
             census.already_stored += 1
     return census

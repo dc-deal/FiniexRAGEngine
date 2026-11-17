@@ -73,6 +73,11 @@ class MailStore:
              mail.sender, mail.subject, mail.sent_at, 'accepted' if verdict.accepted else 'rejected',
              verdict.reason, text, len(text or ''), mail.size_bytes)))
 
+    def is_stored(self, message_id: str) -> bool:
+        """Whether a mail with this Message-ID is stored — read only, what a dry run asks instead of
+        writing (a dry rerun of a backfill must say what a real one would skip)."""
+        return self._one('SELECT 1 FROM mail_raw WHERE mail_id = %s', (mail_key(message_id),)) is not None
+
     # --- extract ------------------------------------------------------------------------------
 
     def pending(self, source_id: str, version: int, limit: int) -> List[PendingMail]:

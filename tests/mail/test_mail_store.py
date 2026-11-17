@@ -109,6 +109,9 @@ def test_a_backfill_dry_run_writes_nothing_and_a_rerun_adds_nothing(tmp_path, st
     backfill(tmp_path, 'newsletter_a', gate, store, dry_run=False)
     again = backfill(tmp_path, 'newsletter_a', gate, store, dry_run=False)
     assert again.already_stored == 3
+    # A dry rerun says what a real one would skip — it read `0 already stored` on the server (F-8).
+    dry_again = backfill(tmp_path, 'newsletter_a', gate, store, dry_run=True)
+    assert (dry_again.accepted, dry_again.already_stored) == (2, 3)
     pending = store.pending('newsletter_a', 1, 10)
     assert len(pending) == 2 and pending[0].sent_at == datetime(2026, 11, 3, 4, 9, 1, tzinfo=timezone.utc)
 
